@@ -13,6 +13,14 @@ pub enum Error {
     #[error("Failed to pull image: {0}")]
     ImagePullFailed(String),
 
+    /// Failed to parse image reference
+    #[error("Invalid image reference: {0}")]
+    InvalidImageRef(String),
+
+    /// Layer extraction failed
+    #[error("Failed to extract layer: {0}")]
+    LayerExtractionFailed(String),
+
     /// Sandbox not found
     #[error("Sandbox not found: {0}")]
     SandboxNotFound(String),
@@ -40,6 +48,22 @@ pub enum Error {
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// OCI distribution error
+    #[error("OCI registry error: {0}")]
+    OciRegistry(String),
+
+    /// Operation timed out
+    #[error("Operation timed out after {0} seconds")]
+    Timeout(u32),
+
+    /// Sandbox already exists
+    #[error("Sandbox already exists: {0}")]
+    SandboxAlreadyExists(String),
+
+    /// Sandbox is in invalid state for operation
+    #[error("Invalid sandbox state: {0}")]
+    InvalidState(String),
 }
 
 /// Result type alias

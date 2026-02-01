@@ -13,7 +13,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use nanosandbox::{Sandbox, SandboxConfig};
 //!
 //! #[tokio::main]
@@ -39,20 +39,35 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod image;
+pub mod oci;
+pub mod registry;
 pub mod runtime;
 pub mod sandbox;
 
 // Re-exports
-pub use config::SandboxConfig;
+pub use auth::CredentialStore;
+pub use config::{
+    Mount, MountType, NetworkConfig, NetworkMode, PortMapping, RegistryConfig, SandboxConfig,
+};
 pub use error::{Error, Result};
-pub use sandbox::Sandbox;
+pub use image::{ImageManager, ImageRef, PulledImage};
+pub use oci::OciBundle;
+pub use registry::{SandboxInfo, SandboxRegistry};
+pub use runtime::{detect_runtime, Runtime};
+pub use sandbox::{ExecOptions, ExecResult, OutputChunk, Sandbox, SandboxStatus, Stream};
 
 /// Prelude module for convenient imports
 pub mod prelude {
+    pub use crate::auth::CredentialStore;
     pub use crate::config::*;
     pub use crate::error::{Error, Result};
+    pub use crate::image::{ImageManager, ImageRef, PulledImage};
+    pub use crate::oci::OciBundle;
+    pub use crate::registry::{SandboxInfo, SandboxRegistry};
+    pub use crate::runtime::Runtime;
     pub use crate::sandbox::*;
 }

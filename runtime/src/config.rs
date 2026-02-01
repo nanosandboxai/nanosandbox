@@ -112,27 +112,53 @@ impl SandboxConfigBuilder {
         self
     }
 
-    /// Add a mount point
+    /// Add a bind mount point
     pub fn mount(mut self, host: impl Into<PathBuf>, container: impl Into<String>) -> Self {
-        self.config.mounts.push(Mount {
-            host_path: host.into(),
-            container_path: container.into(),
-            readonly: false,
-        });
+        self.config.mounts.push(Mount::bind(host, container));
         self
     }
 
-    /// Add a readonly mount point
+    /// Add a readonly bind mount point
     pub fn mount_readonly(
         mut self,
         host: impl Into<PathBuf>,
         container: impl Into<String>,
     ) -> Self {
-        self.config.mounts.push(Mount {
-            host_path: host.into(),
-            container_path: container.into(),
-            readonly: true,
-        });
+        self.config.mounts.push(Mount::bind(host, container).readonly());
+        self
+    }
+
+    /// Add a virtio-fs mount point (faster for VMs)
+    pub fn mount_virtiofs(mut self, host: impl Into<PathBuf>, container: impl Into<String>) -> Self {
+        self.config.mounts.push(Mount::virtiofs(host, container));
+        self
+    }
+
+    /// Add a readonly virtio-fs mount point
+    pub fn mount_virtiofs_readonly(
+        mut self,
+        host: impl Into<PathBuf>,
+        container: impl Into<String>,
+    ) -> Self {
+        self.config.mounts.push(Mount::virtiofs(host, container).readonly());
+        self
+    }
+
+    /// Set the network mode
+    pub fn network_mode(mut self, mode: NetworkMode) -> Self {
+        self.config.network.mode = mode;
+        self
+    }
+
+    /// Add a port mapping
+    pub fn port(mut self, host: u16, container: u16) -> Self {
+        self.config.network.port_mappings.push(PortMapping::tcp(host, container));
+        self
+    }
+
+    /// Add a DNS server
+    pub fn dns(mut self, server: impl Into<String>) -> Self {
+        self.config.network.dns.push(server.into());
         self
     }
 
@@ -166,6 +192,17 @@ impl SandboxConfigBuilder {
     }
 }
 
+/// Mount type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MountType {
+    /// Standard bind mount
+    #[default]
+    Bind,
+    /// virtio-fs mount (VM-optimized, faster)
+    VirtioFs,
+}
+
 /// Mount point configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mount {
@@ -178,6 +215,74 @@ pub struct Mount {
     /// Whether the mount is read-only
     #[serde(default)]
     pub readonly: bool,
+
+    /// Mount type (bind or virtio-fs)
+    #[serde(default)]
+    pub mount_type: MountType,
+}
+
+impl Mount {
+    /// Create a new bind mount
+    pub fn bind(host: impl Into<PathBuf>, container: impl Into<String>) -> Self {
+        Self {
+            host_path: host.into(),
+            container_path: container.into(),
+            readonly: false,
+            mount_type: MountType::Bind,
+        }
+    }
+
+    /// Create a new virtio-fs mount
+    pub fn virtiofs(host: impl Into<PathBuf>, container: impl Into<String>) -> Self {
+        Self {
+            host_path: host.into(),
+            container_path: container.into(),
+            readonly: false,
+            mount_type: MountType::VirtioFs,
+        }
+    }
+
+    /// Set mount as read-only
+    pub fn readonly(mut self) -> Self {
+        self.readonly = true;
+        self
+    }
+}
+
+/// Port mapping for inbound connections
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortMapping {
+    /// Port on the host
+    pub host_port: u16,
+    /// Port inside the container
+    pub container_port: u16,
+    /// Protocol (tcp/udp)
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
+}
+
+fn default_protocol() -> String {
+    "tcp".to_string()
+}
+
+impl PortMapping {
+    /// Create a TCP port mapping
+    pub fn tcp(host: u16, container: u16) -> Self {
+        Self {
+            host_port: host,
+            container_port: container,
+            protocol: "tcp".to_string(),
+        }
+    }
+
+    /// Create a UDP port mapping
+    pub fn udp(host: u16, container: u16) -> Self {
+        Self {
+            host_port: host,
+            container_port: container,
+            protocol: "udp".to_string(),
+        }
+    }
 }
 
 /// Network configuration
@@ -190,6 +295,14 @@ pub struct NetworkConfig {
     /// Network mode (tsi, bridge, none)
     #[serde(default = "default_network_mode")]
     pub mode: NetworkMode,
+
+    /// Port mappings for inbound connections
+    #[serde(default)]
+    pub port_mappings: Vec<PortMapping>,
+
+    /// DNS servers (uses host DNS if empty)
+    #[serde(default)]
+    pub dns: Vec<String>,
 }
 
 fn default_network_enabled() -> bool {
@@ -205,7 +318,43 @@ impl Default for NetworkConfig {
         Self {
             enabled: default_network_enabled(),
             mode: default_network_mode(),
+            port_mappings: Vec::new(),
+            dns: Vec::new(),
         }
+    }
+}
+
+impl NetworkConfig {
+    /// Create a config with no network access
+    pub fn none() -> Self {
+        Self {
+            enabled: false,
+            mode: NetworkMode::None,
+            port_mappings: Vec::new(),
+            dns: Vec::new(),
+        }
+    }
+
+    /// Create a config with TSI networking
+    pub fn tsi() -> Self {
+        Self {
+            enabled: true,
+            mode: NetworkMode::Tsi,
+            port_mappings: Vec::new(),
+            dns: Vec::new(),
+        }
+    }
+
+    /// Add a port mapping
+    pub fn with_port(mut self, host: u16, container: u16) -> Self {
+        self.port_mappings.push(PortMapping::tcp(host, container));
+        self
+    }
+
+    /// Add a DNS server
+    pub fn with_dns(mut self, server: impl Into<String>) -> Self {
+        self.dns.push(server.into());
+        self
     }
 }
 
@@ -222,4 +371,42 @@ pub enum NetworkMode {
 
     /// Virtual bridge network
     Bridge,
+}
+
+/// Registry configuration for per-registry settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryConfig {
+    /// Registry hostname (e.g., "ghcr.io")
+    pub host: String,
+
+    /// Allow insecure HTTP connections
+    #[serde(default)]
+    pub insecure: bool,
+
+    /// Skip TLS certificate verification
+    #[serde(default)]
+    pub skip_tls_verify: bool,
+}
+
+impl RegistryConfig {
+    /// Create a new registry config
+    pub fn new(host: impl Into<String>) -> Self {
+        Self {
+            host: host.into(),
+            insecure: false,
+            skip_tls_verify: false,
+        }
+    }
+
+    /// Allow insecure HTTP connections
+    pub fn insecure(mut self) -> Self {
+        self.insecure = true;
+        self
+    }
+
+    /// Skip TLS verification
+    pub fn skip_tls(mut self) -> Self {
+        self.skip_tls_verify = true;
+        self
+    }
 }
