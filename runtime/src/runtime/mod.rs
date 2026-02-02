@@ -1,17 +1,36 @@
 //! Runtime backend abstraction for sandbox execution
 //!
-//! Supports multiple runtime backends:
-//! - `OciRuntime` - crun/krun (OCI runtimes with libkrun) for Linux
-//! - `KrunVmRuntime` - krunvm for macOS Apple Silicon
+//! This module provides platform-specific runtime backends:
+//!
+//! | Platform | Runtime | Hypervisor |
+//! |----------|---------|------------|
+//! | Linux | crun/krun (OCI) | KVM |
+//! | macOS | krunvm | HVF (Hypervisor.framework) |
+//! | Windows | Windows Containers | HCS (Hyper-V/Process isolation) |
+//!
+//! Each platform has exactly one runtime. If the runtime prerequisites
+//! are not met, an error is returned with installation instructions.
 
 mod krunvm;
 mod oci;
+pub mod validation;
+
+// Windows Container runtime (only compiled on Windows)
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 pub use krunvm::KrunVmRuntime;
 pub use oci::OciRuntime;
+pub use validation::validate_runtime_prerequisites;
+
+#[cfg(target_os = "windows")]
+pub use windows::{WindowsContainerRuntime, WindowsIsolation};
 
 use crate::config::SandboxConfig;
-use crate::error::{Error, Result};
+use crate::error::Result;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+use crate::error::Error;
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::info;
@@ -29,29 +48,70 @@ pub struct ExecOutput {
 
 /// Runtime backend enum
 ///
-/// Uses enum dispatch instead of trait objects to avoid dyn compatibility issues
-/// with generic methods like exec_stream.
+/// Each platform has exactly one runtime backend:
+/// - Linux: `Oci` (crun/krun)
+/// - macOS: `KrunVm` (krunvm)
+/// - Windows: `Windows` (Windows Containers)
 pub enum RuntimeBackend {
-    /// OCI Runtime (crun/krun)
+    /// OCI Runtime (crun/krun) - Linux only
+    #[cfg(target_os = "linux")]
     Oci(OciRuntime),
-    /// krunvm Runtime (macOS)
+
+    /// krunvm Runtime - macOS Apple Silicon only
+    #[cfg(target_os = "macos")]
     KrunVm(KrunVmRuntime),
+
+    /// Windows Container Runtime - Windows only
+    #[cfg(target_os = "windows")]
+    Windows(WindowsContainerRuntime),
 }
 
 impl RuntimeBackend {
     /// Get the runtime name
     pub fn name(&self) -> &str {
-        match self {
-            RuntimeBackend::Oci(r) => r.name(),
-            RuntimeBackend::KrunVm(_) => "krunvm",
+        #[cfg(target_os = "linux")]
+        {
+            match self {
+                RuntimeBackend::Oci(r) => r.name(),
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                RuntimeBackend::KrunVm(_) => "krunvm",
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                RuntimeBackend::Windows(r) => r.name(),
+            }
         }
     }
 
     /// Check if this runtime handles image pulling internally
     pub fn handles_image_pull(&self) -> bool {
-        match self {
-            RuntimeBackend::Oci(_) => false,
-            RuntimeBackend::KrunVm(_) => true,
+        #[cfg(target_os = "linux")]
+        {
+            match self {
+                RuntimeBackend::Oci(_) => false,
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                RuntimeBackend::KrunVm(_) => true,
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                RuntimeBackend::Windows(_) => false,
+            }
         }
     }
 
@@ -62,17 +122,49 @@ impl RuntimeBackend {
         config: &SandboxConfig,
         bundle_path: Option<&Path>,
     ) -> Result<()> {
-        match self {
-            RuntimeBackend::Oci(r) => r.create(id, config, bundle_path).await,
-            RuntimeBackend::KrunVm(r) => r.create(id, config, bundle_path).await,
+        #[cfg(target_os = "linux")]
+        {
+            match self {
+                RuntimeBackend::Oci(r) => r.create(id, config, bundle_path).await,
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                RuntimeBackend::KrunVm(r) => r.create(id, config, bundle_path).await,
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                RuntimeBackend::Windows(r) => r.create(id, config, bundle_path).await,
+            }
         }
     }
 
     /// Start the sandbox/VM
     pub async fn start(&self, id: &str) -> Result<()> {
-        match self {
-            RuntimeBackend::Oci(r) => r.start(id).await,
-            RuntimeBackend::KrunVm(r) => r.start(id).await,
+        #[cfg(target_os = "linux")]
+        {
+            match self {
+                RuntimeBackend::Oci(r) => r.start(id).await,
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                RuntimeBackend::KrunVm(r) => r.start(id).await,
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                RuntimeBackend::Windows(r) => r.start(id).await,
+            }
         }
     }
 
@@ -85,9 +177,25 @@ impl RuntimeBackend {
         workdir: Option<&str>,
         env: &HashMap<String, String>,
     ) -> Result<ExecOutput> {
-        match self {
-            RuntimeBackend::Oci(r) => r.exec(id, command, args, workdir, env).await,
-            RuntimeBackend::KrunVm(r) => r.exec(id, command, args, workdir, env).await,
+        #[cfg(target_os = "linux")]
+        {
+            match self {
+                RuntimeBackend::Oci(r) => r.exec(id, command, args, workdir, env).await,
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                RuntimeBackend::KrunVm(r) => r.exec(id, command, args, workdir, env).await,
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                RuntimeBackend::Windows(r) => r.exec(id, command, args, workdir, env).await,
+            }
         }
     }
 
@@ -104,52 +212,138 @@ impl RuntimeBackend {
     where
         F: Fn(&str, bool) + Send + Sync,
     {
-        match self {
-            RuntimeBackend::Oci(r) => {
-                r.exec_stream(id, command, args, workdir, env, on_output)
-                    .await
+        #[cfg(target_os = "linux")]
+        {
+            match self {
+                RuntimeBackend::Oci(r) => {
+                    r.exec_stream(id, command, args, workdir, env, on_output)
+                        .await
+                }
             }
-            RuntimeBackend::KrunVm(r) => {
-                r.exec_stream(id, command, args, workdir, env, on_output)
-                    .await
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                RuntimeBackend::KrunVm(r) => {
+                    r.exec_stream(id, command, args, workdir, env, on_output)
+                        .await
+                }
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                RuntimeBackend::Windows(r) => {
+                    r.exec_stream(id, command, args, workdir, env, on_output)
+                        .await
+                }
             }
         }
     }
 
     /// Stop the sandbox/VM
     pub async fn stop(&self, id: &str) -> Result<()> {
-        match self {
-            RuntimeBackend::Oci(r) => r.stop(id).await,
-            RuntimeBackend::KrunVm(r) => r.stop(id).await,
+        #[cfg(target_os = "linux")]
+        {
+            match self {
+                RuntimeBackend::Oci(r) => r.stop(id).await,
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                RuntimeBackend::KrunVm(r) => r.stop(id).await,
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                RuntimeBackend::Windows(r) => r.stop(id).await,
+            }
         }
     }
 
     /// Destroy/delete the sandbox/VM
     pub async fn destroy(&self, id: &str) -> Result<()> {
-        match self {
-            RuntimeBackend::Oci(r) => r.destroy(id).await,
-            RuntimeBackend::KrunVm(r) => r.destroy(id).await,
+        #[cfg(target_os = "linux")]
+        {
+            match self {
+                RuntimeBackend::Oci(r) => r.destroy(id).await,
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                RuntimeBackend::KrunVm(r) => r.destroy(id).await,
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                RuntimeBackend::Windows(r) => r.destroy(id).await,
+            }
         }
     }
 }
 
-/// Detect and create the best available runtime for the current platform
+/// Detect and create the runtime for the current platform
+///
+/// This function:
+/// 1. Validates all runtime prerequisites
+/// 2. Creates the platform-specific runtime
+///
+/// Each platform has exactly one runtime:
+/// - Linux → OciRuntime (crun/krun)
+/// - macOS → KrunVmRuntime (krunvm)
+/// - Windows → WindowsContainerRuntime (HCS)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The platform is not supported
+/// - Runtime prerequisites are not met (with installation instructions)
+/// - Runtime initialization fails
 pub async fn detect_runtime() -> Result<RuntimeBackend> {
-    // Try OCI runtime first (Linux with crun/krun)
-    if OciRuntime::is_available().await {
-        info!("Using OCI runtime (crun/krun)");
-        return Ok(RuntimeBackend::Oci(OciRuntime::new().await?));
+    // First, validate prerequisites
+    validate_runtime_prerequisites().await?;
+
+    // Then create the platform-specific runtime
+    #[cfg(target_os = "linux")]
+    {
+        info!("Initializing OCI runtime (Linux)");
+        let runtime = OciRuntime::new().await?;
+        info!("Using OCI runtime: {}", runtime.name());
+        Ok(RuntimeBackend::Oci(runtime))
     }
 
-    // Try krunvm (macOS Apple Silicon)
-    if KrunVmRuntime::is_available().await {
+    #[cfg(target_os = "macos")]
+    {
+        info!("Initializing krunvm runtime (macOS)");
+        let runtime = KrunVmRuntime::new().await?;
         info!("Using krunvm runtime");
-        return Ok(RuntimeBackend::KrunVm(KrunVmRuntime::new().await?));
+        return Ok(RuntimeBackend::KrunVm(runtime));
     }
 
-    Err(Error::RuntimeNotAvailable(
-        "No runtime available. Install crun/krun (Linux) or krunvm (macOS).".to_string(),
-    ))
+    #[cfg(target_os = "windows")]
+    {
+        info!("Initializing Windows Container runtime");
+        let runtime = WindowsContainerRuntime::new().await?;
+        info!("Using Windows Container runtime");
+        return Ok(RuntimeBackend::Windows(runtime));
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Err(Error::UnsupportedPlatform {
+            platform: std::env::consts::OS.to_string(),
+        })
+    }
 }
 
 /// Runtime wrapper for backward compatibility
@@ -195,12 +389,7 @@ impl Runtime {
     }
 
     /// Execute a command
-    pub async fn exec(
-        &self,
-        id: &str,
-        command: &str,
-        args: &[&str],
-    ) -> Result<ExecOutput> {
+    pub async fn exec(&self, id: &str, command: &str, args: &[&str]) -> Result<ExecOutput> {
         self.backend
             .exec(id, command, args, None, &HashMap::new())
             .await
@@ -220,6 +409,7 @@ impl Runtime {
     }
 
     /// Execute with streaming output
+    #[allow(clippy::too_many_arguments)]
     pub async fn exec_stream<F>(
         &self,
         id: &str,
@@ -255,13 +445,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_creation() {
+        // This test will pass on supported platforms with prerequisites met,
+        // and provide helpful error messages on unsupported platforms
         match Runtime::new().await {
             Ok(runtime) => {
                 println!("Runtime detected: {}", runtime.name());
                 assert!(!runtime.name().is_empty());
             }
             Err(e) => {
-                eprintln!("Runtime not available for testing: {}", e);
+                // Expected on systems without runtime prerequisites
+                eprintln!("Runtime not available: {}", e);
             }
         }
     }

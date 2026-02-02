@@ -7,9 +7,7 @@ mod cli {
     use clap::{Parser, Subcommand, ValueEnum};
     use colored::Colorize;
     use indicatif::{ProgressBar, ProgressStyle};
-    use nanosandbox::{
-        ImageManager, Sandbox, SandboxConfig, SandboxRegistry, SandboxStatus,
-    };
+    use nanosandbox::{ImageManager, Sandbox, SandboxConfig, SandboxRegistry, SandboxStatus};
     use std::time::Duration;
     use tabled::{Table, Tabled};
 
@@ -193,7 +191,18 @@ mod cli {
                 cpus,
                 memory,
                 command,
-            } => cmd_run(&image, name, cpus, memory, &command, cli.format, cli.verbose).await,
+            } => {
+                cmd_run(
+                    &image,
+                    name,
+                    cpus,
+                    memory,
+                    &command,
+                    cli.format,
+                    cli.verbose,
+                )
+                .await
+            }
             Commands::Exec { sandbox, command } => {
                 cmd_exec(&sandbox, &command, cli.format, cli.verbose).await
             }
@@ -287,7 +296,8 @@ mod cli {
         format: OutputFormat,
         verbose: bool,
     ) -> anyhow::Result<()> {
-        let sandbox_name = name.unwrap_or_else(|| format!("sandbox-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+        let sandbox_name =
+            name.unwrap_or_else(|| format!("sandbox-{}", &uuid::Uuid::new_v4().to_string()[..8]));
 
         if verbose {
             eprintln!("Creating sandbox '{}' with image '{}'", sandbox_name, image);
@@ -304,7 +314,7 @@ mod cli {
         pb.set_message("Creating sandbox...");
 
         let mut sandbox = Sandbox::create(config).await?;
-        
+
         pb.set_message("Starting sandbox...");
         sandbox.start().await?;
         pb.finish_and_clear();
@@ -313,12 +323,11 @@ mod cli {
             // No command, just print sandbox info
             match format {
                 OutputFormat::Text => {
+                    println!("{} Sandbox {} started", "✓".green(), sandbox.id().bold());
                     println!(
-                        "{} Sandbox {} started",
-                        "✓".green(),
-                        sandbox.id().bold()
+                        "Run commands with: nanosb exec {} <command>",
+                        &sandbox.id()[..12]
                     );
-                    println!("Run commands with: nanosb exec {} <command>", &sandbox.id()[..12]);
                 }
                 OutputFormat::Json => {
                     let json = serde_json::json!({
@@ -357,7 +366,7 @@ mod cli {
 
             // Clean up sandbox
             sandbox.destroy().await?;
-            
+
             if result.exit_code != 0 {
                 std::process::exit(result.exit_code);
             }
@@ -378,15 +387,15 @@ mod cli {
         }
 
         let registry = SandboxRegistry::new()?;
-        
-        // Find sandbox by ID or name prefix
-        let sandbox_info = registry.list()?.into_iter().find(|s| {
-            s.id.starts_with(sandbox_id) || s.name.starts_with(sandbox_id)
-        });
 
-        let sandbox_info = sandbox_info.ok_or_else(|| {
-            anyhow::anyhow!("Sandbox not found: {}", sandbox_id)
-        })?;
+        // Find sandbox by ID or name prefix
+        let sandbox_info = registry
+            .list()?
+            .into_iter()
+            .find(|s| s.id.starts_with(sandbox_id) || s.name.starts_with(sandbox_id));
+
+        let sandbox_info =
+            sandbox_info.ok_or_else(|| anyhow::anyhow!("Sandbox not found: {}", sandbox_id))?;
 
         if sandbox_info.status != SandboxStatus::Running {
             anyhow::bail!(
@@ -411,7 +420,10 @@ mod cli {
         // Return the sandbox info for reference
         match format {
             OutputFormat::Text => {
-                println!("Sandbox {} exists but exec requires runtime integration.", sandbox_id);
+                println!(
+                    "Sandbox {} exists but exec requires runtime integration.",
+                    sandbox_id
+                );
             }
             OutputFormat::Json => {
                 let json = serde_json::json!({
@@ -487,22 +499,29 @@ mod cli {
         let registry = SandboxRegistry::new()?;
 
         // Find sandbox by ID or name prefix
-        let sandbox_info = registry.list()?.into_iter().find(|s| {
-            s.id.starts_with(sandbox_id) || s.name.starts_with(sandbox_id)
-        });
+        let sandbox_info = registry
+            .list()?
+            .into_iter()
+            .find(|s| s.id.starts_with(sandbox_id) || s.name.starts_with(sandbox_id));
 
-        let sandbox_info = sandbox_info.ok_or_else(|| {
-            anyhow::anyhow!("Sandbox not found: {}", sandbox_id)
-        })?;
+        let sandbox_info =
+            sandbox_info.ok_or_else(|| anyhow::anyhow!("Sandbox not found: {}", sandbox_id))?;
 
         if verbose {
-            eprintln!("Stopping sandbox: {} ({})", sandbox_info.name, sandbox_info.id);
+            eprintln!(
+                "Stopping sandbox: {} ({})",
+                sandbox_info.name, sandbox_info.id
+            );
         }
 
         // Update status in registry
         registry.update_status(&sandbox_info.id, SandboxStatus::Stopped)?;
 
-        println!("{} Stopped {}", "✓".green(), sandbox_info.id[..12].to_string().bold());
+        println!(
+            "{} Stopped {}",
+            "✓".green(),
+            sandbox_info.id[..12].to_string().bold()
+        );
         Ok(())
     }
 
@@ -511,13 +530,13 @@ mod cli {
         let registry = SandboxRegistry::new()?;
 
         // Find sandbox by ID or name prefix
-        let sandbox_info = registry.list()?.into_iter().find(|s| {
-            s.id.starts_with(sandbox_id) || s.name.starts_with(sandbox_id)
-        });
+        let sandbox_info = registry
+            .list()?
+            .into_iter()
+            .find(|s| s.id.starts_with(sandbox_id) || s.name.starts_with(sandbox_id));
 
-        let sandbox_info = sandbox_info.ok_or_else(|| {
-            anyhow::anyhow!("Sandbox not found: {}", sandbox_id)
-        })?;
+        let sandbox_info =
+            sandbox_info.ok_or_else(|| anyhow::anyhow!("Sandbox not found: {}", sandbox_id))?;
 
         if sandbox_info.status == SandboxStatus::Running && !force {
             anyhow::bail!(
@@ -527,7 +546,10 @@ mod cli {
         }
 
         if verbose {
-            eprintln!("Removing sandbox: {} ({})", sandbox_info.name, sandbox_info.id);
+            eprintln!(
+                "Removing sandbox: {} ({})",
+                sandbox_info.name, sandbox_info.id
+            );
         }
 
         // Remove bundle directory if it exists
@@ -538,7 +560,11 @@ mod cli {
         // Unregister from registry
         registry.unregister(&sandbox_info.id)?;
 
-        println!("{} Removed {}", "✓".green(), sandbox_info.id[..12].to_string().bold());
+        println!(
+            "{} Removed {}",
+            "✓".green(),
+            sandbox_info.id[..12].to_string().bold()
+        );
         Ok(())
     }
 }

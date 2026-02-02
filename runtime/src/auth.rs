@@ -68,7 +68,8 @@ impl CredentialStore {
                         // Merge auths
                         for (registry, auth) in config.auths {
                             if let Some((user, pass)) = Self::decode_auth(&auth) {
-                                credentials.insert(Self::normalize_registry(&registry), (user, pass));
+                                credentials
+                                    .insert(Self::normalize_registry(&registry), (user, pass));
                             }
                         }
                         // Use first found helper
@@ -147,7 +148,7 @@ impl CredentialStore {
         let registry = registry.trim_start_matches("https://");
         let registry = registry.trim_start_matches("http://");
         let registry = registry.trim_end_matches('/');
-        
+
         // Handle Docker Hub special case
         match registry {
             "index.docker.io" | "index.docker.io/v1" | "registry-1.docker.io" => {
@@ -160,7 +161,7 @@ impl CredentialStore {
     /// Get authentication for a registry
     pub fn get_auth(&self, registry: &str) -> RegistryAuth {
         let normalized = Self::normalize_registry(registry);
-        
+
         // Check if there's a credential helper for this registry
         if let Some(helper) = self.cred_helpers.get(&normalized) {
             if let Some(auth) = self.get_from_helper(helper, &normalized) {
@@ -184,7 +185,10 @@ impl CredentialStore {
         // Try matching with registry prefix (e.g., ghcr.io matches ghcr.io/user)
         for (stored_registry, (user, pass)) in &self.credentials {
             if normalized.starts_with(stored_registry) {
-                debug!("Found prefix-matched credentials for registry: {}", normalized);
+                debug!(
+                    "Found prefix-matched credentials for registry: {}",
+                    normalized
+                );
                 return RegistryAuth::Basic(user.clone(), pass.clone());
             }
         }
@@ -196,7 +200,7 @@ impl CredentialStore {
     /// Get credentials from a credential helper
     fn get_from_helper(&self, _helper: &str, registry: &str) -> Option<RegistryAuth> {
         debug!("Attempting to get credentials for registry: {}", registry);
-        
+
         // Use docker_credential crate to get credentials
         // It automatically handles the credential helper based on config.json
         match docker_credential::get_credential(registry) {
@@ -248,14 +252,11 @@ impl Default for CredentialStore {
 /// Decode base64 string
 fn base64_decode(input: &str) -> std::result::Result<String, Error> {
     // Simple base64 decode without external crate
-    let bytes: Vec<u8> = input
-        .bytes()
-        .filter(|b| !b.is_ascii_whitespace())
-        .collect();
-    
+    let bytes: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+
     let decoded = base64_decode_bytes(&bytes)
         .map_err(|e| Error::InvalidConfig(format!("Base64 decode error: {}", e)))?;
-    
+
     String::from_utf8(decoded)
         .map_err(|e| Error::InvalidConfig(format!("UTF-8 decode error: {}", e)))
 }
@@ -263,14 +264,12 @@ fn base64_decode(input: &str) -> std::result::Result<String, Error> {
 /// Simple base64 decoder
 fn base64_decode_bytes(input: &[u8]) -> std::result::Result<Vec<u8>, &'static str> {
     const DECODE_TABLE: [i8; 128] = [
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, -1, 63,
-        52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1,
-        -1,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
-        15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, -1,
-        -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-        41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1,
+        -1, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3, 4,
+        5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1,
+        -1, -1, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+        46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
     ];
 
     let mut output = Vec::with_capacity(input.len() * 3 / 4);
@@ -341,7 +340,7 @@ mod tests {
     fn test_add_credentials() {
         let mut store = CredentialStore::empty();
         store.add_credentials("ghcr.io", "user".to_string(), "token".to_string());
-        
+
         assert!(store.has_credentials("ghcr.io"));
         match store.get_auth("ghcr.io") {
             RegistryAuth::Basic(user, pass) => {
@@ -356,18 +355,22 @@ mod tests {
     fn test_load_docker_config() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.json");
-        
+
         // Write test config with base64-encoded "testuser:testpass"
-        std::fs::write(&config_path, r#"{
+        std::fs::write(
+            &config_path,
+            r#"{
             "auths": {
                 "ghcr.io": {
                     "auth": "dGVzdHVzZXI6dGVzdHBhc3M="
                 }
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let store = CredentialStore::load_from_paths(&[config_path]).unwrap();
-        
+
         match store.get_auth("ghcr.io") {
             RegistryAuth::Basic(user, pass) => {
                 assert_eq!(user, "testuser");

@@ -165,13 +165,13 @@ fn generate_mounts(user_mounts: &[Mount]) -> Vec<serde_json::Value> {
 /// Generate Linux-specific configuration
 fn generate_linux_config(config: &SandboxConfig) -> serde_json::Value {
     let memory_limit = (config.memory_mb as i64) * 1024 * 1024;
-    
+
     // CPU quota: microseconds per period that the container can use
     // 100000 microseconds = 100ms = 1 CPU core at 100%
     // So for N cores, we allow N * 100000 microseconds per period
     let cpu_quota = (config.cpus as i64) * 100000;
     let cpu_period = 100000_i64; // 100ms period (standard)
-    
+
     // PIDs limit to prevent fork bombs
     let pids_limit = 256_i64;
 

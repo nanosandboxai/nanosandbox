@@ -124,12 +124,18 @@ impl SandboxConfigBuilder {
         host: impl Into<PathBuf>,
         container: impl Into<String>,
     ) -> Self {
-        self.config.mounts.push(Mount::bind(host, container).readonly());
+        self.config
+            .mounts
+            .push(Mount::bind(host, container).readonly());
         self
     }
 
     /// Add a virtio-fs mount point (faster for VMs)
-    pub fn mount_virtiofs(mut self, host: impl Into<PathBuf>, container: impl Into<String>) -> Self {
+    pub fn mount_virtiofs(
+        mut self,
+        host: impl Into<PathBuf>,
+        container: impl Into<String>,
+    ) -> Self {
         self.config.mounts.push(Mount::virtiofs(host, container));
         self
     }
@@ -140,7 +146,9 @@ impl SandboxConfigBuilder {
         host: impl Into<PathBuf>,
         container: impl Into<String>,
     ) -> Self {
-        self.config.mounts.push(Mount::virtiofs(host, container).readonly());
+        self.config
+            .mounts
+            .push(Mount::virtiofs(host, container).readonly());
         self
     }
 
@@ -152,7 +160,10 @@ impl SandboxConfigBuilder {
 
     /// Add a port mapping
     pub fn port(mut self, host: u16, container: u16) -> Self {
-        self.config.network.port_mappings.push(PortMapping::tcp(host, container));
+        self.config
+            .network
+            .port_mappings
+            .push(PortMapping::tcp(host, container));
         self
     }
 

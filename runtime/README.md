@@ -13,15 +13,45 @@ Nanosandbox provides hardware-isolated execution environments with near-containe
 - **Fast Boot Times**: Sub-second VM startup using libkrun's optimized VMM
 - **Transparent Networking**: TSI (Transparent Socket Impersonation) for seamless network access
 - **Registry Authentication**: Support for private registries via Docker config.json
-- **Cross-Platform**: Supports Linux (KVM) and macOS Apple Silicon (HVF)
+- **Cross-Platform**: Supports Linux (KVM), macOS Apple Silicon (HVF), and Windows (Containers)
+
+## Platform Support
+
+| Platform | Runtime | Hypervisor | Container Images |
+|----------|---------|------------|------------------|
+| **Linux** | crun/krun | KVM | Linux images (Alpine, Ubuntu, etc.) |
+| **macOS** | krunvm | HVF (Hypervisor.framework) | Linux images (Alpine, Ubuntu, etc.) |
+| **Windows** | Windows Containers | HCS / Hyper-V | **Windows images only** |
+
+### Windows Limitation
+
+> **Important**: Windows containers can only run **Windows container images** (e.g., `nanoserver`, `servercore`). Linux images like Alpine or Ubuntu are **not supported** on Windows.
+>
+> For Linux container workloads, use Linux or macOS.
+
+**Windows container images:**
+- `mcr.microsoft.com/windows/nanoserver:ltsc2022` (lightweight)
+- `mcr.microsoft.com/windows/servercore:ltsc2022` (full)
 
 ## Installation
 
 ### Prerequisites
 
+#### Linux
 - Rust 1.70+ (for building from source)
 - [crun](https://github.com/containers/crun) with libkrun support, or [krun](https://github.com/containers/libkrun)
-- KVM enabled (Linux) or Hypervisor.framework (macOS Apple Silicon)
+- KVM enabled (`/dev/kvm` accessible)
+
+#### macOS (Apple Silicon)
+- Rust 1.70+ (for building from source)
+- [krunvm](https://github.com/containers/krunvm): `brew tap slp/krun && brew install krunvm`
+- macOS 11+ on Apple Silicon (M1/M2/M3/M4)
+
+#### Windows
+- Rust 1.70+ (for building from source)
+- Windows 10/11 Pro, Enterprise, or Windows Server
+- Containers feature enabled: `Enable-WindowsOptionalFeature -Online -FeatureName Containers -All`
+- (Optional) Hyper-V for Hyper-V isolation: `Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All`
 
 ### From Source
 
@@ -46,7 +76,7 @@ nanosb --help
 
 ## Quick Start
 
-### CLI Usage
+### CLI Usage (Linux/macOS)
 
 ```bash
 # Pull an image
@@ -69,6 +99,22 @@ nanosb stop <sandbox-id>
 
 # Remove a sandbox
 nanosb rm <sandbox-id>
+```
+
+### CLI Usage (Windows)
+
+```powershell
+# Pull a Windows container image
+nanosb.exe pull mcr.microsoft.com/windows/nanoserver:ltsc2022
+
+# Run a command in a Windows container
+nanosb.exe run mcr.microsoft.com/windows/nanoserver:ltsc2022 cmd.exe /c "echo Hello from Windows sandbox!"
+
+# List cached images
+nanosb.exe images
+
+# List running sandboxes
+nanosb.exe ps
 ```
 
 ### SDK Usage
@@ -152,7 +198,7 @@ For detailed CLI documentation, see [docs/CLI.md](docs/CLI.md).
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                 Hardware Virtualization                          │
-│             KVM (Linux) / HVF (macOS ARM64)                     │
+│      KVM (Linux) / HVF (macOS) / HCS (Windows)                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -179,11 +225,15 @@ Command-line interface for:
 
 | Feature | Nanosandbox | Microsandbox | Docker | gVisor |
 |---------|-------------|--------------|--------|--------|
-| Isolation | VM (KVM/HVF) | VM (libkrun) | Namespace | User-space kernel |
+| Isolation | VM (KVM/HVF/HCS) | VM (libkrun) | Namespace | User-space kernel |
 | OCI Registry Support | Any | Own registry | Any | Any |
+| Linux Support | Yes (KVM) | Yes | Yes | Yes |
 | macOS Support | Apple Silicon | Apple Silicon | Yes | No |
+| Windows Support | Windows containers* | No | Yes | No |
 | Boot Time | <1s | <1s | <0.5s | <0.5s |
 | Self-Hosted | Yes | Requires server | Yes | Yes |
+
+*Windows support is limited to Windows container images only (nanoserver, servercore). Linux images require Linux or macOS.
 
 ## Status
 

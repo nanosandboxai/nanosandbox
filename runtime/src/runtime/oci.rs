@@ -216,7 +216,10 @@ impl OciRuntime {
         exec_args.push(command.to_string());
         exec_args.extend(args.iter().map(|s| s.to_string()));
 
-        debug!("Executing (streaming): {} {:?}", self.binary_path, exec_args);
+        debug!(
+            "Executing (streaming): {} {:?}",
+            self.binary_path, exec_args
+        );
 
         let mut child = Command::new(&self.binary_path)
             .args(&exec_args)

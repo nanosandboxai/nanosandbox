@@ -100,9 +100,10 @@ impl ImageRef {
 
         // Parse registry and rest
         let (registry, rest) = if image.contains('/')
-            && image.split('/').next().is_some_and(|s| {
-                s.contains('.') || s.contains(':') || s == "localhost"
-            })
+            && image
+                .split('/')
+                .next()
+                .is_some_and(|s| s.contains('.') || s.contains(':') || s == "localhost")
         {
             let parts: Vec<&str> = image.splitn(2, '/').collect();
             (parts[0].to_string(), parts[1].to_string())
@@ -302,7 +303,10 @@ impl ImageManager {
         match &auth {
             RegistryAuth::Anonymous => debug!("Using anonymous auth for {}", image_ref.registry),
             RegistryAuth::Basic(user, _) => {
-                debug!("Using authenticated pull as {} for {}", user, image_ref.registry)
+                debug!(
+                    "Using authenticated pull as {} for {}",
+                    user, image_ref.registry
+                )
             }
         }
 
@@ -420,9 +424,9 @@ impl ImageManager {
             archive.set_preserve_permissions(true);
             archive.set_preserve_ownerships(false);
             archive.set_overwrite(true);
-            archive
-                .unpack(dest)
-                .map_err(|e| Error::LayerExtractionFailed(format!("Failed to unpack gzip: {}", e)))?;
+            archive.unpack(dest).map_err(|e| {
+                Error::LayerExtractionFailed(format!("Failed to unpack gzip: {}", e))
+            })?;
         } else {
             // Try as plain tar
             let file = File::open(&blob_path)?;
@@ -430,9 +434,9 @@ impl ImageManager {
             archive.set_preserve_permissions(true);
             archive.set_preserve_ownerships(false);
             archive.set_overwrite(true);
-            archive
-                .unpack(dest)
-                .map_err(|e| Error::LayerExtractionFailed(format!("Failed to unpack tar: {}", e)))?;
+            archive.unpack(dest).map_err(|e| {
+                Error::LayerExtractionFailed(format!("Failed to unpack tar: {}", e))
+            })?;
         }
 
         Ok(())

@@ -78,9 +78,9 @@ impl SandboxRegistry {
 
     /// Update a sandbox's status
     pub fn update_status(&self, id: &str, status: SandboxStatus) -> Result<()> {
-        let mut info = self.get(id)?.ok_or_else(|| {
-            Error::SandboxNotFound(id.to_string())
-        })?;
+        let mut info = self
+            .get(id)?
+            .ok_or_else(|| Error::SandboxNotFound(id.to_string()))?;
 
         info.status = status;
         info.updated_at = Utc::now();
@@ -128,14 +128,12 @@ impl SandboxRegistry {
 
             if path.extension().is_some_and(|ext| ext == "json") {
                 match fs::read_to_string(&path) {
-                    Ok(content) => {
-                        match serde_json::from_str::<SandboxInfo>(&content) {
-                            Ok(info) => sandboxes.push(info),
-                            Err(e) => {
-                                warn!("Failed to parse sandbox state {:?}: {}", path, e);
-                            }
+                    Ok(content) => match serde_json::from_str::<SandboxInfo>(&content) {
+                        Ok(info) => sandboxes.push(info),
+                        Err(e) => {
+                            warn!("Failed to parse sandbox state {:?}: {}", path, e);
                         }
-                    }
+                    },
                     Err(e) => {
                         warn!("Failed to read sandbox state {:?}: {}", path, e);
                     }
@@ -177,7 +175,7 @@ impl SandboxRegistry {
     /// Get count of sandboxes by status
     pub fn count_by_status(&self) -> Result<std::collections::HashMap<SandboxStatus, usize>> {
         let mut counts = std::collections::HashMap::new();
-        
+
         for info in self.list()? {
             *counts.entry(info.status).or_insert(0) += 1;
         }
@@ -260,7 +258,9 @@ mod tests {
         let info = create_test_info("test-1");
         registry.register(&info).unwrap();
 
-        registry.update_status("test-1", SandboxStatus::Running).unwrap();
+        registry
+            .update_status("test-1", SandboxStatus::Running)
+            .unwrap();
 
         let retrieved = registry.get("test-1").unwrap().unwrap();
         assert_eq!(retrieved.status, SandboxStatus::Running);

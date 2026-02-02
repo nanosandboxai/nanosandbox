@@ -127,10 +127,7 @@ fn test_format_option() {
 #[test]
 fn test_verbose_option() {
     // Test that -v is recognized
-    nanosb()
-        .args(["-v", "images"])
-        .assert()
-        .success();
+    nanosb().args(["-v", "images"]).assert().success();
 }
 
 // ============================================================================
@@ -198,10 +195,7 @@ fn test_missing_image_for_run() {
 #[test]
 fn test_images_empty() {
     // This test might have cached images, so we just check it runs
-    nanosb()
-        .arg("images")
-        .assert()
-        .success();
+    nanosb().arg("images").assert().success();
 }
 
 #[test]
@@ -218,26 +212,17 @@ fn test_images_json_format() {
 
 #[test]
 fn test_ps_empty() {
-    nanosb()
-        .arg("ps")
-        .assert()
-        .success();
+    nanosb().arg("ps").assert().success();
 }
 
 #[test]
 fn test_ps_all() {
-    nanosb()
-        .args(["ps", "-a"])
-        .assert()
-        .success();
+    nanosb().args(["ps", "-a"]).assert().success();
 }
 
 #[test]
 fn test_ps_json_format() {
-    nanosb()
-        .args(["--format", "json", "ps"])
-        .assert()
-        .success();
+    nanosb().args(["--format", "json", "ps"]).assert().success();
 }
 
 // ============================================================================

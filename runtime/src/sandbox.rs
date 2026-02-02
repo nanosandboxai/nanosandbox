@@ -158,11 +158,14 @@ impl Sandbox {
 
         let (bundle, pulled_image) = if handles_pull {
             // krunvm handles image pulling internally
-            info!("Using {} runtime (handles image pull internally)", runtime.name());
-            
+            info!(
+                "Using {} runtime (handles image pull internally)",
+                runtime.name()
+            );
+
             // Create the VM via krunvm (no bundle needed)
             runtime.create(&id, &config, None).await?;
-            
+
             (None, None)
         } else {
             // OCI runtime - we need to pull and create bundle
@@ -288,20 +291,24 @@ impl Sandbox {
         // For OCI runtimes, we need to create and start the container
         // For krunvm, the VM was created in Sandbox::create
         if !runtime.handles_image_pull() {
-            let bundle = self.bundle.as_ref().ok_or_else(|| {
-                Error::SandboxCreationFailed("No bundle available".to_string())
-            })?;
+            let bundle = self
+                .bundle
+                .as_ref()
+                .ok_or_else(|| Error::SandboxCreationFailed("No bundle available".to_string()))?;
 
             let start_timeout = Duration::from_secs(60);
 
             // Create the container
             debug!("Creating container via runtime");
-            timeout(start_timeout, runtime.create(&self.id, &self.config, Some(&bundle.path)))
-                .await
-                .map_err(|_| Error::Timeout(60))?
-                .inspect_err(|_| {
-                    self.status = SandboxStatus::Error;
-                })?;
+            timeout(
+                start_timeout,
+                runtime.create(&self.id, &self.config, Some(&bundle.path)),
+            )
+            .await
+            .map_err(|_| Error::Timeout(60))?
+            .inspect_err(|_| {
+                self.status = SandboxStatus::Error;
+            })?;
 
             // Start the container
             debug!("Starting container via runtime");
@@ -323,7 +330,8 @@ impl Sandbox {
 
     /// Execute a command in the sandbox
     pub async fn exec(&self, command: &str, args: &[&str]) -> Result<ExecResult> {
-        self.exec_with_options(command, args, ExecOptions::default()).await
+        self.exec_with_options(command, args, ExecOptions::default())
+            .await
     }
 
     /// Execute a command with options
@@ -340,9 +348,10 @@ impl Sandbox {
             )));
         }
 
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            Error::ExecFailed("Runtime not initialized".to_string())
-        })?;
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
 
         let timeout_secs = options.timeout_secs.unwrap_or(self.config.timeout_secs);
         let workdir = options.workdir.as_deref();
@@ -350,17 +359,14 @@ impl Sandbox {
 
         let start = std::time::Instant::now();
 
-        debug!("Executing command: {} {:?} (timeout: {}s)", command, args, timeout_secs);
+        debug!(
+            "Executing command: {} {:?} (timeout: {}s)",
+            command, args, timeout_secs
+        );
 
         // Execute with timeout
-        let exec_future = runtime.exec_with_options(
-            &self.id,
-            command,
-            args,
-            workdir,
-            &options.env,
-            user,
-        );
+        let exec_future =
+            runtime.exec_with_options(&self.id, command, args, workdir, &options.env, user);
 
         let output = timeout(Duration::from_secs(timeout_secs as u64), exec_future)
             .await
@@ -377,12 +383,7 @@ impl Sandbox {
     }
 
     /// Execute a command with streaming output
-    pub async fn exec_stream<F>(
-        &self,
-        command: &str,
-        args: &[&str],
-        on_output: F,
-    ) -> Result<i32>
+    pub async fn exec_stream<F>(&self, command: &str, args: &[&str], on_output: F) -> Result<i32>
     where
         F: Fn(OutputChunk) + Send + Sync,
     {
@@ -408,20 +409,28 @@ impl Sandbox {
             )));
         }
 
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            Error::ExecFailed("Runtime not initialized".to_string())
-        })?;
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
 
         let timeout_secs = options.timeout_secs.unwrap_or(self.config.timeout_secs);
         let workdir = options.workdir.as_deref();
         let user = options.user.as_deref();
 
-        debug!("Executing (streaming): {} {:?} (timeout: {}s)", command, args, timeout_secs);
+        debug!(
+            "Executing (streaming): {} {:?} (timeout: {}s)",
+            command, args, timeout_secs
+        );
 
         // Wrapper to convert runtime callback to our OutputChunk format
         let callback = |data: &str, is_stderr: bool| {
             on_output(OutputChunk {
-                stream: if is_stderr { Stream::Stderr } else { Stream::Stdout },
+                stream: if is_stderr {
+                    Stream::Stderr
+                } else {
+                    Stream::Stdout
+                },
                 data: data.to_string(),
                 timestamp: Utc::now(),
             });
@@ -475,9 +484,10 @@ impl Sandbox {
             )));
         }
 
-        let bundle = self.bundle.as_ref().ok_or_else(|| {
-            Error::SandboxCreationFailed("No bundle available".to_string())
-        })?;
+        let bundle = self
+            .bundle
+            .as_ref()
+            .ok_or_else(|| Error::SandboxCreationFailed("No bundle available".to_string()))?;
 
         info!("Restarting sandbox {}", self.id);
 
@@ -489,7 +499,9 @@ impl Sandbox {
 
         // Create and start the container again
         debug!("Creating container via runtime");
-        runtime.create(&self.id, &self.config, Some(&bundle.path)).await?;
+        runtime
+            .create(&self.id, &self.config, Some(&bundle.path))
+            .await?;
 
         debug!("Starting container via runtime");
         runtime.start(&self.id).await?;
