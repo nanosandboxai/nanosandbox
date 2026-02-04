@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feature/**]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ==========================================================================
+  # Build CLI - macOS Only (stable platform)
+  # ==========================================================================
+  build:
+    name: Build CLI (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --features cli --target aarch64-apple-darwin
+
+      - name: Verify binary
+        run: |
+          ls -la target/aarch64-apple-darwin/release/nanosb
+          file target/aarch64-apple-darwin/release/nanosb
+          ./target/aarch64-apple-darwin/release/nanosb --version
+
+      - name: Make install script executable
+        run: chmod +x scripts/install.sh
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanosb-macos-arm64
+          path: |
+            target/aarch64-apple-darwin/release/nanosb
+            scripts/install.sh

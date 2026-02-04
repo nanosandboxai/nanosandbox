@@ -162,6 +162,9 @@ impl KrunVmRuntime {
             cmd_args.push(format!("{}={}", key, value));
         }
 
+        // Add separator to prevent krunvm from interpreting command flags as its own
+        cmd_args.push("--".to_string());
+
         // Add command and args
         cmd_args.push(command.to_string());
         cmd_args.extend(args.iter().map(|s| s.to_string()));
@@ -206,6 +209,9 @@ impl KrunVmRuntime {
             cmd_args.push("-e".to_string());
             cmd_args.push(format!("{}={}", key, value));
         }
+
+        // Add separator to prevent krunvm from interpreting command flags as its own
+        cmd_args.push("--".to_string());
 
         cmd_args.push(command.to_string());
         cmd_args.extend(args.iter().map(|s| s.to_string()));

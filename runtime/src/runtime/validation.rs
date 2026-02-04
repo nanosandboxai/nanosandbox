@@ -82,7 +82,7 @@ pub async fn validate_runtime_prerequisites() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 async fn validate_windows_prerequisites() -> Result<()> {
-    info!("Validating Windows runtime prerequisites...");
+    info!("Validating Windows containerd runtime prerequisites...");
     let mut result = ValidationResult::default();
 
     // Check 1: Windows Containers feature
@@ -99,18 +99,42 @@ async fn validate_windows_prerequisites() -> Result<()> {
         );
     }
 
-    // Check 2: Runtime binary (runhcs.exe)
-    debug!("Checking for runtime binary...");
-    let runtime_found = find_windows_runtime().await.is_some();
-    if !runtime_found {
+    // Check 2: containerd daemon running
+    debug!("Checking containerd service...");
+    let containerd_running = check_containerd_service().await;
+    if !containerd_running {
         result.add_error(
-            "Runtime Binary",
-            "No Windows container runtime found (runhcs.exe, ctr.exe)",
-            Some("Install Docker Desktop or Windows Container tools".to_string()),
+            "containerd Service",
+            "containerd is not running or not reachable",
+            Some(
+                "Install containerd and start the service:\n\
+                 1. Download from https://github.com/containerd/containerd/releases\n\
+                 2. Extract to C:\\Program Files\\containerd\n\
+                 3. Run: containerd.exe --register-service\n\
+                 4. Run: Start-Service containerd"
+                    .to_string(),
+            ),
         );
     }
 
-    // Check 3: HCS service running
+    // Check 3: containerd-shim-runhcs-v1.exe available
+    debug!("Checking containerd-shim-runhcs-v1...");
+    let shim_found = find_containerd_shim().await.is_some();
+    if !shim_found {
+        result.add_error(
+            "runhcs Shim",
+            "containerd-shim-runhcs-v1.exe not found",
+            Some(
+                "Build and install the runhcs shim from hcsshim:\n\
+                 1. Clone https://github.com/microsoft/hcsshim\n\
+                 2. Run: go build -o containerd-shim-runhcs-v1.exe ./cmd/containerd-shim-runhcs-v1\n\
+                 3. Copy to C:\\Program Files\\containerd\\ (same dir as containerd.exe)"
+                    .to_string(),
+            ),
+        );
+    }
+
+    // Check 4: HCS service running
     debug!("Checking HCS service...");
     let hcs_running = check_hcs_service().await;
     if !hcs_running {
@@ -121,7 +145,7 @@ async fn validate_windows_prerequisites() -> Result<()> {
         );
     }
 
-    // Check 4: Hyper-V (optional, for Hyper-V isolation)
+    // Check 5: Hyper-V (optional, for Hyper-V isolation)
     debug!("Checking Hyper-V feature...");
     let hyperv_enabled = check_windows_feature("Microsoft-Hyper-V").await;
     if !hyperv_enabled {
@@ -181,30 +205,178 @@ async fn check_hcs_service() -> bool {
     false
 }
 
-/// Find the Windows container runtime binary (runhcs, ctr, or hcsdiag)
+/// Check if containerd service is running and reachable
+#[cfg(target_os = "windows")]
+async fn check_containerd_service() -> bool {
+    use tokio::process::Command;
+
+    // First check if containerd service is running
+    let service_check = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-Service containerd -ErrorAction SilentlyContinue).Status -eq 'Running'",
+        ])
+        .output()
+        .await;
+
+    if let Ok(out) = service_check {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if stdout.trim().eq_ignore_ascii_case("true") {
+            // Service is running, verify we can connect via ctr
+            let ctr_check = Command::new("ctr")
+                .args(["version"])
+                .output()
+                .await;
+            
+            if let Ok(ctr_out) = ctr_check {
+                return ctr_out.status.success();
+            }
+        }
+    }
+    
+    // Also try connecting directly in case containerd runs without Windows service
+    let ctr_check = Command::new("ctr")
+        .args(["version"])
+        .output()
+        .await;
+    
+    matches!(ctr_check, Ok(out) if out.status.success())
+}
+
+/// Find the containerd-shim-runhcs-v1.exe binary
+#[cfg(target_os = "windows")]
+pub async fn find_containerd_shim() -> Option<String> {
+    use tokio::process::Command;
+
+    // Check in PATH
+    let output = Command::new("where")
+        .arg("containerd-shim-runhcs-v1.exe")
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !path.is_empty() {
+                debug!("Found containerd-shim-runhcs-v1: {}", path);
+                return Some(path);
+            }
+        }
+    }
+
+    // Check common installation directories
+    let common_paths = [
+        r"C:\Program Files\containerd\containerd-shim-runhcs-v1.exe",
+        r"C:\containerd\containerd-shim-runhcs-v1.exe",
+    ];
+
+    for path in &common_paths {
+        if std::path::Path::new(path).exists() {
+            debug!("Found containerd-shim-runhcs-v1: {}", path);
+            return Some(path.to_string());
+        }
+    }
+
+    // Check next to containerd.exe
+    if let Some(containerd_path) = find_containerd_exe().await {
+        let shim_path = std::path::Path::new(&containerd_path)
+            .parent()
+            .map(|p| p.join("containerd-shim-runhcs-v1.exe"));
+        
+        if let Some(shim) = shim_path {
+            if shim.exists() {
+                debug!("Found containerd-shim-runhcs-v1: {}", shim.display());
+                return Some(shim.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// Find the containerd.exe binary
+#[cfg(target_os = "windows")]
+async fn find_containerd_exe() -> Option<String> {
+    use tokio::process::Command;
+
+    let output = Command::new("where")
+        .arg("containerd.exe")
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+
+    // Check common paths
+    let common_paths = [
+        r"C:\Program Files\containerd\containerd.exe",
+        r"C:\containerd\containerd.exe",
+    ];
+
+    for path in &common_paths {
+        if std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+
+    None
+}
+
+/// Find the Windows container runtime (containerd + shim)
+///
+/// Returns the path to ctr.exe if containerd infrastructure is available.
 #[cfg(target_os = "windows")]
 pub async fn find_windows_runtime() -> Option<String> {
     use tokio::process::Command;
 
-    // Try to find runtime binaries in order of preference
-    for binary in &["runhcs.exe", "ctr.exe", "hcsdiag.exe"] {
-        let output = Command::new("where").arg(binary).output().await;
+    // Check for ctr.exe (containerd CLI) in PATH
+    let output = Command::new("where").arg("ctr.exe").output().await;
 
-        if let Ok(out) = output {
-            if out.status.success() {
-                let path = String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                if !path.is_empty() {
-                    debug!("Found Windows runtime: {}", path);
-                    return Some(path);
-                }
+    if let Ok(out) = output {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !path.is_empty() {
+                debug!("Found containerd CLI: {}", path);
+                return Some(path);
             }
         }
     }
+
+    // Check common installation paths
+    let common_paths = [
+        r"C:\Program Files\containerd\ctr.exe",
+        r"C:\containerd\ctr.exe",
+    ];
+
+    for path in &common_paths {
+        if std::path::Path::new(path).exists() {
+            debug!("Found containerd CLI: {}", path);
+            return Some(path.to_string());
+        }
+    }
+
     None
 }
 
@@ -304,8 +476,6 @@ pub async fn find_linux_runtime() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 async fn validate_macos_prerequisites() -> Result<()> {
-    use tokio::process::Command;
-
     info!("Validating macOS runtime prerequisites...");
     let mut result = ValidationResult::default();
 
@@ -354,6 +524,7 @@ async fn validate_macos_prerequisites() -> Result<()> {
     result.into_result()
 }
 
+/// Find the macOS krunvm runtime binary
 #[cfg(target_os = "macos")]
 pub async fn find_macos_runtime() -> Option<String> {
     use tokio::process::Command;

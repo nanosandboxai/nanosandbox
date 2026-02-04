@@ -1,30 +1,44 @@
-//! Windows Container Runtime Backend
+//! Windows Container Runtime Backend (Legacy/Deprecated)
 //!
-//! This backend uses Windows Containers (HCS - Host Compute Service) for
-//! container execution on Windows. Supports both process isolation and
-//! Hyper-V isolation modes.
+//! **DEPRECATED**: This module is deprecated. Use `ContainerdWindowsRuntime` from
+//! `containerd_windows` module instead. The direct runhcs approach has been replaced
+//! with containerd + containerd-shim-runhcs-v1 to avoid ProcessBaseLayer idempotency
+//! issues during layer import.
 //!
-//! # Prerequisites
+//! # Migration
 //!
-//! - Windows 10/11 Pro, Enterprise, or Windows Server 2016+
-//! - Containers feature enabled
-//! - For Hyper-V isolation: Hyper-V feature enabled
-//! - HCS service (vmcompute) running
-//!
-//! # Enable Prerequisites
-//!
-//! ```powershell
-//! # Enable Containers feature
-//! Enable-WindowsOptionalFeature -Online -FeatureName Containers -All
-//!
-//! # Enable Hyper-V (optional, for Hyper-V isolation)
-//! Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All
-//!
-//! # Start HCS service
-//! Start-Service vmcompute
+//! Replace:
+//! ```ignore
+//! use nanosandbox::runtime::WindowsContainerRuntime;
+//! let runtime = WindowsContainerRuntime::new().await?;
 //! ```
+//!
+//! With:
+//! ```ignore
+//! use nanosandbox::runtime::ContainerdWindowsRuntime;
+//! let runtime = ContainerdWindowsRuntime::new().await?;
+//! ```
+//!
+//! # Legacy Information
+//!
+//! This backend previously used Windows Containers (HCS - Host Compute Service) for
+//! container execution on Windows via runhcs - the standalone OCI runtime
+//! from Microsoft's hcsshim project.
+//!
+//! # Why Deprecated
+//!
+//! The direct runhcs + wclayer approach suffered from `ProcessBaseLayer` not being
+//! idempotent when retried on the same destination path, causing "Cannot create a
+//! file when that file already exists" errors.
+//!
+//! containerd solves this by:
+//! - Managing layer snapshots properly via the Windows snapshotter
+//! - Using unique directories and commit semantics
+//! - Not repeatedly importing into stable digest paths
 
-use super::validation::find_windows_runtime;
+#![allow(deprecated)]
+
+use super::runhcs_setup::ensure_runhcs;
 use super::ExecOutput;
 use crate::config::SandboxConfig;
 use crate::error::{Error, Result};
@@ -35,8 +49,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, info};
 
-/// Windows isolation mode for containers
+/// Windows isolation mode for containers (Legacy)
+///
+/// **Deprecated**: Use `WindowsContainerdIsolation` from `containerd_windows` module instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use WindowsContainerdIsolation from containerd_windows module instead"
+)]
 pub enum WindowsIsolation {
     /// Process isolation - faster, shares kernel with host
     /// Suitable for same-OS-version containers
@@ -47,9 +67,17 @@ pub enum WindowsIsolation {
     HyperV,
 }
 
-/// Windows Container Runtime using HCS
+/// Windows Container Runtime using HCS via runhcs (Legacy)
+///
+/// **Deprecated**: Use `ContainerdWindowsRuntime` from `containerd_windows` module instead.
+/// This runtime used direct runhcs.exe calls which suffered from ProcessBaseLayer
+/// idempotency issues during layer import.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use ContainerdWindowsRuntime from containerd_windows module instead"
+)]
 pub struct WindowsContainerRuntime {
-    /// Path to the runtime binary (runhcs or ctr)
+    /// Path to the runhcs.exe binary
     binary_path: String,
     /// Runtime root directory for state
     root_dir: PathBuf,
@@ -60,19 +88,17 @@ pub struct WindowsContainerRuntime {
 impl WindowsContainerRuntime {
     /// Create a new Windows Container runtime
     ///
-    /// This will fail if prerequisites are not met.
+    /// This will automatically download runhcs.exe if not found.
+    /// runhcs is the standalone OCI runtime from hcsshim that works
+    /// directly with HCS (no containerd required).
     pub async fn new() -> Result<Self> {
-        let binary_path =
-            find_windows_runtime()
-                .await
-                .ok_or_else(|| Error::RuntimeBinaryNotFound {
-                    binary: "runhcs.exe".to_string(),
-                    install_hint: "Install Docker Desktop or Windows Container tools".to_string(),
-                })?;
+        // Use ensure_runhcs() which handles auto-download
+        let runhcs_path = ensure_runhcs().await?;
+        let binary_path = runhcs_path.to_string_lossy().to_string();
 
         let root_dir = Self::default_root_dir()?;
 
-        info!("Windows Container runtime initialized: {}", binary_path);
+        info!("Windows Container runtime initialized with runhcs: {}", binary_path);
 
         Ok(Self {
             binary_path,

@@ -6,7 +6,7 @@
 //! |----------|---------|------------|
 //! | Linux | crun/krun (OCI) | KVM |
 //! | macOS | krunvm | HVF (Hypervisor.framework) |
-//! | Windows | Windows Containers | HCS (Hyper-V/Process isolation) |
+//! | Windows | containerd + runhcs shim | HCS (Hyper-V/Process isolation) |
 //!
 //! Each platform has exactly one runtime. If the runtime prerequisites
 //! are not met, an error is returned with installation instructions.
@@ -15,15 +15,28 @@ mod krunvm;
 mod oci;
 pub mod validation;
 
-// Windows Container runtime (only compiled on Windows)
+// Windows containerd runtime (primary Windows runtime)
+#[cfg(target_os = "windows")]
+pub mod containerd_windows;
+
+// Legacy Windows Container runtime (deprecated, kept for reference)
 #[cfg(target_os = "windows")]
 pub mod windows;
+
+// Legacy Windows runhcs setup (deprecated, kept for reference)
+#[cfg(target_os = "windows")]
+pub mod runhcs_setup;
 
 pub use krunvm::KrunVmRuntime;
 pub use oci::OciRuntime;
 pub use validation::validate_runtime_prerequisites;
 
 #[cfg(target_os = "windows")]
+pub use containerd_windows::{ContainerdWindowsRuntime, WindowsContainerdIsolation};
+
+// Legacy exports (deprecated, kept for backward compatibility)
+#[cfg(target_os = "windows")]
+#[allow(deprecated)]
 pub use windows::{WindowsContainerRuntime, WindowsIsolation};
 
 use crate::config::SandboxConfig;
@@ -51,7 +64,7 @@ pub struct ExecOutput {
 /// Each platform has exactly one runtime backend:
 /// - Linux: `Oci` (crun/krun)
 /// - macOS: `KrunVm` (krunvm)
-/// - Windows: `Windows` (Windows Containers)
+/// - Windows: `WindowsContainerd` (containerd + runhcs shim)
 pub enum RuntimeBackend {
     /// OCI Runtime (crun/krun) - Linux only
     #[cfg(target_os = "linux")]
@@ -61,9 +74,10 @@ pub enum RuntimeBackend {
     #[cfg(target_os = "macos")]
     KrunVm(KrunVmRuntime),
 
-    /// Windows Container Runtime - Windows only
+    /// Windows containerd Runtime - Windows only (primary)
+    /// Uses containerd with containerd-shim-runhcs-v1 for proper layer/snapshot management
     #[cfg(target_os = "windows")]
-    Windows(WindowsContainerRuntime),
+    WindowsContainerd(ContainerdWindowsRuntime),
 }
 
 impl RuntimeBackend {
@@ -86,12 +100,15 @@ impl RuntimeBackend {
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::Windows(r) => r.name(),
+                RuntimeBackend::WindowsContainerd(r) => r.name(),
             }
         }
     }
 
     /// Check if this runtime handles image pulling internally
+    ///
+    /// Windows containerd runtime handles image pull via containerd,
+    /// so nanosandbox does not need to pull images separately.
     pub fn handles_image_pull(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
@@ -110,7 +127,8 @@ impl RuntimeBackend {
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::Windows(_) => false,
+                // containerd handles image pull + snapshot management
+                RuntimeBackend::WindowsContainerd(_) => true,
             }
         }
     }
@@ -139,7 +157,7 @@ impl RuntimeBackend {
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::Windows(r) => r.create(id, config, bundle_path).await,
+                RuntimeBackend::WindowsContainerd(r) => r.create(id, config, bundle_path).await,
             }
         }
     }
@@ -163,7 +181,7 @@ impl RuntimeBackend {
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::Windows(r) => r.start(id).await,
+                RuntimeBackend::WindowsContainerd(r) => r.start(id).await,
             }
         }
     }
@@ -194,7 +212,7 @@ impl RuntimeBackend {
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::Windows(r) => r.exec(id, command, args, workdir, env).await,
+                RuntimeBackend::WindowsContainerd(r) => r.exec(id, command, args, workdir, env).await,
             }
         }
     }
@@ -235,7 +253,7 @@ impl RuntimeBackend {
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::Windows(r) => {
+                RuntimeBackend::WindowsContainerd(r) => {
                     r.exec_stream(id, command, args, workdir, env, on_output)
                         .await
                 }
@@ -262,7 +280,7 @@ impl RuntimeBackend {
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::Windows(r) => r.stop(id).await,
+                RuntimeBackend::WindowsContainerd(r) => r.stop(id).await,
             }
         }
     }
@@ -286,7 +304,7 @@ impl RuntimeBackend {
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::Windows(r) => r.destroy(id).await,
+                RuntimeBackend::WindowsContainerd(r) => r.destroy(id).await,
             }
         }
     }
@@ -301,7 +319,7 @@ impl RuntimeBackend {
 /// Each platform has exactly one runtime:
 /// - Linux → OciRuntime (crun/krun)
 /// - macOS → KrunVmRuntime (krunvm)
-/// - Windows → WindowsContainerRuntime (HCS)
+/// - Windows → ContainerdWindowsRuntime (containerd + runhcs shim)
 ///
 /// # Errors
 ///
@@ -327,15 +345,15 @@ pub async fn detect_runtime() -> Result<RuntimeBackend> {
         info!("Initializing krunvm runtime (macOS)");
         let runtime = KrunVmRuntime::new().await?;
         info!("Using krunvm runtime");
-        return Ok(RuntimeBackend::KrunVm(runtime));
+        Ok(RuntimeBackend::KrunVm(runtime))
     }
 
     #[cfg(target_os = "windows")]
     {
-        info!("Initializing Windows Container runtime");
-        let runtime = WindowsContainerRuntime::new().await?;
-        info!("Using Windows Container runtime");
-        return Ok(RuntimeBackend::Windows(runtime));
+        info!("Initializing Windows containerd runtime");
+        let runtime = ContainerdWindowsRuntime::new().await?;
+        info!("Using Windows containerd runtime (containerd + runhcs shim)");
+        Ok(RuntimeBackend::WindowsContainerd(runtime))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

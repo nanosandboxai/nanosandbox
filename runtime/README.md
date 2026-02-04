@@ -2,6 +2,9 @@
 
 A lightweight, VM-based sandbox SDK for secure code execution using [libkrun](https://github.com/containers/libkrun) and [crun](https://github.com/containers/crun).
 
+> **Platform Status**: Currently, only **macOS Apple Silicon** is fully tested and stable.
+> Linux and Windows support are in development and **not fully supported or tested** yet.
+
 ## Overview
 
 Nanosandbox provides hardware-isolated execution environments with near-container performance. Unlike traditional containers that share the host kernel, Nanosandbox runs each sandbox in its own microVM, providing stronger security guarantees.
@@ -17,11 +20,17 @@ Nanosandbox provides hardware-isolated execution environments with near-containe
 
 ## Platform Support
 
-| Platform | Runtime | Hypervisor | Container Images |
-|----------|---------|------------|------------------|
-| **Linux** | crun/krun | KVM | Linux images (Alpine, Ubuntu, etc.) |
-| **macOS** | krunvm | HVF (Hypervisor.framework) | Linux images (Alpine, Ubuntu, etc.) |
-| **Windows** | Windows Containers | HCS / Hyper-V | **Windows images only** |
+| Platform | Runtime | Hypervisor | Status |
+|----------|---------|------------|--------|
+| **macOS** | krunvm | HVF (Hypervisor.framework) | **Stable** |
+| **Linux** | crun/krun | KVM | In Development |
+| **Windows** | Windows Containers | HCS / Hyper-V | In Development |
+
+### Platform Notes
+
+- **macOS Apple Silicon (M1/M2/M3/M4)**: Fully tested and stable. Use the install script for easy setup.
+- **Linux**: Not fully supported/tested yet. Requires manual setup of libkrun stack (libkrunfw + libkrun + crun).
+- **Windows**: Not fully supported/tested yet. Limited to Windows container images only (nanoserver, servercore).
 
 ### Windows Limitation
 
@@ -35,19 +44,41 @@ Nanosandbox provides hardware-isolated execution environments with near-containe
 
 ## Installation
 
+### Quick Start (macOS Apple Silicon)
+
+The fastest way to get started on macOS:
+
+```bash
+# Clone the repository
+git clone https://github.com/devdone-labs/dd-nanosandbox
+cd dd-nanosandbox
+
+# Run the install script (installs krunvm and dependencies)
+./scripts/install.sh
+
+# Build the CLI
+cargo build --release --features cli
+
+# Test it works
+./target/release/nanosb run alpine:3.19 echo "Hello from sandbox!"
+```
+
 ### Prerequisites
 
-#### Linux
+#### macOS (Apple Silicon) - Recommended
+- macOS 11+ on Apple Silicon (M1/M2/M3/M4)
+- Rust 1.70+ (for building from source)
+- Run `./scripts/install.sh` to install all dependencies automatically
+
+Or install manually:
+- [krunvm](https://github.com/containers/krunvm): `brew tap slp/krun && brew install krunvm`
+
+#### Linux (In Development)
 - Rust 1.70+ (for building from source)
 - [crun](https://github.com/containers/crun) with libkrun support, or [krun](https://github.com/containers/libkrun)
 - KVM enabled (`/dev/kvm` accessible)
 
-#### macOS (Apple Silicon)
-- Rust 1.70+ (for building from source)
-- [krunvm](https://github.com/containers/krunvm): `brew tap slp/krun && brew install krunvm`
-- macOS 11+ on Apple Silicon (M1/M2/M3/M4)
-
-#### Windows
+#### Windows (In Development)
 - Rust 1.70+ (for building from source)
 - Windows 10/11 Pro, Enterprise, or Windows Server
 - Containers feature enabled: `Enable-WindowsOptionalFeature -Online -FeatureName Containers -All`

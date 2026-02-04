@@ -7,7 +7,8 @@ mod cli {
     use clap::{Parser, Subcommand, ValueEnum};
     use colored::Colorize;
     use indicatif::{ProgressBar, ProgressStyle};
-    use nanosandbox::{ImageManager, Sandbox, SandboxConfig, SandboxRegistry, SandboxStatus};
+    use nanosandbox::{ImageManager, Sandbox, SandboxConfig, SandboxRegistry, SandboxStatus, Stream};
+    use std::io::Write;
     use std::time::Duration;
     use tabled::{Table, Tabled};
 
@@ -64,6 +65,10 @@ mod cli {
             #[arg(long, default_value = "4096")]
             memory: u32,
 
+            /// Stream output in real-time (don't buffer)
+            #[arg(short = 'f', long)]
+            follow: bool,
+
             /// Command to run
             #[arg(trailing_var_arg = true)]
             command: Vec<String>,
@@ -73,6 +78,10 @@ mod cli {
         Exec {
             /// Sandbox ID or name
             sandbox: String,
+
+            /// Stream output in real-time (don't buffer)
+            #[arg(short = 'f', long)]
+            follow: bool,
 
             /// Command to run
             #[arg(trailing_var_arg = true)]
@@ -190,6 +199,7 @@ mod cli {
                 name,
                 cpus,
                 memory,
+                follow,
                 command,
             } => {
                 cmd_run(
@@ -197,15 +207,18 @@ mod cli {
                     name,
                     cpus,
                     memory,
+                    follow,
                     &command,
                     cli.format,
                     cli.verbose,
                 )
                 .await
             }
-            Commands::Exec { sandbox, command } => {
-                cmd_exec(&sandbox, &command, cli.format, cli.verbose).await
-            }
+            Commands::Exec {
+                sandbox,
+                follow,
+                command,
+            } => cmd_exec(&sandbox, follow, &command, cli.format, cli.verbose).await,
             Commands::Ps { all } => cmd_ps(all, cli.format).await,
             Commands::Stop { sandbox } => cmd_stop(&sandbox, cli.verbose).await,
             Commands::Rm { sandbox, force } => cmd_rm(&sandbox, force, cli.verbose).await,
@@ -287,11 +300,13 @@ mod cli {
     }
 
     /// Run a command in a new sandbox
+    #[allow(clippy::too_many_arguments)]
     async fn cmd_run(
         image: &str,
         name: Option<String>,
         cpus: u32,
         memory: u32,
+        follow: bool,
         command: &[String],
         format: OutputFormat,
         verbose: bool,
@@ -346,29 +361,55 @@ mod cli {
                 eprintln!("Executing: {} {:?}", cmd, args);
             }
 
-            let result = sandbox.exec(cmd, &args).await?;
+            if follow {
+                // Streaming execution - output in real-time
+                let exit_code = sandbox
+                    .exec_stream(cmd, &args, |chunk| {
+                        match chunk.stream {
+                            Stream::Stdout => {
+                                println!("{}", chunk.data);
+                                let _ = std::io::stdout().flush();
+                            }
+                            Stream::Stderr => {
+                                eprintln!("{}", chunk.data);
+                                let _ = std::io::stderr().flush();
+                            }
+                        }
+                    })
+                    .await?;
 
-            match format {
-                OutputFormat::Text => {
-                    print!("{}", result.stdout);
-                    eprint!("{}", result.stderr);
+                // Clean up sandbox
+                sandbox.destroy().await?;
+
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
                 }
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "exit_code": result.exit_code,
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "duration_ms": result.duration_ms,
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                // Buffered execution - output after completion
+                let result = sandbox.exec(cmd, &args).await?;
+
+                match format {
+                    OutputFormat::Text => {
+                        print!("{}", result.stdout);
+                        eprint!("{}", result.stderr);
+                    }
+                    OutputFormat::Json => {
+                        let json = serde_json::json!({
+                            "exit_code": result.exit_code,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                            "duration_ms": result.duration_ms,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&json)?);
+                    }
                 }
-            }
 
-            // Clean up sandbox
-            sandbox.destroy().await?;
+                // Clean up sandbox
+                sandbox.destroy().await?;
 
-            if result.exit_code != 0 {
-                std::process::exit(result.exit_code);
+                if result.exit_code != 0 {
+                    std::process::exit(result.exit_code);
+                }
             }
         }
 
@@ -378,6 +419,7 @@ mod cli {
     /// Execute a command in a running sandbox
     async fn cmd_exec(
         sandbox_id: &str,
+        follow: bool,
         command: &[String],
         format: OutputFormat,
         verbose: bool,
@@ -407,6 +449,9 @@ mod cli {
 
         if verbose {
             eprintln!("Found sandbox: {} ({})", sandbox_info.name, sandbox_info.id);
+            if follow {
+                eprintln!("Streaming mode enabled");
+            }
         }
 
         // For exec, we need to connect to the running sandbox

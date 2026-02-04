@@ -5,7 +5,8 @@
 use crate::config::SandboxConfig;
 use crate::error::{Error, Result};
 use crate::image::{ImageManager, PulledImage};
-use crate::oci::{self, OciBundle};
+use crate::oci;
+use crate::oci::OciBundle;
 use crate::runtime::Runtime;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -142,9 +143,10 @@ impl Sandbox {
     /// Create a new sandbox from configuration
     ///
     /// This will:
-    /// 1. Detect available runtime (OCI or krunvm)
-    /// 2. For OCI runtimes: Pull image, extract layers, create bundle
-    /// 3. For krunvm: Create VM directly (handles image internally)
+    /// 1. Detect available runtime (OCI, krunvm, or containerd)
+    /// 2. For runtimes that handle image pull (krunvm, Windows containerd):
+    ///    Create container/VM directly (runtime handles image internally)
+    /// 3. For OCI runtimes (Linux): Pull image, extract layers, create bundle
     pub async fn create(config: SandboxConfig) -> Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
         info!("Creating sandbox {} with image {}", id, config.image);
@@ -153,22 +155,22 @@ impl Sandbox {
         let runtime = Runtime::new().await?;
         let handles_pull = runtime.handles_image_pull();
 
-        // Initialize image manager
+        // Initialize image manager (needed for Linux OCI path)
         let image_manager = Arc::new(ImageManager::with_default_cache()?);
 
         let (bundle, pulled_image) = if handles_pull {
-            // krunvm handles image pulling internally
+            // Runtime handles image pulling internally (krunvm, Windows containerd)
             info!(
                 "Using {} runtime (handles image pull internally)",
                 runtime.name()
             );
 
-            // Create the VM via krunvm (no bundle needed)
+            // Create the container/VM - runtime handles image pull and rootfs setup
             runtime.create(&id, &config, None).await?;
 
             (None, None)
         } else {
-            // OCI runtime - we need to pull and create bundle
+            // OCI runtime (Linux) - we need to pull and create bundle
             debug!("Pulling image: {}", config.image);
             let pulled = image_manager.pull(&config.image).await?;
 
@@ -176,11 +178,10 @@ impl Sandbox {
             let bundles_dir = image_manager.cache_dir().join("bundles");
             let bundle = OciBundle::create(&bundles_dir, &id)?;
 
-            // Extract layers to create rootfs
+            // Linux: merge all layers into single rootfs
             debug!("Creating rootfs from {} layers", pulled.layers.len());
             image_manager.create_rootfs(&pulled.layers, &bundle.rootfs_path)?;
 
-            // Generate and write OCI config
             let oci_config = oci::generate_config(&config, &bundle.rootfs_path);
             bundle.write_config(&oci_config)?;
 
@@ -202,41 +203,57 @@ impl Sandbox {
     }
 
     /// Create a sandbox with a pre-existing image manager
+    ///
+    /// Note: On Windows, this function redirects to `create()` because the Windows
+    /// containerd runtime handles image pulling internally and doesn't use ImageManager.
     pub async fn create_with_manager(
         config: SandboxConfig,
         image_manager: Arc<ImageManager>,
     ) -> Result<Self> {
-        let id = uuid::Uuid::new_v4().to_string();
-        info!("Creating sandbox {} with image {}", id, config.image);
+        // On Windows, containerd handles image pull internally - redirect to create()
+        #[cfg(target_os = "windows")]
+        {
+            let _ = image_manager; // suppress unused warning
+            return Self::create(config).await;
+        }
 
-        // Pull the image
-        debug!("Pulling image: {}", config.image);
-        let pulled_image = image_manager.pull(&config.image).await?;
+        // Linux/macOS: use traditional OCI bundle creation
+        #[cfg(not(target_os = "windows"))]
+        {
+            let id = uuid::Uuid::new_v4().to_string();
+            info!("Creating sandbox {} with image {}", id, config.image);
 
-        // Create OCI bundle directory
-        let bundles_dir = image_manager.cache_dir().join("bundles");
-        let bundle = OciBundle::create(&bundles_dir, &id)?;
+            // Pull the image
+            debug!("Pulling image: {}", config.image);
+            let pulled_image = image_manager.pull(&config.image).await?;
 
-        // Extract layers to create rootfs
-        debug!("Creating rootfs from {} layers", pulled_image.layers.len());
-        image_manager.create_rootfs(&pulled_image.layers, &bundle.rootfs_path)?;
+            // Create OCI bundle directory
+            let bundles_dir = image_manager.cache_dir().join("bundles");
+            let bundle = OciBundle::create(&bundles_dir, &id)?;
 
-        // Generate and write OCI config
-        let oci_config = oci::generate_config(&config, &bundle.rootfs_path);
-        bundle.write_config(&oci_config)?;
+            // Linux: merge all layers into single rootfs
+            debug!(
+                "Creating rootfs from {} layers",
+                pulled_image.layers.len()
+            );
+            image_manager.create_rootfs(&pulled_image.layers, &bundle.rootfs_path)?;
 
-        info!("Sandbox {} created successfully", id);
+            let oci_config = oci::generate_config(&config, &bundle.rootfs_path);
+            bundle.write_config(&oci_config)?;
 
-        Ok(Self {
-            id,
-            config,
-            status: SandboxStatus::Ready,
-            runtime: None,
-            bundle: Some(bundle),
-            image_manager,
-            pulled_image: Some(pulled_image),
-            created_at: Utc::now(),
-        })
+            info!("Sandbox {} created successfully", id);
+
+            Ok(Self {
+                id,
+                config,
+                status: SandboxStatus::Ready,
+                runtime: None,
+                bundle: Some(bundle),
+                image_manager,
+                pulled_image: Some(pulled_image),
+                created_at: Utc::now(),
+            })
+        }
     }
 
     /// Get the sandbox ID
