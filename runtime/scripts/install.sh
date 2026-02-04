@@ -166,28 +166,65 @@ fetch_release_json() {
     else
         url="https://api.github.com/repos/${REPO}/releases/latest"
     fi
-    curl -fsSL "$url"
+    local response
+    response="$(curl -sSL \
+        -H "Accept: application/vnd.github+json" \
+        -H "User-Agent: nanosandbox-installer" \
+        -w '\n%{http_code}' \
+        "$url")"
+    local http_code
+    http_code="$(printf '%s' "$response" | tail -n 1)"
+    local body
+    body="$(printf '%s' "$response" | sed '$d')"
+
+    if [[ "$http_code" != "200" ]]; then
+        error "GitHub API request failed (HTTP ${http_code})."
+        if printf '%s' "$body" | grep -q "rate limit"; then
+            error "GitHub API rate limit exceeded. Try again later."
+        fi
+        if printf '%s' "$body" | grep -q "Not Found"; then
+            error "Release not found. Ensure the version exists and is public."
+        fi
+        return 1
+    fi
+
+    printf '%s' "$body"
 }
 
 find_asset_url() {
     local json="$1"
     local asset_name="$2"
-    python3 - <<PY
-import json, sys
-data = json.loads(sys.stdin.read())
-assets = data.get("assets", [])
-names = [
-    f"{asset_name}.tar.gz",
-    f"{asset_name}.zip",
-    asset_name,
-]
-for name in names:
-    for asset in assets:
-        if asset.get("name") == name:
-            print(asset.get("browser_download_url"))
-            sys.exit(0)
-print("")
-PY
+    local one_line
+    one_line="$(printf '%s' "$json" | tr -d '\n')"
+
+    local names=(
+        "${asset_name}.tar.gz"
+        "${asset_name}.zip"
+        "${asset_name}.dmg"
+        "${asset_name}"
+    )
+
+    local name
+    for name in "${names[@]}"; do
+        local url
+        url="$(printf '%s' "$one_line" | awk -v target="$name" '
+            BEGIN { RS="\"name\":\"" }
+            NR>1 {
+                split($0, a, "\"");
+                if (a[1] == target) {
+                    if (match($0, /\"browser_download_url\":\"([^\"]+)\"/, m)) {
+                        print m[1];
+                        exit;
+                    }
+                }
+            }
+        ')"
+        if [[ -n "$url" ]]; then
+            printf '%s' "$url"
+            return 0
+        fi
+    done
+    printf ''
 }
 
 download_and_install_nanosb() {
@@ -207,14 +244,13 @@ download_and_install_nanosb() {
         error "Failed to fetch release metadata. Ensure the release exists."
         exit 1
     fi
+    if [[ -z "$json" ]]; then
+        error "Release metadata is empty. Ensure the release exists and is public."
+        exit 1
+    fi
 
     local tag_name
-    tag_name="$(python3 - <<PY
-import json, sys
-data = json.loads(sys.stdin.read())
-print(data.get("tag_name", "unknown"))
-PY
-<<< "$json")"
+    tag_name="$(printf '%s' "$json" | tr -d '\n' | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p')"
     if [[ "$tag_name" == "unknown" || -z "$tag_name" ]]; then
         error "Release metadata missing tag_name. Ensure a release exists for the version."
         exit 1
@@ -242,6 +278,15 @@ PY
     elif [[ "$asset_url" == *.zip ]]; then
         unzip -q "$download_path" -d "$tmp_dir"
         bin_path="$(find "$tmp_dir" -type f -name nanosb -maxdepth 2 | head -n 1)"
+    elif [[ "$asset_url" == *.dmg ]]; then
+        local mount_dir
+        mount_dir="$(mktemp -d)"
+        if ! hdiutil attach "$download_path" -mountpoint "$mount_dir" -nobrowse -quiet; then
+            error "Failed to mount DMG."
+            exit 1
+        fi
+        bin_path="$(find "$mount_dir" -type f -name nanosb -maxdepth 3 | head -n 1)"
+        hdiutil detach "$mount_dir" -quiet || true
     else
         bin_path="$download_path"
         chmod +x "$bin_path"
