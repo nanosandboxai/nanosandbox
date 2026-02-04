@@ -56,6 +56,7 @@ header() {
 
 REPO="devdone-labs/dd-nanosandbox"
 DEFAULT_ASSET_NAME="nanosb-macos-arm64"
+DEFAULT_RELEASE_TAG="v0.1.0"
 
 # =============================================================================
 # Pre-flight checks
@@ -142,7 +143,7 @@ install_krunvm() {
 }
 
 # =============================================================================
-# Nanosandbox CLI installation (from GitHub Releases)
+# Nanosandbox CLI installation (from GitHub Releases, no auth)
 # =============================================================================
 
 select_install_dir() {
@@ -158,73 +159,21 @@ select_install_dir() {
     echo "$HOME/.local/bin"
 }
 
-fetch_release_json() {
+build_asset_urls() {
     local version="$1"
-    local url
-    if [[ -n "$version" ]]; then
-        url="https://api.github.com/repos/${REPO}/releases/tags/${version}"
-    else
-        url="https://api.github.com/repos/${REPO}/releases/latest"
-    fi
-    local response
-    response="$(curl -sSL \
-        -H "Accept: application/vnd.github+json" \
-        -H "User-Agent: nanosandbox-installer" \
-        -w '\n%{http_code}' \
-        "$url")"
-    local http_code
-    http_code="$(printf '%s' "$response" | tail -n 1)"
-    local body
-    body="$(printf '%s' "$response" | sed '$d')"
-
-    if [[ "$http_code" != "200" ]]; then
-        error "GitHub API request failed (HTTP ${http_code})."
-        if printf '%s' "$body" | grep -q "rate limit"; then
-            error "GitHub API rate limit exceeded. Try again later."
-        fi
-        if printf '%s' "$body" | grep -q "Not Found"; then
-            error "Release not found. Ensure the version exists and is public."
-        fi
-        return 1
-    fi
-
-    printf '%s' "$body"
-}
-
-find_asset_url() {
-    local json="$1"
     local asset_name="$2"
-    local one_line
-    one_line="$(printf '%s' "$json" | tr -d '\n')"
+    local base
+    if [[ -n "$version" ]]; then
+        base="https://github.com/${REPO}/releases/download/${version}"
+    else
+        base="https://github.com/${REPO}/releases/latest/download"
+    fi
 
-    local names=(
-        "${asset_name}.tar.gz"
-        "${asset_name}.zip"
-        "${asset_name}.dmg"
-        "${asset_name}"
-    )
-
-    local name
-    for name in "${names[@]}"; do
-        local url
-        url="$(printf '%s' "$one_line" | awk -v target="$name" '
-            BEGIN { RS="\"name\":\"" }
-            NR>1 {
-                split($0, a, "\"");
-                if (a[1] == target) {
-                    if (match($0, /\"browser_download_url\":\"([^\"]+)\"/, m)) {
-                        print m[1];
-                        exit;
-                    }
-                }
-            }
-        ')"
-        if [[ -n "$url" ]]; then
-            printf '%s' "$url"
-            return 0
-        fi
-    done
-    printf ''
+    printf '%s\n' \
+        "${base}/${asset_name}.tar.gz" \
+        "${base}/${asset_name}.zip" \
+        "${base}/${asset_name}.dmg" \
+        "${base}/${asset_name}"
 }
 
 download_and_install_nanosb() {
@@ -235,37 +184,28 @@ download_and_install_nanosb() {
         return
     fi
 
-    local version="${NANOSB_VERSION:-}"
+    local version="${NANOSB_VERSION:-$DEFAULT_RELEASE_TAG}"
     local asset_name="${NANOSB_ASSET_NAME:-$DEFAULT_ASSET_NAME}"
 
-    info "Fetching release metadata for ${REPO}..."
-    local json
-    if ! json="$(fetch_release_json "$version")"; then
-        error "Failed to fetch release metadata. Ensure the release exists."
-        exit 1
-    fi
-    if [[ -z "$json" ]]; then
-        error "Release metadata is empty. Ensure the release exists and is public."
-        exit 1
-    fi
+    local asset_url=""
+    while IFS= read -r candidate; do
+        if curl -fsI "$candidate" >/dev/null 2>&1; then
+            asset_url="$candidate"
+            break
+        fi
+    done < <(build_asset_urls "$version" "$asset_name")
 
-    local tag_name
-    tag_name="$(printf '%s' "$json" | tr -d '\n' | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p')"
-    if [[ "$tag_name" == "unknown" || -z "$tag_name" ]]; then
-        error "Release metadata missing tag_name. Ensure a release exists for the version."
-        exit 1
-    fi
-
-    local asset_url
-    asset_url="$(find_asset_url "$json" "$asset_name")"
     if [[ -z "$asset_url" ]]; then
         error "Release asset not found for '${asset_name}'."
-        error "Expected one of: ${asset_name}, ${asset_name}.tar.gz, ${asset_name}.zip"
-        error "Ensure the release assets are published."
+        if [[ -n "$version" ]]; then
+            error "Ensure release '${version}' exists and includes the macOS asset."
+        else
+            error "Ensure the latest release includes the macOS asset."
+        fi
         exit 1
     fi
 
-    info "Downloading nanosb from release ${tag_name}..."
+    info "Downloading nanosb from release asset..."
     local tmp_dir
     tmp_dir="$(mktemp -d)"
     local download_path="${tmp_dir}/nanosb_asset"
