@@ -1,7 +1,7 @@
 //! Integration tests for Nanosandbox
 //!
 //! These tests require network access to pull images from registries.
-//! Some tests require crun/krun to be installed for full sandbox functionality.
+//! Some tests require libkrun to be installed for full sandbox functionality.
 
 use nanosandbox::config::SandboxConfig;
 use nanosandbox::image::{ImageManager, ImageRef};
@@ -175,7 +175,7 @@ async fn test_full_image_to_bundle_flow() {
     println!("Bundle path: {:?}", bundle.path);
 }
 
-/// Test sandbox creation (requires crun/krun or krunvm to be configured)
+/// Test sandbox creation (requires libkrun to be configured)
 #[tokio::test]
 #[ignore] // Requires runtime: cargo test -- --ignored
 async fn test_sandbox_creation() {

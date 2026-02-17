@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the Windows Container runtime implementation for Nanosandbox, providing the same interface as Linux (KVM/libkrun) and macOS (HVF/krunvm).
+This document describes the Windows Container runtime implementation for Nanosandbox, providing the same interface as Linux (KVM/libkrun) and macOS (HVF/libkrun).
 
 ## Architecture
 
@@ -10,8 +10,8 @@ Nanosandbox uses **one runtime per platform**:
 
 | Platform | Runtime | Hypervisor | Isolation |
 |----------|---------|------------|-----------|
-| Linux | crun/krun | KVM | VM-based via libkrun |
-| macOS | krunvm | HVF (Hypervisor.framework) | VM-based |
+| Linux | libkrun FFI | KVM | VM-based via libkrun |
+| macOS | libkrun FFI | HVF (Hypervisor.framework) | VM-based |
 | **Windows** | **Windows Containers (HCS)** | **Hyper-V / Process** | **Container-based** |
 
 ## Windows Container Runtime
@@ -247,7 +247,7 @@ cargo test --test windows_e2e_test test_full_integration --features cli -- --ign
 
 | Feature | Linux | macOS | Windows |
 |---------|-------|-------|---------|
-| Runtime | crun/krun | krunvm | Windows Containers |
+| Runtime | libkrun FFI | libkrun FFI | Windows Containers |
 | Hypervisor | KVM | HVF | Hyper-V / Process |
 | Image format | Linux OCI | Linux OCI | Windows OCI |
 | Boot time | ~100-500ms | ~100-500ms | ~1-5s |

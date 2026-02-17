@@ -2,7 +2,7 @@
 name = "nanosandbox"
 version = "0.1.0"
 edition = "2021"
-description = "VM-based sandbox SDK using libkrun and crun"
+description = "VM-based sandbox SDK using libkrun FFI"
 license = "Apache-2.0"
 repository = "https://github.com/devdone-labs/dd-nanosandbox"
 keywords = ["sandbox", "virtualization", "containers", "isolation", "security"]
@@ -45,8 +45,14 @@ docker_credential = "1.3"   # For Docker config.json parsing
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
+log = "0.4"         # Needed to detect existing logger for libkrun FFI safety
+env_logger = "0.11" # Needed to safely probe before krun_set_log_level calls env_logger::init()
 async-trait = "0.1"
 dirs = "6"
+
+# libkrun FFI support - fork child process for krun_start_enter (macOS + Linux)
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+libc = "0.2"
 
 # CLI (optional)
 clap = { version = "4", features = ["derive"], optional = true }

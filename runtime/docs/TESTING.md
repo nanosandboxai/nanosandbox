@@ -64,7 +64,7 @@ Tests included:
 
 #### Full E2E Tests
 
-These tests require crun/libkrun and KVM (Linux) or HVF (macOS):
+These tests require libkrun and KVM (Linux) or HVF (macOS):
 
 ```bash
 make check-prereqs  # Verify prerequisites
@@ -92,9 +92,9 @@ make install-runtime
 ```
 
 This script handles installation for:
-- **Linux (Ubuntu/Debian)**: Builds crun with libkrun from source
-- **Linux (Fedora)**: Installs via dnf
-- **macOS (Apple Silicon)**: Installs krun via Homebrew
+- **Linux (Ubuntu/Debian)**: Builds libkrun from source
+- **Linux (Fedora)**: Installs libkrun via dnf
+- **macOS (Apple Silicon)**: Installs libkrun via Homebrew
 
 ### Manual Installation
 
@@ -117,14 +117,6 @@ make
 sudo make install
 cd ..
 
-# Build and install crun with libkrun
-git clone https://github.com/containers/crun.git
-cd crun
-./autogen.sh
-./configure --with-libkrun
-make
-sudo make install
-
 # Update library cache
 sudo ldconfig
 ```
@@ -132,7 +124,7 @@ sudo ldconfig
 #### Linux (Fedora/RHEL)
 
 ```bash
-sudo dnf install -y crun libkrun
+sudo dnf install -y libkrun
 ```
 
 #### macOS (Apple Silicon)
@@ -140,7 +132,7 @@ sudo dnf install -y crun libkrun
 ```bash
 # Install via Homebrew
 brew tap slp/krun
-brew install krun
+brew install libkrun
 
 # Verify HVF entitlement
 codesign -d --entitlements :- $(which krun)
@@ -179,7 +171,7 @@ The project includes a GitHub Actions workflow (`.github/workflows/e2e.yml`) tha
 To run sandbox E2E tests in CI, set up a self-hosted runner with:
 
 1. Linux with KVM enabled
-2. crun with libkrun installed
+2. libkrun installed
 3. Runner labels: `self-hosted`, `linux`, `kvm`
 
 ```bash
@@ -207,16 +199,17 @@ ls -la /dev/kvm
 sudo usermod -aG kvm $USER
 ```
 
-### "crun without libkrun support"
+### "libkrun.so not found"
 
-The crun binary was built without `--with-libkrun`. Rebuild:
+The libkrun shared library is not installed. Install it:
 
 ```bash
-cd crun
-./configure --with-libkrun
-make clean
+# From source
+git clone https://github.com/containers/libkrun.git
+cd libkrun
 make
 sudo make install
+sudo ldconfig
 ```
 
 ### "Cannot reach Docker Hub"
@@ -295,7 +288,7 @@ make test             # Run unit/integration tests
 make test-unit        # Run only unit tests
 make test-e2e         # Run all E2E tests
 make test-e2e-network # Run network-only E2E tests
-make install-runtime  # Install crun+libkrun
+make install-runtime  # Install libkrun
 make check-prereqs    # Check E2E prerequisites
 make clippy           # Run linter
 make fmt              # Format code

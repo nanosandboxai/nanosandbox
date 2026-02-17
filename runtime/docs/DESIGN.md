@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Nanosandbox is a Rust SDK for managing VM-isolated sandboxes using libkrun and crun. It provides a simple, async API for creating and managing secure execution environments with full OCI image support.
+Nanosandbox is a Rust SDK for managing VM-isolated sandboxes using libkrun via direct FFI. It provides a simple, async API for creating and managing secure execution environments with full OCI image support.
 
 ## Goals
 
@@ -115,21 +115,18 @@ impl ImageManager {
 
 ### 2. Runtime Integration
 
-#### 2.1 crun + libkrun
+#### 2.1 libkrun FFI
 
-Nanosandbox uses crun with the krun handler for container execution:
+Nanosandbox calls libkrun's C API directly via FFI for VM management:
 
 ```
 nanosandbox-sdk
       │
       ▼
-   crun CLI (or libcrun FFI)
+   libkrun FFI (direct C API calls)
       │
       ▼
-   krun handler
-      │
-      ▼
-   libkrun (VMM)
+   libkrun (VMM + virtio)
       │
       ▼
    KVM/HVF (hypervisor)
@@ -297,7 +294,7 @@ sandbox.exec("npm", &["run", "build"]).await?;
 - [ ] Project structure and build system
 - [ ] Basic OCI image pulling (single registry)
 - [ ] Layer extraction and caching
-- [ ] crun integration (via CLI)
+- [ ] libkrun FFI integration
 
 ### M2: Sandbox Management
 - [ ] Sandbox create/start/stop/destroy
@@ -326,9 +323,8 @@ sandbox.exec("npm", &["run", "build"]).await?;
 
 ### Required
 
-- `libkrun` - VM management
+- `libkrun` - VM management (called via FFI)
 - `libkrunfw` - Guest firmware
-- `crun` - OCI runtime (with libkrun support)
 
 ### Rust Crates
 
@@ -340,11 +336,7 @@ sandbox.exec("npm", &["run", "build"]).await?;
 
 ## Open Questions
 
-1. **crun integration**: CLI vs libcrun FFI?
-   - CLI is simpler but adds process overhead
-   - FFI is faster but more complex to maintain
-
-2. **Snapshot support**: Priority for checkpoint/restore?
+1. **Snapshot support**: Priority for checkpoint/restore?
    - Useful for fast startup
    - Complex to implement correctly
 
@@ -357,4 +349,3 @@ sandbox.exec("npm", &["run", "build"]).await?;
 - [OCI Runtime Spec](https://github.com/opencontainers/runtime-spec)
 - [OCI Distribution Spec](https://github.com/opencontainers/distribution-spec)
 - [libkrun Documentation](https://github.com/containers/libkrun)
-- [crun Documentation](https://github.com/containers/crun)

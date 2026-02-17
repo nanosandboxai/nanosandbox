@@ -103,40 +103,47 @@ if $network_only; then
     echo ""
 else
     # =============================================================================
-    # Container Runtime
+    # libkrun Library (FFI Backend)
     # =============================================================================
-    echo "--- Container Runtime ---"
+    echo "--- libkrun Library (FFI Backend) ---"
 
-    runtime_found=false
+    libkrun_found=false
 
-    # Check for krunvm (macOS)
-    if command -v krunvm &> /dev/null; then
-        version=$(krunvm --version 2>&1 | head -1)
-        pass "krunvm found: $version"
-        runtime_found=true
-    fi
+    case "$OS" in
+        Darwin)
+            if [[ -f "/opt/homebrew/lib/libkrun.dylib" ]]; then
+                pass "libkrun: /opt/homebrew/lib/libkrun.dylib"
+                libkrun_found=true
+            else
+                fail "libkrun.dylib not found at /opt/homebrew/lib/"
+                info "Install with: brew tap slp/krun && brew install libkrun"
+            fi
+            ;;
+        Linux)
+            for path in /usr/lib/libkrun.so /usr/lib64/libkrun.so /usr/local/lib/libkrun.so \
+                        /usr/lib/x86_64-linux-gnu/libkrun.so /usr/lib/aarch64-linux-gnu/libkrun.so; do
+                if [[ -f "$path" ]]; then
+                    pass "libkrun: $path"
+                    libkrun_found=true
+                    break
+                fi
+            done
+            if ! $libkrun_found; then
+                if ldconfig -p 2>/dev/null | grep -q libkrun; then
+                    libpath=$(ldconfig -p 2>/dev/null | grep libkrun | awk '{print $NF}' | head -1)
+                    pass "libkrun: $libpath (via ldconfig)"
+                    libkrun_found=true
+                else
+                    fail "libkrun.so not found"
+                    info "Install from: https://github.com/containers/libkrun"
+                    info "Or run: ./scripts/install-runtime.sh"
+                fi
+            fi
+            ;;
+    esac
 
-    # Check for krun (OCI runtime)
-    if command -v krun &> /dev/null; then
-        version=$(krun --version 2>&1 | head -1)
-        pass "krun found: $version"
-        runtime_found=true
-    fi
-
-    # Check for crun with libkrun
-    if command -v crun &> /dev/null; then
-        version=$(crun --version 2>&1 | head -1)
-        if crun --version 2>&1 | grep -q "libkrun"; then
-            pass "crun with libkrun: $version"
-            runtime_found=true
-        else
-            warn "crun found but without libkrun support: $version"
-            info "Rebuild crun with --with-libkrun or install krunvm"
-        fi
-    fi
-
-    if ! $runtime_found; then
-        fail "No compatible runtime found (need krunvm, crun+libkrun, or krun)"
+    if ! $libkrun_found; then
+        fail "No runtime found (libkrun library is required)"
         info "Run: ./scripts/install-runtime.sh"
     fi
 
@@ -158,13 +165,15 @@ else
                     fail "Hypervisor.framework not available"
                     info "Apple Silicon Macs should have HVF by default"
                 fi
-                
-                # Check krun entitlement if installed
-                if command -v krun &> /dev/null; then
-                    if codesign -d --entitlements :- "$(which krun)" 2>&1 | grep -q "com.apple.security.hypervisor"; then
-                        pass "krun has HVF entitlement"
+
+                # Check nanosb HVF entitlement
+                if command -v nanosb &> /dev/null; then
+                    nanosb_path="$(which nanosb)"
+                    if codesign -d --entitlements :- "$nanosb_path" 2>&1 | grep -q "com.apple.security.hypervisor"; then
+                        pass "nanosb has HVF entitlement"
                     else
-                        warn "krun may not have HVF entitlement"
+                        warn "nanosb may not have HVF entitlement (VM creation will fail)"
+                        info "Sign with: codesign --entitlements entitlements.plist --force -s - $nanosb_path"
                     fi
                 fi
             else
@@ -220,6 +229,7 @@ else
         echo -e "${GREEN}All prerequisites met!${NC}"
     fi
     echo ""
+    echo "Runtime: libkrun FFI"
     echo "You can now run: make test-e2e"
     exit 0
 fi

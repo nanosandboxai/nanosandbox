@@ -143,10 +143,10 @@ impl Sandbox {
     /// Create a new sandbox from configuration
     ///
     /// This will:
-    /// 1. Detect available runtime (OCI, krunvm, or containerd)
-    /// 2. For runtimes that handle image pull (krunvm, Windows containerd):
+    /// 1. Detect available runtime (libkrun FFI or containerd)
+    /// 2. For runtimes that handle image pull (Windows containerd):
     ///    Create container/VM directly (runtime handles image internally)
-    /// 3. For OCI runtimes (Linux): Pull image, extract layers, create bundle
+    /// 3. For libkrun (Linux/macOS): Pull image, extract layers, create bundle
     pub async fn create(config: SandboxConfig) -> Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
         info!("Creating sandbox {} with image {}", id, config.image);
@@ -155,11 +155,11 @@ impl Sandbox {
         let runtime = Runtime::new().await?;
         let handles_pull = runtime.handles_image_pull();
 
-        // Initialize image manager (needed for Linux OCI path)
+        // Initialize image manager (needed for libkrun path)
         let image_manager = Arc::new(ImageManager::with_default_cache()?);
 
         let (bundle, pulled_image) = if handles_pull {
-            // Runtime handles image pulling internally (krunvm, Windows containerd)
+            // Runtime handles image pulling internally (Windows containerd)
             info!(
                 "Using {} runtime (handles image pull internally)",
                 runtime.name()
@@ -170,7 +170,7 @@ impl Sandbox {
 
             (None, None)
         } else {
-            // OCI runtime (Linux) - we need to pull and create bundle
+            // libkrun (Linux/macOS) - we need to pull and create bundle
             debug!("Pulling image: {}", config.image);
             let pulled = image_manager.pull(&config.image).await?;
 
@@ -181,6 +181,12 @@ impl Sandbox {
             // Linux: merge all layers into single rootfs
             debug!("Creating rootfs from {} layers", pulled.layers.len());
             image_manager.create_rootfs(&pulled.layers, &bundle.rootfs_path)?;
+
+            // Configure DNS in rootfs for TSI networking.
+            // TSI on macOS routes guest DNS through the host, but the image's
+            // resolv.conf may point to IPs blocked by the vsock IP filter.
+            // Write a resolv.conf that uses the host's DNS configuration.
+            Self::configure_rootfs_dns(&bundle.rootfs_path);
 
             let oci_config = oci::generate_config(&config, &bundle.rootfs_path);
             bundle.write_config(&oci_config)?;
@@ -217,7 +223,7 @@ impl Sandbox {
             return Self::create(config).await;
         }
 
-        // Linux/macOS: use traditional OCI bundle creation
+        // Linux/macOS: use libkrun with OCI bundle creation
         #[cfg(not(target_os = "windows"))]
         {
             let id = uuid::Uuid::new_v4().to_string();
@@ -237,6 +243,9 @@ impl Sandbox {
                 pulled_image.layers.len()
             );
             image_manager.create_rootfs(&pulled_image.layers, &bundle.rootfs_path)?;
+
+            // Configure DNS in rootfs for TSI networking
+            Self::configure_rootfs_dns(&bundle.rootfs_path);
 
             let oci_config = oci::generate_config(&config, &bundle.rootfs_path);
             bundle.write_config(&oci_config)?;
@@ -283,8 +292,8 @@ impl Sandbox {
 
     /// Start the sandbox
     ///
-    /// For OCI runtimes: Creates and starts the container
-    /// For krunvm: VM is created during `Sandbox::create`, this just marks it ready
+    /// For libkrun: Creates the VM and starts it
+    /// For containerd: Verifies the container exists and starts it
     pub async fn start(&mut self) -> Result<()> {
         if self.status != SandboxStatus::Ready && self.status != SandboxStatus::Stopped {
             return Err(Error::InvalidState(format!(
@@ -297,7 +306,7 @@ impl Sandbox {
 
         // Get or create runtime
         let runtime = if let Some(ref rt) = self.runtime {
-            // Runtime already exists (krunvm case)
+            // Runtime already exists
             rt
         } else {
             // Need to create runtime (shouldn't happen with new create flow)
@@ -305,8 +314,8 @@ impl Sandbox {
             self.runtime.as_ref().unwrap()
         };
 
-        // For OCI runtimes, we need to create and start the container
-        // For krunvm, the VM was created in Sandbox::create
+        // For libkrun, we need to create and start the VM
+        // For containerd, verify and start the container
         if !runtime.handles_image_pull() {
             let bundle = self
                 .bundle
@@ -336,7 +345,7 @@ impl Sandbox {
                     self.status = SandboxStatus::Error;
                 })?;
         } else {
-            // krunvm: start just verifies the VM exists
+            // libkrun/containerd: start just verifies the sandbox exists
             runtime.start(&self.id).await?;
         }
 
@@ -374,16 +383,23 @@ impl Sandbox {
         let workdir = options.workdir.as_deref();
         let user = options.user.as_deref();
 
+        // Merge sandbox config env with exec-specific env (exec overrides config)
+        let mut merged_env = self.config.env.clone();
+        merged_env.extend(options.env);
+
         let start = std::time::Instant::now();
 
         debug!(
-            "Executing command: {} {:?} (timeout: {}s)",
-            command, args, timeout_secs
+            "Executing command: {} {:?} (timeout: {}s, env_keys: {:?})",
+            command,
+            args,
+            timeout_secs,
+            merged_env.keys().collect::<Vec<_>>()
         );
 
         // Execute with timeout
         let exec_future =
-            runtime.exec_with_options(&self.id, command, args, workdir, &options.env, user);
+            runtime.exec_with_options(&self.id, command, args, workdir, &merged_env, user);
 
         let output = timeout(Duration::from_secs(timeout_secs as u64), exec_future)
             .await
@@ -435,9 +451,16 @@ impl Sandbox {
         let workdir = options.workdir.as_deref();
         let user = options.user.as_deref();
 
+        // Merge sandbox config env with exec-specific env (exec overrides config)
+        let mut merged_env = self.config.env.clone();
+        merged_env.extend(options.env);
+
         debug!(
-            "Executing (streaming): {} {:?} (timeout: {}s)",
-            command, args, timeout_secs
+            "Executing (streaming): {} {:?} (timeout: {}s, env_keys: {:?})",
+            command,
+            args,
+            timeout_secs,
+            merged_env.keys().collect::<Vec<_>>()
         );
 
         // Wrapper to convert runtime callback to our OutputChunk format
@@ -459,7 +482,7 @@ impl Sandbox {
             command,
             args,
             workdir,
-            &options.env,
+            &merged_env,
             user,
             callback,
         );
@@ -469,6 +492,160 @@ impl Sandbox {
             .map_err(|_| Error::Timeout(timeout_secs))??;
 
         Ok(exit_code)
+    }
+
+    /// Send a structured agent message to the gateway (persistent mode).
+    ///
+    /// This is the primary API for multi-turn agent conversations. The gateway
+    /// handles agent CLI spawning, session continuity (e.g., `--continue` for
+    /// Claude Code), and streams output back as SSE events.
+    ///
+    /// Returns the exit code from the agent CLI.
+    pub async fn send_message<F>(
+        &self,
+        message: &str,
+        agent: &str,
+        model: &str,
+        env: &HashMap<String, String>,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        F: Fn(&str, bool) + Send + Sync,
+    {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot send message in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        // Merge sandbox config env with call-specific env
+        let mut merged_env = self.config.env.clone();
+        merged_env.extend(env.clone());
+
+        let timeout_secs = self.config.timeout_secs;
+
+        let send_future = runtime.send_message(
+            &self.id,
+            message,
+            agent,
+            model,
+            &merged_env,
+            |data, is_stderr| on_output(data, is_stderr),
+        );
+
+        let exit_code = timeout(Duration::from_secs(timeout_secs as u64), send_future)
+            .await
+            .map_err(|_| Error::Timeout(timeout_secs))??;
+
+        Ok(exit_code)
+    }
+
+    /// Check if this sandbox is in persistent (gateway) mode.
+    pub fn is_persistent(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .map(|r| r.is_persistent(&self.id))
+            .unwrap_or(false)
+    }
+
+    /// Configure networking in the rootfs for VM networking.
+    ///
+    /// When gvproxy is available:
+    /// - Sets DNS to gvproxy's built-in DNS at 192.168.127.1
+    /// - Writes a network init script to bring up eth0 with static IP
+    /// Otherwise falls back to host DNS servers.
+    fn configure_rootfs_dns(rootfs_path: &std::path::Path) {
+        use crate::runtime::gvproxy_available;
+
+        let resolv_conf = rootfs_path.join("etc/resolv.conf");
+        let use_gvproxy = gvproxy_available();
+
+        let dns_servers = if use_gvproxy {
+            // gvproxy provides DNS at the gateway IP
+            vec!["192.168.127.1".to_string()]
+        } else {
+            Self::read_host_dns()
+        };
+
+        if !dns_servers.is_empty() {
+            let mode = if use_gvproxy { "gvproxy" } else { "host" };
+            let mut content = format!("# Generated by nanosandbox ({} networking)\n", mode);
+            for dns in &dns_servers {
+                content.push_str(&format!("nameserver {}\n", dns));
+            }
+            if let Err(e) = std::fs::write(&resolv_conf, &content) {
+                warn!("Failed to write resolv.conf to rootfs: {}", e);
+            } else {
+                debug!("Configured rootfs DNS ({}): {:?}", mode, dns_servers);
+            }
+        }
+
+        // Write network init wrapper for gvproxy.
+        // This script configures eth0, then execs the user's command (passed as "$@").
+        // It's used as the VM's init process (PID 1) when gvproxy networking is active.
+        if use_gvproxy {
+            let bin_dir = rootfs_path.join("usr/local/bin");
+            let _ = std::fs::create_dir_all(&bin_dir);
+
+            let init_script = rootfs_path.join("usr/local/bin/nanosb-net-init");
+            // This script is invoked as: /bin/sh nanosb-net-init <user_cmd> <args...>
+            // $0 = nanosb-net-init (or /bin/sh), $1 = user command, $2+ = args
+            // shift removes the script path, so "$@" becomes the user's command.
+            let script = "#!/bin/sh\n\
+                if command -v ip >/dev/null 2>&1; then\n\
+                    ip link set eth0 up 2>/dev/null\n\
+                    ip addr add 192.168.127.2/24 dev eth0 2>/dev/null\n\
+                    ip route add default via 192.168.127.1 dev eth0 2>/dev/null\n\
+                elif command -v ifconfig >/dev/null 2>&1; then\n\
+                    ifconfig eth0 192.168.127.2 netmask 255.255.255.0 up 2>/dev/null\n\
+                    route add default gw 192.168.127.1 2>/dev/null\n\
+                else\n\
+                    echo 'nanosb: ERROR - no networking tools found (ip/ifconfig)' >&2\n\
+                    echo 'nanosb: Install iproute2 in your container image for network support' >&2\n\
+                fi\n\
+                exec \"$@\"\n";
+            if let Err(e) = std::fs::write(&init_script, script) {
+                warn!("Failed to write network init script: {}", e);
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &init_script,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+                debug!("Wrote gvproxy network init script to rootfs");
+            }
+        }
+    }
+
+    /// Read DNS servers from the host system.
+    ///
+    /// Reads the host's /etc/resolv.conf to get DNS servers.
+    /// Falls back to well-known public DNS servers if unavailable.
+    fn read_host_dns() -> Vec<String> {
+        // Try /etc/resolv.conf first (works on Linux and macOS)
+        if let Ok(content) = std::fs::read_to_string("/etc/resolv.conf") {
+            let servers: Vec<String> = content
+                .lines()
+                .filter(|l| l.starts_with("nameserver"))
+                .filter_map(|l| l.split_whitespace().nth(1))
+                .map(|s| s.to_string())
+                .collect();
+            if !servers.is_empty() {
+                return servers;
+            }
+        }
+
+        // Fallback: common public DNS servers
+        vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]
     }
 
     /// Stop the sandbox

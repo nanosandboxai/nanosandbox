@@ -1,12 +1,20 @@
 #!/bin/bash
 #
-# Install crun + libkrun for Nanosandbox E2E tests
+# Install libkrun runtime for Nanosandbox
 #
 # Usage: ./scripts/install-runtime.sh [--check-only]
 #
 # Supported platforms:
-#   - Linux (Ubuntu/Debian) - installs crun with libkrun
-#   - macOS (Apple Silicon) - installs krun via Homebrew
+#   - macOS (Apple Silicon) - installs libkrun via Homebrew
+#   - Linux (Ubuntu/Debian) - installs libkrun from source
+#   - Linux (Fedora/RHEL)  - installs libkrun via dnf
+#
+# Runtime architecture:
+#   libkrun FFI (direct VM management, pure-Rust image handling)
+#   gvproxy (user-mode networking for VM outbound connectivity)
+#
+# No buildah, krunvm, or crun dependency is required -- image pulling and
+# rootfs creation are handled entirely in Rust by the ImageManager component.
 
 set -e
 
@@ -47,7 +55,7 @@ install_macos() {
         error "macOS support requires Apple Silicon (arm64). Detected: $ARCH"
     fi
 
-    info "Installing krunvm for macOS Apple Silicon..."
+    info "Installing libkrun runtime for macOS Apple Silicon..."
 
     # Check for Homebrew
     if ! command -v brew &> /dev/null; then
@@ -55,22 +63,24 @@ install_macos() {
     fi
 
     if $check_only; then
-        info "Would install: krunvm via Homebrew (slp/krun tap)"
+        info "Would install: libkrun via Homebrew (slp/krun tap)"
         return 0
     fi
 
-    # Tap and install krunvm
+    # Tap and install
     info "Adding slp/krun tap..."
     brew tap slp/krun || warn "Tap may already exist"
 
-    info "Installing krunvm..."
-    brew install slp/krun/krunvm || warn "krunvm may already be installed"
+    # Install libkrun (direct FFI backend)
+    info "Installing libkrun..."
+    brew install slp/krun/libkrun || warn "libkrun may already be installed"
 
-    # Verify installation
-    if command -v krunvm &> /dev/null; then
-        info "krunvm installed successfully: $(krunvm --version 2>&1 | head -1)"
+    # Verify libkrun installation
+    if [[ -f "/opt/homebrew/lib/libkrun.dylib" ]]; then
+        info "libkrun installed successfully: /opt/homebrew/lib/libkrun.dylib"
     else
-        error "krunvm installation failed"
+        warn "libkrun.dylib not found at /opt/homebrew/lib/"
+        warn "Installation may have failed"
     fi
 
     # Check HVF support
@@ -81,21 +91,20 @@ install_macos() {
         warn "Hypervisor.framework may not be available"
     fi
 
-    # Check for case-sensitive volume
     info ""
-    info "IMPORTANT: krunvm requires a case-sensitive APFS volume."
-    info "If not already created, run:"
+    info "IMPORTANT: Binaries using libkrun must be signed with the"
+    info "com.apple.security.hypervisor entitlement to create VMs."
     info ""
-    info "  diskutil apfs addVolume disk3 'Case-sensitive APFS' krunvm"
+    info "For nanosb built from source, sign with:"
+    info "  codesign --entitlements entitlements.plist --force -s - target/debug/nanosb"
     info ""
-    info "Then configure krunvm to use /Volumes/krunvm"
 }
 
 # =============================================================================
 # Linux Installation
 # =============================================================================
 install_linux() {
-    info "Installing crun with libkrun for Linux..."
+    info "Installing libkrun runtime for Linux..."
 
     # Check for package manager
     if command -v apt-get &> /dev/null; then
@@ -103,7 +112,7 @@ install_linux() {
     elif command -v dnf &> /dev/null; then
         install_linux_fedora
     else
-        error "Unsupported Linux distribution. Please install crun and libkrun manually."
+        error "Unsupported Linux distribution. Please install libkrun manually from: https://github.com/containers/libkrun"
     fi
 }
 
@@ -111,7 +120,7 @@ install_linux_debian() {
     info "Detected Debian/Ubuntu..."
 
     if $check_only; then
-        info "Would install: build dependencies, libkrun, crun"
+        info "Would install: libkrun (from source)"
         return 0
     fi
 
@@ -127,55 +136,31 @@ install_linux_debian() {
     sudo apt-get install -y \
         build-essential \
         git \
-        libseccomp-dev \
-        libcap-dev \
-        libsystemd-dev \
-        libyajl-dev \
-        go-md2man \
         python3 \
         python3-pip \
         ninja-build \
         pkg-config \
-        autoconf \
-        automake \
-        libtool \
         curl
 
     # Create temp directory for builds
     BUILD_DIR=$(mktemp -d)
     cd "$BUILD_DIR"
 
-    # Check if libkrun is already installed
+    # Install libkrun
     if ldconfig -p | grep -q libkrun; then
         info "libkrun already installed"
     else
-        # Install libkrun
         info "Building libkrun from source..."
         git clone https://github.com/containers/libkrun.git
         cd libkrun
-        
+
         # Install Rust if not present
         if ! command -v cargo &> /dev/null; then
             info "Installing Rust..."
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             source "$HOME/.cargo/env"
         fi
-        
-        make
-        sudo make install
-        cd ..
-    fi
 
-    # Check if crun with libkrun is already installed
-    if crun --version 2>&1 | grep -q "libkrun"; then
-        info "crun with libkrun already installed"
-    else
-        # Install crun with libkrun support
-        info "Building crun with libkrun support..."
-        git clone https://github.com/containers/crun.git
-        cd crun
-        ./autogen.sh
-        ./configure --with-libkrun
         make
         sudo make install
         cd ..
@@ -188,12 +173,26 @@ install_linux_debian() {
     cd /
     rm -rf "$BUILD_DIR"
 
-    # Verify installation
-    if crun --version 2>&1 | grep -q "libkrun"; then
-        info "crun with libkrun installed successfully"
-        crun --version
+    # Verify libkrun
+    if ldconfig -p | grep -q libkrun; then
+        info "libkrun installed successfully"
     else
-        warn "crun installed but libkrun support may not be enabled"
+        warn "libkrun not found in library cache"
+    fi
+
+    # Verify libkrun shared library location
+    local libkrun_found=false
+    for path in /usr/lib/libkrun.so /usr/lib64/libkrun.so /usr/local/lib/libkrun.so \
+                /usr/lib/x86_64-linux-gnu/libkrun.so /usr/lib/aarch64-linux-gnu/libkrun.so; do
+        if [[ -f "$path" ]]; then
+            info "libkrun found at: $path"
+            libkrun_found=true
+            break
+        fi
+    done
+    if ! $libkrun_found; then
+        warn "libkrun.so not found in expected locations"
+        warn "The FFI backend may not detect it at runtime"
     fi
 }
 
@@ -201,21 +200,100 @@ install_linux_fedora() {
     info "Detected Fedora/RHEL..."
 
     if $check_only; then
-        info "Would install: crun, libkrun via dnf"
+        info "Would install: libkrun via dnf"
         return 0
     fi
 
     # Fedora has packages available
-    info "Installing crun and libkrun..."
-    sudo dnf install -y crun libkrun
+    info "Installing libkrun..."
+    sudo dnf install -y libkrun
 
-    # Verify
-    if crun --version &> /dev/null; then
-        info "crun installed successfully"
-        crun --version
+    # Verify libkrun
+    if ldconfig -p 2>/dev/null | grep -q libkrun; then
+        info "libkrun installed successfully"
     else
-        error "crun installation failed"
+        warn "libkrun not found in library cache after install"
     fi
+}
+
+# =============================================================================
+# gvproxy Installation (cross-platform)
+# =============================================================================
+install_gvproxy() {
+    info "Installing gvproxy for VM networking..."
+
+    if command -v gvproxy &> /dev/null; then
+        info "gvproxy is already installed: $(which gvproxy)"
+        return 0
+    fi
+
+    if $check_only; then
+        info "Would install: gvproxy from gvisor-tap-vsock releases"
+        return 0
+    fi
+
+    local gvproxy_version="v0.8.7"
+    local gvproxy_binary=""
+
+    case "$OS" in
+        Darwin)
+            gvproxy_binary="gvproxy-darwin"
+            ;;
+        Linux)
+            case "$ARCH" in
+                x86_64|amd64)
+                    gvproxy_binary="gvproxy-linux-amd64"
+                    ;;
+                aarch64|arm64)
+                    gvproxy_binary="gvproxy-linux-arm64"
+                    ;;
+                *)
+                    warn "No gvproxy binary available for architecture: $ARCH"
+                    warn "VM outbound networking will be limited."
+                    return 0
+                    ;;
+            esac
+            ;;
+        *)
+            warn "No gvproxy binary available for OS: $OS"
+            return 0
+            ;;
+    esac
+
+    local gvproxy_url="https://github.com/containers/gvisor-tap-vsock/releases/download/${gvproxy_version}/${gvproxy_binary}"
+
+    info "Downloading gvproxy ${gvproxy_version}..."
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+    local download_path="${tmp_dir}/gvproxy"
+
+    if ! curl -fsSL "$gvproxy_url" -o "$download_path"; then
+        warn "Failed to download gvproxy from ${gvproxy_url}"
+        warn "VM outbound networking will be limited (TSI fallback)."
+        warn "Install manually from: https://github.com/containers/gvisor-tap-vsock/releases"
+        rm -rf "$tmp_dir"
+        return 0
+    fi
+
+    chmod +x "$download_path"
+
+    # Install to a suitable location
+    if [[ -w "/usr/local/bin" ]]; then
+        sudo install -m 0755 "$download_path" /usr/local/bin/gvproxy
+        info "gvproxy installed at /usr/local/bin/gvproxy"
+    elif [[ "$OS" == "Darwin" && -w "/opt/homebrew/bin" ]]; then
+        install -m 0755 "$download_path" /opt/homebrew/bin/gvproxy
+        info "gvproxy installed at /opt/homebrew/bin/gvproxy"
+    else
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 "$download_path" "$HOME/.local/bin/gvproxy"
+        info "gvproxy installed at $HOME/.local/bin/gvproxy"
+        if ! echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin"; then
+            warn "Add $HOME/.local/bin to your PATH for automatic detection"
+        fi
+    fi
+
+    rm -rf "$tmp_dir"
 }
 
 # =============================================================================
@@ -224,9 +302,11 @@ install_linux_fedora() {
 case "$OS" in
     Darwin)
         install_macos
+        install_gvproxy
         ;;
     Linux)
         install_linux
+        install_gvproxy
         ;;
     *)
         error "Unsupported operating system: $OS"
@@ -234,6 +314,11 @@ case "$OS" in
 esac
 
 info "Runtime installation complete!"
+info ""
+info "Runtime architecture:"
+info "  Backend:    libkrun FFI (direct VM management)"
+info "  Networking: gvproxy (user-mode virtio-net for outbound connectivity)"
+info "  Images:     Pure-Rust ImageManager (no external tools needed)"
 info ""
 info "Next steps:"
 info "  1. Run './scripts/check-e2e-prereqs.sh' to verify installation"

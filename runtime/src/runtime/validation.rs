@@ -387,17 +387,21 @@ async fn validate_linux_prerequisites() -> Result<()> {
     info!("Validating Linux runtime prerequisites...");
     let mut result = ValidationResult::default();
 
-    // Check 1: Runtime binary (krun or crun)
-    debug!("Checking for runtime binary...");
-    let runtime = find_linux_runtime().await;
-    if runtime.is_none() {
+    // Check 1: libkrun library
+    debug!("Checking for libkrun library...");
+    let libkrun_found = find_linux_libkrun();
+    if libkrun_found.is_none() {
         result.add_error(
-            "Runtime Binary",
-            "No OCI runtime found (krun, crun)",
+            "libkrun Library",
+            "libkrun.so not found",
             Some(
-                "Install crun with libkrun support: https://github.com/containers/crun".to_string(),
+                "Install libkrun from source: https://github.com/containers/libkrun\n\
+                 Or run: ./scripts/install-runtime.sh"
+                    .to_string(),
             ),
         );
+    } else {
+        debug!("Found libkrun at: {}", libkrun_found.unwrap());
     }
 
     // Check 2: KVM availability
@@ -442,6 +446,21 @@ async fn validate_linux_prerequisites() -> Result<()> {
         }
     }
 
+    // Check 3: gvproxy (warning only - not required, TSI is the fallback)
+    debug!("Checking for gvproxy...");
+    if super::gvproxy::GvproxyManager::is_available() {
+        if let Some(path) = super::gvproxy::GvproxyManager::find_binary() {
+            debug!("Found gvproxy at {}", path.display());
+            info!("gvproxy available - full outbound networking enabled");
+        }
+    } else {
+        result.add_warning(
+            "gvproxy not found - outbound networking from VMs will be limited. \
+             Install from: https://github.com/containers/gvisor-tap-vsock/releases \
+             or run: scripts/install-runtime.sh".to_string(),
+        );
+    }
+
     // Log warnings
     for warning in &result.warnings {
         warn!("{}", warning);
@@ -450,23 +469,20 @@ async fn validate_linux_prerequisites() -> Result<()> {
     result.into_result()
 }
 
-/// Find the Linux OCI runtime binary (krun or crun)
+/// Find the libkrun shared library on Linux
 #[cfg(target_os = "linux")]
-pub async fn find_linux_runtime() -> Option<String> {
-    use tokio::process::Command;
+fn find_linux_libkrun() -> Option<String> {
+    let search_paths = [
+        "/usr/lib/libkrun.so",
+        "/usr/lib64/libkrun.so",
+        "/usr/local/lib/libkrun.so",
+        "/usr/lib/x86_64-linux-gnu/libkrun.so",
+        "/usr/lib/aarch64-linux-gnu/libkrun.so",
+    ];
 
-    // Try krun first (preferred for VM isolation), then crun
-    for binary in &["krun", "crun"] {
-        let output = Command::new("which").arg(binary).output().await;
-
-        if let Ok(out) = output {
-            if out.status.success() {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !path.is_empty() {
-                    debug!("Found Linux runtime: {}", path);
-                    return Some(path);
-                }
-            }
+    for path in &search_paths {
+        if Path::new(path).exists() {
+            return Some(path.to_string());
         }
     }
     None
@@ -493,19 +509,19 @@ async fn validate_macos_prerequisites() -> Result<()> {
         );
     }
 
-    // Check 2: krunvm binary
-    debug!("Checking for krunvm binary...");
-    let krunvm = find_macos_runtime().await;
-    if krunvm.is_none() {
+    // Check 2: libkrun library
+    debug!("Checking for libkrun library...");
+    if !std::path::Path::new("/opt/homebrew/lib/libkrun.dylib").exists() {
         result.add_error(
-            "Runtime Binary",
-            "krunvm not found",
-            Some("Install via Homebrew: brew tap slp/krun && brew install krunvm".to_string()),
+            "libkrun Library",
+            "libkrun.dylib not found at /opt/homebrew/lib/",
+            Some("Install via Homebrew: brew tap slp/krun && brew install libkrun".to_string()),
         );
+    } else {
+        debug!("Found libkrun at /opt/homebrew/lib/libkrun.dylib");
     }
 
-    // Check 3: Hypervisor.framework entitlement
-    // This is harder to check directly, but krunvm will fail if not available
+    // Check 3: Hypervisor.framework
     debug!("Checking Hypervisor.framework...");
     let hvf_available = check_hvf_available().await;
     if !hvf_available {
@@ -516,31 +532,27 @@ async fn validate_macos_prerequisites() -> Result<()> {
         );
     }
 
+    // Check 4: gvproxy (warning only - not required, TSI is the fallback)
+    debug!("Checking for gvproxy...");
+    if super::gvproxy::GvproxyManager::is_available() {
+        if let Some(path) = super::gvproxy::GvproxyManager::find_binary() {
+            debug!("Found gvproxy at {}", path.display());
+            info!("gvproxy available - full outbound networking enabled");
+        }
+    } else {
+        result.add_warning(
+            "gvproxy not found - outbound networking from VMs will be limited. \
+             Install from: https://github.com/containers/gvisor-tap-vsock/releases \
+             or run: scripts/install.sh".to_string(),
+        );
+    }
+
     // Log warnings
     for warning in &result.warnings {
         warn!("{}", warning);
     }
 
     result.into_result()
-}
-
-/// Find the macOS krunvm runtime binary
-#[cfg(target_os = "macos")]
-pub async fn find_macos_runtime() -> Option<String> {
-    use tokio::process::Command;
-
-    let output = Command::new("which").arg("krunvm").output().await;
-
-    if let Ok(out) = output {
-        if out.status.success() {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                debug!("Found macOS runtime: {}", path);
-                return Some(path);
-            }
-        }
-    }
-    None
 }
 
 #[cfg(target_os = "macos")]

@@ -1,7 +1,7 @@
 //! OCI Runtime Specification generation
 //!
 //! Generates config.json files conforming to the OCI Runtime Specification
-//! for use with crun/libkrun.
+//! for use with the libkrun FFI backend.
 
 use crate::config::{Mount, MountType, NetworkMode, SandboxConfig};
 use serde_json::json;

@@ -1,6 +1,6 @@
 # Nanosandbox
 
-A lightweight, VM-based sandbox SDK for secure code execution using [libkrun](https://github.com/containers/libkrun) and [crun](https://github.com/containers/crun).
+A lightweight, VM-based sandbox SDK for secure code execution using [libkrun](https://github.com/containers/libkrun) via direct FFI.
 
 > **Platform Status**: Currently, only **macOS Apple Silicon** is fully tested and stable.
 > Linux and Windows support are in development and **not fully supported or tested** yet.
@@ -22,14 +22,14 @@ Nanosandbox provides hardware-isolated execution environments with near-containe
 
 | Platform | Runtime | Hypervisor | Status |
 |----------|---------|------------|--------|
-| **macOS** | krunvm | HVF (Hypervisor.framework) | **Stable** |
-| **Linux** | crun/krun | KVM | In Development |
+| **macOS** | libkrun FFI | HVF (Hypervisor.framework) | **Stable** |
+| **Linux** | libkrun FFI | KVM | In Development |
 | **Windows** | Windows Containers | HCS / Hyper-V | In Development |
 
 ### Platform Notes
 
 - **macOS Apple Silicon (M1/M2/M3/M4)**: Fully tested and stable. Use the install script for easy setup.
-- **Linux**: Not fully supported/tested yet. Requires manual setup of libkrun stack (libkrunfw + libkrun + crun).
+- **Linux**: Not fully supported/tested yet. Requires libkrun installation.
 - **Windows**: Not fully supported/tested yet. Limited to Windows container images only (nanoserver, servercore).
 
 ### Windows Limitation
@@ -53,7 +53,7 @@ The fastest way to get started on macOS:
 git clone https://github.com/devdone-labs/dd-nanosandbox
 cd dd-nanosandbox
 
-# Run the install script (installs krunvm and dependencies)
+# Run the install script (installs libkrun and dependencies)
 ./scripts/install.sh
 
 # Build the CLI
@@ -71,11 +71,11 @@ cargo build --release --features cli
 - Run `./scripts/install.sh` to install all dependencies automatically
 
 Or install manually:
-- [krunvm](https://github.com/containers/krunvm): `brew tap slp/krun && brew install krunvm`
+- [libkrun](https://github.com/containers/libkrun): `brew tap slp/krun && brew install libkrun`
 
 #### Linux (In Development)
 - Rust 1.70+ (for building from source)
-- [crun](https://github.com/containers/crun) with libkrun support, or [krun](https://github.com/containers/libkrun)
+- [libkrun](https://github.com/containers/libkrun) shared library
 - KVM enabled (`/dev/kvm` accessible)
 
 #### Windows (In Development)
@@ -216,7 +216,7 @@ For detailed CLI documentation, see [docs/CLI.md](docs/CLI.md).
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Runtime Layer                                  │
-│            (crun with libkrun handler)                          │
+│              (libkrun FFI / containerd)                          │
 └─────────────────────────────────────────────────────────────────┘
                               │
               ┌───────────────┴───────────────┐
@@ -241,7 +241,7 @@ The main Rust crate providing:
 
 - `Sandbox` - High-level sandbox management
 - `ImageManager` - OCI image operations with authentication
-- `Runtime` - Low-level crun/libkrun interface
+- `Runtime` - Low-level libkrun FFI interface
 - `SandboxRegistry` - Sandbox state persistence
 
 ### nanosb (CLI)
@@ -270,7 +270,7 @@ Command-line interface for:
 
 **Stage: Active Development**
 
-- [x] M1: Foundation (OCI image pulling, layer caching, crun integration)
+- [x] M1: Foundation (OCI image pulling, layer caching, libkrun FFI)
 - [x] M2: Sandbox Management (lifecycle, exec, streaming, timeouts)
 - [x] M3: Advanced Features (auth, virtio-fs, TSI networking)
 - [x] M4: Production Ready (CLI, testing, documentation)
@@ -288,5 +288,4 @@ Apache-2.0
 ## Related Projects
 
 - [libkrun](https://github.com/containers/libkrun) - VM-based isolation library
-- [crun](https://github.com/containers/crun) - Fast OCI container runtime
 - [DD-Code](https://github.com/devdone-labs/dd-code) - IDE that uses Nanosandbox

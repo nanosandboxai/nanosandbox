@@ -14,9 +14,10 @@ use oci_distribution::{Client, Reference};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tar::Archive;
 use tracing::{debug, info};
 
@@ -27,7 +28,7 @@ const LAYER_COMPLETE_MARKER: &str = ".layer_complete";
 /// Get the current platform (os/arch)
 fn current_platform() -> (&'static str, &'static str) {
     // Detect OS - Windows needs "windows", Linux/macOS use "linux"
-    // (macOS runs Linux containers via krunvm)
+    // (macOS runs Linux containers via libkrun)
     let os = if cfg!(target_os = "windows") {
         "windows"
     } else {
@@ -85,9 +86,15 @@ impl ImageRef {
     /// Parse an image reference string
     pub fn parse(image: &str) -> Result<Self> {
         // Handle library images (e.g., "alpine" -> "library/alpine")
-        // Check if this is a simple image name without registry (no dots in the name part)
+        // Check if this is a simple image name without registry.
+        // A simple name has no `/` or `.` in the part before the first `:`.
+        // But we must not treat "localhost:5050/img" as simple - check if
+        // the part before `:` looks like a hostname (contains `/` after the port).
         let image_name_part = image.split(':').next().unwrap_or(image);
-        let image = if !image_name_part.contains('/') && !image_name_part.contains('.') {
+        let has_registry = image_name_part.contains('/')
+            || image_name_part.contains('.')
+            || image.starts_with("localhost");
+        let image = if !has_registry {
             format!("library/{}", image)
         } else {
             image.to_string()
@@ -224,6 +231,19 @@ impl ImageManager {
             registry_clients.insert(reg_config.host.clone(), Client::new(client_config));
         }
 
+        // Auto-configure HTTP for localhost registries (common dev pattern)
+        for port in &["5000", "5050", "5001"] {
+            let host = format!("localhost:{}", port);
+            if !registry_clients.contains_key(&host) {
+                let localhost_config = ClientConfig {
+                    protocol: ClientProtocol::Http,
+                    platform_resolver: Some(create_platform_resolver()),
+                    ..Default::default()
+                };
+                registry_clients.insert(host, Client::new(localhost_config));
+            }
+        }
+
         // Load credentials or use provided
         let credentials = Arc::new(credentials.unwrap_or_else(|| {
             CredentialStore::load().unwrap_or_else(|_| CredentialStore::empty())
@@ -284,10 +304,19 @@ impl ImageManager {
         self.cache_dir.join("extracted")
     }
 
-    /// Pull an image from a registry
+    /// Pull an image from a registry using manifest-first selective download.
+    ///
+    /// This optimized implementation:
+    /// 1. Fetches the manifest (fast metadata operation)
+    /// 2. Checks which layers are already cached locally
+    /// 3. Downloads only missing layers in parallel
+    /// 4. Downloads config blob if not cached
+    ///
+    /// For fully cached images this reduces pull time from minutes to seconds.
     pub async fn pull(&self, image: &str) -> Result<PulledImage> {
         let image_ref = ImageRef::parse(image)?;
         let reference = image_ref.to_reference()?;
+        let start = Instant::now();
 
         info!("Pulling image: {}", image_ref.full_ref());
 
@@ -305,66 +334,167 @@ impl ImageManager {
             }
         }
 
-        // Accept all standard OCI and Docker layer types
-        let accepted_media_types = vec![
-            "application/vnd.oci.image.layer.v1.tar",
-            "application/vnd.oci.image.layer.v1.tar+gzip",
-            "application/vnd.oci.image.layer.v1.tar+zstd",
-            "application/vnd.docker.image.rootfs.diff.tar.gzip",
-        ];
+        // Step 1: Pull manifest only (fast metadata operation)
+        // This also handles multi-arch image index resolution via platform_resolver
+        // Retry up to 3 times for transient registry/network errors
+        let manifest_start = Instant::now();
+        let mut last_err = None;
+        let mut manifest_result = None;
+        for attempt in 1..=3u32 {
+            match client.pull_image_manifest(&reference, &auth).await {
+                Ok(result) => {
+                    manifest_result = Some(result);
+                    break;
+                }
+                Err(e) => {
+                    let err_msg = format!("{}", e);
+                    if attempt < 3 {
+                        debug!(
+                            "Manifest fetch attempt {}/3 failed: {}, retrying...",
+                            attempt, err_msg
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            500 * attempt as u64,
+                        ))
+                        .await;
+                    }
+                    last_err = Some(err_msg);
+                }
+            }
+        }
+        let (manifest, manifest_digest) = manifest_result.ok_or_else(|| {
+            Error::ImagePullFailed(format!(
+                "{}: {}",
+                image_ref.full_ref(),
+                last_err.unwrap_or_else(|| "unknown error".to_string())
+            ))
+        })?;
+        debug!("Manifest fetched in {:?}", manifest_start.elapsed());
 
-        // Use pull to get image data
-        let image_data = client
-            .pull(&reference, &auth, accepted_media_types)
-            .await
-            .map_err(|e| Error::ImagePullFailed(format!("{}: {}", image_ref.full_ref(), e)))?;
-
+        // Step 2: Check which layers are already cached locally
+        let mut missing_layers = Vec::new();
         let mut layer_digests = Vec::new();
-        let mut total_size: u64 = 0;
+        let mut cached_count = 0;
 
-        // Process and cache each layer
-        for layer in &image_data.layers {
-            let digest = &layer.sha256_digest();
+        for layer_desc in &manifest.layers {
+            let digest = &layer_desc.digest;
             let digest_short = digest.strip_prefix("sha256:").unwrap_or(digest);
+            layer_digests.push(digest.clone());
 
-            // Check if layer already cached
             let blob_path = self.blobs_dir().join(digest_short);
             if blob_path.exists() {
-                debug!("Layer {} already cached", digest_short);
+                debug!(
+                    "Layer {} already cached ({} bytes)",
+                    digest_short, layer_desc.size
+                );
+                cached_count += 1;
             } else {
-                debug!("Caching layer: {}", digest_short);
-                let mut file = File::create(&blob_path)?;
-                file.write_all(&layer.data)?;
-            }
-
-            layer_digests.push(digest.clone());
-            total_size += layer.data.len() as u64;
-        }
-
-        // Save config
-        let config_digest = image_data.digest.clone().unwrap_or_default();
-        let config_digest_short = config_digest
-            .strip_prefix("sha256:")
-            .unwrap_or(&config_digest);
-
-        if !image_data.config.data.is_empty() {
-            let config_path = self.blobs_dir().join(config_digest_short);
-            if !config_path.exists() {
-                let mut file = File::create(&config_path)?;
-                file.write_all(&image_data.config.data)?;
+                missing_layers.push(layer_desc.clone());
             }
         }
 
         info!(
-            "Pulled {} layers ({} bytes)",
+            "{}/{} layers cached, {} to download",
+            cached_count,
+            manifest.layers.len(),
+            missing_layers.len()
+        );
+
+        // Step 3: Download missing layers in parallel
+        if !missing_layers.is_empty() {
+            let download_start = Instant::now();
+            info!(
+                "Downloading {} layers in parallel...",
+                missing_layers.len()
+            );
+
+            let mut handles = Vec::new();
+            for layer_desc in missing_layers {
+                let client_clone = client.clone();
+                let reference_clone = reference.clone();
+                let blobs_dir = self.blobs_dir();
+
+                handles.push(tokio::spawn(async move {
+                    let digest = &layer_desc.digest;
+                    let digest_short = digest.strip_prefix("sha256:").unwrap_or(digest);
+                    let blob_path = blobs_dir.join(digest_short);
+                    // Write to temp file first, then atomic rename for crash safety
+                    let temp_path =
+                        blobs_dir.join(format!("{}.dl.{}", digest_short, std::process::id()));
+
+                    debug!(
+                        "Downloading layer {} ({} bytes)...",
+                        digest_short, layer_desc.size
+                    );
+
+                    let file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
+                        Error::ImagePullFailed(format!("Create temp file: {}", e))
+                    })?;
+
+                    client_clone
+                        .pull_blob(&reference_clone, &layer_desc, file)
+                        .await
+                        .map_err(|e| {
+                            Error::ImagePullFailed(format!(
+                                "Download layer {}: {}",
+                                digest_short, e
+                            ))
+                        })?;
+
+                    // Atomic rename from temp to final path
+                    tokio::fs::rename(&temp_path, &blob_path).await.map_err(|e| {
+                        Error::ImagePullFailed(format!("Rename blob {}: {}", digest_short, e))
+                    })?;
+
+                    debug!("Downloaded layer: {}", digest_short);
+                    Ok::<_, Error>(())
+                }));
+            }
+
+            // Await all parallel downloads
+            for handle in handles {
+                handle
+                    .await
+                    .map_err(|e| Error::ImagePullFailed(format!("Task join error: {}", e)))??;
+            }
+
+            info!(
+                "All layers downloaded in {:?}",
+                download_start.elapsed()
+            );
+        }
+
+        // Step 4: Save config blob if not cached
+        let config_digest = manifest.config.digest.clone();
+        let config_digest_short = config_digest
+            .strip_prefix("sha256:")
+            .unwrap_or(&config_digest);
+        let config_path = self.blobs_dir().join(config_digest_short);
+
+        if !config_path.exists() {
+            debug!("Downloading config blob: {}", config_digest_short);
+            let file = tokio::fs::File::create(&config_path)
+                .await
+                .map_err(|e| Error::ImagePullFailed(format!("Create config file: {}", e)))?;
+            client
+                .pull_blob(&reference, &manifest.config, file)
+                .await
+                .map_err(|e| Error::ImagePullFailed(format!("Pull config: {}", e)))?;
+        }
+
+        let total_size: u64 = manifest.layers.iter().map(|l| l.size as u64).sum();
+
+        info!(
+            "Image ready: {} layers ({} bytes), completed in {:?}",
             layer_digests.len(),
-            total_size
+            total_size,
+            start.elapsed()
         );
 
         Ok(PulledImage {
             reference: image_ref,
             layers: layer_digests,
-            config_digest,
+            config_digest: manifest_digest,
             size: total_size,
         })
     }
@@ -437,18 +567,148 @@ impl ImageManager {
         Ok(())
     }
 
-    /// Create a rootfs by extracting all layers in order
+    /// Create a rootfs by extracting all layers in order with parallel decompression.
+    ///
+    /// This optimized implementation:
+    /// 1. Decompresses all gzipped layers in parallel using OS threads
+    /// 2. Caches decompressed tars as `{digest}.tar` for future reuse
+    /// 3. Extracts the uncompressed tars sequentially (maintains layer ordering)
+    ///
+    /// The parallel decompression phase handles the CPU-intensive gzip work,
+    /// while sequential extraction ensures correct overlay semantics.
     pub fn create_rootfs(&self, layers: &[String], dest: &Path) -> Result<()> {
+        let start = Instant::now();
         info!("Creating rootfs at {:?} from {} layers", dest, layers.len());
 
         fs::create_dir_all(dest)?;
 
-        for (i, digest) in layers.iter().enumerate() {
-            debug!("Extracting layer {}/{}: {}", i + 1, layers.len(), digest);
-            self.extract_layer(digest, dest)?;
+        let blobs_dir = self.blobs_dir();
+        let num_layers = layers.len();
+
+        // Phase 1: Decompress all gzipped layers in parallel
+        // Decompressed tars are cached as {digest}.tar for future reuse
+        let decompress_start = Instant::now();
+        let tar_paths: Vec<PathBuf> = std::thread::scope(|scope| {
+            let handles: Vec<_> = layers
+                .iter()
+                .enumerate()
+                .map(|(i, digest)| {
+                    let blobs_dir = &blobs_dir;
+                    scope.spawn(move || -> Result<PathBuf> {
+                        let digest_short =
+                            digest.strip_prefix("sha256:").unwrap_or(digest);
+                        let blob_path = blobs_dir.join(digest_short);
+
+                        if !blob_path.exists() {
+                            return Err(Error::LayerExtractionFailed(format!(
+                                "Layer blob not found: {}",
+                                digest
+                            )));
+                        }
+
+                        // Check if layer is gzipped by reading magic bytes
+                        let mut header = [0u8; 2];
+                        {
+                            let mut peek = File::open(&blob_path)?;
+                            let _ = peek.read_exact(&mut header);
+                        }
+                        let is_gzipped = header[0] == 0x1f && header[1] == 0x8b;
+
+                        if is_gzipped {
+                            let tar_path =
+                                blobs_dir.join(format!("{}.tar", digest_short));
+
+                            // Use cached decompressed tar if available
+                            if !tar_path.exists() {
+                                debug!(
+                                    "Decompressing layer {}/{}: {}",
+                                    i + 1,
+                                    num_layers,
+                                    digest_short
+                                );
+                                let in_file = File::open(&blob_path)?;
+                                let mut decoder = GzDecoder::new(in_file);
+                                // Write to temp file for atomic rename
+                                let temp_path = blobs_dir.join(format!(
+                                    "{}.tar.tmp.{}",
+                                    digest_short,
+                                    std::process::id()
+                                ));
+                                let mut out_file = File::create(&temp_path)?;
+                                std::io::copy(&mut decoder, &mut out_file)
+                                    .map_err(|e| {
+                                        Error::LayerExtractionFailed(format!(
+                                            "Decompress layer {}: {}",
+                                            digest_short, e
+                                        ))
+                                    })?;
+                                // Atomic rename to final path
+                                fs::rename(&temp_path, &tar_path)?;
+                            } else {
+                                debug!(
+                                    "Layer {}/{} already decompressed: {}",
+                                    i + 1,
+                                    num_layers,
+                                    digest_short
+                                );
+                            }
+
+                            Ok(tar_path)
+                        } else {
+                            // Plain tar, use the blob directly
+                            debug!(
+                                "Layer {}/{} is plain tar: {}",
+                                i + 1,
+                                num_layers,
+                                digest_short
+                            );
+                            Ok(blob_path)
+                        }
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Err(Error::LayerExtractionFailed(
+                            "Thread panicked during decompression".to_string(),
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })?;
+
+        debug!(
+            "Parallel decompression completed in {:?}",
+            decompress_start.elapsed()
+        );
+
+        // Phase 2: Extract uncompressed tars sequentially (preserves layer ordering)
+        let extract_start = Instant::now();
+        for (i, tar_path) in tar_paths.iter().enumerate() {
+            debug!(
+                "Extracting layer {}/{}: {:?}",
+                i + 1,
+                num_layers,
+                tar_path.file_name().unwrap_or_default()
+            );
+            let file = File::open(tar_path)?;
+            let mut archive = Archive::new(file);
+            archive.set_preserve_permissions(true);
+            archive.set_preserve_ownerships(false);
+            archive.set_overwrite(true);
+            archive.unpack(dest).map_err(|e| {
+                Error::LayerExtractionFailed(format!("Failed to unpack tar: {}", e))
+            })?;
         }
 
-        info!("Rootfs created successfully");
+        debug!(
+            "Sequential extraction completed in {:?}",
+            extract_start.elapsed()
+        );
+        info!("Rootfs created successfully in {:?}", start.elapsed());
         Ok(())
     }
 

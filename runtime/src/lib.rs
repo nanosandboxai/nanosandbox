@@ -1,8 +1,7 @@
 //! Nanosandbox - VM-based sandbox SDK
 //!
 //! Nanosandbox provides hardware-isolated execution environments using
-//! [libkrun](https://github.com/containers/libkrun) and
-//! [crun](https://github.com/containers/crun).
+//! [libkrun](https://github.com/containers/libkrun) via direct FFI.
 //!
 //! # Features
 //!
@@ -51,7 +50,8 @@ pub mod sandbox;
 // Re-exports
 pub use auth::CredentialStore;
 pub use config::{
-    Mount, MountType, NetworkConfig, NetworkMode, PortMapping, RegistryConfig, SandboxConfig,
+    Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping, RegistryConfig,
+    SandboxConfig,
 };
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PulledImage};

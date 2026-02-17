@@ -65,9 +65,22 @@ mod cli {
             #[arg(long, default_value = "4096")]
             memory: u32,
 
-            /// Stream output in real-time (don't buffer)
-            #[arg(short = 'f', long)]
-            follow: bool,
+            /// Environment variables (KEY=VALUE)
+            #[arg(short = 'e', long = "env")]
+            env: Vec<String>,
+
+            /// Read environment variables from a file
+            #[arg(long = "env-file")]
+            env_file: Option<String>,
+
+            /// Timeout in seconds (default: 600)
+            #[arg(long, default_value = "600")]
+            timeout: u32,
+
+            /// Buffer output instead of streaming in real-time
+            /// (only useful with --format json)
+            #[arg(long)]
+            buffered: bool,
 
             /// Command to run
             #[arg(trailing_var_arg = true)]
@@ -79,9 +92,9 @@ mod cli {
             /// Sandbox ID or name
             sandbox: String,
 
-            /// Stream output in real-time (don't buffer)
-            #[arg(short = 'f', long)]
-            follow: bool,
+            /// Buffer output instead of streaming in real-time
+            #[arg(long)]
+            buffered: bool,
 
             /// Command to run
             #[arg(trailing_var_arg = true)]
@@ -199,7 +212,10 @@ mod cli {
                 name,
                 cpus,
                 memory,
-                follow,
+                env,
+                env_file,
+                timeout,
+                buffered,
                 command,
             } => {
                 cmd_run(
@@ -207,7 +223,10 @@ mod cli {
                     name,
                     cpus,
                     memory,
-                    follow,
+                    &env,
+                    env_file.as_deref(),
+                    timeout,
+                    buffered,
                     &command,
                     cli.format,
                     cli.verbose,
@@ -216,9 +235,9 @@ mod cli {
             }
             Commands::Exec {
                 sandbox,
-                follow,
+                buffered,
                 command,
-            } => cmd_exec(&sandbox, follow, &command, cli.format, cli.verbose).await,
+            } => cmd_exec(&sandbox, buffered, &command, cli.format, cli.verbose).await,
             Commands::Ps { all } => cmd_ps(all, cli.format).await,
             Commands::Stop { sandbox } => cmd_stop(&sandbox, cli.verbose).await,
             Commands::Rm { sandbox, force } => cmd_rm(&sandbox, force, cli.verbose).await,
@@ -299,14 +318,63 @@ mod cli {
         Ok(())
     }
 
+    /// Parse environment variables from --env flags and --env-file
+    fn parse_env_vars(
+        env_args: &[String],
+        env_file: Option<&str>,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let mut vars = Vec::new();
+
+        // Parse --env-file first (if provided)
+        if let Some(path) = env_file {
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("Failed to read env file '{}': {}", path, e))?;
+            for line in content.lines() {
+                let line = line.trim();
+                // Skip empty lines and comments
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once('=') {
+                    vars.push((key.trim().to_string(), value.trim().to_string()));
+                }
+            }
+        }
+
+        // Parse --env KEY=VALUE flags (override env-file)
+        for entry in env_args {
+            if let Some((key, value)) = entry.split_once('=') {
+                vars.push((key.to_string(), value.to_string()));
+            } else {
+                // If just KEY is provided, try to read from host environment
+                if let Ok(value) = std::env::var(entry) {
+                    vars.push((entry.to_string(), value));
+                } else {
+                    anyhow::bail!(
+                        "Environment variable '{}' not found. Use KEY=VALUE format.",
+                        entry
+                    );
+                }
+            }
+        }
+
+        Ok(vars)
+    }
+
     /// Run a command in a new sandbox
+    ///
+    /// By default, output is streamed in real-time (like `docker run`).
+    /// Use `--buffered` or `--format json` for buffered output.
     #[allow(clippy::too_many_arguments)]
     async fn cmd_run(
         image: &str,
         name: Option<String>,
         cpus: u32,
         memory: u32,
-        follow: bool,
+        env_args: &[String],
+        env_file: Option<&str>,
+        timeout: u32,
+        buffered: bool,
         command: &[String],
         format: OutputFormat,
         verbose: bool,
@@ -314,16 +382,35 @@ mod cli {
         let sandbox_name =
             name.unwrap_or_else(|| format!("sandbox-{}", &uuid::Uuid::new_v4().to_string()[..8]));
 
+        // Parse environment variables
+        let env_vars = parse_env_vars(env_args, env_file)?;
+
         if verbose {
             eprintln!("Creating sandbox '{}' with image '{}'", sandbox_name, image);
+            if !env_vars.is_empty() {
+                eprintln!(
+                    "Environment variables: {}",
+                    env_vars
+                        .iter()
+                        .map(|(k, _)| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
         }
 
-        let config = SandboxConfig::builder()
+        let mut builder = SandboxConfig::builder()
             .name(&sandbox_name)
             .image(image)
             .cpus(cpus)
             .memory_mb(memory)
-            .build();
+            .timeout_secs(timeout);
+
+        for (key, value) in &env_vars {
+            builder = builder.env(key, value);
+        }
+
+        let config = builder.build();
 
         let pb = create_pull_progress();
         pb.set_message("Creating sandbox...");
@@ -361,30 +448,10 @@ mod cli {
                 eprintln!("Executing: {} {:?}", cmd, args);
             }
 
-            if follow {
-                // Streaming execution - output in real-time
-                let exit_code = sandbox
-                    .exec_stream(cmd, &args, |chunk| {
-                        match chunk.stream {
-                            Stream::Stdout => {
-                                println!("{}", chunk.data);
-                                let _ = std::io::stdout().flush();
-                            }
-                            Stream::Stderr => {
-                                eprintln!("{}", chunk.data);
-                                let _ = std::io::stderr().flush();
-                            }
-                        }
-                    })
-                    .await?;
+            // Use buffered mode only when explicitly requested or for JSON output
+            let use_buffered = buffered || matches!(format, OutputFormat::Json);
 
-                // Clean up sandbox
-                sandbox.destroy().await?;
-
-                if exit_code != 0 {
-                    std::process::exit(exit_code);
-                }
-            } else {
+            if use_buffered {
                 // Buffered execution - output after completion
                 let result = sandbox.exec(cmd, &args).await?;
 
@@ -410,6 +477,37 @@ mod cli {
                 if result.exit_code != 0 {
                     std::process::exit(result.exit_code);
                 }
+            } else {
+                // Streaming execution (default) - output in real-time.
+                // We use write_all_retry instead of println! because rapid
+                // streaming (e.g. LLM token deltas) can fill the terminal
+                // buffer, causing EAGAIN (os error 35). println! panics on
+                // write errors, so we retry with backoff instead.
+                let exit_code = sandbox
+                    .exec_stream(cmd, &args, |chunk| {
+                        match chunk.stream {
+                            Stream::Stdout => {
+                                let data = format!("{}\n", chunk.data);
+                                let stdout = std::io::stdout();
+                                let mut handle = stdout.lock();
+                                write_all_retry(&mut handle, data.as_bytes());
+                            }
+                            Stream::Stderr => {
+                                let data = format!("{}\n", chunk.data);
+                                let stderr = std::io::stderr();
+                                let mut handle = stderr.lock();
+                                write_all_retry(&mut handle, data.as_bytes());
+                            }
+                        }
+                    })
+                    .await?;
+
+                // Clean up sandbox
+                sandbox.destroy().await?;
+
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
+                }
             }
         }
 
@@ -419,7 +517,7 @@ mod cli {
     /// Execute a command in a running sandbox
     async fn cmd_exec(
         sandbox_id: &str,
-        follow: bool,
+        buffered: bool,
         command: &[String],
         format: OutputFormat,
         verbose: bool,
@@ -449,8 +547,8 @@ mod cli {
 
         if verbose {
             eprintln!("Found sandbox: {} ({})", sandbox_info.name, sandbox_info.id);
-            if follow {
-                eprintln!("Streaming mode enabled");
+            if !buffered {
+                eprintln!("Streaming mode enabled (default)");
             }
         }
 
@@ -611,6 +709,28 @@ mod cli {
             sandbox_info.id[..12].to_string().bold()
         );
         Ok(())
+    }
+
+    /// Write all bytes to a writer, retrying on EAGAIN/WouldBlock.
+    ///
+    /// When streaming rapid output (e.g. LLM token deltas via stream-json),
+    /// the terminal buffer can fill up and return EAGAIN (os error 35 on macOS).
+    /// Unlike `println!()` which panics on write errors, this function retries
+    /// with a short sleep to let the terminal drain its buffer.
+    fn write_all_retry(w: &mut impl Write, mut buf: &[u8]) {
+        while !buf.is_empty() {
+            match w.write(buf) {
+                Ok(0) => break, // EOF / closed pipe
+                Ok(n) => buf = &buf[n..],
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // Terminal buffer full — back off briefly and retry
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break, // Broken pipe or other fatal error — stop quietly
+            }
+        }
+        let _ = w.flush();
     }
 }
 

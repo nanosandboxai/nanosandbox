@@ -21,7 +21,7 @@ help:
 	@echo "  test-e2e-network Run network-only E2E tests"
 	@echo ""
 	@echo "Setup targets:"
-	@echo "  install-runtime Install crun+libkrun for E2E tests"
+	@echo "  install-runtime Install libkrun for E2E tests"
 	@echo "  check-prereqs   Check E2E test prerequisites"
 	@echo ""
 	@echo "Development targets:"
@@ -63,7 +63,7 @@ test-verbose:
 # Setup Targets
 # =============================================================================
 
-# Install crun + libkrun runtime
+# Install libkrun runtime
 install-runtime:
 	./scripts/install-runtime.sh
 

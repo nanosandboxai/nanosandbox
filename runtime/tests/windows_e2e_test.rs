@@ -12,7 +12,7 @@
 //! - containerd-shim-runhcs-v1.exe available
 //!
 //! NOTE: Windows containers can only run Windows images, not Linux images.
-//! For Linux containers, use Linux or macOS with libkrun/krunvm.
+//! For Linux containers, use Linux or macOS with libkrun.
 
 #![cfg(target_os = "windows")]
 

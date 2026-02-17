@@ -197,6 +197,12 @@ impl SandboxConfigBuilder {
         self
     }
 
+    /// Set the TSI network scope (for libkrun direct FFI backend)
+    pub fn network_scope(mut self, scope: NetworkScope) -> Self {
+        self.config.network.scope = scope;
+        self
+    }
+
     /// Build the configuration
     pub fn build(self) -> SandboxConfig {
         self.config
@@ -307,6 +313,11 @@ pub struct NetworkConfig {
     #[serde(default = "default_network_mode")]
     pub mode: NetworkMode,
 
+    /// TSI network scope (used by libkrun direct FFI backend)
+    /// Controls what network destinations the VM can reach.
+    #[serde(default = "default_network_scope")]
+    pub scope: NetworkScope,
+
     /// Port mappings for inbound connections
     #[serde(default)]
     pub port_mappings: Vec<PortMapping>,
@@ -324,11 +335,16 @@ fn default_network_mode() -> NetworkMode {
     NetworkMode::Tsi
 }
 
+fn default_network_scope() -> NetworkScope {
+    NetworkScope::Any
+}
+
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             enabled: default_network_enabled(),
             mode: default_network_mode(),
+            scope: default_network_scope(),
             port_mappings: Vec::new(),
             dns: Vec::new(),
         }
@@ -341,16 +357,18 @@ impl NetworkConfig {
         Self {
             enabled: false,
             mode: NetworkMode::None,
+            scope: NetworkScope::None,
             port_mappings: Vec::new(),
             dns: Vec::new(),
         }
     }
 
-    /// Create a config with TSI networking
+    /// Create a config with TSI networking (full internet access)
     pub fn tsi() -> Self {
         Self {
             enabled: true,
             mode: NetworkMode::Tsi,
+            scope: NetworkScope::Any,
             port_mappings: Vec::new(),
             dns: Vec::new(),
         }
@@ -382,6 +400,31 @@ pub enum NetworkMode {
 
     /// Virtual bridge network
     Bridge,
+}
+
+/// TSI Network Scope for libkrun
+///
+/// Controls the level of network access the VM has when using
+/// TSI (Transparent Socket Impersonation) via direct libkrun FFI.
+///
+/// libkrun enables TSI networking by default (when no explicit network
+/// device is added). This enum allows configuring the desired scope
+/// for future use with `krun_add_vsock` TSI feature flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkScope {
+    /// No outbound network access
+    None,
+
+    /// Local group only
+    Group,
+
+    /// Public internet access
+    Public,
+
+    /// Full access including localhost - recommended default
+    #[default]
+    Any,
 }
 
 /// Registry configuration for per-registry settings

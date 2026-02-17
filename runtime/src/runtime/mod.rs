@@ -4,16 +4,23 @@
 //!
 //! | Platform | Runtime | Hypervisor |
 //! |----------|---------|------------|
-//! | Linux | crun/krun (OCI) | KVM |
-//! | macOS | krunvm | HVF (Hypervisor.framework) |
+//! | Linux | libkrun FFI | KVM |
+//! | macOS | libkrun FFI | HVF (Hypervisor.framework) |
 //! | Windows | containerd + runhcs shim | HCS (Hyper-V/Process isolation) |
 //!
-//! Each platform has exactly one runtime. If the runtime prerequisites
-//! are not met, an error is returned with installation instructions.
+//! On macOS and Linux, the libkrun FFI backend calls libkrun's C API directly
+//! for VM management. Image pulling and rootfs preparation are handled by the
+//! pure-Rust ImageManager component.
 
-mod krunvm;
-mod oci;
 pub mod validation;
+
+// libkrun direct FFI backend (macOS + Linux)
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod ffi;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) mod gvproxy;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod libkrun;
 
 // Windows containerd runtime (primary Windows runtime)
 #[cfg(target_os = "windows")]
@@ -27,9 +34,25 @@ pub mod windows;
 #[cfg(target_os = "windows")]
 pub mod runhcs_setup;
 
-pub use krunvm::KrunVmRuntime;
-pub use oci::OciRuntime;
 pub use validation::validate_runtime_prerequisites;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use self::libkrun::LibkrunRuntime;
+
+/// Check if gvproxy is available on this system.
+///
+/// Used by the sandbox orchestrator to decide DNS configuration (gvproxy gateway
+/// vs host DNS). On non-Linux/macOS platforms, always returns false.
+pub fn gvproxy_available() -> bool {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        gvproxy::GvproxyManager::is_available()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
 
 #[cfg(target_os = "windows")]
 pub use containerd_windows::{ContainerdWindowsRuntime, WindowsContainerdIsolation};
@@ -61,18 +84,14 @@ pub struct ExecOutput {
 
 /// Runtime backend enum
 ///
-/// Each platform has exactly one runtime backend:
-/// - Linux: `Oci` (crun/krun)
-/// - macOS: `KrunVm` (krunvm)
+/// Each platform has a single runtime backend:
+/// - Linux/macOS: `Libkrun` (direct FFI via libkrun C API)
 /// - Windows: `WindowsContainerd` (containerd + runhcs shim)
 pub enum RuntimeBackend {
-    /// OCI Runtime (crun/krun) - Linux only
-    #[cfg(target_os = "linux")]
-    Oci(OciRuntime),
-
-    /// krunvm Runtime - macOS Apple Silicon only
-    #[cfg(target_os = "macos")]
-    KrunVm(KrunVmRuntime),
+    /// Direct libkrun FFI Runtime - macOS and Linux
+    /// Uses TSI networking, no CLI binary dependency, pure-Rust image handling
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Libkrun(LibkrunRuntime),
 
     /// Windows containerd Runtime - Windows only (primary)
     /// Uses containerd with containerd-shim-runhcs-v1 for proper layer/snapshot management
@@ -83,17 +102,10 @@ pub enum RuntimeBackend {
 impl RuntimeBackend {
     /// Get the runtime name
     pub fn name(&self) -> &str {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::Oci(r) => r.name(),
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match self {
-                RuntimeBackend::KrunVm(_) => "krunvm",
+                RuntimeBackend::Libkrun(_) => "libkrun",
             }
         }
 
@@ -107,27 +119,19 @@ impl RuntimeBackend {
 
     /// Check if this runtime handles image pulling internally
     ///
-    /// Windows containerd runtime handles image pull via containerd,
-    /// so nanosandbox does not need to pull images separately.
+    /// - Libkrun: `false` -- uses ImageManager (pure Rust) via Sandbox orchestrator
+    /// - Windows containerd: `true` -- containerd handles image pull + snapshots
     pub fn handles_image_pull(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::Oci(_) => false,
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match self {
-                RuntimeBackend::KrunVm(_) => true,
+                RuntimeBackend::Libkrun(r) => r.handles_image_pull(),
             }
         }
 
         #[cfg(target_os = "windows")]
         {
             match self {
-                // containerd handles image pull + snapshot management
                 RuntimeBackend::WindowsContainerd(_) => true,
             }
         }
@@ -140,17 +144,10 @@ impl RuntimeBackend {
         config: &SandboxConfig,
         bundle_path: Option<&Path>,
     ) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::Oci(r) => r.create(id, config, bundle_path).await,
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match self {
-                RuntimeBackend::KrunVm(r) => r.create(id, config, bundle_path).await,
+                RuntimeBackend::Libkrun(r) => r.create(id, config, bundle_path).await,
             }
         }
 
@@ -164,17 +161,10 @@ impl RuntimeBackend {
 
     /// Start the sandbox/VM
     pub async fn start(&self, id: &str) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::Oci(r) => r.start(id).await,
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match self {
-                RuntimeBackend::KrunVm(r) => r.start(id).await,
+                RuntimeBackend::Libkrun(r) => r.start(id).await,
             }
         }
 
@@ -195,24 +185,19 @@ impl RuntimeBackend {
         workdir: Option<&str>,
         env: &HashMap<String, String>,
     ) -> Result<ExecOutput> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::Oci(r) => r.exec(id, command, args, workdir, env).await,
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match self {
-                RuntimeBackend::KrunVm(r) => r.exec(id, command, args, workdir, env).await,
+                RuntimeBackend::Libkrun(r) => r.exec(id, command, args, workdir, env).await,
             }
         }
 
         #[cfg(target_os = "windows")]
         {
             match self {
-                RuntimeBackend::WindowsContainerd(r) => r.exec(id, command, args, workdir, env).await,
+                RuntimeBackend::WindowsContainerd(r) => {
+                    r.exec(id, command, args, workdir, env).await
+                }
             }
         }
     }
@@ -230,20 +215,10 @@ impl RuntimeBackend {
     where
         F: Fn(&str, bool) + Send + Sync,
     {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::Oci(r) => {
-                    r.exec_stream(id, command, args, workdir, env, on_output)
-                        .await
-                }
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match self {
-                RuntimeBackend::KrunVm(r) => {
+                RuntimeBackend::Libkrun(r) => {
                     r.exec_stream(id, command, args, workdir, env, on_output)
                         .await
                 }
@@ -261,19 +236,63 @@ impl RuntimeBackend {
         }
     }
 
-    /// Stop the sandbox/VM
-    pub async fn stop(&self, id: &str) -> Result<()> {
-        #[cfg(target_os = "linux")]
+    /// Send a structured agent message via the gateway's /api/v1/message endpoint.
+    ///
+    /// Only available when the sandbox is in persistent (gateway) mode.
+    /// On Windows, this always returns an error (no gateway support yet).
+    pub async fn send_message<F>(
+        &self,
+        id: &str,
+        message: &str,
+        agent: &str,
+        model: &str,
+        env: &HashMap<String, String>,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        F: Fn(&str, bool) + Send + Sync,
+    {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::Oci(r) => r.stop(id).await,
+                RuntimeBackend::Libkrun(r) => {
+                    r.send_message(id, message, agent, model, env, on_output)
+                        .await
+                }
             }
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, message, agent, model, env, on_output);
+            Err(crate::error::Error::ExecFailed(
+                "Agent gateway not supported on Windows yet".to_string(),
+            ))
+        }
+    }
+
+    /// Check if the sandbox is in persistent (gateway) mode.
+    pub fn is_persistent(&self, id: &str) -> bool {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::KrunVm(r) => r.stop(id).await,
+                RuntimeBackend::Libkrun(r) => r.is_persistent(id),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = id;
+            false
+        }
+    }
+
+    /// Stop the sandbox/VM
+    pub async fn stop(&self, id: &str) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.stop(id).await,
             }
         }
 
@@ -287,17 +306,10 @@ impl RuntimeBackend {
 
     /// Destroy/delete the sandbox/VM
     pub async fn destroy(&self, id: &str) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             match self {
-                RuntimeBackend::Oci(r) => r.destroy(id).await,
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match self {
-                RuntimeBackend::KrunVm(r) => r.destroy(id).await,
+                RuntimeBackend::Libkrun(r) => r.destroy(id).await,
             }
         }
 
@@ -312,14 +324,10 @@ impl RuntimeBackend {
 
 /// Detect and create the runtime for the current platform
 ///
-/// This function:
-/// 1. Validates all runtime prerequisites
-/// 2. Creates the platform-specific runtime
-///
-/// Each platform has exactly one runtime:
-/// - Linux → OciRuntime (crun/krun)
-/// - macOS → KrunVmRuntime (krunvm)
-/// - Windows → ContainerdWindowsRuntime (containerd + runhcs shim)
+/// Platform runtime selection:
+/// - Linux  -> LibkrunRuntime (direct FFI, requires libkrun.so)
+/// - macOS  -> LibkrunRuntime (direct FFI, requires libkrun.dylib)
+/// - Windows -> ContainerdWindowsRuntime (containerd + runhcs shim)
 ///
 /// # Errors
 ///
@@ -332,20 +340,12 @@ pub async fn detect_runtime() -> Result<RuntimeBackend> {
     validate_runtime_prerequisites().await?;
 
     // Then create the platform-specific runtime
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        info!("Initializing OCI runtime (Linux)");
-        let runtime = OciRuntime::new().await?;
-        info!("Using OCI runtime: {}", runtime.name());
-        Ok(RuntimeBackend::Oci(runtime))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        info!("Initializing krunvm runtime (macOS)");
-        let runtime = KrunVmRuntime::new().await?;
-        info!("Using krunvm runtime");
-        Ok(RuntimeBackend::KrunVm(runtime))
+        info!("Initializing libkrun FFI runtime - direct VM management");
+        let runtime = LibkrunRuntime::new().await?;
+        info!("Using libkrun FFI runtime");
+        Ok(RuntimeBackend::Libkrun(runtime))
     }
 
     #[cfg(target_os = "windows")]
@@ -444,6 +444,33 @@ impl Runtime {
         self.backend
             .exec_stream(id, command, args, workdir, env, on_output)
             .await
+    }
+
+    /// Send a structured agent message via the gateway.
+    ///
+    /// Only works in persistent (gateway) mode. The gateway handles agent CLI
+    /// spawning, session continuity, and streams output as SSE events.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_message<F>(
+        &self,
+        id: &str,
+        message: &str,
+        agent: &str,
+        model: &str,
+        env: &HashMap<String, String>,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        F: Fn(&str, bool) + Send + Sync,
+    {
+        self.backend
+            .send_message(id, message, agent, model, env, on_output)
+            .await
+    }
+
+    /// Check if the sandbox is in persistent (gateway) mode.
+    pub fn is_persistent(&self, id: &str) -> bool {
+        self.backend.is_persistent(id)
     }
 
     /// Stop a container/VM

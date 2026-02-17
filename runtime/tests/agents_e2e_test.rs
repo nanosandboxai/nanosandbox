@@ -82,7 +82,7 @@ const AGENTS: &[AgentDef] = &[
 #[cfg(target_os = "linux")]
 const DD_AGENTS_IMAGE: &str = "ghcr.io/devdone-labs/dd-agents:latest";
 
-/// DD-Agents image for macOS (uses Linux image via krunvm)
+/// DD-Agents image for macOS (uses Linux image via libkrun)
 #[cfg(target_os = "macos")]
 const DD_AGENTS_IMAGE: &str = "ghcr.io/devdone-labs/dd-agents:latest";
 
@@ -220,7 +220,7 @@ async fn test_agent_version(
     // Check runtime availability - skip if not met (this is expected in some environments)
     if !runtime_available().await {
         let msg =
-            "Runtime prerequisites not met. Install crun/krun (Linux), krunvm (macOS), or enable Windows Containers".to_string();
+            "Runtime prerequisites not met. Install libkrun (macOS/Linux) or enable Windows Containers".to_string();
         println!("[SKIP] {}", msg);
         return Ok(AgentTestResult::Skipped(msg));
     }
@@ -337,7 +337,7 @@ async fn test_all_agents_version() {
     if !runtime_available().await {
         println!("[SKIP] Runtime prerequisites not met");
         println!(
-            "[INFO] This test requires crun/krun (Linux), krunvm (macOS), or Windows Containers"
+            "[INFO] This test requires libkrun (macOS/Linux) or Windows Containers"
         );
         return;
     }
