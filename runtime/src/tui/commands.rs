@@ -67,6 +67,8 @@ pub enum Command {
     Sandboxes,
     /// Copy focused panel content to system clipboard.
     Copy,
+    /// Toggle zoom (maximize/minimize) for the focused panel.
+    Zoom,
 }
 
 /// Result of parsing a slash command.
@@ -86,6 +88,7 @@ const SUPPORTED_AGENTS: &[&str] = &["claude", "opencode", "goose", "codex", "cur
 const ALL_COMMANDS: &[&str] = &[
     "/quit", "/q", "/help", "/clear", "/close", "/copy",
     "/add", "/focus", "/kill", "/reconnect", "/env",
+    "/zoom",
     "/sandboxes", "/sb",
     "/mcp", "/mcp list", "/mcp add", "/mcp remove", "/mcp enable", "/mcp disable",
 ];
@@ -127,6 +130,7 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/sandboxes" | "/sb" => ParseResult::Ok(Command::Sandboxes),
         "/reconnect" => ParseResult::Ok(Command::Reconnect),
         "/copy" => ParseResult::Ok(Command::Copy),
+        "/zoom" => ParseResult::Ok(Command::Zoom),
 
         other => ParseResult::Err(format!(
             "Unknown command: {}\nType /help for available commands.",
@@ -193,14 +197,14 @@ fn parse_focus(parts: &[&str]) -> ParseResult {
             Ok(panel) => ParseResult::Ok(Command::Focus { panel }),
             Err(_) => ParseResult::Err(format!(
                 "'{}' is not a valid panel number.\n\
-                 Usage: /focus <n>  (1-indexed panel number)\n\
-                 Example: /focus 1",
+                 Usage: /focus <n>  (0-indexed panel number)\n\
+                 Example: /focus 0",
                 n,
             )),
         },
         None => ParseResult::Err(
-            "Usage: /focus <n>  (1-indexed panel number)\n\
-             Example: /focus 1"
+            "Usage: /focus <n>  (0-indexed panel number)\n\
+             Example: /focus 0"
                 .to_string(),
         ),
     }
@@ -308,8 +312,8 @@ fn parse_kill(parts: &[&str]) -> ParseResult {
             Ok(panel) => ParseResult::Ok(Command::Kill { panel: Some(panel) }),
             Err(_) => ParseResult::Err(format!(
                 "'{}' is not a valid panel number.\n\
-                 Usage: /kill [n]  (1-indexed, or omit for focused panel)\n\
-                 Example: /kill 2",
+                 Usage: /kill [n]  (0-indexed, or omit for focused panel)\n\
+                 Example: /kill 0",
                 n,
             )),
         },
@@ -605,4 +609,14 @@ mod tests {
         assert!(matches!(result, ParseResult::Err(_)));
     }
 
+    #[test]
+    fn test_parse_zoom() {
+        assert_eq!(parse_command("/zoom"), Some(Command::Zoom));
+    }
+
+    #[test]
+    fn test_parse_max_is_unknown() {
+        let result = parse_command_verbose("/max");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
 }

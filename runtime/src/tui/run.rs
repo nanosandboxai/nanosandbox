@@ -380,6 +380,13 @@ async fn handle_key_event(
                         app.focus_global();
                         return;
                     }
+                    // Ctrl+F: toggle zoom
+                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !app.panels.is_empty() {
+                            app.zoomed = !app.zoomed;
+                        }
+                        return;
+                    }
                     _ => {
                         // Forward everything else to SSH terminal
                         let bytes = super::terminal::crossterm_key_to_bytes(key);
@@ -498,6 +505,13 @@ async fn handle_key_event(
             app.handle_delete();
         }
 
+        // Ctrl+F: toggle zoom.
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if !app.panels.is_empty() {
+                app.zoomed = !app.zoomed;
+            }
+        }
+
         // Character input.
         KeyCode::Char(c) => {
             app.handle_char(c);
@@ -590,10 +604,11 @@ async fn handle_command(
                     "Available commands:\n",
                     "  /add <agent> [--image <img>]  Add a new agent panel\n",
                     "  /sandboxes (/sb)              Toggle sandbox sidebar\n",
-                    "  /focus <n>                    Focus panel n (1-indexed)\n",
+                    "  /focus <n>                    Focus panel n (0-indexed)\n",
                     "  /close                        Close focused panel\n",
-                    "  /kill [n]                     Kill sandbox & remove panel\n",
+                    "  /kill [n]                     Kill sandbox & remove panel (0-indexed)\n",
                     "  /copy                         Copy panel content to clipboard\n",
+                    "  /zoom                         Toggle panel zoom (Ctrl+F)\n",
                     "  /clear                        Clear chat history\n",
                     "  /env [KEY=VALUE]              Set/list panel env vars\n",
                     "  /reconnect                    Reconnect SSH terminal\n",
@@ -627,6 +642,7 @@ async fn handle_command(
                 if app.panels.is_empty() {
                     app.focused_panel = 0;
                     app.focus_global();
+                    app.zoomed = false;
                 } else if app.focused_panel >= app.panels.len() {
                     app.focused_panel = app.panels.len() - 1;
                 }
@@ -638,9 +654,8 @@ async fn handle_command(
             }
         }
         Command::Focus { panel } => {
-            let idx = panel.saturating_sub(1);
-            if idx < app.panels.len() {
-                app.focused_panel = idx;
+            if panel < app.panels.len() {
+                app.focused_panel = panel;
                 app.focus_panel_input();
             } else {
                 let msg = ChatMessage {
@@ -723,14 +738,14 @@ async fn handle_command(
         }
         Command::Kill { panel } => {
             let idx = match panel {
-                Some(n) => n.saturating_sub(1),
+                Some(n) => n,
                 None => app.focused_panel,
             };
 
             if idx >= app.panels.len() {
                 let msg = ChatMessage {
                     role: MessageRole::System,
-                    content: format!("No panel {}.", panel.unwrap_or(idx + 1)),
+                    content: format!("No panel {}.", idx),
                 };
                 if let Some(p) = app.focused_panel_mut() {
                     p.chat_history.push(msg);
@@ -745,6 +760,7 @@ async fn handle_command(
                 if app.panels.is_empty() {
                     app.focused_panel = 0;
                     app.focus_global();
+                    app.zoomed = false;
                 } else if app.focused_panel >= app.panels.len() {
                     app.focused_panel = app.panels.len() - 1;
                 }
@@ -802,6 +818,11 @@ async fn handle_command(
         }
         Command::Copy => {
             handle_copy(app);
+        }
+        Command::Zoom => {
+            if !app.panels.is_empty() {
+                app.zoomed = !app.zoomed;
+            }
         }
     }
 }

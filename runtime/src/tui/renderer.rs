@@ -179,7 +179,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(" exit"),
         ])
     } else if app.input_focus == InputFocus::Global {
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(" Tab", Style::new().fg(Color::Cyan)),
             Span::raw(" panel focus  "),
             Span::styled("/kill", Style::new().fg(Color::Cyan)),
@@ -189,8 +189,17 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("/add", Style::new().fg(Color::Cyan)),
             Span::raw(" new  "),
             Span::styled("/quit", Style::new().fg(Color::Cyan)),
-            Span::raw(" exit"),
-        ])
+            Span::raw(" exit  "),
+            Span::styled("^F", Style::new().fg(Color::Cyan)),
+            Span::raw(if app.zoomed { " restore" } else { " maximize" }),
+        ];
+        if app.zoomed {
+            spans.push(Span::styled(
+                format!("  [{}/{}]", app.focused_panel, app.panels.len()),
+                Style::new().fg(Color::Yellow),
+            ));
+        }
+        Line::from(spans)
     } else {
         // Check if focused panel is in terminal mode.
         let in_terminal = app
@@ -199,22 +208,41 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             .map_or(false, |p| p.mode == PanelMode::Terminal);
 
         if in_terminal {
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(" Esc", Style::new().fg(Color::Cyan)),
                 Span::raw(" global bar  "),
                 Span::styled("Tab", Style::new().fg(Color::Cyan)),
                 Span::raw(" next panel  "),
                 Span::styled("SSH Terminal", Style::new().fg(Color::Green)),
-            ])
+                Span::raw("  "),
+                Span::styled("^F", Style::new().fg(Color::Cyan)),
+                Span::raw(if app.zoomed { " restore" } else { " maximize" }),
+            ];
+            if app.zoomed {
+                spans.push(Span::styled(
+                    format!("  [{}/{}]", app.focused_panel, app.panels.len()),
+                    Style::new().fg(Color::Yellow),
+                ));
+            }
+            Line::from(spans)
         } else {
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(" Esc", Style::new().fg(Color::Cyan)),
                 Span::raw(" global bar  "),
                 Span::styled("Tab", Style::new().fg(Color::Cyan)),
                 Span::raw(" next panel  "),
                 Span::styled("Shift+Enter", Style::new().fg(Color::Cyan)),
                 Span::raw(" newline  "),
-            ])
+                Span::styled("^F", Style::new().fg(Color::Cyan)),
+                Span::raw(if app.zoomed { " restore" } else { " maximize" }),
+            ];
+            if app.zoomed {
+                spans.push(Span::styled(
+                    format!("  [{}/{}]", app.focused_panel, app.panels.len()),
+                    Style::new().fg(Color::Yellow),
+                ));
+            }
+            Line::from(spans)
         }
     };
 
@@ -341,7 +369,7 @@ fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         )));
     } else {
         for (i, panel) in app.panels.iter().enumerate() {
-            let idx = i + 1;
+            let idx = i;
             let is_focused = i == app.focused_panel;
 
             let status = if panel.mode == PanelMode::Terminal {
@@ -397,6 +425,30 @@ fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
     let panel_count = app.panels.len();
     if panel_count == 0 {
+        return;
+    }
+
+    // Zoomed mode: render only the focused panel at full width.
+    if app.zoomed {
+        let idx = app.focused_panel;
+        if idx < panel_count {
+            let is_focused = true;
+            let is_input_focused = app.input_focus == InputFocus::Panel;
+            let ac_idx = if is_input_focused {
+                app.autocomplete_index
+            } else {
+                None
+            };
+            render_panel(
+                frame,
+                area,
+                &mut app.panels[idx],
+                idx,
+                is_focused,
+                is_input_focused,
+                ac_idx,
+            );
+        }
         return;
     }
 

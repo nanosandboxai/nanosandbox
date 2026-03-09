@@ -134,6 +134,8 @@ pub struct App {
     pub show_mcp_sidebar: bool,
     /// Whether the sandbox sidebar is visible.
     pub show_sandbox_sidebar: bool,
+    /// Whether a panel is zoomed to full width.
+    pub zoomed: bool,
     /// Whether the welcome screen is visible.
     pub show_welcome: bool,
     /// Global input buffer with cursor tracking and multiline support.
@@ -163,6 +165,7 @@ impl App {
             should_quit: false,
             show_mcp_sidebar: false,
             show_sandbox_sidebar: false,
+            zoomed: false,
             show_welcome: true,
             global_input: TextInput::new(),
             system_messages: Vec::new(),
@@ -646,5 +649,21 @@ mod tests {
         assert_eq!(app.panels[0].input.cursor(), 2);
         app.handle_char('X');
         assert_eq!(app.panels[0].input.text(), "abXc");
+    }
+
+    #[test]
+    fn test_zoomed_default_false() {
+        let app = App::new();
+        assert!(!app.zoomed);
+    }
+
+    #[test]
+    fn test_toggle_zoom() {
+        let mut app = App::new();
+        app.panels.push(AgentPanel::new("test"));
+        app.zoomed = !app.zoomed;
+        assert!(app.zoomed);
+        app.zoomed = !app.zoomed;
+        assert!(!app.zoomed);
     }
 }
