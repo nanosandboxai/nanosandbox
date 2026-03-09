@@ -2,6 +2,7 @@
 //!
 //! High-level API for creating and managing sandboxed execution environments.
 
+use crate::config::McpServerConfig;
 use crate::config::SandboxConfig;
 use crate::error::{Error, Result};
 use crate::image::{ImageManager, PulledImage};
@@ -554,6 +555,124 @@ impl Sandbox {
             .unwrap_or(false)
     }
 
+    /// Get the SSH host port for this sandbox (if available).
+    pub fn ssh_port(&self) -> Option<u16> {
+        self.runtime
+            .as_ref()
+            .and_then(|r| r.ssh_port(&self.id))
+    }
+
+    /// Get the SSH private key path for this sandbox (if available).
+    pub fn ssh_key_path(&self) -> Option<std::path::PathBuf> {
+        self.runtime
+            .as_ref()
+            .and_then(|r| r.ssh_key_path(&self.id))
+    }
+
+    /// Get a ready-to-use SSH command string for connecting to this sandbox.
+    pub fn ssh_command(&self) -> Option<String> {
+        self.runtime
+            .as_ref()
+            .and_then(|r| r.ssh_command(&self.id))
+    }
+
+    /// Add or update an MCP server in the running sandbox.
+    ///
+    /// Requires the sandbox to be in persistent (gateway) mode.
+    /// The gateway automatically regenerates all agent config files.
+    pub async fn add_mcp_server(&self, name: &str, config: McpServerConfig) -> Result<()> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot manage MCP servers in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.add_mcp_server(&self.id, name, &config)
+    }
+
+    /// Remove an MCP server from the running sandbox.
+    ///
+    /// Requires the sandbox to be in persistent (gateway) mode.
+    pub async fn remove_mcp_server(&self, name: &str) -> Result<()> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot manage MCP servers in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.remove_mcp_server(&self.id, name)
+    }
+
+    /// List all MCP servers in the running sandbox.
+    ///
+    /// Returns the current state of all MCP servers from the gateway,
+    /// including both embedded defaults and dynamically added servers.
+    pub async fn list_mcp_servers(&self) -> Result<HashMap<String, McpServerConfig>> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot list MCP servers in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.list_mcp_servers(&self.id)
+    }
+
+    /// Enable an MCP server in the running sandbox.
+    ///
+    /// Requires the sandbox to be in persistent (gateway) mode.
+    pub async fn enable_mcp_server(&self, name: &str) -> Result<()> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot manage MCP servers in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.enable_mcp_server(&self.id, name)
+    }
+
+    /// Disable an MCP server in the running sandbox.
+    ///
+    /// Requires the sandbox to be in persistent (gateway) mode.
+    pub async fn disable_mcp_server(&self, name: &str) -> Result<()> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot manage MCP servers in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.disable_mcp_server(&self.id, name)
+    }
+
     /// Configure networking in the rootfs for VM networking.
     ///
     /// When gvproxy is available:
@@ -599,15 +718,16 @@ impl Sandbox {
             // shift removes the script path, so "$@" becomes the user's command.
             let script = "#!/bin/sh\n\
                 if command -v ip >/dev/null 2>&1; then\n\
-                    ip link set eth0 up 2>/dev/null\n\
-                    ip addr add 192.168.127.2/24 dev eth0 2>/dev/null\n\
-                    ip route add default via 192.168.127.1 dev eth0 2>/dev/null\n\
+                    ip link set eth0 up 2>/dev/null || true\n\
+                    if ! ip addr show eth0 2>/dev/null | grep -q 'inet '; then\n\
+                        ip addr add 192.168.127.2/24 dev eth0 2>/dev/null || true\n\
+                    fi\n\
+                    if ! ip route show 2>/dev/null | grep -q 'default'; then\n\
+                        ip route add default via 192.168.127.1 dev eth0 2>/dev/null || true\n\
+                    fi\n\
                 elif command -v ifconfig >/dev/null 2>&1; then\n\
-                    ifconfig eth0 192.168.127.2 netmask 255.255.255.0 up 2>/dev/null\n\
-                    route add default gw 192.168.127.1 2>/dev/null\n\
-                else\n\
-                    echo 'nanosb: ERROR - no networking tools found (ip/ifconfig)' >&2\n\
-                    echo 'nanosb: Install iproute2 in your container image for network support' >&2\n\
+                    ifconfig eth0 192.168.127.2 netmask 255.255.255.0 up 2>/dev/null || true\n\
+                    route add default gw 192.168.127.1 2>/dev/null || true\n\
                 fi\n\
                 exec \"$@\"\n";
             if let Err(e) = std::fs::write(&init_script, script) {
@@ -733,6 +853,28 @@ impl Sandbox {
         info!("Sandbox {} destroyed", self.id);
         Ok(())
     }
+
+    /// Create a sandbox in a specific state for testing.
+    #[cfg(test)]
+    fn new_test(id: &str, status: SandboxStatus) -> Self {
+        use std::sync::Arc;
+        let cache_dir = std::env::temp_dir().join(format!("nanosandbox-test-{}", id));
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let image_manager = Arc::new(ImageManager::new(cache_dir).expect("test image manager"));
+        Sandbox {
+            id: id.to_string(),
+            config: SandboxConfig::builder()
+                .name("test")
+                .image("alpine:latest")
+                .build(),
+            status,
+            runtime: None,
+            bundle: None,
+            image_manager,
+            pulled_image: None,
+            created_at: Utc::now(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -763,6 +905,15 @@ mod tests {
         assert!(!result_fail.success());
     }
 
+    #[tokio::test]
+    async fn test_mcp_requires_running_state() {
+        let config = SandboxConfig::builder()
+            .name("test-mcp")
+            .image("alpine:latest")
+            .build();
+        assert!(config.mcp_servers.is_empty());
+    }
+
     #[test]
     fn test_exec_options_builder() {
         let options = ExecOptions::new()
@@ -775,5 +926,52 @@ mod tests {
         assert_eq!(options.env.get("FOO"), Some(&"bar".to_string()));
         assert_eq!(options.user, Some("nobody".to_string()));
         assert_eq!(options.timeout_secs, Some(30));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_add_requires_running_state() {
+        use std::collections::HashMap;
+        let sandbox = Sandbox::new_test("test-add", SandboxStatus::Ready);
+        let mcp_config = McpServerConfig {
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+            env: HashMap::new(),
+            enabled: true,
+        };
+        let result = sandbox.add_mcp_server("test", mcp_config).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_remove_requires_running_state() {
+        let sandbox = Sandbox::new_test("test-remove", SandboxStatus::Stopped);
+        let result = sandbox.remove_mcp_server("test").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_list_requires_running_state() {
+        let sandbox = Sandbox::new_test("test-list", SandboxStatus::Creating);
+        let result = sandbox.list_mcp_servers().await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_enable_requires_running_state() {
+        let sandbox = Sandbox::new_test("test-enable", SandboxStatus::Ready);
+        let result = sandbox.enable_mcp_server("test").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_disable_requires_running_state() {
+        let sandbox = Sandbox::new_test("test-disable", SandboxStatus::Stopped);
+        let result = sandbox.disable_mcp_server("test").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
     }
 }

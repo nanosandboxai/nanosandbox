@@ -136,7 +136,7 @@ else
                 else
                     fail "libkrun.so not found"
                     info "Install from: https://github.com/containers/libkrun"
-                    info "Or run: ./scripts/install-runtime.sh"
+                    info "Or run: ./scripts/install/macos.sh (macOS) or ./scripts/install/linux.sh (Linux)"
                 fi
             fi
             ;;
@@ -144,7 +144,7 @@ else
 
     if ! $libkrun_found; then
         fail "No runtime found (libkrun library is required)"
-        info "Run: ./scripts/install-runtime.sh"
+        info "Run: ./scripts/install/macos.sh (macOS) or ./scripts/install/linux.sh (Linux)"
     fi
 
     echo ""
@@ -219,7 +219,7 @@ echo ""
 if [[ $failed -gt 0 ]]; then
     echo -e "${RED}Some prerequisites are missing.${NC}"
     echo ""
-    echo "To install runtime: ./scripts/install-runtime.sh"
+    echo "To install runtime: ./scripts/install/macos.sh (macOS) or ./scripts/install/linux.sh (Linux)"
     echo "To run network-only tests: make test-e2e-network"
     exit 1
 else

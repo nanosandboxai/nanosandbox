@@ -1,0 +1,132 @@
+# escape=`
+
+# Minimal Windows Docker image with agent CLIs for sandboxes
+# Base: Windows Server Core (build) -> Nano Server (runtime)
+# Agents: OpenCode, Claude Code, Goose, Codex, Cursor CLI
+
+# =============================================================================
+# Build Stage - Use Server Core for PowerShell and build tools
+# =============================================================================
+FROM mcr.microsoft.com/windows/servercore:ltsc2022 AS builder
+
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Create directories
+RUN New-Item -ItemType Directory -Force -Path C:\nodejs, C:\agents, C:\agents\npm-global | Out-Null
+
+# Install Node.js LTS (required for Claude Code, Codex, OpenCode)
+ENV NODE_VERSION=20.11.1
+RUN Invoke-WebRequest -Uri "https://nodejs.org/dist/v$env:NODE_VERSION/node-v$env:NODE_VERSION-win-x64.zip" -OutFile C:\nodejs.zip; `
+    Expand-Archive C:\nodejs.zip -DestinationPath C:\; `
+    Move-Item -Path "C:\node-v$env:NODE_VERSION-win-x64\*" -Destination C:\nodejs -Force; `
+    Remove-Item "C:\node-v$env:NODE_VERSION-win-x64" -Force; `
+    Remove-Item C:\nodejs.zip -Force
+
+# Add Node.js to PATH for npm postinstall scripts
+ENV PATH="C:\nodejs;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\system32;C:\Windows"
+
+# Configure npm to install global packages in our agents directory
+RUN C:\nodejs\npm.cmd config set prefix C:\agents\npm-global
+
+# =============================================================================
+# Agent CLIs Installation
+# =============================================================================
+
+# OpenCode - AI coding assistant
+RUN C:\nodejs\npm.cmd install -g opencode-ai
+
+# Claude Code - Anthropic's AI coding assistant
+RUN C:\nodejs\npm.cmd install -g @anthropic-ai/claude-code
+
+# Codex - OpenAI's coding assistant
+RUN C:\nodejs\npm.cmd install -g @openai/codex
+
+# Goose - AI developer agent
+# Use official PowerShell installer script
+RUN [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; `
+    $env:CONFIGURE = 'false'; `
+    $env:GOOSE_HOME = 'C:\agents\goose'; `
+    New-Item -ItemType Directory -Force -Path C:\agents\goose | Out-Null; `
+    $script = Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/block/goose/main/download_cli.ps1' -UseBasicParsing; `
+    $scriptBlock = [scriptblock]::Create($script.Content); `
+    & $scriptBlock; `
+    $gooseExe = Get-ChildItem -Path $env:USERPROFILE, 'C:\agents\goose', $env:LOCALAPPDATA -Recurse -Filter 'goose.exe' -ErrorAction SilentlyContinue | Select-Object -First 1; `
+    if ($gooseExe) { `
+        Copy-Item $gooseExe.FullName C:\agents\goose.exe -Force; `
+        Write-Host "Goose installed: $($gooseExe.FullName)" `
+    } else { `
+        Write-Host 'Searching for goose in .goose folder...'; `
+        $gooseExe = Get-ChildItem -Path "$env:USERPROFILE\.goose" -Recurse -Filter 'goose.exe' -ErrorAction SilentlyContinue | Select-Object -First 1; `
+        if ($gooseExe) { Copy-Item $gooseExe.FullName C:\agents\goose.exe -Force; Write-Host "Goose found: $($gooseExe.FullName)" } `
+        else { throw 'Goose installation failed - goose.exe not found' } `
+    }
+
+# Cursor CLI - Cursor's AI agent
+# The official installer may fail in containers - try direct download approach
+RUN [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; `
+    Write-Host 'Attempting Cursor CLI installation...'; `
+    $binDir = Join-Path $env:USERPROFILE '.local\bin'; `
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null; `
+    try { `
+        Write-Host 'Trying official installer...'; `
+        $installScript = Invoke-WebRequest -Uri 'https://cursor.com/install?win32=true' -UseBasicParsing -TimeoutSec 30; `
+        Write-Host 'Install script content preview:'; `
+        Write-Host ($installScript.Content.Substring(0, [Math]::Min(500, $installScript.Content.Length))); `
+        Invoke-Expression $installScript.Content; `
+        Start-Sleep -Seconds 3 `
+    } catch { `
+        Write-Host "Installer failed: $_" `
+    }; `
+    $agentPath = Join-Path $binDir 'agent.exe'; `
+    if (Test-Path $agentPath) { `
+        Copy-Item $agentPath C:\agents\cursor-agent.exe -Force; `
+        Write-Host "Cursor CLI installed: $agentPath" `
+    } else { `
+        Write-Host 'Official installer did not create agent.exe'; `
+        Write-Host 'Cursor CLI not available - creating stub for build to continue'; `
+        '@echo Cursor CLI not available on Windows containers' | Out-File -FilePath C:\agents\cursor-agent.cmd -Encoding ASCII `
+    }
+
+# Verify all agents are installed in builder stage
+RUN Write-Host '=== Verifying Agent Binaries ==='; `
+    if (-not (Test-Path C:\agents\npm-global\opencode.cmd)) { throw 'OpenCode not found' }; `
+    if (-not (Test-Path C:\agents\npm-global\claude.cmd)) { throw 'Claude Code not found' }; `
+    if (-not (Test-Path C:\agents\npm-global\codex.cmd)) { throw 'Codex not found' }; `
+    if (-not (Test-Path C:\agents\goose.exe)) { throw 'Goose not found' }; `
+    if (Test-Path C:\agents\cursor-agent.exe) { Write-Host 'Cursor CLI: OK' } `
+    elseif (Test-Path C:\agents\cursor-agent.cmd) { Write-Host 'Cursor CLI: stub (not available for Windows)' } `
+    else { throw 'Cursor CLI not found' }; `
+    Write-Host 'All required agent binaries verified'
+
+# =============================================================================
+# Runtime Stage - Minimal Nano Server image
+# =============================================================================
+FROM mcr.microsoft.com/windows/nanoserver:ltsc2022
+
+# Copy Node.js runtime
+COPY --from=builder C:\nodejs C:\nodejs
+
+# Copy installed agents
+COPY --from=builder C:\agents C:\agents
+
+# Set up PATH
+USER ContainerAdministrator
+RUN setx /M PATH "C:\nodejs;C:\agents\npm-global;C:\agents;%PATH%"
+USER ContainerUser
+
+# Labels
+LABEL org.opencontainers.image.source="https://github.com/devdone-labs/dd-agents-registry"
+LABEL org.opencontainers.image.description="Minimal Windows agent CLIs image for AI coding assistants"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Set working directory
+WORKDIR C:\workspace
+
+# Simple verification using cmd (Nano Server has no PowerShell)
+SHELL ["cmd", "/S", "/C"]
+RUN echo === Verifying Agents === && `
+    C:\nodejs\node.exe --version && `
+    echo Node.js: OK
+
+# Default command
+CMD ["cmd", "/c", "echo Available agents: opencode, claude, goose, codex, cursor-agent"]

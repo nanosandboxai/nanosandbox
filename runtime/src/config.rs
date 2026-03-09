@@ -40,14 +40,18 @@ pub struct SandboxConfig {
     /// Timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_secs: u32,
+
+    /// MCP server configurations to push to the agent-gateway on start
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
 fn default_cpus() -> u32 {
-    2
+    1
 }
 
 fn default_memory() -> u32 {
-    4096
+    512
 }
 
 fn default_workdir() -> String {
@@ -70,6 +74,7 @@ impl Default for SandboxConfig {
             network: NetworkConfig::default(),
             workdir: default_workdir(),
             timeout_secs: default_timeout(),
+            mcp_servers: HashMap::new(),
         }
     }
 }
@@ -200,6 +205,12 @@ impl SandboxConfigBuilder {
     /// Set the TSI network scope (for libkrun direct FFI backend)
     pub fn network_scope(mut self, scope: NetworkScope) -> Self {
         self.config.network.scope = scope;
+        self
+    }
+
+    /// Add an MCP server configuration
+    pub fn mcp_server(mut self, name: impl Into<String>, config: McpServerConfig) -> Self {
+        self.config.mcp_servers.insert(name.into(), config);
         self
     }
 
@@ -462,5 +473,142 @@ impl RegistryConfig {
     pub fn skip_tls(mut self) -> Self {
         self.skip_tls_verify = true;
         self
+    }
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// MCP server definition for agent tooling inside the sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Command to run (e.g., "npx", "uvx")
+    pub command: String,
+    /// Arguments for the command
+    pub args: Vec<String>,
+    /// Environment variables for the server process
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// Whether this server is enabled
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcp_server_config_defaults() {
+        let mcp = McpServerConfig {
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            env: HashMap::new(),
+            enabled: true,
+        };
+        assert_eq!(mcp.command, "npx");
+        assert!(mcp.enabled);
+        assert!(mcp.env.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_server_config_serde_roundtrip() {
+        let mcp = McpServerConfig {
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            env: HashMap::from([("GITHUB_TOKEN".to_string(), "abc123".to_string())]),
+            enabled: true,
+        };
+        let json = serde_json::to_string(&mcp).unwrap();
+        let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.command, "npx");
+        assert_eq!(parsed.args.len(), 2);
+        assert_eq!(parsed.env.get("GITHUB_TOKEN").unwrap(), "abc123");
+        assert!(parsed.enabled);
+    }
+
+    #[test]
+    fn test_mcp_server_config_serde_defaults() {
+        let json = r#"{"command":"npx","args":["-y","@upstash/context7-mcp"]}"#;
+        let parsed: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert!(parsed.enabled);
+        assert!(parsed.env.is_empty());
+    }
+
+    #[test]
+    fn test_sandbox_config_builder_with_mcp() {
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("alpine:latest")
+            .mcp_server("github", McpServerConfig {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+                env: HashMap::new(),
+                enabled: true,
+            })
+            .mcp_server("context7", McpServerConfig {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+                env: HashMap::new(),
+                enabled: true,
+            })
+            .build();
+
+        assert_eq!(config.mcp_servers.len(), 2);
+        assert!(config.mcp_servers.contains_key("github"));
+        assert!(config.mcp_servers.contains_key("context7"));
+    }
+
+    #[test]
+    fn test_sandbox_config_default_no_mcp_servers() {
+        let config = SandboxConfig::default();
+        assert!(config.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_config_json_matches_gateway_schema() {
+        let config = McpServerConfig {
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            env: HashMap::from([
+                ("GITHUB_TOKEN".to_string(), "test-token".to_string()),
+            ]),
+            enabled: true,
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&config).unwrap();
+
+        // Verify exact field names match gateway schema
+        assert!(json.get("command").is_some(), "must have 'command' field");
+        assert!(json.get("args").is_some(), "must have 'args' field");
+        assert!(json.get("env").is_some(), "must have 'env' field");
+        assert!(json.get("enabled").is_some(), "must have 'enabled' field");
+
+        // Verify types
+        assert!(json["command"].is_string());
+        assert!(json["args"].is_array());
+        assert!(json["env"].is_object());
+        assert!(json["enabled"].is_boolean());
+
+        // Verify values
+        assert_eq!(json["command"], "npx");
+        assert_eq!(json["args"][0], "-y");
+        assert_eq!(json["env"]["GITHUB_TOKEN"], "test-token");
+        assert_eq!(json["enabled"], true);
+    }
+
+    #[test]
+    fn test_mcp_config_disabled_server() {
+        let config = McpServerConfig {
+            command: "uvx".to_string(),
+            args: vec!["mcp-server-fetch".to_string()],
+            env: HashMap::new(),
+            enabled: false,
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["enabled"], false);
+        assert!(json["env"].as_object().unwrap().is_empty());
     }
 }

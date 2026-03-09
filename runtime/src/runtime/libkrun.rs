@@ -19,13 +19,190 @@
 use super::ffi;
 use super::gvproxy::{GvproxyInstance, GvproxyManager};
 use super::ExecOutput;
-use crate::config::{MountType, NetworkScope, SandboxConfig};
+use crate::config::{McpServerConfig, MountType, NetworkScope, SandboxConfig};
 use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read as IoRead, Write as IoWrite};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
+
+/// Configuration passed to the `internal-boot-vm` subprocess.
+///
+/// Serialized as JSON to stdin of the child process.
+#[derive(Serialize, Deserialize)]
+pub struct BootVmRequest {
+    /// Sandbox identifier (for log file naming)
+    pub sandbox_id: String,
+    /// Path to the rootfs directory
+    pub rootfs_path: String,
+    /// Number of vCPUs
+    pub cpus: u32,
+    /// Memory in MiB
+    pub memory_mb: u32,
+    /// PID 1 command (e.g. "/bin/sh")
+    pub command: String,
+    /// PID 1 command arguments (e.g. ["sh", "/usr/local/bin/nanosb-init.sh"])
+    pub command_args: Vec<String>,
+    /// TSI network scope
+    pub network_scope: NetworkScope,
+    /// Port mappings (host, guest)
+    pub port_mappings: Vec<(u16, u16)>,
+    /// Mount points (host_path, container_path)
+    pub mounts: Vec<(String, String)>,
+    /// DNS servers
+    pub dns: Vec<String>,
+    /// Path to the gvproxy Unix socket (if gvproxy networking is active)
+    pub gvproxy_socket: Option<String>,
+}
+
+/// Entry point for the `internal-boot-vm` subprocess.
+///
+/// Called by the nanosb binary when invoked with the hidden `internal-boot-vm`
+/// argument. Reads a JSON [`BootVmRequest`] from stdin, configures a libkrun VM,
+/// and calls `krun_start_enter` (which never returns on success).
+///
+/// This subprocess approach avoids a macOS Hypervisor.framework issue where
+/// `hv_vm_create()` fails when called from a process that was `fork()`ed from
+/// a multi-threaded parent (e.g. the TUI's tokio runtime). By using
+/// `std::process::Command` (which uses `posix_spawn` on macOS), the child
+/// process is clean and single-threaded.
+pub fn handle_boot_vm_subprocess() -> ! {
+    let mut input = String::new();
+    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("internal-boot-vm: failed to read config from stdin: {}", e);
+        std::process::exit(1);
+    }
+
+    let config: BootVmRequest = match serde_json::from_str(&input) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("internal-boot-vm: failed to parse config JSON: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // macOS dlopen workaround: chdir to the directory containing libkrunfw
+    preload_libkrunfw();
+
+    // Enable libkrun's internal logging to stderr (captured by parent).
+    // WARN level avoids the very verbose vCPU MMIO/interrupt traces from DEBUG.
+    let _ = ffi::init_log(ffi::KRUN_LOG_TARGET_DEFAULT, ffi::KRUN_LOG_LEVEL_WARN);
+
+    // Build environment variables for the VM
+    let mut env = HashMap::new();
+    env.insert(
+        "PATH".to_string(),
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+    );
+    env.insert("HOME".to_string(), "/root".to_string());
+    env.insert("TERM".to_string(), "dumb".to_string());
+    if !config.dns.is_empty() {
+        env.insert("NANOSANDBOX_DNS".to_string(), config.dns.join(","));
+    }
+
+    let args_refs: Vec<&str> = config.command_args.iter().map(|s| s.as_str()).collect();
+
+    let result = LibkrunRuntime::configure_and_start_vm(
+        &config.rootfs_path,
+        config.cpus,
+        config.memory_mb,
+        &config.command,
+        &args_refs,
+        None,
+        &env,
+        &config.network_scope,
+        &config.port_mappings,
+        &config.mounts,
+        &config.dns,
+        config.gvproxy_socket.as_deref(),
+    );
+
+    if let Err(e) = result {
+        eprintln!("internal-boot-vm: configure_and_start_vm failed: {}", e);
+    }
+    std::process::exit(1);
+}
+
+/// Pre-load `libkrunfw.5.dylib` using its full path so that libkrun's internal
+/// `dlopen("libkrunfw.5.dylib")` (bare name) finds it already loaded.
+///
+/// On modern macOS, `dlopen` with a bare filename only searches `/usr/lib` and
+/// the dyld cache — `/usr/local/lib` and `/opt/homebrew/lib` are NOT searched.
+/// Entitled/codesigned binaries also have `DYLD_FALLBACK_LIBRARY_PATH` stripped.
+/// Pre-loading with `RTLD_GLOBAL` makes the library available process-wide.
+/// Ensure `libkrunfw.5.dylib` is discoverable by libkrun's internal `dlopen`.
+///
+/// On modern macOS, `dlopen("libkrunfw.5.dylib")` (bare name) only searches the
+/// process's CWD, `/System/Volumes/Preboot/Cryptexes/OS`, and `/usr/lib`.
+/// Entitled/codesigned binaries also have `DYLD_FALLBACK_LIBRARY_PATH` stripped.
+///
+/// The workaround: `chdir` to the directory containing the firmware dylib so that
+/// libkrun's bare-name `dlopen` finds it in the CWD. This is safe because this
+/// function is called in a forked child process that will be consumed by the VM.
+#[cfg(target_os = "macos")]
+fn preload_libkrunfw() {
+    const SEARCH_DIRS: &[&str] = &[
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+    ];
+    for dir in SEARCH_DIRS {
+        let path = format!("{}/libkrunfw.5.dylib", dir);
+        if std::path::Path::new(&path).exists() {
+            if let Ok(cdir) = std::ffi::CString::new(*dir) {
+                unsafe { libc::chdir(cdir.as_ptr()) };
+            }
+            return;
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn preload_libkrunfw() {
+    // On Linux, dlopen search paths work normally.
+}
+
+/// Ensure the binary at `exe_path` has the `com.apple.security.hypervisor`
+/// entitlement in its code signature. This is required for `hv_vm_create()`.
+///
+/// The binary may have lost its entitlement if cargo rebuilt it after the
+/// initial `codesign-and-run.sh` signing. Re-signing here (which is safe
+/// even while the binary is running) guarantees the NEXT process that
+/// executes this binary will have the entitlement.
+#[cfg(target_os = "macos")]
+fn ensure_hypervisor_entitlement(exe_path: &Path) -> std::result::Result<(), String> {
+    const ENTITLEMENTS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.hypervisor</key>
+    <true/>
+</dict>
+</plist>"#;
+
+    // Write entitlements to a temp file
+    let ent_path = std::env::temp_dir().join("nanosb-entitlements.plist");
+    std::fs::write(&ent_path, ENTITLEMENTS_XML)
+        .map_err(|e| format!("Failed to write entitlements file: {}", e))?;
+
+    let output = std::process::Command::new("codesign")
+        .args(["--force", "--sign", "-", "--entitlements"])
+        .arg(&ent_path)
+        .arg(exe_path)
+        .output()
+        .map_err(|e| format!("codesign failed to execute: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "codesign failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(())
+}
 
 /// State tracked per sandbox for the libkrun backend
 struct SandboxState {
@@ -51,6 +228,14 @@ struct SandboxState {
     vm_pid: Option<i32>,
     /// Whether the rootfs contains /usr/local/bin/agent-gateway (persistent mode)
     has_gateway: bool,
+    /// MCP server configurations to push to the agent-gateway on start
+    mcp_servers: HashMap<String, McpServerConfig>,
+    /// Path to VM stderr log file (for diagnostics on startup failure)
+    vm_log_path: Option<PathBuf>,
+    /// Path to SSH private key for this sandbox
+    ssh_key_path: Option<PathBuf>,
+    /// Host-side port mapped to guest's sshd (port 22)
+    ssh_port: Option<u16>,
 }
 
 /// Direct libkrun FFI runtime for macOS and Linux
@@ -155,6 +340,8 @@ impl LibkrunRuntime {
 
         if pid == 0 {
             // ============ CHILD PROCESS ============
+            preload_libkrunfw();
+
             // Close read ends
             unsafe {
                 libc::close(stdout_read_fd);
@@ -168,6 +355,10 @@ impl LibkrunRuntime {
                 libc::close(stdout_write_fd);
                 libc::close(stderr_write_fd);
             }
+
+            // Enable libkrun's internal debug logging to stderr (captured via pipe).
+            // This uses krun_init_log which bypasses env_logger entirely.
+            let _ = ffi::init_log(ffi::KRUN_LOG_TARGET_DEFAULT, ffi::KRUN_LOG_LEVEL_DEBUG);
 
             // Configure and start the VM
             let result = Self::configure_and_start_vm(
@@ -260,6 +451,8 @@ impl LibkrunRuntime {
 
         if pid == 0 {
             // ============ CHILD PROCESS ============
+            preload_libkrunfw();
+
             unsafe {
                 libc::close(stdout_read_fd);
                 libc::close(stderr_read_fd);
@@ -268,6 +461,9 @@ impl LibkrunRuntime {
                 libc::close(stdout_write_fd);
                 libc::close(stderr_write_fd);
             }
+
+            // Enable libkrun's internal debug logging to stderr (captured via pipe)
+            let _ = ffi::init_log(ffi::KRUN_LOG_TARGET_DEFAULT, ffi::KRUN_LOG_LEVEL_DEBUG);
 
             let result = Self::configure_and_start_vm(
                 rootfs_path,
@@ -348,6 +544,10 @@ impl LibkrunRuntime {
     /// Configure a libkrun VM context and start it.
     /// This function is called in the forked child process.
     /// On success, krun_start_enter takes over and never returns.
+    ///
+    /// **Important**: Call `ffi::init_log()` BEFORE this function in the child
+    /// process to enable libkrun's internal debug logging. This provides
+    /// detailed error messages when `krun_start_enter` returns -EINVAL.
     fn configure_and_start_vm(
         rootfs_path: &str,
         cpus: u32,
@@ -374,15 +574,7 @@ impl LibkrunRuntime {
 
         // Configure networking
         if let Some(socket_path) = gvproxy_socket {
-            // gvproxy mode: configure virtio-net device connected to gvproxy's
-            // unixgram socket. This automatically disables TSI networking.
-            ffi::add_net_unixgram(
-                ctx,
-                socket_path,
-                &ffi::GVPROXY_GUEST_MAC,
-                ffi::COMPAT_NET_FEATURES,
-                ffi::NET_FLAG_VFKIT,
-            )?;
+            ffi::set_gvproxy_path(ctx, socket_path)?;
         }
         // When no net device is added, libkrun uses TSI networking (fallback).
 
@@ -412,7 +604,7 @@ impl LibkrunRuntime {
             .collect();
 
         // Add DNS configuration via environment if specified
-        if !dns.is_empty() {
+        if !dns.is_empty() && !env.contains_key("NANOSANDBOX_DNS") {
             env_vars.push(format!("NANOSANDBOX_DNS={}", dns.join(",")));
         }
 
@@ -428,28 +620,29 @@ impl LibkrunRuntime {
         }
 
         // Build the exec command.
-        // When gvproxy is active AND the command is not agent-gateway (which does
-        // its own network init), wrap in the nanosb-net-init script which
-        // configures eth0 then execs the user's command.
+        // IMPORTANT: Do NOT include exec_path as argv[0]. libkrun stores exec_path
+        // separately as KRUN_INIT in the kernel cmdline, and init.c overrides
+        // exec_argv[0] with KRUN_INIT. Any argv we pass here becomes argv[1..] in
+        // the final execvp() call. Including exec_path as argv[0] would cause it
+        // to appear as an extra argument (e.g., /bin/sh trying to read itself as
+        // a script file).
         //
-        // NOTE: libkrun's krun_set_exec doesn't support shebang scripts as PID 1,
-        // and `/bin/sh -c` has a known parsing bug. We use `/bin/sh <script_path>`
-        // which works correctly as the VM's init process.
+        // When gvproxy is active AND the command is not agent-gateway/nanosb-init
+        // (which do their own network init), wrap in the nanosb-net-init script
+        // which configures eth0 then execs the user's command.
         let (exec_path, exec_argv_owned): (&str, Vec<String>);
 
-        let is_gateway = command.contains("agent-gateway");
+        let is_gateway = command.contains("agent-gateway")
+            || command.contains("nanosb-init")
+            || args.iter().any(|a| a.contains("nanosb-init"));
         if gvproxy_socket.is_some() && !is_gateway {
-            // Use the nanosb-net-init script to configure eth0 before running
-            // the user's command. We pass it as a shell script file, not via -c.
             let init = "/usr/local/bin/nanosb-net-init";
-            let mut v = vec![init.to_string(), command.to_string()];
+            let mut v = vec![command.to_string()];
             v.extend(args.iter().map(|a| a.to_string()));
             exec_path = init;
             exec_argv_owned = v;
         } else {
-            // agent-gateway handles its own network init, or no gvproxy
-            let mut v = vec![command.to_string()];
-            v.extend(args.iter().map(|a| a.to_string()));
+            let v: Vec<String> = args.iter().map(|a| a.to_string()).collect();
             exec_path = command;
             exec_argv_owned = v;
         }
@@ -459,11 +652,25 @@ impl LibkrunRuntime {
         // Set exec with explicit environment (don't inherit host env)
         ffi::set_exec(ctx, exec_path, &exec_argv_refs, Some(&env_vars))?;
 
-        // Note: krun_start_enter takes over stdin/stdout/stderr of the current
-        // process. Since we've dup2'd stdout/stderr to pipes in the parent,
-        // VM output will naturally flow through those pipes.
+        // Write .krun_config.json to the rootfs as a fallback mechanism.
+        // Note: KRUN_INIT env var (from kernel cmdline) takes priority in
+        // init.c, so this config is only used if KRUN_INIT is not set.
+        // The "args" field here uses OCI/Docker convention where args[0]
+        // is the program name.
+        {
+            let mut config_args = vec![exec_path.to_string()];
+            config_args.extend(exec_argv_owned.iter().cloned());
+            let config = serde_json::json!({
+                "args": config_args,
+                "env": env_vars,
+            });
+            let config_path = std::path::Path::new(rootfs_path).join(".krun_config.json");
+            let _ = std::fs::write(&config_path, config.to_string());
+        }
 
-        // Start the VM -- this never returns on success
+        // Start the VM -- this never returns on success.
+        // libkrun's internal logs (enabled via init_log in the caller) will
+        // print the reason for any -EINVAL failure to stderr.
         ffi::start_enter(ctx)
     }
 
@@ -490,6 +697,78 @@ impl LibkrunRuntime {
 
 // Public API matching the RuntimeBackend interface
 impl LibkrunRuntime {
+    /// Generate ephemeral SSH key pair and inject the public key into the rootfs.
+    /// Returns the path to the private key on success.
+    fn setup_ssh_keys(sandbox_id: &str, rootfs_path: &Path) -> std::result::Result<PathBuf, String> {
+        let key_dir = PathBuf::from(format!("/tmp/nanosb-{}-ssh", sandbox_id));
+        std::fs::create_dir_all(&key_dir).map_err(|e| format!("mkdir ssh key dir: {}", e))?;
+        let key_path = key_dir.join("id_ed25519");
+
+        let status = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t", "ed25519",
+                "-f", key_path.to_str().unwrap(),
+                "-N", "",
+                "-q",
+            ])
+            .status()
+            .map_err(|e| format!("ssh-keygen spawn: {}", e))?;
+
+        if !status.success() {
+            return Err(format!("ssh-keygen exited with {}", status));
+        }
+
+        // Read public key and inject into rootfs
+        let pub_key = std::fs::read_to_string(key_path.with_extension("pub"))
+            .map_err(|e| format!("read public key: {}", e))?;
+
+        let auth_keys_dir = rootfs_path.join("root/.ssh");
+        std::fs::create_dir_all(&auth_keys_dir).map_err(|e| format!("mkdir .ssh: {}", e))?;
+        std::fs::write(auth_keys_dir.join("authorized_keys"), &pub_key)
+            .map_err(|e| format!("write authorized_keys: {}", e))?;
+
+        // Set permissions (ssh is strict about this)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&auth_keys_dir, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::set_permissions(
+                auth_keys_dir.join("authorized_keys"),
+                std::fs::Permissions::from_mode(0o600),
+            );
+            let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+        }
+
+        Ok(key_path)
+    }
+
+    /// Get the SSH host port for a sandbox (if available).
+    pub fn ssh_port(&self, id: &str) -> Option<u16> {
+        self.sandboxes.lock().unwrap()
+            .get(id)
+            .and_then(|s| s.ssh_port)
+    }
+
+    /// Get the SSH private key path for a sandbox (if available).
+    pub fn ssh_key_path(&self, id: &str) -> Option<PathBuf> {
+        self.sandboxes.lock().unwrap()
+            .get(id)
+            .and_then(|s| s.ssh_key_path.clone())
+    }
+
+    /// Build a ready-to-use SSH command string for connecting to a sandbox.
+    pub fn ssh_command(&self, id: &str) -> Option<String> {
+        let sandboxes = self.sandboxes.lock().unwrap();
+        let state = sandboxes.get(id)?;
+        let port = state.ssh_port?;
+        let key = state.ssh_key_path.as_ref()?;
+        Some(format!(
+            "ssh -p {} -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@127.0.0.1",
+            port,
+            key.display(),
+        ))
+    }
+
     /// Create a sandbox from a pre-prepared OCI bundle.
     ///
     /// The Sandbox orchestrator has already pulled the image and created the rootfs
@@ -604,14 +883,53 @@ impl LibkrunRuntime {
             }
         }
 
-        // Detect if the rootfs contains agent-gateway (persistent mode)
-        let has_gateway = rootfs_path.join("usr/local/bin/agent-gateway").exists();
+        // Write the init script directly into the rootfs. The script is embedded
+        // in the binary so it always works regardless of CWD or installation layout.
+        // This supersedes any init script from the Docker image.
+        {
+            let init_dest = rootfs_path.join("usr/local/bin/nanosb-init.sh");
+            let _ = std::fs::create_dir_all(rootfs_path.join("usr/local/bin"));
+            let script = include_str!("../../docker/nanosb-init.sh");
+            if let Err(e) = std::fs::write(&init_dest, script) {
+                warn!("Failed to write init script to rootfs: {}", e);
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &init_dest,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+                debug!("Embedded init script written to rootfs");
+            }
+        }
+
+        // Detect if the rootfs contains agent-gateway or init script (persistent mode)
+        let has_gateway = rootfs_path.join("usr/local/bin/agent-gateway").exists()
+            || rootfs_path.join("usr/local/bin/nanosb-init.sh").exists();
         if has_gateway {
             info!(
-                "Detected agent-gateway in rootfs for sandbox '{}' -- persistent VM mode enabled",
+                "Detected agent-gateway/init script in rootfs for sandbox '{}' -- persistent VM mode enabled",
                 id
             );
         }
+
+        // Generate ephemeral SSH key pair and inject public key into rootfs
+        let ssh_key_path = if has_gateway {
+            match Self::setup_ssh_keys(id, &rootfs_path) {
+                Ok(key_path) => {
+                    info!("SSH keys generated for sandbox '{}': {}", id, key_path.display());
+                    Some(key_path)
+                }
+                Err(e) => {
+                    warn!("Failed to generate SSH keys for sandbox '{}': {} (SSH access will be unavailable)", id, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let state = SandboxState {
             rootfs_path: rootfs_path.clone(),
@@ -625,6 +943,10 @@ impl LibkrunRuntime {
             gateway_port: None,
             vm_pid: None,
             has_gateway,
+            mcp_servers: config.mcp_servers.clone(),
+            vm_log_path: None,
+            ssh_key_path,
+            ssh_port: None,
         };
 
         info!(
@@ -675,6 +997,22 @@ impl LibkrunRuntime {
             id, host_port
         );
 
+        // Determine PID 1 command: use init script if present, else agent-gateway directly
+        let (pid1_command, pid1_args): (String, Vec<String>) = {
+            let sandboxes = self.sandboxes.lock().unwrap();
+            let state = sandboxes.get(id).unwrap();
+            let init_script = state.rootfs_path.join("usr/local/bin/nanosb-init.sh");
+            if init_script.exists() {
+                // Run init script directly — the kernel's binfmt_script reads
+                // the #!/bin/sh shebang and invokes /bin/sh automatically.
+                // This avoids issues with how krun_set_exec passes argv through
+                // the kernel command line (which can duplicate /bin/sh).
+                ("/usr/local/bin/nanosb-init.sh".to_string(), vec![])
+            } else {
+                ("/usr/local/bin/agent-gateway".to_string(), vec![])
+            }
+        };
+
         // Clone state for the blocking task (do NOT add gateway port mapping
         // here -- krun_set_port_map is a TSI feature that doesn't work with gvproxy.
         // Port forwarding is done via gvproxy's HTTP API after the VM boots.)
@@ -693,13 +1031,27 @@ impl LibkrunRuntime {
             )
         };
 
+        // Store VM log path for diagnostics
+        let vm_log_path = PathBuf::from(format!("/tmp/nanosb-{}-vm.log", id));
+        {
+            let mut sandboxes = self.sandboxes.lock().unwrap();
+            if let Some(state) = sandboxes.get_mut(id) {
+                state.vm_log_path = Some(vm_log_path.clone());
+            }
+        }
+
         // Boot the VM in a blocking task (fork + krun_start_enter)
         let id_owned = id.to_string();
+        let pid1_args_refs: Vec<String> = pid1_args;
         let vm_pid = tokio::task::spawn_blocking(move || {
+            let args_refs: Vec<&str> = pid1_args_refs.iter().map(|s| s.as_str()).collect();
             Self::boot_persistent_vm(
+                &id_owned,
                 &rootfs_path,
                 cpus,
                 memory_mb,
+                &pid1_command,
+                &args_refs,
                 &network_scope,
                 &port_mappings,
                 &mounts,
@@ -711,11 +1063,14 @@ impl LibkrunRuntime {
         .map_err(|e| Error::ExecFailed(format!("Task join error: {}", e)))?
         .map_err(|e| Error::SandboxCreationFailed(format!("VM boot failed: {}", e)))?;
 
-        // Expose gateway port via gvproxy's HTTP API (host_port -> guest:8080)
-        {
+        let id_owned = id.to_string();
+
+        // Expose ports via gvproxy's HTTP API
+        let ssh_host_port = {
             let sandboxes = self.sandboxes.lock().unwrap();
             if let Some(state) = sandboxes.get(id) {
                 if let Some(ref gvproxy) = state.gvproxy {
+                    // Expose gateway port: host_port -> guest:8080
                     gvproxy.expose_port(host_port, 8080).map_err(|e| {
                         Error::SandboxCreationFailed(format!(
                             "Failed to expose gateway port via gvproxy: {}",
@@ -726,28 +1081,142 @@ impl LibkrunRuntime {
                         "Exposed gateway port via gvproxy: host:{} -> guest:8080",
                         host_port
                     );
-                }
-            }
-        }
 
-        // Store the VM PID and gateway port
+                    // Expose SSH port: ssh_host_port -> guest:22
+                    if state.ssh_key_path.is_some() {
+                        let ssh_port = TcpListener::bind("127.0.0.1:0")
+                            .ok()
+                            .and_then(|l| l.local_addr().ok())
+                            .map(|a| a.port());
+                        if let Some(sp) = ssh_port {
+                            match gvproxy.expose_port(sp, 22) {
+                                Ok(()) => {
+                                    info!("Exposed SSH port via gvproxy: host:{} -> guest:22", sp);
+                                    Some(sp)
+                                }
+                                Err(e) => {
+                                    warn!("Failed to expose SSH port via gvproxy: {} (SSH access unavailable)", e);
+                                    None
+                                }
+                            }
+                        } else {
+                            warn!("Failed to find free port for SSH (SSH access unavailable)");
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        // Store the VM PID, gateway port, and SSH port
         {
             let mut sandboxes = self.sandboxes.lock().unwrap();
             if let Some(state) = sandboxes.get_mut(&id_owned) {
                 state.gateway_port = Some(host_port);
                 state.vm_pid = Some(vm_pid);
+                state.ssh_port = ssh_host_port;
             }
         }
 
-        // Poll health endpoint until ready (timeout 30s)
+        // === Two-stage health check ===
+        // Stage 1: Wait for SSH port (fast — sshd starts before agent-gateway)
+        // Stage 2: Wait for agent-gateway HTTP health endpoint
+
+        // Helper: check if VM process died during health check
+        let check_vm_alive = |vm_pid: i32, vm_log_path: &PathBuf| -> std::result::Result<(), Error> {
+            let mut status: libc::c_int = 0;
+            let wait_result = unsafe { libc::waitpid(vm_pid, &mut status, libc::WNOHANG) };
+            if wait_result > 0 {
+                let exit_info = if libc::WIFEXITED(status) {
+                    format!("exit code {}", libc::WEXITSTATUS(status))
+                } else if libc::WIFSIGNALED(status) {
+                    format!("killed by signal {}", libc::WTERMSIG(status))
+                } else {
+                    format!("status {}", status)
+                };
+                let vm_log = std::fs::read_to_string(vm_log_path)
+                    .unwrap_or_else(|_| "(no log file)".to_string());
+                Err(Error::SandboxCreationFailed(format!(
+                    "VM process exited during startup ({}).\nVM log:\n{}",
+                    exit_info,
+                    if vm_log.is_empty() { "(empty)" } else { &vm_log },
+                )))
+            } else {
+                Ok(())
+            }
+        };
+
+        // Stage 1: Wait for SSH (10s timeout) — proves VM booted + networking works
+        if let Some(sp) = ssh_host_port {
+            let ssh_addr: std::net::SocketAddr = format!("127.0.0.1:{}", sp).parse().unwrap();
+            let ssh_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut ssh_delay_ms = 100u64;
+
+            loop {
+                if std::time::Instant::now() > ssh_deadline {
+                    let vm_alive = unsafe { libc::kill(vm_pid, 0) == 0 };
+                    let vm_log = std::fs::read_to_string(&vm_log_path)
+                        .unwrap_or_else(|_| "(no log file)".to_string());
+                    let log_tail: String = vm_log.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                    warn!(
+                        "SSH port not reachable after 10s for sandbox '{}' (VM: {}, PID: {}). Continuing to gateway check...\nVM log:\n{}",
+                        id_owned,
+                        if vm_alive { "alive" } else { "dead" },
+                        vm_pid,
+                        if log_tail.is_empty() { "(empty)" } else { &log_tail },
+                    );
+                    break;
+                }
+
+                check_vm_alive(vm_pid, &vm_log_path)?;
+
+                if std::net::TcpStream::connect_timeout(
+                    &ssh_addr,
+                    std::time::Duration::from_millis(500),
+                ).is_ok() {
+                    info!("SSH port reachable for sandbox '{}' at host port {}", id_owned, sp);
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(ssh_delay_ms)).await;
+                ssh_delay_ms = (ssh_delay_ms * 2).min(1000);
+            }
+        }
+
+        // Stage 2: Wait for agent-gateway HTTP health (30s timeout)
         let health_url = format!("127.0.0.1:{}", host_port);
         let mut delay_ms = 100u64;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
 
         loop {
             if std::time::Instant::now() > deadline {
-                return Err(Error::Timeout(30));
+                let vm_alive = unsafe { libc::kill(vm_pid, 0) == 0 };
+                let vm_log = std::fs::read_to_string(&vm_log_path)
+                    .unwrap_or_else(|_| "(no log file)".to_string());
+                let log_tail: String = vm_log.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+
+                let diag = format!(
+                    "VM health check timed out after 30s.\n\
+                     VM process: {} (PID {})\n\
+                     gvproxy port forward: host:{} -> guest:8080\n\
+                     SSH port: {}\n\
+                     VM log (last 20 lines):\n{}",
+                    if vm_alive { "alive" } else { "dead" },
+                    vm_pid,
+                    host_port,
+                    ssh_host_port.map(|p| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    if log_tail.is_empty() { "(empty)" } else { &log_tail },
+                );
+                return Err(Error::SandboxCreationFailed(diag));
             }
+
+            check_vm_alive(vm_pid, &vm_log_path)?;
 
             match Self::http_get(&health_url, "/health") {
                 Ok((200, _body)) => {
@@ -769,7 +1238,25 @@ impl LibkrunRuntime {
             }
 
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-            delay_ms = (delay_ms * 2).min(2000); // Exponential backoff, max 2s
+            delay_ms = (delay_ms * 2).min(2000);
+        }
+
+        // Push MCP server config from SandboxConfig (if any)
+        let mcp_servers = {
+            let sandboxes = self.sandboxes.lock().unwrap();
+            let state = sandboxes.get(id).unwrap();
+            state.mcp_servers.clone()
+        };
+
+        if !mcp_servers.is_empty() {
+            info!(
+                "Pushing {} MCP server(s) to gateway for sandbox '{}'",
+                mcp_servers.len(),
+                id
+            );
+            if let Err(e) = self.push_mcp_config(id, &mcp_servers) {
+                warn!("Failed to push MCP config for sandbox '{}': {}", id, e);
+            }
         }
 
         Ok(())
@@ -777,73 +1264,133 @@ impl LibkrunRuntime {
 
     /// Boot a persistent VM with agent-gateway as PID 1.
     /// Returns the child PID on success.
+    ///
+    /// Uses `std::process::Command` (posix_spawn) instead of `fork()` to spawn
+    /// the VM subprocess. This is critical on macOS: `hv_vm_create()` fails when
+    /// called from a `fork()`ed child of a multi-threaded parent process (the
+    /// TUI's tokio runtime). `posix_spawn` creates a clean, single-threaded
+    /// child process where Hypervisor.framework works correctly.
     fn boot_persistent_vm(
+        sandbox_id: &str,
         rootfs_path: &str,
         cpus: u32,
         memory_mb: u32,
+        command: &str,
+        command_args: &[&str],
         network_scope: &NetworkScope,
         port_mappings: &[(u16, u16)],
         mounts: &[(String, String)],
         dns: &[String],
         gvproxy_socket: Option<&str>,
     ) -> std::result::Result<i32, String> {
-        let pid = unsafe { libc::fork() };
+        // Serialize VM configuration for the subprocess
+        let request = BootVmRequest {
+            sandbox_id: sandbox_id.to_string(),
+            rootfs_path: rootfs_path.to_string(),
+            cpus,
+            memory_mb,
+            command: command.to_string(),
+            command_args: command_args.iter().map(|s| s.to_string()).collect(),
+            network_scope: *network_scope,
+            port_mappings: port_mappings.to_vec(),
+            mounts: mounts.to_vec(),
+            dns: dns.to_vec(),
+            gvproxy_socket: gvproxy_socket.map(|s| s.to_string()),
+        };
 
-        if pid < 0 {
-            return Err("fork() failed".to_string());
+        let config_json = serde_json::to_string(&request)
+            .map_err(|e| format!("Failed to serialize boot config: {}", e))?;
+
+        let exe_path = std::env::current_exe()
+            .map_err(|e| format!("Failed to get current exe path: {}", e))?;
+
+        // Ensure the binary has the com.apple.security.hypervisor entitlement.
+        // The binary may have lost its entitlement if cargo rebuilt it after the
+        // initial codesign-and-run.sh signing. Re-signing here guarantees the
+        // subprocess will have the entitlement when macOS evaluates it at exec.
+        #[cfg(target_os = "macos")]
+        ensure_hypervisor_entitlement(&exe_path)?;
+
+        // Spawn the VM in a clean subprocess via posix_spawn (not fork)
+        let mut child = std::process::Command::new(&exe_path)
+            .arg("internal-boot-vm")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn boot-vm subprocess: {}", e))?;
+
+        // Write config JSON to child's stdin, then close it
+        {
+            let mut stdin = child.stdin.take()
+                .ok_or_else(|| "Failed to open subprocess stdin".to_string())?;
+            stdin
+                .write_all(config_json.as_bytes())
+                .map_err(|e| format!("Failed to write config to subprocess: {}", e))?;
+            // stdin drops here, closing the pipe so child gets EOF
         }
 
-        if pid == 0 {
-            // ============ CHILD PROCESS ============
-            // Redirect stdout/stderr to /dev/null for the persistent VM
-            // (output comes via HTTP/SSE, not pipes)
-            let dev_null = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_WRONLY) };
-            if dev_null >= 0 {
-                unsafe {
-                    libc::dup2(dev_null, libc::STDOUT_FILENO);
-                    libc::dup2(dev_null, libc::STDERR_FILENO);
-                    libc::close(dev_null);
+        let pid = child.id() as i32;
+
+        // Take stdout/stderr handles for background logging
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let log_path = format!("/tmp/nanosb-{}-vm.log", sandbox_id);
+
+        // Background thread: merge child stdout (VM console = agent output)
+        // and stderr (libkrun warnings/errors) into the VM log file.
+        // The child runs indefinitely (krun_start_enter never returns on
+        // success), so this thread blocks until the VM exits or is killed.
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&log_path);
+
+            if let Ok(mut log_file) = log_file {
+                // Merge both streams line-by-line using two reader threads
+                let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+                let tx_out = tx.clone();
+                let stdout_thread = stdout.map(|out| {
+                    std::thread::spawn(move || {
+                        for line in BufReader::new(out).lines() {
+                            match line {
+                                Ok(l) => { let _ = tx_out.send(l); }
+                                Err(_) => break,
+                            }
+                        }
+                    })
+                });
+
+                let tx_err = tx;
+                let stderr_thread = stderr.map(|err| {
+                    std::thread::spawn(move || {
+                        for line in BufReader::new(err).lines() {
+                            match line {
+                                Ok(l) => { let _ = tx_err.send(l); }
+                                Err(_) => break,
+                            }
+                        }
+                    })
+                });
+
+                // Write lines as they arrive from either stream
+                for line in rx {
+                    let _ = writeln!(log_file, "{}", line);
                 }
+
+                if let Some(t) = stdout_thread { let _ = t.join(); }
+                if let Some(t) = stderr_thread { let _ = t.join(); }
             }
 
-            // Build env vars
-            let mut env = HashMap::new();
-            env.insert("PATH".to_string(), "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string());
-            env.insert("HOME".to_string(), "/root".to_string());
-            env.insert("TERM".to_string(), "dumb".to_string());
+            // child drops here. Child::drop does non-blocking waitpid
+            // which is harmless — the real cleanup is via SIGKILL in destroy().
+            drop(child);
+        });
 
-            // Add DNS config
-            if !dns.is_empty() {
-                env.insert("NANOSANDBOX_DNS".to_string(), dns.join(","));
-            }
-
-            let result = Self::configure_and_start_vm(
-                rootfs_path,
-                cpus,
-                memory_mb,
-                "/usr/local/bin/agent-gateway",
-                &["agent-gateway"],
-                Some("/workspace"),
-                &env,
-                network_scope,
-                port_mappings,
-                mounts,
-                dns,
-                gvproxy_socket,
-            );
-
-            if let Err(e) = result {
-                // Write error to log file (stderr is redirected)
-                let msg = format!("boot_persistent_vm: configure_and_start_vm failed: {}\n", e);
-                let _ = std::io::Write::write_all(
-                    &mut std::io::stderr(),
-                    msg.as_bytes(),
-                );
-            }
-            unsafe { libc::_exit(1) };
-        }
-
-        // ============ PARENT PROCESS ============
         Ok(pid)
     }
 
@@ -1070,6 +1617,50 @@ impl LibkrunRuntime {
         let request = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             path, addr, json_body.len(), json_body
+        );
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|e| e.to_string())?;
+
+        let mut reader = BufReader::new(stream);
+
+        // Read status line
+        let mut status_line = String::new();
+        reader
+            .read_line(&mut status_line)
+            .map_err(|e| e.to_string())?;
+        let status_code = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+
+        // Skip headers
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).map_err(|e| e.to_string())?;
+            if line.trim().is_empty() {
+                break;
+            }
+        }
+
+        // Read body
+        let mut body = String::new();
+        let _ = reader.read_to_string(&mut body);
+
+        Ok((status_code, body))
+    }
+
+    /// Minimal HTTP DELETE using raw TcpStream. Returns (status_code, body).
+    fn http_delete(addr: &str, path: &str) -> std::result::Result<(u16, String), String> {
+        let mut stream = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .map_err(|e| e.to_string())?;
+
+        let request = format!(
+            "DELETE {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            path, addr
         );
         stream
             .write_all(request.as_bytes())
@@ -1484,6 +2075,19 @@ impl LibkrunRuntime {
                 info!("Stopping gvproxy for sandbox '{}'", id);
                 gvproxy.stop();
             }
+
+            // Clean up SSH keys
+            if let Some(ref key_path) = state.ssh_key_path {
+                if let Some(parent) = key_path.parent() {
+                    let _ = std::fs::remove_dir_all(parent);
+                }
+            }
+
+            // Clean up VM log file
+            if let Some(ref log_path) = state.vm_log_path {
+                let _ = std::fs::remove_file(log_path);
+            }
+
             info!(
                 "Destroyed libkrun sandbox '{}' (rootfs was: {})",
                 id,
@@ -1602,6 +2206,195 @@ impl LibkrunRuntime {
     /// and create the rootfs, then passes the bundle_path to `create()`.
     pub fn handles_image_pull(&self) -> bool {
         false
+    }
+
+    /// Helper: get gateway port or return McpNotSupported error.
+    fn require_gateway_port(&self, id: &str) -> Result<u16> {
+        let sandboxes = self.sandboxes.lock().unwrap();
+        let state = sandboxes
+            .get(id)
+            .ok_or_else(|| Error::SandboxNotFound(id.to_string()))?;
+        state.gateway_port.ok_or_else(|| {
+            Error::McpNotSupported(
+                "MCP operations require a persistent VM with agent-gateway".to_string(),
+            )
+        })
+    }
+
+    /// Push all MCP server configs to the agent-gateway.
+    pub fn push_mcp_config(
+        &self,
+        id: &str,
+        servers: &HashMap<String, McpServerConfig>,
+    ) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+
+        for (name, mcp_config) in servers {
+            if !mcp_config.enabled {
+                continue;
+            }
+
+            let body = serde_json::json!({
+                "name": name,
+                "command": mcp_config.command,
+                "args": mcp_config.args,
+                "env": mcp_config.env,
+                "enabled": true
+            });
+
+            match Self::http_post(&addr, "/api/v1/mcp/servers", &body.to_string()) {
+                Ok((code, _)) if (200..300).contains(&code) => {
+                    info!("Pushed MCP server '{}' to gateway for sandbox '{}'", name, id);
+                }
+                Ok((code, body)) => {
+                    warn!(
+                        "Failed to push MCP server '{}' (HTTP {}): {}",
+                        name, code, body.chars().take(200).collect::<String>()
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to push MCP server '{}': {}", name, e);
+                }
+            }
+        }
+
+        // Regenerate all agent configs after pushing
+        match Self::http_post(&addr, "/api/v1/mcp/regenerate", "{}") {
+            Ok((code, _)) if (200..300).contains(&code) => {
+                info!("MCP configs regenerated for sandbox '{}'", id);
+            }
+            Ok((code, body)) => {
+                warn!(
+                    "Failed to regenerate MCP configs (HTTP {}): {}",
+                    code, body.chars().take(200).collect::<String>()
+                );
+            }
+            Err(e) => {
+                warn!("Failed to regenerate MCP configs: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Add or update an MCP server in the running sandbox.
+    pub fn add_mcp_server(&self, id: &str, name: &str, config: &McpServerConfig) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+
+        let body = serde_json::json!({
+            "name": name,
+            "command": config.command,
+            "args": config.args,
+            "env": config.env,
+            "enabled": config.enabled
+        });
+
+        match Self::http_post(&addr, "/api/v1/mcp/servers", &body.to_string()) {
+            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+            Ok((code, body)) => Err(Error::McpServerError(format!(
+                "Failed to add MCP server '{}' (HTTP {}): {}",
+                name, code, body
+            ))),
+            Err(e) => Err(Error::McpServerError(format!(
+                "Failed to add MCP server '{}': {}",
+                name, e
+            ))),
+        }
+    }
+
+    /// Remove an MCP server from the running sandbox.
+    pub fn remove_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+        let path = format!("/api/v1/mcp/servers/{}", name);
+
+        match Self::http_delete(&addr, &path) {
+            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+            Ok((code, body)) => Err(Error::McpServerError(format!(
+                "Failed to remove MCP server '{}' (HTTP {}): {}",
+                name, code, body
+            ))),
+            Err(e) => Err(Error::McpServerError(format!(
+                "Failed to remove MCP server '{}': {}",
+                name, e
+            ))),
+        }
+    }
+
+    /// List all MCP servers in the running sandbox.
+    pub fn list_mcp_servers(&self, id: &str) -> Result<HashMap<String, McpServerConfig>> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+
+        match Self::http_get(&addr, "/api/v1/mcp/servers") {
+            Ok((code, body)) if (200..300).contains(&code) => {
+                let response: serde_json::Value =
+                    serde_json::from_str(&body).map_err(|e| {
+                        Error::McpServerError(format!("Failed to parse MCP server list: {}", e))
+                    })?;
+
+                let servers_val = response.get("servers").unwrap_or(&response);
+                let mut result = HashMap::new();
+
+                if let Some(obj) = servers_val.as_object() {
+                    for (name, val) in obj {
+                        if let Ok(config) = serde_json::from_value::<McpServerConfig>(val.clone()) {
+                            result.insert(name.clone(), config);
+                        }
+                    }
+                }
+
+                Ok(result)
+            }
+            Ok((code, body)) => Err(Error::McpServerError(format!(
+                "Failed to list MCP servers (HTTP {}): {}",
+                code, body
+            ))),
+            Err(e) => Err(Error::McpServerError(format!(
+                "Failed to list MCP servers: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Enable an MCP server in the running sandbox.
+    pub fn enable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+        let path = format!("/api/v1/mcp/servers/{}/enable", name);
+
+        match Self::http_post(&addr, &path, "{}") {
+            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+            Ok((code, body)) => Err(Error::McpServerError(format!(
+                "Failed to enable MCP server '{}' (HTTP {}): {}",
+                name, code, body
+            ))),
+            Err(e) => Err(Error::McpServerError(format!(
+                "Failed to enable MCP server '{}': {}",
+                name, e
+            ))),
+        }
+    }
+
+    /// Disable an MCP server in the running sandbox.
+    pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+        let path = format!("/api/v1/mcp/servers/{}/disable", name);
+
+        match Self::http_post(&addr, &path, "{}") {
+            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+            Ok((code, body)) => Err(Error::McpServerError(format!(
+                "Failed to disable MCP server '{}' (HTTP {}): {}",
+                name, code, body
+            ))),
+            Err(e) => Err(Error::McpServerError(format!(
+                "Failed to disable MCP server '{}': {}",
+                name, e
+            ))),
+        }
     }
 }
 

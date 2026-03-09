@@ -55,33 +55,52 @@ impl ValidationResult {
 
 /// Validate runtime prerequisites for the current platform
 pub async fn validate_runtime_prerequisites() -> Result<()> {
+    validate_runtime_prerequisites_detailed().await.into_result()
+}
+
+/// Validate runtime prerequisites, returning detailed results
+///
+/// Unlike `validate_runtime_prerequisites()` which returns `Result<()>`,
+/// this function returns the raw `ValidationResult` so callers can inspect
+/// individual check outcomes (used by the `doctor` command).
+pub async fn validate_runtime_prerequisites_detailed() -> ValidationResult {
     #[cfg(target_os = "windows")]
     {
-        validate_windows_prerequisites().await
+        validate_windows_detailed().await
     }
 
     #[cfg(target_os = "linux")]
     {
-        validate_linux_prerequisites().await
+        validate_linux_detailed().await
     }
 
     #[cfg(target_os = "macos")]
     {
-        validate_macos_prerequisites().await
+        validate_macos_detailed().await
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
-        Err(Error::UnsupportedPlatform {
-            platform: std::env::consts::OS.to_string(),
-        })
+        let mut result = ValidationResult::default();
+        result.add_error(
+            "Platform",
+            format!("Unsupported platform: {}", std::env::consts::OS),
+            None,
+        );
+        result
     }
 }
 
 // ===== Windows Validation =====
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 async fn validate_windows_prerequisites() -> Result<()> {
+    validate_windows_detailed().await.into_result()
+}
+
+#[cfg(target_os = "windows")]
+async fn validate_windows_detailed() -> ValidationResult {
     info!("Validating Windows containerd runtime prerequisites...");
     let mut result = ValidationResult::default();
 
@@ -159,7 +178,7 @@ async fn validate_windows_prerequisites() -> Result<()> {
         warn!("{}", warning);
     }
 
-    result.into_result()
+    result
 }
 
 #[cfg(target_os = "windows")]
@@ -383,7 +402,13 @@ pub async fn find_windows_runtime() -> Option<String> {
 // ===== Linux Validation =====
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 async fn validate_linux_prerequisites() -> Result<()> {
+    validate_linux_detailed().await.into_result()
+}
+
+#[cfg(target_os = "linux")]
+async fn validate_linux_detailed() -> ValidationResult {
     info!("Validating Linux runtime prerequisites...");
     let mut result = ValidationResult::default();
 
@@ -394,11 +419,7 @@ async fn validate_linux_prerequisites() -> Result<()> {
         result.add_error(
             "libkrun Library",
             "libkrun.so not found",
-            Some(
-                "Install libkrun from source: https://github.com/containers/libkrun\n\
-                 Or run: ./scripts/install-runtime.sh"
-                    .to_string(),
-            ),
+            Some("Run: ./scripts/install/linux.sh".to_string()),
         );
     } else {
         debug!("Found libkrun at: {}", libkrun_found.unwrap());
@@ -456,8 +477,7 @@ async fn validate_linux_prerequisites() -> Result<()> {
     } else {
         result.add_warning(
             "gvproxy not found - outbound networking from VMs will be limited. \
-             Install from: https://github.com/containers/gvisor-tap-vsock/releases \
-             or run: scripts/install-runtime.sh".to_string(),
+             Run: ./scripts/install/linux.sh".to_string(),
         );
     }
 
@@ -466,7 +486,7 @@ async fn validate_linux_prerequisites() -> Result<()> {
         warn!("{}", warning);
     }
 
-    result.into_result()
+    result
 }
 
 /// Find the libkrun shared library on Linux
@@ -491,7 +511,13 @@ fn find_linux_libkrun() -> Option<String> {
 // ===== macOS Validation =====
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 async fn validate_macos_prerequisites() -> Result<()> {
+    validate_macos_detailed().await.into_result()
+}
+
+#[cfg(target_os = "macos")]
+async fn validate_macos_detailed() -> ValidationResult {
     info!("Validating macOS runtime prerequisites...");
     let mut result = ValidationResult::default();
 
@@ -515,7 +541,7 @@ async fn validate_macos_prerequisites() -> Result<()> {
         result.add_error(
             "libkrun Library",
             "libkrun.dylib not found at /opt/homebrew/lib/",
-            Some("Install via Homebrew: brew tap slp/krun && brew install libkrun".to_string()),
+            Some("Run: ./scripts/install/macos.sh".to_string()),
         );
     } else {
         debug!("Found libkrun at /opt/homebrew/lib/libkrun.dylib");
@@ -542,8 +568,7 @@ async fn validate_macos_prerequisites() -> Result<()> {
     } else {
         result.add_warning(
             "gvproxy not found - outbound networking from VMs will be limited. \
-             Install from: https://github.com/containers/gvisor-tap-vsock/releases \
-             or run: scripts/install.sh".to_string(),
+             Run: ./scripts/install/macos.sh".to_string(),
         );
     }
 
@@ -552,7 +577,7 @@ async fn validate_macos_prerequisites() -> Result<()> {
         warn!("{}", warning);
     }
 
-    result.into_result()
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -608,5 +633,13 @@ mod tests {
         assert!(display.contains("TestCheck"));
         assert!(display.contains("Something failed"));
         assert!(display.contains("Do this to fix"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_detailed_returns_validation_result() {
+        let result = super::validate_runtime_prerequisites_detailed().await;
+        let _is_ok = result.is_ok();
+        let _errors = &result.errors;
+        let _warnings = &result.warnings;
     }
 }

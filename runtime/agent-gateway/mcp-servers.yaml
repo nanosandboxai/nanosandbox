@@ -1,0 +1,66 @@
+version: "1"
+
+defaults:
+  timeout_sec: 30
+  startup_timeout_sec: 10
+
+servers:
+  github:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+    enabled: true
+
+  fetch:
+    command: "uvx"
+    args: ["mcp-server-fetch"]
+    enabled: false
+
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+    enabled: true
+
+  memory:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-memory", "--directory", "/workspace/.memory"]
+    enabled: true
+
+  brave-search:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-brave-search"]
+    env:
+      BRAVE_API_KEY: "${BRAVE_API_KEY}"
+    enabled: false
+
+  context7:
+    command: "npx"
+    args: ["-y", "@upstash/context7-mcp"]
+    enabled: true
+
+agents:
+  claude:
+    config_path: "/workspace/.mcp.json"
+    format: "claude"
+    exclude: [filesystem]
+
+  opencode:
+    config_path: "/workspace/opencode.json"
+    format: "opencode"
+    exclude: []
+
+  goose:
+    config_path: "/root/.config/goose/config.yaml"
+    format: "goose"
+    exclude: []
+
+  codex:
+    config_path: "/root/.codex/config.toml"
+    format: "codex"
+    exclude: []
+
+  cursor:
+    config_path: "/workspace/.cursor/mcp.json"
+    format: "cursor"
+    exclude: [filesystem]

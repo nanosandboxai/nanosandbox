@@ -176,7 +176,7 @@ To run sandbox E2E tests in CI, set up a self-hosted runner with:
 
 ```bash
 # On your self-hosted runner
-./scripts/install-runtime.sh
+./scripts/install/linux.sh
 ./scripts/check-e2e-prereqs.sh
 ```
 

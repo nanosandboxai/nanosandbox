@@ -34,10 +34,13 @@ pub mod windows;
 #[cfg(target_os = "windows")]
 pub mod runhcs_setup;
 
-pub use validation::validate_runtime_prerequisites;
+pub use validation::{validate_runtime_prerequisites, validate_runtime_prerequisites_detailed, ValidationResult};
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use self::libkrun::LibkrunRuntime;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use self::libkrun::handle_boot_vm_subprocess;
 
 /// Check if gvproxy is available on this system.
 ///
@@ -62,6 +65,7 @@ pub use containerd_windows::{ContainerdWindowsRuntime, WindowsContainerdIsolatio
 #[allow(deprecated)]
 pub use windows::{WindowsContainerRuntime, WindowsIsolation};
 
+use crate::config::McpServerConfig;
 use crate::config::SandboxConfig;
 use crate::error::Result;
 
@@ -287,6 +291,174 @@ impl RuntimeBackend {
         }
     }
 
+    /// Get the SSH host port for a sandbox (if available).
+    pub fn ssh_port(&self, id: &str) -> Option<u16> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.ssh_port(id),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = id;
+            None
+        }
+    }
+
+    /// Get the SSH private key path for a sandbox (if available).
+    pub fn ssh_key_path(&self, id: &str) -> Option<std::path::PathBuf> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.ssh_key_path(id),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = id;
+            None
+        }
+    }
+
+    /// Build a ready-to-use SSH command string for connecting to a sandbox.
+    pub fn ssh_command(&self, id: &str) -> Option<String> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.ssh_command(id),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = id;
+            None
+        }
+    }
+
+    /// Push MCP server configurations to the gateway (bulk, on start).
+    pub fn push_mcp_config(
+        &self,
+        id: &str,
+        servers: &HashMap<String, McpServerConfig>,
+    ) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.push_mcp_config(id, servers),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, servers);
+            Err(crate::error::Error::McpNotSupported(
+                "MCP not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// Add or update an MCP server.
+    pub fn add_mcp_server(
+        &self,
+        id: &str,
+        name: &str,
+        config: &McpServerConfig,
+    ) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.add_mcp_server(id, name, config),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, name, config);
+            Err(crate::error::Error::McpNotSupported(
+                "MCP not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// Remove an MCP server.
+    pub fn remove_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.remove_mcp_server(id, name),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, name);
+            Err(crate::error::Error::McpNotSupported(
+                "MCP not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// List all MCP servers.
+    pub fn list_mcp_servers(
+        &self,
+        id: &str,
+    ) -> Result<HashMap<String, McpServerConfig>> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.list_mcp_servers(id),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = id;
+            Err(crate::error::Error::McpNotSupported(
+                "MCP not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// Enable an MCP server.
+    pub fn enable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.enable_mcp_server(id, name),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, name);
+            Err(crate::error::Error::McpNotSupported(
+                "MCP not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// Disable an MCP server.
+    pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.disable_mcp_server(id, name),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, name);
+            Err(crate::error::Error::McpNotSupported(
+                "MCP not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
     /// Stop the sandbox/VM
     pub async fn stop(&self, id: &str) -> Result<()> {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -473,6 +645,21 @@ impl Runtime {
         self.backend.is_persistent(id)
     }
 
+    /// Get the SSH host port for a sandbox (if available).
+    pub fn ssh_port(&self, id: &str) -> Option<u16> {
+        self.backend.ssh_port(id)
+    }
+
+    /// Get the SSH private key path for a sandbox (if available).
+    pub fn ssh_key_path(&self, id: &str) -> Option<std::path::PathBuf> {
+        self.backend.ssh_key_path(id)
+    }
+
+    /// Build a ready-to-use SSH command string for connecting to a sandbox.
+    pub fn ssh_command(&self, id: &str) -> Option<String> {
+        self.backend.ssh_command(id)
+    }
+
     /// Stop a container/VM
     pub async fn kill(&self, id: &str) -> Result<()> {
         self.backend.stop(id).await
@@ -481,6 +668,40 @@ impl Runtime {
     /// Delete a container/VM
     pub async fn delete(&self, id: &str) -> Result<()> {
         self.backend.destroy(id).await
+    }
+
+    /// Push MCP server configs to the gateway (bulk, on start).
+    pub fn push_mcp_config(
+        &self,
+        id: &str,
+        servers: &HashMap<String, McpServerConfig>,
+    ) -> Result<()> {
+        self.backend.push_mcp_config(id, servers)
+    }
+
+    /// Add or update an MCP server in the running sandbox.
+    pub fn add_mcp_server(&self, id: &str, name: &str, config: &McpServerConfig) -> Result<()> {
+        self.backend.add_mcp_server(id, name, config)
+    }
+
+    /// Remove an MCP server from the running sandbox.
+    pub fn remove_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        self.backend.remove_mcp_server(id, name)
+    }
+
+    /// List all MCP servers in the running sandbox.
+    pub fn list_mcp_servers(&self, id: &str) -> Result<HashMap<String, McpServerConfig>> {
+        self.backend.list_mcp_servers(id)
+    }
+
+    /// Enable an MCP server in the running sandbox.
+    pub fn enable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        self.backend.enable_mcp_server(id, name)
+    }
+
+    /// Disable an MCP server in the running sandbox.
+    pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+        self.backend.disable_mcp_server(id, name)
     }
 }
 

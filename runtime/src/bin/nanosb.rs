@@ -26,7 +26,7 @@ mod cli {
     #[command(version)]
     pub struct Cli {
         #[command(subcommand)]
-        pub command: Commands,
+        pub command: Option<Commands>,
 
         /// Output format (text, json)
         #[arg(long, default_value = "text", global = true)]
@@ -123,6 +123,9 @@ mod cli {
             #[arg(short, long)]
             force: bool,
         },
+
+        /// Check runtime prerequisites
+        Doctor,
     }
 
     /// Image info for table display
@@ -198,16 +201,20 @@ mod cli {
     pub async fn run() -> anyhow::Result<()> {
         let cli = Cli::parse();
 
-        if cli.verbose {
+        if cli.verbose && cli.command.is_some() {
             tracing_subscriber::fmt()
                 .with_env_filter("nanosandbox=debug")
                 .init();
         }
 
         match cli.command {
-            Commands::Pull { image } => cmd_pull(&image, cli.format, cli.verbose).await,
-            Commands::Images => cmd_images(cli.format).await,
-            Commands::Run {
+            None => {
+                // Default: launch TUI when no subcommand is given
+                nanosandbox::tui::run::run_tui().await
+            }
+            Some(Commands::Pull { image }) => cmd_pull(&image, cli.format, cli.verbose).await,
+            Some(Commands::Images) => cmd_images(cli.format).await,
+            Some(Commands::Run {
                 image,
                 name,
                 cpus,
@@ -217,7 +224,7 @@ mod cli {
                 timeout,
                 buffered,
                 command,
-            } => {
+            }) => {
                 cmd_run(
                     &image,
                     name,
@@ -233,14 +240,15 @@ mod cli {
                 )
                 .await
             }
-            Commands::Exec {
+            Some(Commands::Exec {
                 sandbox,
                 buffered,
                 command,
-            } => cmd_exec(&sandbox, buffered, &command, cli.format, cli.verbose).await,
-            Commands::Ps { all } => cmd_ps(all, cli.format).await,
-            Commands::Stop { sandbox } => cmd_stop(&sandbox, cli.verbose).await,
-            Commands::Rm { sandbox, force } => cmd_rm(&sandbox, force, cli.verbose).await,
+            }) => cmd_exec(&sandbox, buffered, &command, cli.format, cli.verbose).await,
+            Some(Commands::Ps { all }) => cmd_ps(all, cli.format).await,
+            Some(Commands::Stop { sandbox }) => cmd_stop(&sandbox, cli.verbose).await,
+            Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
+            Some(Commands::Doctor) => cmd_doctor(cli.format).await,
         }
     }
 
@@ -379,6 +387,8 @@ mod cli {
         format: OutputFormat,
         verbose: bool,
     ) -> anyhow::Result<()> {
+        preflight_check().await?;
+
         let sandbox_name =
             name.unwrap_or_else(|| format!("sandbox-{}", &uuid::Uuid::new_v4().to_string()[..8]));
 
@@ -525,6 +535,8 @@ mod cli {
         if command.is_empty() {
             anyhow::bail!("No command specified. Usage: nanosb exec <sandbox> <command>");
         }
+
+        preflight_check().await?;
 
         let registry = SandboxRegistry::new()?;
 
@@ -711,6 +723,222 @@ mod cli {
         Ok(())
     }
 
+
+    /// Check runtime prerequisites and display status
+    async fn cmd_doctor(format: OutputFormat) -> anyhow::Result<()> {
+        use nanosandbox::runtime::validate_runtime_prerequisites_detailed;
+
+        let result = validate_runtime_prerequisites_detailed().await;
+
+        match format {
+            OutputFormat::Text => {
+                print_doctor_results(&result);
+            }
+            OutputFormat::Json => {
+                let json = doctor_results_to_json(&result);
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+        }
+
+        if result.is_ok() {
+            Ok(())
+        } else {
+            std::process::exit(1);
+        }
+    }
+
+    /// Print doctor results as colored checklist
+    fn print_doctor_results(result: &nanosandbox::runtime::ValidationResult) {
+        println!();
+        println!("Checking runtime prerequisites...");
+        println!();
+
+        let mut passed = 0u32;
+        let errors = &result.errors;
+        let warnings = &result.warnings;
+
+        let checks = get_platform_checks();
+
+        for check in &checks {
+            let failed = errors.iter().find(|e| e.check == check.name);
+            let warned = warnings.iter().find(|w| w.contains(check.keyword));
+
+            if let Some(err) = failed {
+                println!(
+                    "  {} {}: {}",
+                    "[✗]".red().bold(),
+                    check.name,
+                    err.message
+                );
+                if let Some(ref hint) = &err.fix_hint {
+                    println!("      {}: {}", "Fix".yellow(), hint);
+                }
+            } else if let Some(warning) = warned {
+                println!(
+                    "  {} {}",
+                    "[!]".yellow().bold(),
+                    warning
+                );
+                passed += 1;
+            } else {
+                println!(
+                    "  {} {}: {}",
+                    "[✓]".green().bold(),
+                    check.name,
+                    check.ok_message
+                );
+                passed += 1;
+            }
+        }
+
+        println!();
+        println!(
+            "{} checks passed, {} errors, {} warnings",
+            passed,
+            errors.len(),
+            warnings.len()
+        );
+        println!();
+
+        if result.is_ok() {
+            println!("{}", "Ready to run sandboxes.".green());
+        } else {
+            println!("{}", "Cannot run sandboxes. Fix the errors above.".red());
+        }
+        println!();
+    }
+
+    struct PlatformCheck {
+        name: &'static str,
+        keyword: &'static str,
+        ok_message: &'static str,
+    }
+
+    fn get_platform_checks() -> Vec<PlatformCheck> {
+        #[cfg(target_os = "macos")]
+        {
+            vec![
+                PlatformCheck {
+                    name: "Architecture",
+                    keyword: "architecture",
+                    ok_message: "Apple Silicon (aarch64)",
+                },
+                PlatformCheck {
+                    name: "libkrun Library",
+                    keyword: "libkrun",
+                    ok_message: "/opt/homebrew/lib/libkrun.dylib",
+                },
+                PlatformCheck {
+                    name: "Hypervisor.framework",
+                    keyword: "Hypervisor",
+                    ok_message: "available",
+                },
+                PlatformCheck {
+                    name: "gvproxy",
+                    keyword: "gvproxy",
+                    ok_message: "available (full outbound networking)",
+                },
+            ]
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            vec![
+                PlatformCheck {
+                    name: "libkrun Library",
+                    keyword: "libkrun",
+                    ok_message: "found",
+                },
+                PlatformCheck {
+                    name: "KVM Device",
+                    keyword: "KVM",
+                    ok_message: "/dev/kvm accessible",
+                },
+                PlatformCheck {
+                    name: "gvproxy",
+                    keyword: "gvproxy",
+                    ok_message: "available (full outbound networking)",
+                },
+            ]
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            vec![
+                PlatformCheck {
+                    name: "Windows Containers",
+                    keyword: "Containers",
+                    ok_message: "enabled",
+                },
+                PlatformCheck {
+                    name: "containerd Service",
+                    keyword: "containerd",
+                    ok_message: "running",
+                },
+                PlatformCheck {
+                    name: "runhcs Shim",
+                    keyword: "runhcs",
+                    ok_message: "found",
+                },
+                PlatformCheck {
+                    name: "HCS Service",
+                    keyword: "HCS",
+                    ok_message: "running",
+                },
+                PlatformCheck {
+                    name: "Hyper-V",
+                    keyword: "Hyper-V",
+                    ok_message: "enabled",
+                },
+            ]
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            vec![PlatformCheck {
+                name: "Platform",
+                keyword: "platform",
+                ok_message: "supported",
+            }]
+        }
+    }
+
+    fn doctor_results_to_json(
+        result: &nanosandbox::runtime::ValidationResult,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "ok": result.is_ok(),
+            "platform": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "errors": result.errors.iter().map(|e| {
+                serde_json::json!({
+                    "check": e.check,
+                    "message": e.message,
+                    "fix_hint": e.fix_hint,
+                })
+            }).collect::<Vec<_>>(),
+            "warnings": result.warnings,
+        })
+    }
+
+    /// Run preflight validation, showing doctor output on failure.
+    async fn preflight_check() -> anyhow::Result<()> {
+        use nanosandbox::runtime::validate_runtime_prerequisites_detailed;
+
+        let result = validate_runtime_prerequisites_detailed().await;
+        if !result.is_ok() {
+            print_doctor_results(&result);
+
+            #[cfg(target_os = "macos")]
+            eprintln!("\nRun './scripts/install/macos.sh' to install dependencies.");
+            #[cfg(target_os = "linux")]
+            eprintln!("\nRun './scripts/install/linux.sh' to install dependencies.");
+
+            anyhow::bail!("Runtime prerequisites not met. Run 'nanosb doctor' for details.");
+        }
+        Ok(())
+    }
+
     /// Write all bytes to a writer, retrying on EAGAIN/WouldBlock.
     ///
     /// When streaming rapid output (e.g. LLM token deltas via stream-json),
@@ -735,9 +963,25 @@ mod cli {
 }
 
 #[cfg(feature = "cli")]
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    cli::run().await
+fn main() -> anyhow::Result<()> {
+    // Handle internal subprocess commands BEFORE starting the tokio runtime.
+    //
+    // This is critical on macOS: the TUI uses a multi-threaded tokio runtime,
+    // and Hypervisor.framework's hv_vm_create() fails when called from a
+    // fork()ed child of a multi-threaded process. By spawning the VM boot
+    // subprocess via posix_spawn (std::process::Command) and handling it here
+    // — before any threads are created — the child runs in a clean,
+    // single-threaded process where hv_vm_create() works correctly.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if std::env::args().nth(1).as_deref() == Some("internal-boot-vm") {
+        nanosandbox::runtime::handle_boot_vm_subprocess();
+        // ^ never returns
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(cli::run())
 }
 
 #[cfg(not(feature = "cli"))]

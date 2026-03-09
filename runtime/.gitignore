@@ -9,6 +9,8 @@ Cargo.lock
 *.swo
 *~
 
+docs/plans/**
+
 .env
 
 # OS

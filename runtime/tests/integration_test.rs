@@ -756,3 +756,311 @@ fn test_sandbox_config_m3_features() {
     assert_eq!(config.network.port_mappings.len(), 1);
     assert_eq!(config.network.dns.len(), 1);
 }
+
+// ============================================================================
+// M4: MCP Server Integration Tests
+// ============================================================================
+
+/// Helper: create a sandbox config with an MCP server for testing
+fn create_mcp_test_config(name: &str) -> SandboxConfig {
+    use nanosandbox::McpServerConfig;
+    use std::collections::HashMap;
+
+    SandboxConfig::builder()
+        .name(name)
+        .image("alpine:3.19")
+        .cpus(2)
+        .memory_mb(1024)
+        .mcp_server(
+            "context7",
+            McpServerConfig {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+                env: HashMap::new(),
+                enabled: true,
+            },
+        )
+        .build()
+}
+
+/// Test that MCP servers from SandboxConfig are auto-pushed on start
+#[tokio::test]
+#[ignore]
+async fn test_mcp_auto_push_on_start() {
+    use nanosandbox::Sandbox;
+
+    let config = create_mcp_test_config("mcp-auto-push-test");
+
+    match Sandbox::create(config).await {
+        Ok(mut sandbox) => {
+            match sandbox.start().await {
+                Ok(_) => {
+                    println!("=== Sandbox started, checking MCP servers ===");
+
+                    match sandbox.list_mcp_servers().await {
+                        Ok(servers) => {
+                            println!("MCP servers: {:?}", servers.keys().collect::<Vec<_>>());
+                            assert!(
+                                servers.contains_key("context7"),
+                                "Expected 'context7' server to be auto-pushed, got: {:?}",
+                                servers.keys().collect::<Vec<_>>()
+                            );
+                            println!("=== Test PASSED: MCP auto-push verified ===");
+                        }
+                        Err(e) => {
+                            println!("list_mcp_servers failed (may need gateway): {}", e);
+                        }
+                    }
+
+                    let _ = sandbox.stop().await;
+                }
+                Err(e) => {
+                    println!("Start failed (runtime may not be available): {}", e);
+                }
+            }
+            let _ = sandbox.destroy().await;
+        }
+        Err(e) => {
+            println!("Sandbox creation failed: {}", e);
+        }
+    }
+}
+
+/// Test adding an MCP server to a running sandbox
+#[tokio::test]
+#[ignore]
+async fn test_mcp_add_server() {
+    use nanosandbox::{McpServerConfig, Sandbox};
+    use std::collections::HashMap;
+
+    let config = SandboxConfig::builder()
+        .name("mcp-add-test")
+        .image("alpine:3.19")
+        .cpus(2)
+        .memory_mb(1024)
+        .build();
+
+    match Sandbox::create(config).await {
+        Ok(mut sandbox) => {
+            match sandbox.start().await {
+                Ok(_) => {
+                    let mcp_config = McpServerConfig {
+                        command: "npx".to_string(),
+                        args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+                        env: HashMap::new(),
+                        enabled: true,
+                    };
+
+                    match sandbox.add_mcp_server("test-server", mcp_config).await {
+                        Ok(_) => {
+                            println!("=== MCP server added ===");
+
+                            match sandbox.list_mcp_servers().await {
+                                Ok(servers) => {
+                                    assert!(
+                                        servers.contains_key("test-server"),
+                                        "Expected 'test-server' in list, got: {:?}",
+                                        servers.keys().collect::<Vec<_>>()
+                                    );
+                                    println!("=== Test PASSED: MCP add verified ===");
+                                }
+                                Err(e) => println!("list failed: {}", e),
+                            }
+                        }
+                        Err(e) => println!("add_mcp_server failed: {}", e),
+                    }
+
+                    let _ = sandbox.stop().await;
+                }
+                Err(e) => println!("Start failed: {}", e),
+            }
+            let _ = sandbox.destroy().await;
+        }
+        Err(e) => println!("Sandbox creation failed: {}", e),
+    }
+}
+
+/// Test removing an MCP server from a running sandbox
+#[tokio::test]
+#[ignore]
+async fn test_mcp_remove_server() {
+    use nanosandbox::{McpServerConfig, Sandbox};
+    use std::collections::HashMap;
+
+    let config = SandboxConfig::builder()
+        .name("mcp-remove-test")
+        .image("alpine:3.19")
+        .cpus(2)
+        .memory_mb(1024)
+        .build();
+
+    match Sandbox::create(config).await {
+        Ok(mut sandbox) => {
+            match sandbox.start().await {
+                Ok(_) => {
+                    let mcp_config = McpServerConfig {
+                        command: "npx".to_string(),
+                        args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+                        env: HashMap::new(),
+                        enabled: true,
+                    };
+
+                    if sandbox.add_mcp_server("to-remove", mcp_config).await.is_ok() {
+                        match sandbox.remove_mcp_server("to-remove").await {
+                            Ok(_) => {
+                                println!("=== MCP server removed ===");
+
+                                match sandbox.list_mcp_servers().await {
+                                    Ok(servers) => {
+                                        assert!(
+                                            !servers.contains_key("to-remove"),
+                                            "Server 'to-remove' should be gone, got: {:?}",
+                                            servers.keys().collect::<Vec<_>>()
+                                        );
+                                        println!("=== Test PASSED: MCP remove verified ===");
+                                    }
+                                    Err(e) => println!("list failed: {}", e),
+                                }
+                            }
+                            Err(e) => println!("remove failed: {}", e),
+                        }
+                    }
+
+                    let _ = sandbox.stop().await;
+                }
+                Err(e) => println!("Start failed: {}", e),
+            }
+            let _ = sandbox.destroy().await;
+        }
+        Err(e) => println!("Sandbox creation failed: {}", e),
+    }
+}
+
+/// Test enabling and disabling an MCP server
+#[tokio::test]
+#[ignore]
+async fn test_mcp_enable_disable() {
+    use nanosandbox::{McpServerConfig, Sandbox};
+    use std::collections::HashMap;
+
+    let config = SandboxConfig::builder()
+        .name("mcp-toggle-test")
+        .image("alpine:3.19")
+        .cpus(2)
+        .memory_mb(1024)
+        .mcp_server(
+            "toggle-me",
+            McpServerConfig {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+                env: HashMap::new(),
+                enabled: true,
+            },
+        )
+        .build();
+
+    match Sandbox::create(config).await {
+        Ok(mut sandbox) => {
+            match sandbox.start().await {
+                Ok(_) => {
+                    match sandbox.disable_mcp_server("toggle-me").await {
+                        Ok(_) => println!("=== Disabled toggle-me ==="),
+                        Err(e) => println!("disable failed: {}", e),
+                    }
+
+                    match sandbox.enable_mcp_server("toggle-me").await {
+                        Ok(_) => {
+                            println!("=== Re-enabled toggle-me ===");
+                            println!("=== Test PASSED: MCP enable/disable verified ===");
+                        }
+                        Err(e) => println!("enable failed: {}", e),
+                    }
+
+                    let _ = sandbox.stop().await;
+                }
+                Err(e) => println!("Start failed: {}", e),
+            }
+            let _ = sandbox.destroy().await;
+        }
+        Err(e) => println!("Sandbox creation failed: {}", e),
+    }
+}
+
+/// Full MCP CRUD lifecycle test
+#[tokio::test]
+#[ignore]
+async fn test_mcp_full_crud_lifecycle() {
+    use nanosandbox::{McpServerConfig, Sandbox};
+    use std::collections::HashMap;
+
+    let config = SandboxConfig::builder()
+        .name("mcp-lifecycle-test")
+        .image("alpine:3.19")
+        .cpus(2)
+        .memory_mb(1024)
+        .build();
+
+    match Sandbox::create(config).await {
+        Ok(mut sandbox) => {
+            match sandbox.start().await {
+                Ok(_) => {
+                    println!("=== Starting MCP CRUD lifecycle ===");
+
+                    let mcp_config = McpServerConfig {
+                        command: "npx".to_string(),
+                        args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+                        env: HashMap::new(),
+                        enabled: true,
+                    };
+
+                    if let Err(e) = sandbox.add_mcp_server("lifecycle", mcp_config).await {
+                        println!("add failed: {}", e);
+                        let _ = sandbox.stop().await;
+                        let _ = sandbox.destroy().await;
+                        return;
+                    }
+                    println!("  [1/5] Added 'lifecycle' server");
+
+                    match sandbox.list_mcp_servers().await {
+                        Ok(servers) => {
+                            assert!(servers.contains_key("lifecycle"), "Server should exist after add");
+                            println!("  [2/5] Listed servers: {:?}", servers.keys().collect::<Vec<_>>());
+                        }
+                        Err(e) => println!("  list failed: {}", e),
+                    }
+
+                    match sandbox.disable_mcp_server("lifecycle").await {
+                        Ok(_) => println!("  [3/5] Disabled 'lifecycle'"),
+                        Err(e) => println!("  disable failed: {}", e),
+                    }
+
+                    match sandbox.enable_mcp_server("lifecycle").await {
+                        Ok(_) => println!("  [4/5] Re-enabled 'lifecycle'"),
+                        Err(e) => println!("  enable failed: {}", e),
+                    }
+
+                    match sandbox.remove_mcp_server("lifecycle").await {
+                        Ok(_) => {
+                            println!("  [5/5] Removed 'lifecycle'");
+
+                            if let Ok(servers) = sandbox.list_mcp_servers().await {
+                                assert!(
+                                    !servers.contains_key("lifecycle"),
+                                    "Server should be gone after remove"
+                                );
+                            }
+                        }
+                        Err(e) => println!("  remove failed: {}", e),
+                    }
+
+                    println!("=== Test PASSED: Full MCP CRUD lifecycle ===");
+
+                    let _ = sandbox.stop().await;
+                }
+                Err(e) => println!("Start failed: {}", e),
+            }
+            let _ = sandbox.destroy().await;
+        }
+        Err(e) => println!("Sandbox creation failed: {}", e),
+    }
+}

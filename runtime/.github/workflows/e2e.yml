@@ -44,7 +44,7 @@ jobs:
           echo "  - Windows:             DISABLED (containerd issues)"
           echo ""
           echo "To run E2E tests locally on macOS:"
-          echo "  1. Run: ./scripts/install.sh"
+          echo "  1. Run: ./scripts/install/macos.sh"
           echo "  2. Run: cargo test --test agents_e2e_test --features cli"
           echo ""
           echo "========================================"

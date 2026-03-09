@@ -53,8 +53,9 @@ The fastest way to get started on macOS:
 git clone https://github.com/devdone-labs/dd-nanosandbox
 cd dd-nanosandbox
 
-# Run the install script (installs libkrun and dependencies)
-./scripts/install.sh
+# Install runtime dependencies
+./scripts/install/macos.sh   # macOS Apple Silicon
+# ./scripts/install/linux.sh  # Linux
 
 # Build the CLI
 cargo build --release --features cli
@@ -68,7 +69,7 @@ cargo build --release --features cli
 #### macOS (Apple Silicon) - Recommended
 - macOS 11+ on Apple Silicon (M1/M2/M3/M4)
 - Rust 1.70+ (for building from source)
-- Run `./scripts/install.sh` to install all dependencies automatically
+- Run `./scripts/install/macos.sh` to install all dependencies automatically
 
 Or install manually:
 - [libkrun](https://github.com/containers/libkrun): `brew tap slp/krun && brew install libkrun`

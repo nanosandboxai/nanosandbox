@@ -1,0 +1,24 @@
+ARG BASE_IMAGE=dd-agents-base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="OpenCode agent for DD sandboxes"
+
+ARG TARGETARCH
+
+# Download pre-built glibc binary from GitHub releases (works natively on Debian)
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) OC_ARCH="x64" ;; \
+        arm64) OC_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/opencode.tar.gz \
+        "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${OC_ARCH}.tar.gz" \
+    && tar -xzf /tmp/opencode.tar.gz -C /tmp \
+    && mv /tmp/opencode /usr/local/bin/opencode \
+    && chmod +x /usr/local/bin/opencode \
+    && rm -rf /tmp/opencode.tar.gz
+
+RUN opencode --version && echo "OpenCode: OK"
+
+CMD ["/usr/local/bin/nanosb-init.sh"]

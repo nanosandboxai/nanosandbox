@@ -49,8 +49,8 @@ jobs:
           file target/aarch64-apple-darwin/release/nanosb
           ./target/aarch64-apple-darwin/release/nanosb --version
 
-      - name: Make install script executable
-        run: chmod +x scripts/install.sh
+      - name: Make install scripts executable
+        run: chmod +x scripts/install/*.sh
 
       - name: Prepare release asset
         if: startsWith(github.ref, 'refs/tags/v')
@@ -69,4 +69,4 @@ jobs:
           name: nanosb-macos-arm64
           path: |
             target/aarch64-apple-darwin/release/nanosb
-            scripts/install.sh
+            scripts/install/

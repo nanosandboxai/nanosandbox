@@ -65,6 +65,14 @@ pub enum Error {
     #[error("Invalid sandbox state: {0}")]
     InvalidState(String),
 
+    /// MCP operation not supported (sandbox not in persistent/gateway mode)
+    #[error("MCP not supported: {0}")]
+    McpNotSupported(String),
+
+    /// MCP server operation failed
+    #[error("MCP server error: {0}")]
+    McpServerError(String),
+
     // ===== Runtime Prerequisite Errors =====
     /// Platform not supported
     #[error("Platform not supported: {platform}. Supported platforms: Windows, Linux, macOS")]

@@ -20,8 +20,8 @@
 //!     let config = SandboxConfig::builder()
 //!         .name("my-sandbox")
 //!         .image("python:3.12-slim")
-//!         .cpus(2)
-//!         .memory_mb(4096)
+//!         .cpus(1)
+//!         .memory_mb(512)
 //!         .build();
 //!
 //!     let mut sandbox = Sandbox::create(config).await?;
@@ -47,11 +47,14 @@ pub mod registry;
 pub mod runtime;
 pub mod sandbox;
 
+#[cfg(feature = "cli")]
+pub mod tui;
+
 // Re-exports
 pub use auth::CredentialStore;
 pub use config::{
-    Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping, RegistryConfig,
-    SandboxConfig,
+    McpServerConfig, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping,
+    RegistryConfig, SandboxConfig,
 };
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PulledImage};

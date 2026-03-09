@@ -20,7 +20,7 @@ required-features = ["cli"]
 
 [features]
 default = []
-cli = ["clap", "indicatif", "tabled", "colored", "tracing-subscriber"]
+cli = ["clap", "indicatif", "tabled", "colored", "tracing-subscriber", "ratatui", "russh", "ssh-key", "vt100", "tui-term"]
 server = ["axum", "tower"]
 
 [dependencies]
@@ -49,10 +49,12 @@ log = "0.4"         # Needed to detect existing logger for libkrun FFI safety
 env_logger = "0.11" # Needed to safely probe before krun_set_log_level calls env_logger::init()
 async-trait = "0.1"
 dirs = "6"
+unicode-width = "0.2"
 
 # libkrun FFI support - fork child process for krun_start_enter (macOS + Linux)
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 libc = "0.2"
+libloading = "0.8"
 
 # CLI (optional)
 clap = { version = "4", features = ["derive"], optional = true }
@@ -60,6 +62,11 @@ indicatif = { version = "0.17", optional = true }  # Progress bars
 tabled = { version = "0.15", optional = true }     # Table formatting
 colored = { version = "2", optional = true }       # Colored output
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
+ratatui = { version = "0.29", optional = true }    # Terminal UI
+russh = { version = "0.57", optional = true }      # Async SSH2 client
+ssh-key = { version = "0.6", features = ["ed25519", "std"], optional = true } # SSH key loading
+vt100 = { version = "0.15", optional = true }      # Terminal emulation
+tui-term = { version = "0.2", optional = true }    # ratatui terminal widget
 
 # Server (optional)
 axum = { version = "0.7", optional = true }
