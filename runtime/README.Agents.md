@@ -6,7 +6,6 @@ Minimal Docker images containing AI coding agent CLIs for use in sandboxed devel
 
 | Agent | CLI Command | Description |
 |-------|-------------|-------------|
-| [OpenCode](https://opencode.ai) | `opencode` | Go-based AI coding assistant |
 | [Claude Code](https://docs.anthropic.com/claude-code) | `claude` | Anthropic's AI coding assistant |
 | [Goose](https://github.com/block/goose) | `goose` | AI developer agent by Block |
 | [Codex](https://github.com/openai/codex) | `codex` | OpenAI's coding assistant |
@@ -21,7 +20,6 @@ Minimal Docker images containing AI coding agent CLIs for use in sandboxed devel
 ```bash
 # Pull the agent you need
 docker pull ghcr.io/devdone-labs/dd-agent-claude:latest
-docker pull ghcr.io/devdone-labs/dd-agent-opencode:latest
 docker pull ghcr.io/devdone-labs/dd-agent-goose:latest
 docker pull ghcr.io/devdone-labs/dd-agent-codex:latest
 docker pull ghcr.io/devdone-labs/dd-agent-cursor:latest
@@ -32,9 +30,6 @@ docker pull ghcr.io/devdone-labs/dd-agent-cursor:latest
 ```bash
 # Run Claude Code
 docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-claude:latest claude
-
-# Run OpenCode
-docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-opencode:latest opencode
 
 # Run Goose
 docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-goose:latest goose
@@ -54,7 +49,6 @@ docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-cursor:la
 
 ```powershell
 docker pull ghcr.io/devdone-labs/dd-agent-claude:latest
-docker pull ghcr.io/devdone-labs/dd-agent-opencode:latest
 ```
 
 #### Run an Agent
@@ -62,9 +56,6 @@ docker pull ghcr.io/devdone-labs/dd-agent-opencode:latest
 ```powershell
 # Run Claude Code
 docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/dd-agent-claude:latest claude
-
-# Run OpenCode
-docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/dd-agent-opencode:latest opencode
 
 # Run Goose
 docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/dd-agent-goose:latest goose
@@ -110,7 +101,6 @@ Each agent ships as its own image, built on a shared Alpine base:
 |-------|----------|-----------|
 | `dd-agents-base` | `ghcr.io/devdone-labs/dd-agents-base` | ~150 MB |
 | `dd-agent-claude` | `ghcr.io/devdone-labs/dd-agent-claude` | ~200 MB |
-| `dd-agent-opencode` | `ghcr.io/devdone-labs/dd-agent-opencode` | ~200 MB |
 | `dd-agent-goose` | `ghcr.io/devdone-labs/dd-agent-goose` | ~180 MB |
 | `dd-agent-codex` | `ghcr.io/devdone-labs/dd-agent-codex` | ~200 MB |
 | `dd-agent-cursor` | `ghcr.io/devdone-labs/dd-agent-cursor` | ~180 MB |
@@ -157,7 +147,6 @@ Each agent has its own slim Alpine-based image built on a shared base:
 |-------|------|-----------|-----------|
 | `dd-agents-base` | Alpine 3.20 + Node.js 22 + agent-gateway + MCP packages | - | ~150MB |
 | `dd-agent-claude` | dd-agents-base | @anthropic-ai/claude-code | ~200MB |
-| `dd-agent-opencode` | dd-agents-base | opencode-ai | ~200MB |
 | `dd-agent-goose` | dd-agents-base | goose binary | ~180MB |
 | `dd-agent-codex` | dd-agents-base | @openai/codex | ~200MB |
 | `dd-agent-cursor` | dd-agents-base | cursor-agent binary | ~180MB |

@@ -101,7 +101,7 @@ pub enum ParseResult {
 }
 
 /// Supported agent names for `/add`.
-const SUPPORTED_AGENTS: &[&str] = &["claude", "opencode", "goose", "codex", "cursor"];
+const SUPPORTED_AGENTS: &[&str] = &["claude", "goose", "codex", "cursor"];
 
 const ALL_COMMANDS: &[&str] = &[
     "/quit", "/q", "/help", "/clear", "/close", "/copy",

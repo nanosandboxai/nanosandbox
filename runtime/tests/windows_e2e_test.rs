@@ -532,11 +532,6 @@ struct WindowsAgentDef {
 /// All agents available in dd-agents-registry Windows image
 const WINDOWS_AGENTS: &[WindowsAgentDef] = &[
     WindowsAgentDef {
-        name: "OpenCode",
-        command: "opencode",
-        version_args: &["--version"],
-    },
-    WindowsAgentDef {
         name: "Claude Code",
         command: "claude",
         version_args: &["--version"],
@@ -584,21 +579,6 @@ fn test_dd_agents_windows_config() {
     assert!(oci_config["windows"]["layerFolders"].is_null());
 
     println!("[PASS] DD-Agents Windows OCI config generation test passed");
-}
-
-/// Test OpenCode agent on Windows
-///
-/// Requires DD-Agents Windows image to be available.
-/// Run with: cargo test --test windows_e2e_test test_windows_agent_opencode -- --ignored
-#[tokio::test]
-#[ignore]
-async fn test_windows_agent_opencode() {
-    let result = test_windows_agent("OpenCode", "opencode", &["--version"]).await;
-    assert!(
-        result.is_ok(),
-        "OpenCode agent test failed: {:?}",
-        result.err()
-    );
 }
 
 /// Test Claude Code agent on Windows

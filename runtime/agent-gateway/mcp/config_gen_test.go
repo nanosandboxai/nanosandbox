@@ -50,36 +50,6 @@ func TestGenerateClaudeConfig(t *testing.T) {
 	}
 }
 
-func TestGenerateOpenCodeConfig(t *testing.T) {
-	out, err := GenerateOpenCodeConfig(testServers)
-	if err != nil {
-		t.Fatalf("GenerateOpenCodeConfig failed: %v", err)
-	}
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(out, &parsed); err != nil {
-		t.Fatalf("invalid JSON: %v\n%s", err, out)
-	}
-
-	mcp, ok := parsed["mcp"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected mcp object, got %T", parsed["mcp"])
-	}
-
-	gh := mcp["github"].(map[string]interface{})
-	if gh["type"] != "local" {
-		t.Errorf("expected type 'local', got %v", gh["type"])
-	}
-
-	cmd := gh["command"].([]interface{})
-	if len(cmd) < 2 {
-		t.Errorf("expected command array with args, got %v", cmd)
-	}
-	if cmd[0] != "npx" {
-		t.Errorf("expected 'npx', got %v", cmd[0])
-	}
-}
-
 func TestGenerateGooseConfig(t *testing.T) {
 	out, err := GenerateGooseConfig(testServers)
 	if err != nil {
@@ -146,9 +116,6 @@ func TestGenerateEmptyServers(t *testing.T) {
 
 	if _, err := GenerateClaudeConfig(empty); err != nil {
 		t.Errorf("claude: %v", err)
-	}
-	if _, err := GenerateOpenCodeConfig(empty); err != nil {
-		t.Errorf("opencode: %v", err)
 	}
 	if _, err := GenerateGooseConfig(empty); err != nil {
 		t.Errorf("goose: %v", err)

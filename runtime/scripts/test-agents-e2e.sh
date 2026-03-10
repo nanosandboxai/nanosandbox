@@ -30,7 +30,7 @@ NC='\033[0m'
 if [ $# -gt 0 ]; then
     AGENTS=("$@")
 else
-    AGENTS=(claude opencode goose codex cursor)
+    AGENTS=(claude goose codex cursor)
 fi
 
 echo "=== Agent E2E Tests ==="

@@ -2,7 +2,7 @@
 
 # Minimal Windows Docker image with agent CLIs for sandboxes
 # Base: Windows Server Core (build) -> Nano Server (runtime)
-# Agents: OpenCode, Claude Code, Goose, Codex, Cursor CLI
+# Agents: Claude Code, Goose, Codex, Cursor CLI
 
 # =============================================================================
 # Build Stage - Use Server Core for PowerShell and build tools
@@ -14,7 +14,7 @@ SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPref
 # Create directories
 RUN New-Item -ItemType Directory -Force -Path C:\nodejs, C:\agents, C:\agents\npm-global | Out-Null
 
-# Install Node.js LTS (required for Claude Code, Codex, OpenCode)
+# Install Node.js LTS (required for Claude Code, Codex)
 ENV NODE_VERSION=20.11.1
 RUN Invoke-WebRequest -Uri "https://nodejs.org/dist/v$env:NODE_VERSION/node-v$env:NODE_VERSION-win-x64.zip" -OutFile C:\nodejs.zip; `
     Expand-Archive C:\nodejs.zip -DestinationPath C:\; `
@@ -31,9 +31,6 @@ RUN C:\nodejs\npm.cmd config set prefix C:\agents\npm-global
 # =============================================================================
 # Agent CLIs Installation
 # =============================================================================
-
-# OpenCode - AI coding assistant
-RUN C:\nodejs\npm.cmd install -g opencode-ai
 
 # Claude Code - Anthropic's AI coding assistant
 RUN C:\nodejs\npm.cmd install -g @anthropic-ai/claude-code
@@ -89,7 +86,6 @@ RUN [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tl
 
 # Verify all agents are installed in builder stage
 RUN Write-Host '=== Verifying Agent Binaries ==='; `
-    if (-not (Test-Path C:\agents\npm-global\opencode.cmd)) { throw 'OpenCode not found' }; `
     if (-not (Test-Path C:\agents\npm-global\claude.cmd)) { throw 'Claude Code not found' }; `
     if (-not (Test-Path C:\agents\npm-global\codex.cmd)) { throw 'Codex not found' }; `
     if (-not (Test-Path C:\agents\goose.exe)) { throw 'Goose not found' }; `
@@ -129,4 +125,4 @@ RUN echo === Verifying Agents === && `
     echo Node.js: OK
 
 # Default command
-CMD ["cmd", "/c", "echo Available agents: opencode, claude, goose, codex, cursor-agent"]
+CMD ["cmd", "/c", "echo Available agents: claude, goose, codex, cursor-agent"]

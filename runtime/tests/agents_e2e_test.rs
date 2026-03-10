@@ -12,7 +12,6 @@
 //!
 //! | Agent       | Command        | Description                      |
 //! |-------------|----------------|----------------------------------|
-//! | OpenCode    | `opencode`     | Go-based AI coding assistant     |
 //! | Claude Code | `claude`       | Anthropic's AI coding assistant  |
 //! | Goose       | `goose`        | AI developer agent by Block      |
 //! | Codex       | `codex`        | OpenAI's coding assistant        |
@@ -47,11 +46,6 @@ struct AgentDef {
 
 /// All agents available in dd-agents-registry
 const AGENTS: &[AgentDef] = &[
-    AgentDef {
-        name: "OpenCode",
-        command: "opencode",
-        version_args: &["--version"],
-    },
     AgentDef {
         name: "Claude Code",
         command: "claude",
@@ -113,21 +107,6 @@ fn create_agent_sandbox_config(sandbox_name: &str) -> SandboxConfig {
 // =============================================================================
 // Individual Agent Tests (require runtime + image)
 // =============================================================================
-
-/// Test OpenCode agent version command
-///
-/// Requires runtime and DD-Agents image to be available.
-/// Run with: cargo test --test agents_e2e_test test_agent_opencode_version -- --ignored --nocapture
-#[tokio::test]
-#[ignore]
-async fn test_agent_opencode_version() {
-    let result = test_agent_version("OpenCode", "opencode", &["--version"]).await;
-    assert!(
-        result.is_ok(),
-        "OpenCode agent test failed: {:?}",
-        result.err()
-    );
-}
 
 /// Test Claude Code agent version command
 #[tokio::test]

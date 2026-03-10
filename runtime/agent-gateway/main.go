@@ -69,7 +69,7 @@ type SSEEvent struct {
 // agentSession tracks per-agent state for conversation continuity.
 type agentSession struct {
 	messageCount int
-	sessionID    string // captured from agent output (goose, opencode)
+	sessionID    string // captured from agent output (goose)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,16 +152,6 @@ func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []strin
 			args = append(args, "--continue")
 		}
 		return "claude", args
-
-	case "opencode":
-		args := []string{"run", "--format", "json", req.Message}
-		if req.Model != "" {
-			args = append(args, "--provider", req.Model)
-		}
-		if sess.sessionID != "" {
-			args = append(args, "--session", sess.sessionID)
-		}
-		return "opencode", args
 
 	case "goose":
 		if sess.messageCount > 0 && sess.sessionID != "" {

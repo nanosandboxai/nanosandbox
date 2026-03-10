@@ -24,8 +24,6 @@ func (m *Manager) GenerateAllConfigs() error {
 		switch agentCfg.Format {
 		case "claude":
 			data, err = GenerateClaudeConfig(servers)
-		case "opencode":
-			data, err = GenerateOpenCodeConfig(servers)
 		case "goose":
 			data, err = GenerateGooseConfig(servers)
 		case "codex":
@@ -101,32 +99,6 @@ func GenerateClaudeConfig(servers map[string]*McpServerDef) ([]byte, error) {
 		}
 	}
 	wrapper := map[string]interface{}{"mcpServers": entries}
-	return json.MarshalIndent(wrapper, "", "  ")
-}
-
-// --- OpenCode Format ---
-
-type openCodeServerEntry struct {
-	Type    string            `json:"type"`
-	Command []string          `json:"command"`
-	Env     map[string]string `json:"env,omitempty"`
-	Enabled bool              `json:"enabled"`
-}
-
-func GenerateOpenCodeConfig(servers map[string]*McpServerDef) ([]byte, error) {
-	entries := make(map[string]openCodeServerEntry, len(servers))
-	for name, srv := range servers {
-		cmd := make([]string, 0, 1+len(srv.Args))
-		cmd = append(cmd, srv.Command)
-		cmd = append(cmd, srv.Args...)
-		entries[name] = openCodeServerEntry{
-			Type:    "local",
-			Command: cmd,
-			Env:     nonEmptyEnv(srv.Env),
-			Enabled: true,
-		}
-	}
-	wrapper := map[string]interface{}{"mcp": entries}
 	return json.MarshalIndent(wrapper, "", "  ")
 }
 

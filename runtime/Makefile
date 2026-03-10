@@ -37,7 +37,7 @@ help:
 	@echo "  registry-down     Stop local Docker registry"
 	@echo "  agents-build-base Build and push shared base image"
 	@echo "  agents-build      Build and push all agent images (includes base)"
-	@echo "  agents-build-one  Build single agent (AGENT=claude|opencode|goose|codex|cursor)"
+	@echo "  agents-build-one  Build single agent (AGENT=claude|goose|codex|cursor)"
 	@echo "  agents-test       Smoke test all agent images (--version)"
 	@echo "  agents-list       Show images in local registry"
 	@echo "  agents-e2e        Run full E2E tests with nanosandbox"
@@ -130,7 +130,7 @@ ci-fast: lint test
 
 REGISTRY_HOST ?= localhost:5050
 BASE_IMAGE_TAG ?= latest
-AGENTS := claude opencode goose codex cursor
+AGENTS := claude goose codex cursor
 
 # Start local Docker registry
 registry-up:

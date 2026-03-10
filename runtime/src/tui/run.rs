@@ -1352,10 +1352,6 @@ fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
     match agent {
         "claude" => vec![("ANTHROPIC_API_KEY", true)],
         "codex" => vec![("OPENAI_API_KEY", true)],
-        "opencode" => vec![
-            ("OPENAI_API_KEY", false),
-            ("OPENROUTER_API_KEY", false),
-        ],
         "goose" => vec![
             ("OPENAI_API_KEY", false),
             ("ANTHROPIC_API_KEY", false),

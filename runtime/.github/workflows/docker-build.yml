@@ -23,7 +23,6 @@ on:
         options:
           - ''
           - claude
-          - opencode
           - goose
           - codex
           - cursor
@@ -90,7 +89,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        agent: [claude, opencode, goose, codex, cursor]
+        agent: [claude, goose, codex, cursor]
       fail-fast: false
     if: ${{ inputs.agent == '' || inputs.agent == matrix.agent }}
 

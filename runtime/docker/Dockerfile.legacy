@@ -1,6 +1,6 @@
 # Minimal Docker image with agent CLIs for sandboxes
 # Base: Debian Bookworm Slim (~25MB)
-# Agents: OpenCode, Claude Code, Goose, Codex, Cursor CLI
+# Agents: Claude Code, Goose, Codex, Cursor CLI
 # Includes: agent-gateway HTTP server for persistent VM communication
 
 # =============================================================================
@@ -43,11 +43,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
 # =============================================================================
 # Agent CLIs Installation
 # =============================================================================
-
-# OpenCode - AI coding assistant
-# https://opencode.ai
-RUN npm install -g opencode-ai \
-    && npm cache clean --force
 
 # Architecture argument for binary downloads
 ARG TARGETARCH
@@ -106,7 +101,6 @@ COPY --from=gateway-builder /build/agent-gateway /usr/local/bin/agent-gateway
 # Create config directories for MCP config generation
 RUN mkdir -p /root/.config/goose \
     && mkdir -p /root/.codex \
-    && mkdir -p /root/.config/opencode \
     && mkdir -p /workspace/.cursor
 
 # Create non-root user for running agents
@@ -119,8 +113,6 @@ WORKDIR /workspace
 
 # Verify installations (will FAIL build if any agent is missing)
 RUN echo "=== Verifying Installed Agents ===" \
-    && opencode --version \
-    && echo "OpenCode: OK" \
     && claude --version \
     && echo "Claude Code: OK" \
     && goose --version \
@@ -137,4 +129,4 @@ RUN echo "=== Verifying Installed Agents ===" \
 USER agentuser
 
 # Default command - show available agents
-CMD ["sh", "-c", "echo 'Available agents: opencode, claude, goose, codex, cursor-agent'"]
+CMD ["sh", "-c", "echo 'Available agents: claude, goose, codex, cursor-agent'"]

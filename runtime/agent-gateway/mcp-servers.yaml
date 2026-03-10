@@ -45,11 +45,6 @@ agents:
     format: "claude"
     exclude: [filesystem]
 
-  opencode:
-    config_path: "/root/.config/opencode/opencode.json"
-    format: "opencode"
-    exclude: []
-
   goose:
     config_path: "/root/.config/goose/config.yaml"
     format: "goose"

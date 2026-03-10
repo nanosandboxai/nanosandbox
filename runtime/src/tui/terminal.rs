@@ -232,7 +232,6 @@ pub async fn connect_ssh(
 fn agent_cli_command(agent_name: &str) -> Option<String> {
     match agent_name {
         "claude" | "claude-code" => Some("claude".to_string()),
-        "opencode" => Some("opencode".to_string()),
         "goose" => Some("goose session".to_string()),
         "codex" => Some("codex".to_string()),
         "cursor" | "cursor-agent" => Some("cursor-agent".to_string()),
