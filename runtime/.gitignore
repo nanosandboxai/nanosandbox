@@ -11,6 +11,8 @@ Cargo.lock
 
 docs/plans/**
 
+agent-gateway/agent-gateway
+
 .env
 
 # OS

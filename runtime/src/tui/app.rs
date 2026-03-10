@@ -74,8 +74,10 @@ pub enum SubmitResult {
 
 /// State for a single agent panel.
 pub struct AgentPanel {
-    /// Display name of the agent.
+    /// Agent type key (e.g. "claude", "codex") — used for CLI command resolution.
     pub agent_name: String,
+    /// Display name shown in panel title. Falls back to agent_name if not set.
+    pub display_name: Option<String>,
     /// The sandbox instance backing this agent, wrapped in Arc<Mutex<>> for
     /// shared access between the event loop and background streaming tasks.
     pub sandbox: Option<Arc<Mutex<Sandbox>>>,
@@ -120,6 +122,7 @@ impl AgentPanel {
     pub fn new(agent_name: &str) -> Self {
         Self {
             agent_name: agent_name.to_string(),
+            display_name: None,
             sandbox: None,
             chat_history: Vec::new(),
             input: TextInput::new(),

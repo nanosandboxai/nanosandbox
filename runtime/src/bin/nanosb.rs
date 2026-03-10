@@ -39,6 +39,27 @@ mod cli {
         /// Project directory to mount into sandboxes
         #[arg(long, global = true)]
         pub project: Option<String>,
+
+        /// Path to sandbox.yml config file or directory containing one.
+        /// Can be specified multiple times to load from multiple configs.
+        #[arg(long = "config", global = true)]
+        pub configs: Vec<String>,
+
+        /// Start only the named sandbox from the config file (instead of all).
+        #[arg(long, global = true)]
+        pub sandbox: Option<String>,
+
+        /// Override CPU cores for all sandboxes from config
+        #[arg(long, global = true)]
+        pub cpus: Option<u32>,
+
+        /// Override memory (MB) for all sandboxes from config
+        #[arg(long, global = true)]
+        pub memory: Option<u32>,
+
+        /// Override timeout (seconds) for all sandboxes from config
+        #[arg(long, global = true)]
+        pub timeout: Option<u32>,
     }
 
     #[derive(Subcommand)]
@@ -157,6 +178,8 @@ mod cli {
     struct SandboxRow {
         #[tabled(rename = "ID")]
         id: String,
+        #[tabled(rename = "NAME")]
+        name: String,
         #[tabled(rename = "IMAGE")]
         image: String,
         #[tabled(rename = "STATUS")]
@@ -220,11 +243,68 @@ mod cli {
 
         match cli.command {
             None => {
-                // Default: launch TUI when no subcommand is given
+                // Collect config file paths.
+                let mut config_paths: Vec<std::path::PathBuf> = cli
+                    .configs
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect();
+
+                // Auto-detect sandbox.yml in CWD.
+                let cwd = std::env::current_dir()?;
+                if nanosandbox::find_sandbox_file(&cwd).is_some()
+                    && !config_paths.contains(&cwd)
+                {
+                    config_paths.insert(0, cwd.clone());
+                }
+
+                // Also auto-detect sandbox.yml in --project path.
+                if let Some(ref project) = cli.project {
+                    let project_dir = std::path::PathBuf::from(project);
+                    if nanosandbox::find_sandbox_file(&project_dir).is_some()
+                        && !config_paths.contains(&project_dir)
+                    {
+                        config_paths.push(project_dir);
+                    }
+                }
+
+                // Load and resolve sandbox configs.
+                let mut sandbox_configs = if config_paths.is_empty() {
+                    Vec::new()
+                } else {
+                    nanosandbox::load_sandbox_files(&config_paths)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?
+                };
+
+                // Apply CLI flag overrides (merge step 4).
+                nanosandbox::config::file::apply_cli_overrides(
+                    &mut sandbox_configs,
+                    cli.cpus,
+                    cli.memory,
+                    cli.timeout,
+                );
+
+                // Filter to a single sandbox if --sandbox is specified.
+                let sandbox_configs = if let Some(ref name) = cli.sandbox {
+                    let filtered: Vec<_> = sandbox_configs
+                        .into_iter()
+                        .filter(|(key, config)| key == name || config.name == *name)
+                        .collect();
+                    if filtered.is_empty() {
+                        anyhow::bail!(
+                            "Sandbox '{}' not found in config files",
+                            name
+                        );
+                    }
+                    filtered
+                } else {
+                    sandbox_configs
+                };
+
+                // Project path for sandboxes without explicit project config.
                 let project_path = cli.project
                     .map(std::path::PathBuf::from)
                     .or_else(|| {
-                        // Auto-detect: if cwd is a git repo, use it
                         let cwd = std::env::current_dir().ok()?;
                         if cwd.join(".git").exists() {
                             Some(cwd)
@@ -232,7 +312,8 @@ mod cli {
                             None
                         }
                     });
-                nanosandbox::tui::run::run_tui(project_path).await
+
+                nanosandbox::tui::run::run_tui(project_path, sandbox_configs).await
             }
             Some(Commands::Pull { image }) => cmd_pull(&image, cli.format, cli.verbose).await,
             Some(Commands::Images) => cmd_images(cli.format).await,
@@ -654,6 +735,7 @@ mod cli {
                         };
                         SandboxRow {
                             id: s.id[..12].to_string(),
+                            name: s.name.clone(),
                             image: s.image.clone(),
                             status: status_str,
                             created: format_duration(duration),

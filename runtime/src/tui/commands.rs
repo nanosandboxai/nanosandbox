@@ -21,6 +21,8 @@ pub enum Command {
         project: Option<String>,
         /// Optional branch name for the project clone.
         branch: Option<String>,
+        /// Optional sandbox name.
+        name: Option<String>,
     },
     /// Switch focus to a specific panel index.
     Focus {
@@ -168,7 +170,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         Some(a) => *a,
         None => {
             return ParseResult::Err(format!(
-                "Usage: /add <agent> [--image <image>] [--project <path>] [--branch <name>]\n\
+                "Usage: /add <agent> [--image <image>] [--project <path>] [--branch <name>] [--name <name>]\n\
                  Supported agents: {}\n\
                  Example: /add claude",
                 SUPPORTED_AGENTS.join(", "),
@@ -179,6 +181,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
     let mut image = None;
     let mut project = None;
     let mut branch = None;
+    let mut name = None;
     let mut i = 2;
 
     while i < parts.len() {
@@ -210,10 +213,19 @@ fn parse_add(parts: &[&str]) -> ParseResult {
                     ),
                 }
             }
+            "--name" => {
+                match parts.get(i + 1) {
+                    Some(v) => { name = Some(v.to_string()); i += 2; }
+                    None => return ParseResult::Err(
+                        "--name requires a value\n\
+                         Usage: /add <agent> --name <name>".to_string(),
+                    ),
+                }
+            }
             other => {
                 return ParseResult::Err(format!(
                     "Unknown option: {}\n\
-                     Usage: /add <agent> [--image <image>] [--project <path>] [--branch <name>]",
+                     Usage: /add <agent> [--image <image>] [--project <path>] [--branch <name>] [--name <name>]",
                     other,
                 ));
             }
@@ -236,6 +248,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         image,
         project,
         branch,
+        name,
     })
 }
 
@@ -421,6 +434,7 @@ mod tests {
                 image: None,
                 project: None,
                 branch: None,
+                name: None,
             })
         );
     }
@@ -434,6 +448,7 @@ mod tests {
                 image: Some("my-registry/claude:v2".to_string()),
                 project: None,
                 branch: None,
+                name: None,
             })
         );
     }
@@ -525,6 +540,7 @@ mod tests {
                 image: Some("foo/bar:latest".to_string()),
                 project: None,
                 branch: None,
+                name: None,
             })
         );
     }
@@ -702,6 +718,7 @@ mod tests {
                 image: None,
                 project: Some("/tmp/myapp".to_string()),
                 branch: None,
+                name: None,
             })
         );
     }
@@ -715,6 +732,7 @@ mod tests {
                 image: None,
                 project: Some("/tmp/myapp".to_string()),
                 branch: Some("feat/auth".to_string()),
+                name: None,
             })
         );
     }

@@ -29,7 +29,10 @@ use super::renderer;
 ///
 /// This enables raw mode, enters the alternate screen, and runs the main
 /// event loop. On exit (or error) it restores the terminal.
-pub async fn run_tui(project_path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+pub async fn run_tui(
+    project_path: Option<std::path::PathBuf>,
+    sandbox_configs: Vec<(String, crate::config::SandboxConfig)>,
+) -> anyhow::Result<()> {
     // Check if we're running in a real terminal.
     if !io::stdout().is_terminal() {
         anyhow::bail!(
@@ -111,6 +114,11 @@ pub async fn run_tui(project_path: Option<std::path::PathBuf>) -> anyhow::Result
 
     // Spawn terminal event reader.
     spawn_terminal_event_reader(tx.clone());
+
+    // Auto-start sandboxes from config file.
+    for (key, config) in sandbox_configs {
+        add_agent_from_config(&mut app, &key, config, &tx);
+    }
 
     // Spawn tick timer (every 250ms).
     {
@@ -758,7 +766,7 @@ async fn handle_command(
                 role: MessageRole::System,
                 content: concat!(
                     "Available commands:\n",
-                    "  /add <agent> [--image <img>] [--project <path>] [--branch <name>]\n",
+                    "  /add <agent> [--image <img>] [--project <path>] [--branch <name>] [--name <name>]\n",
                     "                                Add a new agent panel\n",
                     "  /sandboxes                    Toggle sandbox sidebar\n",
                     "  /focus <n>                    Focus panel n (0-indexed)\n",
@@ -778,7 +786,8 @@ async fn handle_command(
                     "  /mcp disable <name>           Disable MCP server\n",
                     "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
                     "  /open [tool]                  Open clone in external tool\n",
-                    "  /quit                         Exit the TUI",
+                    "  /quit                         Exit the TUI\n",
+                    "  Config: Place sandbox.yml in project root for auto-start\n",
                 )
                 .to_string(),
             };
@@ -832,8 +841,8 @@ async fn handle_command(
         Command::McpToggle => {
             app.show_mcp_sidebar = !app.show_mcp_sidebar;
         }
-        Command::AddAgent { agent, image, project, branch } => {
-            add_agent(app, &agent, image.as_deref(), project.as_deref(), branch.as_deref(), tx);
+        Command::AddAgent { agent, image, project, branch, name } => {
+            add_agent(app, &agent, image.as_deref(), project.as_deref(), branch.as_deref(), name.as_deref(), tx);
         }
         Command::Env { assignment } => {
             handle_env(app, assignment);
@@ -1362,6 +1371,7 @@ fn add_agent(
     image: Option<&str>,
     project: Option<&str>,
     branch: Option<&str>,
+    name: Option<&str>,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let image_name = match image {
@@ -1403,8 +1413,12 @@ fn add_agent(
         .map(std::path::PathBuf::from)
         .or_else(|| app.project_path.clone());
 
+    let sandbox_name = name
+        .map(String::from)
+        .unwrap_or_else(|| format!("tui-{}", agent));
+
     let mut builder = SandboxConfig::builder()
-        .name(format!("tui-{}", agent))
+        .name(&sandbox_name)
         .image(&image_name)
         .memory_mb(1024);
 
@@ -1431,6 +1445,80 @@ fn add_agent(
                     Ok(()) => {
                         // Take the project mount from the sandbox so we can
                         // store it on the panel for teardown on kill.
+                        let project_mount = sandbox.take_project_mount();
+                        let sb = Arc::new(Mutex::new(sandbox));
+                        let _ = tx.send(AppEvent::SandboxReady {
+                            panel_idx,
+                            sandbox: sb,
+                            short_id,
+                            project_mount,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::SandboxFailed {
+                            panel_idx,
+                            error: format!("Failed to start sandbox: {}", e),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::SandboxFailed {
+                    panel_idx,
+                    error: format!("Failed to create sandbox: {}", e),
+                });
+            }
+        }
+    });
+}
+
+/// Add an agent panel from a resolved SandboxConfig (from sandbox.yml).
+fn add_agent_from_config(
+    app: &mut App,
+    key: &str,
+    config: SandboxConfig,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let display_name = config.name.clone();
+    let image_name = config.image.clone();
+
+    // Use the sandbox key (e.g. "claude", "codex") as agent_name so that
+    // agent_cli_command() can resolve the correct startup command.
+    let mut panel = AgentPanel::new(key);
+    panel.display_name = Some(display_name.clone());
+    panel.chat_history.push(ChatMessage {
+        role: MessageRole::System,
+        content: format!("Launching {} (image: {})...", display_name, image_name),
+    });
+
+    // Copy env vars from config to panel.
+    for (k, v) in &config.env {
+        panel.env.insert(k.clone(), v.clone());
+    }
+
+    // Auto-detect API keys from host environment (if not already in config env).
+    for (api_key, _) in &required_api_keys(key) {
+        if !panel.env.contains_key(*api_key) {
+            if let Ok(val) = std::env::var(api_key) {
+                panel.env.insert(api_key.to_string(), val);
+            }
+        }
+    }
+
+    app.panels.push(panel);
+    let panel_idx = app.panels.len() - 1;
+    app.focused_panel = panel_idx;
+    app.show_welcome = false;
+    app.focus_panel_input();
+
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        match Sandbox::create(config).await {
+            Ok(mut sandbox) => {
+                let short_id = sandbox.id()[..8.min(sandbox.id().len())].to_string();
+
+                match sandbox.start().await {
+                    Ok(()) => {
                         let project_mount = sandbox.take_project_mount();
                         let sb = Arc::new(Mutex::new(sandbox));
                         let _ = tx.send(AppEvent::SandboxReady {

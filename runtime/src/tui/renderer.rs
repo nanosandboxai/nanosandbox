@@ -438,7 +438,7 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(vec![
                 Span::raw(format!(" [{}] ", i)),
                 status,
-                Span::styled(&panel.agent_name, name_style),
+                Span::styled(panel.display_name.as_deref().unwrap_or(&panel.agent_name), name_style),
                 Span::styled(sid, Style::new().fg(Color::DarkGray)),
                 sync_label,
                 Span::styled(focus_marker, Style::new().fg(Color::Cyan)),
@@ -708,7 +708,7 @@ fn render_panel(
         Span::raw(" "),
         status_indicator,
         Span::styled(
-            &panel.agent_name,
+            panel.display_name.as_deref().unwrap_or(&panel.agent_name),
             Style::new().add_modifier(Modifier::BOLD),
         ),
         Span::styled(

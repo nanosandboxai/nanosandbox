@@ -58,6 +58,7 @@ pub use config::{
     McpServerConfig, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping,
     ProjectConfig, RegistryConfig, SandboxConfig,
 };
+pub use config::file::{find_sandbox_file, load_sandbox_file, load_sandbox_files, SandboxFile};
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PulledImage};
 pub use oci::OciBundle;
