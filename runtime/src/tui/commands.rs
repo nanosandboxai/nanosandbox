@@ -17,6 +17,10 @@ pub enum Command {
         agent: String,
         /// Optional custom container image.
         image: Option<String>,
+        /// Optional project path to mount.
+        project: Option<String>,
+        /// Optional branch name for the project clone.
+        branch: Option<String>,
     },
     /// Switch focus to a specific panel index.
     Focus {
@@ -69,6 +73,18 @@ pub enum Command {
     Copy,
     /// Toggle zoom (maximize/minimize) for the focused panel.
     Zoom,
+    /// List git branches created by nanosb sandboxes.
+    Branches,
+    /// Git sync control: show status, enable, disable, or manual sync.
+    GitSync {
+        /// Subcommand: None (status), "on", "off", "now"
+        action: Option<String>,
+    },
+    /// Open clone directory in an external tool.
+    Open {
+        /// Tool override, or None for preferred/auto-detected.
+        tool: Option<String>,
+    },
 }
 
 /// Result of parsing a slash command.
@@ -88,8 +104,10 @@ const SUPPORTED_AGENTS: &[&str] = &["claude", "opencode", "goose", "codex", "cur
 const ALL_COMMANDS: &[&str] = &[
     "/quit", "/q", "/help", "/clear", "/close", "/copy",
     "/add", "/focus", "/kill", "/reconnect", "/env",
-    "/zoom",
-    "/sandboxes", "/sb",
+    "/zoom", "/branches",
+    "/gitsync", "/gitsync on", "/gitsync off", "/gitsync now",
+    "/open",
+    "/sandboxes",
     "/mcp", "/mcp list", "/mcp add", "/mcp remove", "/mcp enable", "/mcp disable",
 ];
 
@@ -127,10 +145,16 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/mcp" => parse_mcp(&parts),
         "/env" => parse_env(&parts),
         "/kill" => parse_kill(&parts),
-        "/sandboxes" | "/sb" => ParseResult::Ok(Command::Sandboxes),
+        "/sandboxes" => ParseResult::Ok(Command::Sandboxes),
         "/reconnect" => ParseResult::Ok(Command::Reconnect),
         "/copy" => ParseResult::Ok(Command::Copy),
         "/zoom" => ParseResult::Ok(Command::Zoom),
+        "/branches" => ParseResult::Ok(Command::Branches),
+        "/gitsync" => parse_gitsync(&parts),
+        "/open" => {
+            let tool = parts.get(1).map(|s| s.to_string());
+            ParseResult::Ok(Command::Open { tool })
+        }
 
         other => ParseResult::Err(format!(
             "Unknown command: {}\nType /help for available commands.",
@@ -144,7 +168,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         Some(a) => *a,
         None => {
             return ParseResult::Err(format!(
-                "Usage: /add <agent> [--image <image>]\n\
+                "Usage: /add <agent> [--image <image>] [--project <path>] [--branch <name>]\n\
                  Supported agents: {}\n\
                  Example: /add claude",
                 SUPPORTED_AGENTS.join(", "),
@@ -152,27 +176,49 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         }
     };
 
-    // Validate agent name unless a custom --image is provided.
-    let image = if parts.get(2) == Some(&"--image") {
-        match parts.get(3) {
-            Some(img) => Some(img.to_string()),
-            None => {
-                return ParseResult::Err(
-                    "Usage: /add <agent> --image <image>\n\
-                     Example: /add myagent --image ghcr.io/org/agent:latest"
-                        .to_string(),
-                );
+    let mut image = None;
+    let mut project = None;
+    let mut branch = None;
+    let mut i = 2;
+
+    while i < parts.len() {
+        match parts[i] {
+            "--image" => {
+                match parts.get(i + 1) {
+                    Some(v) => { image = Some(v.to_string()); i += 2; }
+                    None => return ParseResult::Err(
+                        "Usage: /add <agent> --image <image>\n\
+                         Example: /add myagent --image ghcr.io/org/agent:latest".to_string(),
+                    ),
+                }
+            }
+            "--project" => {
+                match parts.get(i + 1) {
+                    Some(v) => { project = Some(v.to_string()); i += 2; }
+                    None => return ParseResult::Err(
+                        "--project requires a path\n\
+                         Usage: /add <agent> --project <path>".to_string(),
+                    ),
+                }
+            }
+            "--branch" => {
+                match parts.get(i + 1) {
+                    Some(v) => { branch = Some(v.to_string()); i += 2; }
+                    None => return ParseResult::Err(
+                        "--branch requires a name\n\
+                         Usage: /add <agent> --branch <name>".to_string(),
+                    ),
+                }
+            }
+            other => {
+                return ParseResult::Err(format!(
+                    "Unknown option: {}\n\
+                     Usage: /add <agent> [--image <image>] [--project <path>] [--branch <name>]",
+                    other,
+                ));
             }
         }
-    } else if parts.len() > 2 {
-        return ParseResult::Err(format!(
-            "Unknown option: {}\n\
-             Usage: /add <agent> [--image <image>]",
-            parts[2],
-        ));
-    } else {
-        None
-    };
+    }
 
     if image.is_none() && !SUPPORTED_AGENTS.contains(&agent) {
         return ParseResult::Err(format!(
@@ -188,6 +234,8 @@ fn parse_add(parts: &[&str]) -> ParseResult {
     ParseResult::Ok(Command::AddAgent {
         agent: agent.to_string(),
         image,
+        project,
+        branch,
     })
 }
 
@@ -321,6 +369,26 @@ fn parse_kill(parts: &[&str]) -> ParseResult {
     }
 }
 
+fn parse_gitsync(parts: &[&str]) -> ParseResult {
+    match parts.get(1).copied() {
+        None => ParseResult::Ok(Command::GitSync { action: None }),
+        Some("on") | Some("off") | Some("now") => {
+            ParseResult::Ok(Command::GitSync {
+                action: Some(parts[1].to_string()),
+            })
+        }
+        Some(other) => ParseResult::Err(format!(
+            "Unknown gitsync action: '{}'\n\
+             Usage: /gitsync [on|off|now]\n\
+             - /gitsync     Show current sync status\n\
+             - /gitsync on  Auto-sync sandbox commits to your local repo branches\n\
+             - /gitsync off Stop syncing (changes stay in sandbox clone only)\n\
+             - /gitsync now Sync sandbox commits to local repo once",
+            other,
+        )),
+    }
+}
+
 /// Return autocomplete suggestions for a partial input.
 pub fn autocomplete(partial: &str) -> Vec<String> {
     ALL_COMMANDS
@@ -351,6 +419,8 @@ mod tests {
             Some(Command::AddAgent {
                 agent: "claude".to_string(),
                 image: None,
+                project: None,
+                branch: None,
             })
         );
     }
@@ -362,6 +432,8 @@ mod tests {
             Some(Command::AddAgent {
                 agent: "claude".to_string(),
                 image: Some("my-registry/claude:v2".to_string()),
+                project: None,
+                branch: None,
             })
         );
     }
@@ -451,6 +523,8 @@ mod tests {
             ParseResult::Ok(Command::AddAgent {
                 agent: "myagent".to_string(),
                 image: Some("foo/bar:latest".to_string()),
+                project: None,
+                branch: None,
             })
         );
     }
@@ -548,7 +622,6 @@ mod tests {
     #[test]
     fn test_parse_sandboxes() {
         assert_eq!(parse_command("/sandboxes"), Some(Command::Sandboxes));
-        assert_eq!(parse_command("/sb"), Some(Command::Sandboxes));
     }
 
     #[test]
@@ -618,5 +691,84 @@ mod tests {
     fn test_parse_max_is_unknown() {
         let result = parse_command_verbose("/max");
         assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    #[test]
+    fn test_parse_add_with_project() {
+        assert_eq!(
+            parse_command_verbose("/add claude --project /tmp/myapp"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                project: Some("/tmp/myapp".to_string()),
+                branch: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_with_project_and_branch() {
+        assert_eq!(
+            parse_command_verbose("/add claude --project /tmp/myapp --branch feat/auth"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                project: Some("/tmp/myapp".to_string()),
+                branch: Some("feat/auth".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_branches() {
+        assert_eq!(parse_command("/branches"), Some(Command::Branches));
+    }
+
+    #[test]
+    fn test_parse_gitsync_status() {
+        assert_eq!(parse_command("/gitsync"), Some(Command::GitSync { action: None }));
+    }
+
+    #[test]
+    fn test_parse_gitsync_on() {
+        assert_eq!(
+            parse_command_verbose("/gitsync on"),
+            ParseResult::Ok(Command::GitSync { action: Some("on".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_gitsync_off() {
+        assert_eq!(
+            parse_command_verbose("/gitsync off"),
+            ParseResult::Ok(Command::GitSync { action: Some("off".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_gitsync_now() {
+        assert_eq!(
+            parse_command_verbose("/gitsync now"),
+            ParseResult::Ok(Command::GitSync { action: Some("now".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_gitsync_invalid() {
+        let result = parse_command_verbose("/gitsync foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    #[test]
+    fn test_parse_open_default() {
+        assert_eq!(parse_command("/open"), Some(Command::Open { tool: None }));
+    }
+
+    #[test]
+    fn test_parse_open_specific_tool() {
+        assert_eq!(
+            parse_command("/open gitui"),
+            Some(Command::Open { tool: Some("gitui".to_string()) })
+        );
     }
 }

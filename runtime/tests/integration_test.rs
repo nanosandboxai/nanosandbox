@@ -1064,3 +1064,190 @@ async fn test_mcp_full_crud_lifecycle() {
         Err(e) => println!("Sandbox creation failed: {}", e),
     }
 }
+
+// ============================================================================
+// M5: Project Mount Integration Tests
+// ============================================================================
+
+/// Test the full project mount lifecycle: detect -> setup -> simulate work -> teardown -> verify
+#[test]
+fn test_project_mount_full_lifecycle() {
+    use nanosandbox::project::{BranchStrategy, ProjectLayout, ProjectMount};
+    use std::fs;
+    use std::process::Command as GitCmd;
+    use tempfile::TempDir;
+
+    // Create a project repo
+    let dir = TempDir::new().unwrap();
+    GitCmd::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    // Configure git user for commits
+    GitCmd::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    GitCmd::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    fs::write(dir.path().join("app.rs"), "fn main() {}").unwrap();
+    GitCmd::new("git")
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    GitCmd::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Detect: should be SingleRepo
+    let mut mount = ProjectMount::detect(dir.path()).unwrap();
+    assert!(matches!(mount.layout, ProjectLayout::SingleRepo { .. }));
+
+    // Setup clone with named branch
+    let wt_path = mount
+        .setup(
+            "integration-test-1",
+            &BranchStrategy::Named("feat/test".to_string()),
+        )
+        .unwrap();
+    assert!(wt_path.exists());
+    assert!(wt_path.join("app.rs").exists());
+
+    // Simulate agent work
+    fs::write(wt_path.join("agent_output.txt"), "agent produced this").unwrap();
+    fs::write(
+        wt_path.join("app.rs"),
+        "fn main() { println!(\"modified\"); }",
+    )
+    .unwrap();
+
+    // Get mount config
+    let mount_cfg = mount.mount_config("/workspace").unwrap();
+    assert_eq!(mount_cfg.container_path, "/workspace");
+    assert!(!mount_cfg.readonly);
+
+    // Teardown: should auto-commit, fetch branch to source, and remove clone
+    mount.teardown().unwrap();
+    assert!(!wt_path.exists(), "Clone directory should be removed");
+
+    // Verify branch exists with agent's changes
+    let log = GitCmd::new("git")
+        .args(["log", "--oneline", "feat/test"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let log_str = String::from_utf8_lossy(&log.stdout);
+    assert!(
+        log_str.contains("nanosb: auto-save"),
+        "Expected auto-save commit in log: {}",
+        log_str
+    );
+
+    // Verify file content on the branch
+    let show = GitCmd::new("git")
+        .args(["show", "feat/test:agent_output.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&show.stdout).trim(),
+        "agent produced this"
+    );
+}
+
+/// Test multi-repo project mount lifecycle
+#[test]
+fn test_project_mount_multi_repo() {
+    use nanosandbox::project::{BranchStrategy, ProjectLayout, ProjectMount};
+    use std::fs;
+    use std::process::Command as GitCmd;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+
+    // Create two sub-repos
+    for name in &["frontend", "backend"] {
+        let sub = dir.path().join(name);
+        fs::create_dir_all(&sub).unwrap();
+        GitCmd::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&sub)
+            .output()
+            .unwrap();
+        GitCmd::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&sub)
+            .output()
+            .unwrap();
+        GitCmd::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&sub)
+            .output()
+            .unwrap();
+        fs::write(sub.join("index.js"), format!("// {}", name)).unwrap();
+        GitCmd::new("git")
+            .args(["add", "."])
+            .current_dir(&sub)
+            .output()
+            .unwrap();
+        GitCmd::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&sub)
+            .output()
+            .unwrap();
+    }
+
+    // Add a loose file at root
+    fs::write(dir.path().join("Makefile"), "all:\n\techo hi").unwrap();
+
+    // Detect
+    let mut mount = ProjectMount::detect(dir.path()).unwrap();
+    if let ProjectLayout::MultiRepo {
+        ref repos,
+        ref loose_items,
+    } = mount.layout
+    {
+        assert_eq!(repos.len(), 2);
+        assert!(loose_items.len() >= 1);
+    } else {
+        panic!("Expected MultiRepo layout");
+    }
+
+    // Setup
+    let wt_path = mount
+        .setup("multi-test-1", &BranchStrategy::Auto)
+        .unwrap();
+    assert!(wt_path.join("frontend").exists());
+    assert!(wt_path.join("backend").exists());
+    assert!(wt_path.join("Makefile").exists());
+
+    // Teardown
+    mount.teardown().unwrap();
+    assert!(!wt_path.exists());
+}
+
+/// Test SandboxConfig with project configuration
+#[test]
+fn test_sandbox_config_project_integration() {
+    use nanosandbox::SandboxConfig;
+
+    let config = SandboxConfig::builder()
+        .name("test")
+        .image("alpine")
+        .project("/tmp/fake-project", Some("feat/test"))
+        .build();
+
+    let proj = config.project.unwrap();
+    assert_eq!(proj.path, std::path::PathBuf::from("/tmp/fake-project"));
+    assert_eq!(proj.branch, Some("feat/test".to_string()));
+    assert_eq!(proj.mount_point, "/workspace");
+}

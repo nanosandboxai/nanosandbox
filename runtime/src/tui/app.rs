@@ -28,6 +28,15 @@ pub enum InputFocus {
     Panel,
 }
 
+/// Which file list tab is active in the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarFilesTab {
+    /// Uncommitted changes (git status --porcelain).
+    Modified,
+    /// Files changed by sandbox commits vs the branch starting point.
+    Committed,
+}
+
 /// Role of a chat message sender.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageRole {
@@ -97,6 +106,15 @@ pub struct AgentPanel {
     pub opened_urls: HashSet<String>,
     /// Trailing bytes from the last TerminalData chunk for cross-chunk URL detection.
     pub terminal_url_buffer: Vec<u8>,
+    /// Active project mount for this panel's sandbox.
+    pub project_mount: Option<crate::project::ProjectMount>,
+    /// Last known HEAD SHA in the clone (for commit auto-sync detection).
+    pub last_known_head: Option<String>,
+    /// Initial HEAD SHA of the clone at creation (base for committed files diff).
+    pub base_commit: Option<String>,
+    /// Per-panel sync override. Takes priority over global settings.
+    /// None = use global, Some(true) = force on, Some(false) = force off.
+    pub sync_override: Option<bool>,
 }
 
 impl AgentPanel {
@@ -118,6 +136,10 @@ impl AgentPanel {
             last_terminal_size: (80, 24),
             opened_urls: HashSet::new(),
             terminal_url_buffer: Vec::new(),
+            project_mount: None,
+            last_known_head: None,
+            base_commit: None,
+            sync_override: None,
         }
     }
 }
@@ -148,6 +170,28 @@ pub struct App {
     pub input_focus: InputFocus,
     /// Last rendered global input width (set by renderer, used by key handler).
     pub last_global_input_width: u16,
+    /// Project path to mount into sandboxes (if specified on launch).
+    pub project_path: Option<std::path::PathBuf>,
+    /// Scroll offset for the sandbox list section of the sidebar.
+    pub sidebar_sandbox_scroll: usize,
+    /// Scroll offset for the modified files section of the sidebar.
+    pub sidebar_files_scroll: usize,
+    /// Which sidebar section has focus (false = sandboxes, true = files).
+    pub sidebar_files_focused: bool,
+    /// Cached list of modified files for the focused panel's project mount.
+    pub sidebar_modified_files: Vec<String>,
+    /// Cached list of committed files for the focused panel's project mount.
+    pub sidebar_committed_files: Vec<String>,
+    /// Active tab in the files section of the sidebar.
+    pub sidebar_files_tab: SidebarFilesTab,
+    /// Scroll offset for the committed files section.
+    pub sidebar_committed_scroll: usize,
+    /// Tick counter for throttling sidebar refresh.
+    pub sidebar_tick_counter: u8,
+    /// Persistent user settings (loaded from ~/.nanosandbox/config.toml).
+    pub settings: crate::settings::UserSettings,
+    /// Temporary status message shown on the status bar (message, remaining ticks).
+    pub status_message: Option<(String, u8)>,
 }
 
 impl Default for App {
@@ -172,7 +216,202 @@ impl App {
             autocomplete_index: None,
             input_focus: InputFocus::Global,
             last_global_input_width: 40,
+            project_path: None,
+            sidebar_sandbox_scroll: 0,
+            sidebar_files_scroll: 0,
+            sidebar_files_focused: false,
+            sidebar_modified_files: Vec::new(),
+            sidebar_committed_files: Vec::new(),
+            sidebar_files_tab: SidebarFilesTab::Modified,
+            sidebar_committed_scroll: 0,
+            sidebar_tick_counter: 0,
+            settings: crate::settings::UserSettings::load(),
+            status_message: None,
         }
+    }
+
+    /// Set a temporary status message that appears on the status bar for ~3 seconds.
+    pub fn set_status_message(&mut self, msg: impl Into<String>) {
+        self.status_message = Some((msg.into(), 12)); // 12 ticks × 250ms = 3s
+    }
+
+    /// Refresh the cached modified files list from the focused panel's project mount.
+    pub fn refresh_sidebar_modified_files(&mut self) {
+        let panel = self.panels.get(self.focused_panel);
+        let worktree_path = panel
+            .and_then(|p| p.project_mount.as_ref())
+            .and_then(|pm| pm.worktree_base.as_ref());
+
+        self.sidebar_modified_files = match worktree_path {
+            Some(wt) => {
+                let output = std::process::Command::new("git")
+                    .args(["status", "--porcelain"])
+                    .current_dir(wt)
+                    .output();
+                match output {
+                    Ok(out) => {
+                        String::from_utf8_lossy(&out.stdout)
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .map(|l| l.to_string())
+                            .collect()
+                    }
+                    Err(_) => Vec::new(),
+                }
+            }
+            None => Vec::new(),
+        };
+        // Reset scroll if list shrank
+        if self.sidebar_files_scroll >= self.sidebar_modified_files.len() {
+            self.sidebar_files_scroll = 0;
+        }
+    }
+
+    /// Refresh the cached committed files list from the focused panel's project mount.
+    ///
+    /// Runs `git diff --name-only <base_commit>..HEAD` in the clone to find all
+    /// files changed by sandbox commits since the branch starting point.
+    pub fn refresh_sidebar_committed_files(&mut self) {
+        let panel = self.panels.get(self.focused_panel);
+        let (worktree_path, base) = match panel {
+            Some(p) => {
+                let wt = p.project_mount.as_ref().and_then(|pm| pm.worktree_base.as_ref());
+                let base = p.base_commit.as_deref();
+                (wt, base)
+            }
+            None => (None, None),
+        };
+
+        self.sidebar_committed_files = match (worktree_path, base) {
+            (Some(wt), Some(base_sha)) => {
+                let range = format!("{}..HEAD", base_sha);
+                let output = std::process::Command::new("git")
+                    .args(["diff", "--name-only", &range])
+                    .current_dir(wt)
+                    .output();
+                match output {
+                    Ok(out) if out.status.success() => {
+                        String::from_utf8_lossy(&out.stdout)
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .map(|l| l.to_string())
+                            .collect()
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
+        // Reset scroll if list shrank
+        if self.sidebar_committed_scroll >= self.sidebar_committed_files.len() {
+            self.sidebar_committed_scroll = 0;
+        }
+    }
+
+    /// Check all panels for new commits in their clones and sync to source repos.
+    ///
+    /// For each panel with a project mount, compares the clone's HEAD with the
+    /// last known SHA. When a new commit is detected, fetches the branch from
+    /// the clone back to the source repo so it's immediately visible locally.
+    /// Returns a list of (panel_idx, message) pairs for system notifications.
+    pub fn sync_project_commits(&mut self) -> Vec<(usize, String)> {
+        let mut notifications = Vec::new();
+        let global_auto_sync = self.settings.gitsync.auto_sync;
+        let notify_on_commit = self.settings.gitsync.notify_on_commit;
+
+        for (panel_idx, panel) in self.panels.iter_mut().enumerate() {
+            let pm = match panel.project_mount.as_ref() {
+                Some(pm) => pm,
+                None => continue,
+            };
+            let wt_base = match pm.worktree_base.as_ref() {
+                Some(wt) => wt,
+                None => continue,
+            };
+
+            // Get current HEAD SHA in clone.
+            let output = match std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(wt_base)
+                .output()
+            {
+                Ok(out) if out.status.success() => out,
+                _ => continue,
+            };
+            let current_head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if current_head.is_empty() {
+                continue;
+            }
+
+            // First poll — record HEAD as baseline for committed-files diff.
+            if panel.last_known_head.is_none() {
+                panel.base_commit = Some(current_head.clone());
+                panel.last_known_head = Some(current_head);
+                continue;
+            }
+
+            // No change — skip.
+            if panel.last_known_head.as_deref() == Some(&current_head) {
+                continue;
+            }
+
+            // Determine if auto-sync is active for this panel.
+            let auto_sync = panel.sync_override
+                .unwrap_or(global_auto_sync);
+
+            // Get commit info for notification.
+            let subject = std::process::Command::new("git")
+                .args(["log", "--format=%s", "-1"])
+                .current_dir(wt_base)
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            let short_sha = &current_head[..7.min(current_head.len())];
+
+            if auto_sync {
+                // Fetch from clone to source (existing behavior).
+                let (source_path, branch_name) = match pm.created_branches.first() {
+                    Some((src, branch)) => (src.clone(), branch.clone()),
+                    None => {
+                        // If branches not yet created (deferred setup), just notify.
+                        if notify_on_commit {
+                            notifications.push((
+                                panel_idx,
+                                format!("New commit {}: {} (use /gitsync now to sync)", short_sha, subject),
+                            ));
+                        }
+                        panel.last_known_head = Some(current_head);
+                        continue;
+                    }
+                };
+
+                let refspec = format!("{}:{}", branch_name, branch_name);
+                let fetch_ok = std::process::Command::new("git")
+                    .args(["fetch", &wt_base.to_string_lossy(), &refspec, "--force"])
+                    .current_dir(&source_path)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+
+                if fetch_ok {
+                    notifications.push((
+                        panel_idx,
+                        format!("Synced {} to {}: {}", short_sha, branch_name, subject),
+                    ));
+                }
+            } else if notify_on_commit {
+                // Notify only — don't fetch.
+                notifications.push((
+                    panel_idx,
+                    format!("New commit {}: {} (use /gitsync now to sync)", short_sha, subject),
+                ));
+            }
+
+            panel.last_known_head = Some(current_head);
+        }
+
+        notifications
     }
 
     /// Switch input focus to the global command bar.
@@ -194,6 +433,9 @@ impl App {
         if !self.panels.is_empty() {
             self.focused_panel = (self.focused_panel + 1) % self.panels.len();
             self.input_focus = InputFocus::Panel;
+            if self.show_sandbox_sidebar {
+                self.refresh_sidebar_modified_files();
+            }
         }
     }
 
@@ -206,6 +448,9 @@ impl App {
                 self.focused_panel - 1
             };
             self.input_focus = InputFocus::Panel;
+            if self.show_sandbox_sidebar {
+                self.refresh_sidebar_modified_files();
+            }
         }
     }
 

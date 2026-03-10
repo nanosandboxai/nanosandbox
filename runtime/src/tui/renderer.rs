@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::app::{App, AgentPanel, InputFocus, MessageRole, PanelMode};
+use super::app::{App, AgentPanel, InputFocus, MessageRole, PanelMode, SidebarFilesTab};
 use super::commands::autocomplete;
 use super::grid::grid_dimensions;
 
@@ -19,8 +19,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let global_content_width = (frame.area().width as usize).saturating_sub(3).max(1);
     let global_input_height = if app.input_focus == InputFocus::Global {
         (app.global_input.visual_line_count(global_content_width) as u16)
-            .max(1)
-            .min(MAX_INPUT_HEIGHT)
+            .clamp(1, MAX_INPUT_HEIGHT)
     } else {
         1
     };
@@ -205,7 +204,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         let in_terminal = app
             .panels
             .get(app.focused_panel)
-            .map_or(false, |p| p.mode == PanelMode::Terminal);
+            .is_some_and(|p| p.mode == PanelMode::Terminal);
 
         if in_terminal {
             let mut spans = vec![
@@ -246,7 +245,17 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let bar = Paragraph::new(hints).style(Style::new().bg(Color::DarkGray));
+    // If there's a temporary status message, show it instead of hints.
+    let line = if let Some((ref msg, _)) = app.status_message {
+        Line::from(Span::styled(
+            format!(" {}", msg),
+            Style::new().fg(Color::Yellow),
+        ))
+    } else {
+        hints
+    };
+
+    let bar = Paragraph::new(line).style(Style::new().bg(Color::DarkGray));
     frame.render_widget(bar, area);
 }
 
@@ -350,17 +359,38 @@ fn render_mcp_sidebar(frame: &mut Frame, area: Rect) {
     frame.render_widget(sidebar, area);
 }
 
-/// Render the sandbox sidebar listing all running panels.
+/// Render the sandbox sidebar with a sandboxes list and files section.
 fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = vec![
-        Line::from(Span::styled(
-            "Sandboxes",
-            Style::new()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-    ];
+    // Split sidebar into two sections: sandboxes (top) and files (bottom).
+    let has_files = !app.sidebar_modified_files.is_empty() || !app.sidebar_committed_files.is_empty();
+    let chunks = if has_files {
+        Layout::vertical([
+            Constraint::Percentage(40),
+            Constraint::Percentage(60),
+        ])
+        .split(area)
+    } else {
+        // No files: give all space to sandboxes
+        Layout::vertical([
+            Constraint::Percentage(100),
+            Constraint::Min(0),
+        ])
+        .split(area)
+    };
+
+    // ── Top section: Sandbox list ──
+    render_sandbox_list(frame, chunks[0], app);
+
+    // ── Bottom section: Files (Modified / Committed tabs) ──
+    if has_files {
+        render_files_section(frame, chunks[1], app);
+    }
+}
+
+/// Render the sandbox list section of the sidebar.
+fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
+    let inner_height = area.height.saturating_sub(2) as usize; // border top + bottom
+    let mut lines = Vec::new();
 
     if app.panels.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -369,7 +399,6 @@ fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         )));
     } else {
         for (i, panel) in app.panels.iter().enumerate() {
-            let idx = i;
             let is_focused = i == app.focused_panel;
 
             let status = if panel.mode == PanelMode::Terminal {
@@ -394,31 +423,167 @@ fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 
             let focus_marker = if is_focused { " *" } else { "" };
 
+            let sync_label = if panel.project_mount.is_some() {
+                let is_syncing = panel.sync_override
+                    .unwrap_or(app.settings.gitsync.auto_sync);
+                if is_syncing {
+                    Span::styled(" [sync]", Style::new().fg(Color::Green))
+                } else {
+                    Span::styled(" [clone]", Style::new().fg(Color::DarkGray))
+                }
+            } else {
+                Span::raw("")
+            };
+
             lines.push(Line::from(vec![
-                Span::raw(format!(" [{}] ", idx)),
+                Span::raw(format!(" [{}] ", i)),
                 status,
                 Span::styled(&panel.agent_name, name_style),
                 Span::styled(sid, Style::new().fg(Color::DarkGray)),
+                sync_label,
                 Span::styled(focus_marker, Style::new().fg(Color::Cyan)),
             ]));
         }
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Press /sb to toggle this sidebar.",
-        Style::new().fg(Color::DarkGray),
-    )));
+    // Add help hint if there's space
+    let total_lines = lines.len();
+    if total_lines + 2 <= inner_height {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "/sb to toggle",
+            Style::new().fg(Color::DarkGray),
+        )));
+    }
+
+    let scroll = app.sidebar_sandbox_scroll.min(
+        total_lines.saturating_sub(inner_height),
+    ) as u16;
+
+    let border_style = if !app.sidebar_files_focused {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
 
     let sidebar = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::new().fg(Color::DarkGray))
+                .border_style(border_style)
                 .title(" Sandboxes "),
         )
-        .wrap(Wrap { trim: false });
+        .scroll((scroll, 0));
     frame.render_widget(sidebar, area);
+}
+
+/// Render the files section of the sidebar with Modified/Committed tabs.
+fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
+    let inner_height = area.height.saturating_sub(2) as usize; // border top + bottom
+
+    // Build tab header line.
+    let mod_count = app.sidebar_modified_files.len();
+    let com_count = app.sidebar_committed_files.len();
+
+    let mod_label = format!(" Modified ({}) ", mod_count);
+    let com_label = format!(" Committed ({}) ", com_count);
+
+    let (mod_style, com_style) = match app.sidebar_files_tab {
+        SidebarFilesTab::Modified => (
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::new().fg(Color::DarkGray),
+        ),
+        SidebarFilesTab::Committed => (
+            Style::new().fg(Color::DarkGray),
+            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
+    };
+
+    let tab_line = Line::from(vec![
+        Span::styled(mod_label, mod_style),
+        Span::styled(com_label, com_style),
+    ]);
+
+    // Build file list based on active tab.
+    let (files, scroll_offset) = match app.sidebar_files_tab {
+        SidebarFilesTab::Modified => (&app.sidebar_modified_files, app.sidebar_files_scroll),
+        SidebarFilesTab::Committed => (&app.sidebar_committed_files, app.sidebar_committed_scroll),
+    };
+
+    let mut lines: Vec<Line> = vec![tab_line];
+
+    for entry in files.iter() {
+        let line = match app.sidebar_files_tab {
+            SidebarFilesTab::Modified => {
+                // git status --porcelain format: "XY filename"
+                let (status_str, filename) = if entry.len() > 3 {
+                    (&entry[..2], entry[3..].trim())
+                } else {
+                    (entry.as_str(), "")
+                };
+
+                let status_color = match status_str.trim() {
+                    "M" | " M" | "MM" => Color::Yellow,
+                    "A" | " A" => Color::Green,
+                    "D" | " D" => Color::Red,
+                    "R" => Color::Blue,
+                    "??" => Color::DarkGray,
+                    _ => Color::White,
+                };
+
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", status_str),
+                        Style::new().fg(status_color),
+                    ),
+                    Span::styled(filename, Style::new().fg(Color::White)),
+                ])
+            }
+            SidebarFilesTab::Committed => {
+                Line::from(Span::styled(
+                    format!("  {}", entry),
+                    Style::new().fg(Color::Green),
+                ))
+            }
+        };
+        lines.push(line);
+    }
+
+    // Total lines includes tab header.
+    let total_content = files.len() + 1; // +1 for tab header
+    let scroll = scroll_offset.min(
+        total_content.saturating_sub(inner_height),
+    ) as u16;
+
+    // Show scroll indicator if content overflows.
+    if total_content > inner_height {
+        let remaining = total_content.saturating_sub(inner_height + scroll_offset);
+        if remaining > 0 {
+            let hint = format!("  \u{2193} {} more", remaining);
+            lines.push(Line::from(Span::styled(hint, Style::new().fg(Color::DarkGray))));
+        }
+    }
+
+    let border_style = if app.sidebar_files_focused {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+
+    let title = match app.sidebar_files_tab {
+        SidebarFilesTab::Modified => " Files ",
+        SidebarFilesTab::Committed => " Files ",
+    };
+
+    let widget = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(title),
+        )
+        .scroll((scroll, 0));
+    frame.render_widget(widget, area);
 }
 
 /// Render the panel grid based on the number of panels.
@@ -686,8 +851,25 @@ fn render_chat(frame: &mut Frame, area: Rect, panel: &AgentPanel) {
         })
         .collect();
 
+    // scroll_offset uses "lines from bottom" semantics: 0 = pinned to bottom.
+    // Convert to "lines from top" for Paragraph::scroll().
+    let viewport_width = area.width.max(1);
+    let total_visual: u16 = lines
+        .iter()
+        .map(|l| {
+            let w = l.width() as u16;
+            if w == 0 {
+                1
+            } else {
+                w.div_ceil(viewport_width)
+            }
+        })
+        .sum();
+    let max_from_top = total_visual.saturating_sub(area.height);
+    let from_top = max_from_top.saturating_sub(panel.scroll_offset);
+
     let paragraph = Paragraph::new(lines)
-        .scroll((panel.scroll_offset, 0))
+        .scroll((from_top, 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);

@@ -117,7 +117,7 @@ impl GvproxyInstance {
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(0);
 
-        if status_code >= 200 && status_code < 300 {
+        if (200..300).contains(&status_code) {
             Ok(())
         } else {
             // Read response body for error details

@@ -234,14 +234,14 @@ impl ImageManager {
         // Auto-configure HTTP for localhost registries (common dev pattern)
         for port in &["5000", "5050", "5001"] {
             let host = format!("localhost:{}", port);
-            if !registry_clients.contains_key(&host) {
+            registry_clients.entry(host).or_insert_with(|| {
                 let localhost_config = ClientConfig {
                     protocol: ClientProtocol::Http,
                     platform_resolver: Some(create_platform_resolver()),
                     ..Default::default()
                 };
-                registry_clients.insert(host, Client::new(localhost_config));
-            }
+                Client::new(localhost_config)
+            });
         }
 
         // Load credentials or use provided

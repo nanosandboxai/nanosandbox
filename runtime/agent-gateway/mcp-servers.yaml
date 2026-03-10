@@ -24,7 +24,7 @@ servers:
 
   memory:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-memory", "--directory", "/workspace/.memory"]
+    args: ["-y", "@modelcontextprotocol/server-memory", "--directory", "/root/.memory"]
     enabled: true
 
   brave-search:
@@ -41,12 +41,12 @@ servers:
 
 agents:
   claude:
-    config_path: "/workspace/.mcp.json"
+    config_path: "/root/.mcp.json"
     format: "claude"
     exclude: [filesystem]
 
   opencode:
-    config_path: "/workspace/opencode.json"
+    config_path: "/root/.config/opencode/opencode.json"
     format: "opencode"
     exclude: []
 
@@ -61,6 +61,6 @@ agents:
     exclude: []
 
   cursor:
-    config_path: "/workspace/.cursor/mcp.json"
+    config_path: "/root/.cursor/mcp.json"
     format: "cursor"
     exclude: [filesystem]

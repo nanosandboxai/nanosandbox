@@ -527,6 +527,20 @@ func mcpRegenerateHandler(mgr *mcp.Manager) http.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 func main() {
+	// Handle --mount subcommand: direct syscall.Mount() for init scripts.
+	// util-linux's mount binary can refuse even for root in micro-VMs,
+	// so the init script uses this instead.
+	if len(os.Args) >= 5 && os.Args[1] == "--mount" {
+		// Usage: agent-gateway --mount <source> <target> <fstype>
+		src, tgt, fstype := os.Args[2], os.Args[3], os.Args[4]
+		if err := syscall.Mount(src, tgt, fstype, 0, ""); err != nil {
+			fmt.Fprintf(os.Stderr, "mount(%s, %s, %s) failed: %v\n", src, tgt, fstype, err)
+			os.Exit(1)
+		}
+		fmt.Printf("mount(%s, %s, %s) OK\n", src, tgt, fstype)
+		os.Exit(0)
+	}
+
 	skipNetworkInit := flag.Bool("skip-network-init", false, "Skip network configuration (done by init script)")
 	flag.Parse()
 

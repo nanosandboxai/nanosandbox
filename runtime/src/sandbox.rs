@@ -138,6 +138,57 @@ pub struct Sandbox {
     pulled_image: Option<PulledImage>,
     /// Creation timestamp
     created_at: DateTime<Utc>,
+    /// Active project mount (if project config was provided).
+    project_mount: Option<crate::project::ProjectMount>,
+}
+
+/// Set up project mount if configured.
+///
+/// This is shared between `Sandbox::create()` and `Sandbox::create_with_manager()`.
+fn setup_project_mount(
+    id: &str,
+    config: &mut SandboxConfig,
+) -> Result<Option<crate::project::ProjectMount>> {
+    if let Some(ref proj_config) = config.project {
+        use crate::project::{BranchStrategy, ProjectMount};
+
+        let mut pm = ProjectMount::detect(&proj_config.path).map_err(|e| {
+            Error::SandboxCreationFailed(format!("Project detection failed: {}", e))
+        })?;
+
+        let strategy = match &proj_config.branch {
+            Some(name) => BranchStrategy::Named(name.clone()),
+            None => BranchStrategy::Auto,
+        };
+
+        let wt_path = if proj_config.auto_sync {
+            pm.setup(id, &strategy).map_err(|e| {
+                Error::SandboxCreationFailed(format!("Project clone setup failed: {}", e))
+            })?
+        } else {
+            pm.setup_deferred(id, &strategy).map_err(|e| {
+                Error::SandboxCreationFailed(format!(
+                    "Project clone setup (deferred) failed: {}",
+                    e
+                ))
+            })?
+        };
+
+        info!(
+            "Project mounted: {} -> {}",
+            wt_path.display(),
+            proj_config.mount_point
+        );
+
+        // Add the virtiofs mount to config
+        if let Some(mount) = pm.mount_config(&proj_config.mount_point) {
+            config.mounts.push(mount);
+        }
+
+        Ok(Some(pm))
+    } else {
+        Ok(None)
+    }
 }
 
 impl Sandbox {
@@ -148,7 +199,7 @@ impl Sandbox {
     /// 2. For runtimes that handle image pull (Windows containerd):
     ///    Create container/VM directly (runtime handles image internally)
     /// 3. For libkrun (Linux/macOS): Pull image, extract layers, create bundle
-    pub async fn create(config: SandboxConfig) -> Result<Self> {
+    pub async fn create(mut config: SandboxConfig) -> Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
         info!("Creating sandbox {} with image {}", id, config.image);
 
@@ -159,7 +210,7 @@ impl Sandbox {
         // Initialize image manager (needed for libkrun path)
         let image_manager = Arc::new(ImageManager::with_default_cache()?);
 
-        let (bundle, pulled_image) = if handles_pull {
+        let (bundle, pulled_image, project_mount) = if handles_pull {
             // Runtime handles image pulling internally (Windows containerd)
             info!(
                 "Using {} runtime (handles image pull internally)",
@@ -169,7 +220,7 @@ impl Sandbox {
             // Create the container/VM - runtime handles image pull and rootfs setup
             runtime.create(&id, &config, None).await?;
 
-            (None, None)
+            (None, None, None)
         } else {
             // libkrun (Linux/macOS) - we need to pull and create bundle
             debug!("Pulling image: {}", config.image);
@@ -189,10 +240,14 @@ impl Sandbox {
             // Write a resolv.conf that uses the host's DNS configuration.
             Self::configure_rootfs_dns(&bundle.rootfs_path);
 
+            // Set up project mount if configured (must happen before generate_config
+            // so the virtiofs mount is included in the OCI config)
+            let project_mount = setup_project_mount(&id, &mut config)?;
+
             let oci_config = oci::generate_config(&config, &bundle.rootfs_path);
             bundle.write_config(&oci_config)?;
 
-            (Some(bundle), Some(pulled))
+            (Some(bundle), Some(pulled), project_mount)
         };
 
         info!("Sandbox {} created successfully", id);
@@ -206,6 +261,7 @@ impl Sandbox {
             image_manager,
             pulled_image,
             created_at: Utc::now(),
+            project_mount,
         })
     }
 
@@ -214,7 +270,7 @@ impl Sandbox {
     /// Note: On Windows, this function redirects to `create()` because the Windows
     /// containerd runtime handles image pulling internally and doesn't use ImageManager.
     pub async fn create_with_manager(
-        config: SandboxConfig,
+        mut config: SandboxConfig,
         image_manager: Arc<ImageManager>,
     ) -> Result<Self> {
         // On Windows, containerd handles image pull internally - redirect to create()
@@ -248,6 +304,10 @@ impl Sandbox {
             // Configure DNS in rootfs for TSI networking
             Self::configure_rootfs_dns(&bundle.rootfs_path);
 
+            // Set up project mount if configured (must happen before generate_config
+            // so the virtiofs mount is included in the OCI config)
+            let project_mount = setup_project_mount(&id, &mut config)?;
+
             let oci_config = oci::generate_config(&config, &bundle.rootfs_path);
             bundle.write_config(&oci_config)?;
 
@@ -262,6 +322,7 @@ impl Sandbox {
                 image_manager,
                 pulled_image: Some(pulled_image),
                 created_at: Utc::now(),
+                project_mount,
             })
         }
     }
@@ -576,6 +637,16 @@ impl Sandbox {
             .and_then(|r| r.ssh_command(&self.id))
     }
 
+    /// Get a reference to the active project mount, if any.
+    pub fn project_mount(&self) -> Option<&crate::project::ProjectMount> {
+        self.project_mount.as_ref()
+    }
+
+    /// Take ownership of the project mount (for transferring to TUI panels).
+    pub fn take_project_mount(&mut self) -> Option<crate::project::ProjectMount> {
+        self.project_mount.take()
+    }
+
     /// Add or update an MCP server in the running sandbox.
     ///
     /// Requires the sandbox to be in persistent (gateway) mode.
@@ -678,7 +749,7 @@ impl Sandbox {
     /// When gvproxy is available:
     /// - Sets DNS to gvproxy's built-in DNS at 192.168.127.1
     /// - Writes a network init script to bring up eth0 with static IP
-    /// Otherwise falls back to host DNS servers.
+    ///   Otherwise falls back to host DNS servers.
     fn configure_rootfs_dns(rootfs_path: &std::path::Path) {
         use crate::runtime::gvproxy_available;
 
@@ -836,6 +907,13 @@ impl Sandbox {
             self.stop().await?;
         }
 
+        // Teardown project mount (auto-commit and remove worktree)
+        if let Some(mut pm) = self.project_mount.take() {
+            if let Err(e) = pm.teardown() {
+                warn!("Failed to teardown project mount: {}", e);
+            }
+        }
+
         // Delete from runtime
         if let Some(ref runtime) = self.runtime {
             runtime.delete(&self.id).await?;
@@ -873,6 +951,7 @@ impl Sandbox {
             image_manager,
             pulled_image: None,
             created_at: Utc::now(),
+            project_mount: None,
         }
     }
 }
@@ -973,5 +1052,21 @@ mod tests {
         let result = sandbox.disable_mcp_server("test").await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
+    }
+
+    #[test]
+    fn test_sandbox_config_with_project_field() {
+        let config = SandboxConfig::builder()
+            .name("test-project")
+            .image("alpine")
+            .project("/tmp/test", None)
+            .build();
+        assert!(config.project.is_some());
+    }
+
+    #[test]
+    fn test_sandbox_new_test_has_no_project_mount() {
+        let sandbox = Sandbox::new_test("test-pm", SandboxStatus::Ready);
+        assert!(sandbox.project_mount().is_none());
     }
 }

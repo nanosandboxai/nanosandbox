@@ -32,6 +32,8 @@ pub enum AppEvent {
         sandbox: Arc<Mutex<Sandbox>>,
         /// Short sandbox identifier for display.
         short_id: String,
+        /// Project mount transferred from the sandbox (if any).
+        project_mount: Option<crate::project::ProjectMount>,
     },
     /// Sandbox creation or startup failed.
     SandboxFailed {
@@ -60,6 +62,13 @@ pub enum AppEvent {
         panel_idx: usize,
         /// Error description (None for clean disconnect).
         error: Option<String>,
+    },
+    /// Open a TUI tool (suspend terminal, launch tool, resume on exit).
+    OpenTuiTool {
+        /// Binary name of the tool to launch.
+        binary: String,
+        /// Path to the clone directory to open.
+        path: std::path::PathBuf,
     },
 }
 

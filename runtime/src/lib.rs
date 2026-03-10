@@ -45,6 +45,8 @@ pub mod image;
 pub mod oci;
 pub mod registry;
 pub mod runtime;
+pub mod project;
+pub mod settings;
 pub mod sandbox;
 
 #[cfg(feature = "cli")]
@@ -54,7 +56,7 @@ pub mod tui;
 pub use auth::CredentialStore;
 pub use config::{
     McpServerConfig, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping,
-    RegistryConfig, SandboxConfig,
+    ProjectConfig, RegistryConfig, SandboxConfig,
 };
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PulledImage};

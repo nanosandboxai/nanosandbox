@@ -44,6 +44,10 @@ pub struct SandboxConfig {
     /// MCP server configurations to push to the agent-gateway on start
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    /// Optional project mount configuration.
+    #[serde(default)]
+    pub project: Option<ProjectConfig>,
 }
 
 fn default_cpus() -> u32 {
@@ -75,6 +79,7 @@ impl Default for SandboxConfig {
             workdir: default_workdir(),
             timeout_secs: default_timeout(),
             mcp_servers: HashMap::new(),
+            project: None,
         }
     }
 }
@@ -211,6 +216,28 @@ impl SandboxConfigBuilder {
     /// Add an MCP server configuration
     pub fn mcp_server(mut self, name: impl Into<String>, config: McpServerConfig) -> Self {
         self.config.mcp_servers.insert(name.into(), config);
+        self
+    }
+
+    /// Set a project directory to mount into the sandbox.
+    pub fn project(mut self, path: impl Into<PathBuf>, branch: Option<&str>) -> Self {
+        self.config.project = Some(ProjectConfig {
+            path: path.into(),
+            branch: branch.map(String::from),
+            mount_point: "/workspace".to_string(),
+            auto_sync: false,
+        });
+        self
+    }
+
+    /// Set a project directory with a specific branch name.
+    pub fn project_with_branch(mut self, path: impl Into<PathBuf>, branch: &str) -> Self {
+        self.config.project = Some(ProjectConfig {
+            path: path.into(),
+            branch: Some(branch.to_string()),
+            mount_point: "/workspace".to_string(),
+            auto_sync: false,
+        });
         self
     }
 
@@ -495,6 +522,25 @@ pub struct McpServerConfig {
     pub enabled: bool,
 }
 
+/// Configuration for mounting a project into the sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    /// Host path to the project directory.
+    pub path: PathBuf,
+    /// Optional branch name (auto-generated if None).
+    pub branch: Option<String>,
+    /// Mount point inside the VM (default: /workspace).
+    #[serde(default = "default_project_mount_point")]
+    pub mount_point: String,
+    /// Whether auto-sync is enabled. When false, clones are created without source branches.
+    #[serde(default)]
+    pub auto_sync: bool,
+}
+
+fn default_project_mount_point() -> String {
+    "/workspace".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,5 +656,42 @@ mod tests {
         let json: serde_json::Value = serde_json::to_value(&config).unwrap();
         assert_eq!(json["enabled"], false);
         assert!(json["env"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_sandbox_config_with_project() {
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("alpine")
+            .project("/tmp/myproject", None)
+            .build();
+
+        assert!(config.project.is_some());
+        let proj = config.project.unwrap();
+        assert_eq!(proj.path, std::path::PathBuf::from("/tmp/myproject"));
+        assert!(proj.branch.is_none());
+        assert_eq!(proj.mount_point, "/workspace");
+    }
+
+    #[test]
+    fn test_sandbox_config_with_project_and_branch() {
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("alpine")
+            .project_with_branch("/tmp/myproject", "feat/auth")
+            .build();
+
+        let proj = config.project.unwrap();
+        assert_eq!(proj.branch, Some("feat/auth".to_string()));
+    }
+
+    #[test]
+    fn test_sandbox_config_no_project() {
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("alpine")
+            .build();
+
+        assert!(config.project.is_none());
     }
 }

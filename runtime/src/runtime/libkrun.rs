@@ -306,6 +306,7 @@ impl LibkrunRuntime {
 
     /// Fork a child process, configure libkrun, and run a command in the VM.
     /// Returns (exit_code, stdout, stderr).
+    #[allow(clippy::too_many_arguments)]
     fn run_in_vm(
         rootfs_path: &str,
         cpus: u32,
@@ -419,6 +420,7 @@ impl LibkrunRuntime {
 
     /// Fork a child process and stream output via an mpsc channel.
     /// Returns the exit code. Output lines are sent as `(text, is_stderr)` tuples.
+    #[allow(clippy::too_many_arguments)]
     fn run_in_vm_with_channel(
         rootfs_path: &str,
         cpus: u32,
@@ -548,6 +550,7 @@ impl LibkrunRuntime {
     /// **Important**: Call `ffi::init_log()` BEFORE this function in the child
     /// process to enable libkrun's internal debug logging. This provides
     /// detailed error messages when `krun_start_enter` returns -EINVAL.
+    #[allow(clippy::too_many_arguments)]
     fn configure_and_start_vm(
         rootfs_path: &str,
         cpus: u32,
@@ -902,6 +905,30 @@ impl LibkrunRuntime {
                     );
                 }
                 debug!("Embedded init script written to rootfs");
+            }
+        }
+
+        // Write virtiofs mount config for the guest init script.
+        // The tags must match the "mount{i}" convention used in krun_add_virtiofs above.
+        {
+            let mut mount_lines = Vec::new();
+            for (i, m) in config
+                .mounts
+                .iter()
+                .filter(|m| m.mount_type == MountType::VirtioFs || m.mount_type == MountType::Bind)
+                .enumerate()
+            {
+                if m.mount_type == MountType::VirtioFs {
+                    mount_lines.push(format!("mount{} {}", i, m.container_path));
+                }
+            }
+            if !mount_lines.is_empty() {
+                let mount_config_path = rootfs_path.join("etc/nanosb-mounts");
+                let _ = std::fs::write(&mount_config_path, mount_lines.join("\n") + "\n");
+                debug!(
+                    "Wrote virtiofs mount config ({} entries) to rootfs",
+                    mount_lines.len()
+                );
             }
         }
 
@@ -1270,6 +1297,7 @@ impl LibkrunRuntime {
     /// called from a `fork()`ed child of a multi-threaded parent process (the
     /// TUI's tokio runtime). `posix_spawn` creates a clean, single-threaded
     /// child process where Hypervisor.framework works correctly.
+    #[allow(clippy::too_many_arguments)]
     fn boot_persistent_vm(
         sandbox_id: &str,
         rootfs_path: &str,
@@ -1772,7 +1800,7 @@ impl LibkrunRuntime {
         })
         .await
         .map_err(|e| Error::ExecFailed(format!("Task join error: {}", e)))?
-        .map_err(|e| Error::ExecFailed(e))?;
+        .map_err(Error::ExecFailed)?;
 
         Ok(ExecOutput {
             exit_code: result.0,
@@ -1835,7 +1863,7 @@ impl LibkrunRuntime {
         })
         .await
         .map_err(|e| Error::ExecFailed(format!("Task join error: {}", e)))?
-        .map_err(|e| Error::ExecFailed(e))?;
+        .map_err(Error::ExecFailed)?;
 
         Ok(ExecOutput {
             exit_code: result.0,
@@ -1937,7 +1965,7 @@ impl LibkrunRuntime {
         let result = handle
             .await
             .map_err(|e| Error::ExecFailed(format!("Task join error: {}", e)))?
-            .map_err(|e| Error::ExecFailed(e))?;
+            .map_err(Error::ExecFailed)?;
 
         Ok(result)
     }
@@ -1986,7 +2014,7 @@ impl LibkrunRuntime {
         let result = handle
             .await
             .map_err(|e| Error::ExecFailed(format!("Task join error: {}", e)))?
-            .map_err(|e| Error::ExecFailed(e))?;
+            .map_err(Error::ExecFailed)?;
 
         Ok(result)
     }
@@ -2184,7 +2212,7 @@ impl LibkrunRuntime {
         let result = handle
             .await
             .map_err(|e| Error::ExecFailed(format!("Task join error: {}", e)))?
-            .map_err(|e| Error::ExecFailed(e))?;
+            .map_err(Error::ExecFailed)?;
 
         eprintln!("[send_message] Complete: exit_code={}", result);
         Ok(result)

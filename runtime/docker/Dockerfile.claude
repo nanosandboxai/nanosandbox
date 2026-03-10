@@ -7,5 +7,6 @@ RUN npm install -g @anthropic-ai/claude-code \
     && npm cache clean --force
 
 RUN claude --version && echo "Claude Code: OK"
+RUN "rm -R"
 
 CMD ["/usr/local/bin/nanosb-init.sh"]

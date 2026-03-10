@@ -88,6 +88,7 @@ impl russh::client::Handler for SshHandler {
 /// 5. Spawns background tasks for reading/writing the SSH channel
 ///
 /// Returns an `SshTerminalHandle` for the caller to send keystrokes and resize events.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_ssh(
     ssh_port: u16,
     key_path: PathBuf,
@@ -95,6 +96,7 @@ pub async fn connect_ssh(
     rows: u16,
     agent_name: &str,
     env: &HashMap<String, String>,
+    workdir: Option<&str>,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<SshTerminalHandle, anyhow::Error> {
@@ -136,8 +138,11 @@ pub async fn connect_ssh(
         .await?;
     channel.request_shell(false).await?;
 
-    // Build the initialization commands (env vars + agent CLI launch)
+    // Build the initialization commands (cd + env vars + agent CLI launch)
     let mut init_commands = String::new();
+    if let Some(dir) = workdir {
+        init_commands.push_str(&format!("cd '{}'\n", dir));
+    }
     for (key, val) in env {
         init_commands.push_str(&format!("export {}='{}'\n", key, val.replace('\'', "'\\''")));
     }
@@ -394,7 +399,7 @@ pub fn extract_urls(data: &[u8], prev_buffer: &[u8]) -> (Vec<String>, Vec<u8>) {
         }
 
         // Strip trailing punctuation that's likely not part of the URL.
-        while url.ends_with(|c: char| c == '.' || c == ',' || c == ')' || c == ']' || c == ';') {
+        while url.ends_with(['.', ',', ')', ']', ';']) {
             url.pop();
         }
 

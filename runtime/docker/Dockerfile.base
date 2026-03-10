@@ -45,12 +45,12 @@ RUN npm install -g \
     @upstash/context7-mcp \
     && npm cache clean --force
 
-# Create config directories for MCP config generation
+# Create config directories for MCP config generation (all under /root/ to keep /workspace clean)
 RUN mkdir -p /root/.config/goose \
     && mkdir -p /root/.codex \
     && mkdir -p /root/.config/opencode \
-    && mkdir -p /workspace/.cursor \
-    && mkdir -p /workspace/.memory
+    && mkdir -p /root/.cursor \
+    && mkdir -p /root/.memory
 
 WORKDIR /workspace
 

@@ -8,7 +8,7 @@
 # if it exits for ANY reason, the VM shuts down. Every command must
 # be individually guarded with "|| true" or explicit error handling.
 
-echo "nanosb-init: starting (v3)"
+echo "nanosb-init: starting (v6-virtiofs)"
 
 # ---------------------------------------------------------------
 # 1. Configure networking (gvproxy virtio-net)
@@ -35,7 +35,27 @@ echo "nameserver 192.168.127.1" > /etc/resolv.conf 2>/dev/null || true
 echo "nanosb-init: networking configured"
 
 # ---------------------------------------------------------------
-# 2. Start sshd (background) — enables SSH health check + access
+# 2. Mount virtiofs shared directories
+# ---------------------------------------------------------------
+# The host writes /etc/nanosb-mounts with lines: "<tag> <mountpoint>"
+# Each line corresponds to a virtiofs device registered via krun_add_virtiofs.
+if [ -f /etc/nanosb-mounts ]; then
+    while read -r tag mountpoint; do
+        [ -z "$tag" ] && continue
+        mkdir -p "$mountpoint" 2>/dev/null || true
+        # Use agent-gateway --mount for direct syscall.Mount() — util-linux's
+        # mount binary refuses even for root in libkrun micro-VMs.
+        if /usr/local/bin/agent-gateway --mount "$tag" "$mountpoint" virtiofs 2>&1; then
+            echo "nanosb-init: mounted $tag -> $mountpoint"
+        else
+            echo "nanosb-init: mount $tag -> $mountpoint FAILED"
+        fi
+    done < /etc/nanosb-mounts
+    echo "nanosb-init: virtiofs mounts done"
+fi
+
+# ---------------------------------------------------------------
+# 3. Start sshd (background) — enables SSH health check + access
 # ---------------------------------------------------------------
 if [ -x /usr/sbin/sshd ]; then
     # Generate host keys if missing (first boot)
@@ -56,7 +76,7 @@ if [ -x /usr/sbin/sshd ]; then
 fi
 
 # ---------------------------------------------------------------
-# 3. Start agent-gateway (foreground) — handles agent API + MCP
+# 4. Start agent-gateway (foreground) — handles agent API + MCP
 # ---------------------------------------------------------------
 if [ -x /usr/local/bin/agent-gateway ]; then
     echo "nanosb-init: starting agent-gateway"

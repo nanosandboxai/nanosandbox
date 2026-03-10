@@ -35,6 +35,10 @@ mod cli {
         /// Verbose output
         #[arg(short, long, global = true)]
         pub verbose: bool,
+
+        /// Project directory to mount into sandboxes
+        #[arg(long, global = true)]
+        pub project: Option<String>,
     }
 
     #[derive(Subcommand)]
@@ -126,6 +130,13 @@ mod cli {
 
         /// Check runtime prerequisites
         Doctor,
+
+        /// Clean up stale project clones and list nanosb branches
+        Cleanup {
+            /// Project directory (defaults to current directory)
+            #[arg(long)]
+            project: Option<String>,
+        },
     }
 
     /// Image info for table display
@@ -210,7 +221,18 @@ mod cli {
         match cli.command {
             None => {
                 // Default: launch TUI when no subcommand is given
-                nanosandbox::tui::run::run_tui().await
+                let project_path = cli.project
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        // Auto-detect: if cwd is a git repo, use it
+                        let cwd = std::env::current_dir().ok()?;
+                        if cwd.join(".git").exists() {
+                            Some(cwd)
+                        } else {
+                            None
+                        }
+                    });
+                nanosandbox::tui::run::run_tui(project_path).await
             }
             Some(Commands::Pull { image }) => cmd_pull(&image, cli.format, cli.verbose).await,
             Some(Commands::Images) => cmd_images(cli.format).await,
@@ -249,6 +271,7 @@ mod cli {
             Some(Commands::Stop { sandbox }) => cmd_stop(&sandbox, cli.verbose).await,
             Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
             Some(Commands::Doctor) => cmd_doctor(cli.format).await,
+            Some(Commands::Cleanup { project }) => cmd_cleanup(project.as_deref()).await,
         }
     }
 
@@ -919,6 +942,116 @@ mod cli {
             }).collect::<Vec<_>>(),
             "warnings": result.warnings,
         })
+    }
+
+    /// Clean up stale project clones and list project branches.
+    async fn cmd_cleanup(project: Option<&str>) -> anyhow::Result<()> {
+        let project_path = match project {
+            Some(p) => std::path::PathBuf::from(p),
+            None => std::env::current_dir()?,
+        };
+
+        let canonical_path = project_path.canonicalize().unwrap_or_else(|_| project_path.clone());
+        let clones = nanosandbox::project::clones_dir(&canonical_path);
+        if !clones.exists() {
+            println!("No nanosb clones found for {}", project_path.display());
+            return Ok(());
+        }
+
+        let mut cleaned = 0;
+        if let Ok(entries) = std::fs::read_dir(&clones) {
+            for entry in entries {
+                let entry = entry?;
+                if entry.path().is_dir() {
+                    println!(
+                        "Cleaning up stale clone: {}",
+                        entry.file_name().to_string_lossy()
+                    );
+
+                    let clone_path = entry.path();
+
+                    // Detect the branch name from the clone
+                    let branch_output = std::process::Command::new("git")
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .current_dir(&clone_path)
+                        .output();
+                    let branch_name = branch_output
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+                    // Auto-commit any uncommitted changes
+                    let status_output = std::process::Command::new("git")
+                        .args(["status", "--porcelain"])
+                        .current_dir(&clone_path)
+                        .output();
+                    if let Ok(status_out) = status_output {
+                        let status_text = String::from_utf8_lossy(&status_out.stdout);
+                        if !status_text.trim().is_empty() {
+                            println!("  Auto-committing uncommitted changes...");
+                            let _ = std::process::Command::new("git")
+                                .args(["add", "-A"])
+                                .current_dir(&clone_path)
+                                .output();
+                            let _ = std::process::Command::new("git")
+                                .args(["commit", "-m", "nanosb: auto-save on cleanup"])
+                                .current_dir(&clone_path)
+                                .env("GIT_AUTHOR_NAME", "nanosandbox")
+                                .env("GIT_AUTHOR_EMAIL", "nanosandbox@localhost")
+                                .env("GIT_COMMITTER_NAME", "nanosandbox")
+                                .env("GIT_COMMITTER_EMAIL", "nanosandbox@localhost")
+                                .output();
+                        }
+                    }
+
+                    // Fetch the branch back to source repo
+                    if let Some(ref branch) = branch_name {
+                        let refspec = format!("{}:{}", branch, branch);
+                        let _ = std::process::Command::new("git")
+                            .args([
+                                "fetch",
+                                &clone_path.to_string_lossy(),
+                                &refspec,
+                                "--force",
+                            ])
+                            .current_dir(&project_path)
+                            .output();
+                    }
+
+                    // Remove the clone directory
+                    std::fs::remove_dir_all(&clone_path).ok();
+                    cleaned += 1;
+                }
+            }
+        }
+
+        // Remove empty clones dir
+        if std::fs::read_dir(&clones)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true)
+        {
+            std::fs::remove_dir_all(&clones).ok();
+        }
+
+        // List nanosb branches
+        let output = std::process::Command::new("git")
+            .args(["branch", "--list", "nanosb/*"])
+            .current_dir(&project_path)
+            .output();
+
+        if let Ok(out) = output {
+            let branches = String::from_utf8_lossy(&out.stdout);
+            if !branches.trim().is_empty() {
+                println!("\nRemaining nanosb branches:");
+                for line in branches.lines() {
+                    println!("  {}", line.trim());
+                }
+                println!("\nTo delete a merged branch: git branch -d <branch-name>");
+            }
+        }
+
+        println!("\nCleaned up {} clone(s).", cleaned);
+        Ok(())
     }
 
     /// Run preflight validation, showing doctor output on failure.

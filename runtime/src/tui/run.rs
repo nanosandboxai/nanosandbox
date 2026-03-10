@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, Mutex};
 use crate::config::{McpServerConfig, SandboxConfig};
 use crate::Sandbox;
 
-use super::app::{AgentPanel, App, ChatMessage, InputFocus, MessageRole, PanelMode, SubmitResult};
+use super::app::{AgentPanel, App, ChatMessage, InputFocus, MessageRole, PanelMode, SidebarFilesTab, SubmitResult};
 use super::commands::{self, Command};
 use super::event::{spawn_terminal_event_reader, AppEvent};
 use super::renderer;
@@ -29,7 +29,7 @@ use super::renderer;
 ///
 /// This enables raw mode, enters the alternate screen, and runs the main
 /// event loop. On exit (or error) it restores the terminal.
-pub async fn run_tui() -> anyhow::Result<()> {
+pub async fn run_tui(project_path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     // Check if we're running in a real terminal.
     if !io::stdout().is_terminal() {
         anyhow::bail!(
@@ -71,7 +71,7 @@ pub async fn run_tui() -> anyhow::Result<()> {
     // corrupt the ratatui alternate screen or cause panics when the
     // terminal buffer fills up (EAGAIN / os error 35).
     let saved_stderr = unsafe { libc::dup(io::stderr().as_raw_fd()) };
-    let dev_null = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_WRONLY) };
+    let dev_null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY) };
     if dev_null >= 0 {
         unsafe {
             libc::dup2(dev_null, libc::STDERR_FILENO);
@@ -104,6 +104,7 @@ pub async fn run_tui() -> anyhow::Result<()> {
 
     // Create app state.
     let mut app = App::new();
+    app.project_path = project_path;
 
     // Create the event channel.
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
@@ -150,7 +151,7 @@ pub async fn run_tui() -> anyhow::Result<()> {
                     });
                 }
             }
-            AppEvent::SandboxReady { panel_idx, sandbox, short_id } => {
+            AppEvent::SandboxReady { panel_idx, sandbox, short_id, project_mount } => {
                 // Get SSH info before storing sandbox
                 let ssh_info = {
                     let sb = sandbox.lock().await;
@@ -162,6 +163,7 @@ pub async fn run_tui() -> anyhow::Result<()> {
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
                     panel.sandbox = Some(sandbox);
                     panel.sandbox_id_short = short_id.clone();
+                    panel.project_mount = project_mount;
                     panel.chat_history.push(ChatMessage {
                         role: MessageRole::System,
                         content: format!("Sandbox {} started. Connecting SSH terminal...", short_id),
@@ -172,13 +174,14 @@ pub async fn run_tui() -> anyhow::Result<()> {
                     if let Some(panel) = app.panels.get(panel_idx) {
                         let agent_name = panel.agent_name.clone();
                         let env = panel.env.clone();
+                        let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             // Small delay for sshd to be fully ready
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             match super::terminal::connect_ssh(
                                 ssh_port, key_path, 80, 24,
-                                &agent_name, &env, panel_idx, tx.clone(),
+                                &agent_name, &env, workdir.as_deref(), panel_idx, tx.clone(),
                             ).await {
                                 Ok(handle) => {
                                     let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -250,7 +253,67 @@ pub async fn run_tui() -> anyhow::Result<()> {
                 }
             }
             AppEvent::Tick => {
-                // Just re-render below.
+                // Tick down temporary status message.
+                if let Some((_, ref mut ticks)) = app.status_message {
+                    *ticks = ticks.saturating_sub(1);
+                    if *ticks == 0 {
+                        app.status_message = None;
+                    }
+                }
+                app.sidebar_tick_counter = app.sidebar_tick_counter.wrapping_add(1);
+                if app.sidebar_tick_counter.is_multiple_of(8) {
+                    // Refresh file lists when sidebar is visible (~every 2s).
+                    if app.show_sandbox_sidebar {
+                        app.refresh_sidebar_modified_files();
+                        app.refresh_sidebar_committed_files();
+                    }
+                    // Auto-sync commits from all panel clones to source repos.
+                    let notifications = app.sync_project_commits();
+                    for (panel_idx, message) in notifications {
+                        if let Some(panel) = app.panels.get_mut(panel_idx) {
+                            panel.chat_history.push(ChatMessage {
+                                role: MessageRole::System,
+                                content: message,
+                            });
+                        }
+                    }
+                }
+            }
+            AppEvent::OpenTuiTool { binary, path } => {
+                // Suspend TUI: leave alternate screen, disable raw mode
+                let _ = disable_raw_mode();
+                let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+
+                // Restore stderr so the tool can use it
+                if saved_stderr >= 0 {
+                    unsafe { libc::dup2(saved_stderr, libc::STDERR_FILENO); }
+                }
+
+                // Build tool-specific arguments
+                let path_str = path.to_string_lossy().to_string();
+                let mut cmd = std::process::Command::new(&binary);
+                match binary.as_str() {
+                    "gitui" => { cmd.args(["-d", &path_str]); }
+                    "lazygit" => { cmd.args(["-p", &path_str]); }
+                    "tig" => { cmd.current_dir(&path); }
+                    _ => { cmd.arg(&path); }
+                };
+                // Block until tool exits
+                let _ = cmd.status();
+
+                // Redirect stderr back to /dev/null
+                let dev_null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY) };
+                if dev_null >= 0 {
+                    unsafe {
+                        libc::dup2(dev_null, libc::STDERR_FILENO);
+                        libc::close(dev_null);
+                    }
+                }
+
+                // Resume TUI: enter alternate screen, enable raw mode
+                let _ = enable_raw_mode();
+                let _ = execute!(terminal.backend_mut(), EnterAlternateScreen);
+                terminal.clear()?;
             }
         }
 
@@ -276,6 +339,13 @@ pub async fn run_tui() -> anyhow::Result<()> {
     }
 
     // Clean up all running sandboxes (kill VMs, stop gvproxy, remove SSH keys).
+    // Teardown project mounts first (auto-commit and fetch clones).
+    for panel in &mut app.panels {
+        if let Some(mut pm) = panel.project_mount.take() {
+            let _ = pm.teardown();
+        }
+    }
+
     let sandbox_count = app
         .panels
         .iter()
@@ -387,6 +457,46 @@ async fn handle_key_event(
                         }
                         return;
                     }
+                    // Sidebar navigation: Ctrl+Arrow keys
+                    KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if app.show_sandbox_sidebar {
+                            app.sidebar_files_tab = match app.sidebar_files_tab {
+                                SidebarFilesTab::Modified => SidebarFilesTab::Committed,
+                                SidebarFilesTab::Committed => SidebarFilesTab::Modified,
+                            };
+                        }
+                        return;
+                    }
+                    KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if app.show_sandbox_sidebar {
+                            match app.sidebar_files_tab {
+                                SidebarFilesTab::Modified => {
+                                    app.sidebar_files_scroll = app.sidebar_files_scroll.saturating_sub(1);
+                                }
+                                SidebarFilesTab::Committed => {
+                                    app.sidebar_committed_scroll = app.sidebar_committed_scroll.saturating_sub(1);
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if app.show_sandbox_sidebar {
+                            match app.sidebar_files_tab {
+                                SidebarFilesTab::Modified => {
+                                    if app.sidebar_files_scroll + 1 < app.sidebar_modified_files.len() {
+                                        app.sidebar_files_scroll += 1;
+                                    }
+                                }
+                                SidebarFilesTab::Committed => {
+                                    if app.sidebar_committed_scroll + 1 < app.sidebar_committed_files.len() {
+                                        app.sidebar_committed_scroll += 1;
+                                    }
+                                }
+                            }
+                        }
+                        return;
+                    }
                     _ => {
                         // Forward everything else to SSH terminal
                         let bytes = super::terminal::crossterm_key_to_bytes(key);
@@ -401,6 +511,46 @@ async fn handle_key_event(
                     }
                 }
             }
+        }
+    }
+
+    // Sidebar: Ctrl+Up/Down scrolls files, Ctrl+Left/Right switches tabs.
+    if app.show_sandbox_sidebar && key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Up => {
+                match app.sidebar_files_tab {
+                    SidebarFilesTab::Modified => {
+                        app.sidebar_files_scroll = app.sidebar_files_scroll.saturating_sub(1);
+                    }
+                    SidebarFilesTab::Committed => {
+                        app.sidebar_committed_scroll = app.sidebar_committed_scroll.saturating_sub(1);
+                    }
+                }
+                return;
+            }
+            KeyCode::Down => {
+                match app.sidebar_files_tab {
+                    SidebarFilesTab::Modified => {
+                        if app.sidebar_files_scroll + 1 < app.sidebar_modified_files.len() {
+                            app.sidebar_files_scroll += 1;
+                        }
+                    }
+                    SidebarFilesTab::Committed => {
+                        if app.sidebar_committed_scroll + 1 < app.sidebar_committed_files.len() {
+                            app.sidebar_committed_scroll += 1;
+                        }
+                    }
+                }
+                return;
+            }
+            KeyCode::Left | KeyCode::Right => {
+                app.sidebar_files_tab = match app.sidebar_files_tab {
+                    SidebarFilesTab::Modified => SidebarFilesTab::Committed,
+                    SidebarFilesTab::Committed => SidebarFilesTab::Modified,
+                };
+                return;
+            }
+            _ => {}
         }
     }
 
@@ -457,6 +607,11 @@ async fn handle_key_event(
                         return;
                     }
                 }
+            }
+
+            // Reset scroll to bottom so the user sees command output / their message.
+            if let Some(panel) = app.focused_panel_mut() {
+                panel.scroll_offset = 0;
             }
 
             let result = app.handle_submit();
@@ -540,7 +695,8 @@ async fn handle_key_event(
                 if row > 0 {
                     app.handle_move_up(width);
                 } else if let Some(panel) = app.focused_panel_mut() {
-                    panel.scroll_offset = panel.scroll_offset.saturating_sub(1);
+                    // scroll_offset = lines from bottom; adding moves up
+                    panel.scroll_offset = panel.scroll_offset.saturating_add(1);
                 }
             }
         }
@@ -558,18 +714,19 @@ async fn handle_key_event(
                 if row + 1 < total_lines {
                     app.handle_move_down(width);
                 } else if let Some(panel) = app.focused_panel_mut() {
-                    panel.scroll_offset = panel.scroll_offset.saturating_add(1);
+                    // scroll_offset = lines from bottom; subtracting moves down
+                    panel.scroll_offset = panel.scroll_offset.saturating_sub(1);
                 }
             }
         }
         KeyCode::PageUp => {
             if let Some(panel) = app.focused_panel_mut() {
-                panel.scroll_offset = panel.scroll_offset.saturating_sub(10);
+                panel.scroll_offset = panel.scroll_offset.saturating_add(10);
             }
         }
         KeyCode::PageDown => {
             if let Some(panel) = app.focused_panel_mut() {
-                panel.scroll_offset = panel.scroll_offset.saturating_add(10);
+                panel.scroll_offset = panel.scroll_offset.saturating_sub(10);
             }
         }
 
@@ -602,8 +759,9 @@ async fn handle_command(
                 role: MessageRole::System,
                 content: concat!(
                     "Available commands:\n",
-                    "  /add <agent> [--image <img>]  Add a new agent panel\n",
-                    "  /sandboxes (/sb)              Toggle sandbox sidebar\n",
+                    "  /add <agent> [--image <img>] [--project <path>] [--branch <name>]\n",
+                    "                                Add a new agent panel\n",
+                    "  /sandboxes                    Toggle sandbox sidebar\n",
                     "  /focus <n>                    Focus panel n (0-indexed)\n",
                     "  /close                        Close focused panel\n",
                     "  /kill [n]                     Kill sandbox & remove panel (0-indexed)\n",
@@ -612,12 +770,15 @@ async fn handle_command(
                     "  /clear                        Clear chat history\n",
                     "  /env [KEY=VALUE]              Set/list panel env vars\n",
                     "  /reconnect                    Reconnect SSH terminal\n",
+                    "  /branches                     List nanosb branches in project\n",
                     "  /mcp                          Toggle MCP sidebar\n",
                     "  /mcp list                     List MCP servers\n",
                     "  /mcp add <name> <cmd> [args]  Add MCP server\n",
                     "  /mcp remove <name>            Remove MCP server\n",
                     "  /mcp enable <name>            Enable MCP server\n",
                     "  /mcp disable <name>           Disable MCP server\n",
+                    "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
+                    "  /open [tool]                  Open clone in external tool\n",
                     "  /quit                         Exit the TUI",
                 )
                 .to_string(),
@@ -672,14 +833,17 @@ async fn handle_command(
         Command::McpToggle => {
             app.show_mcp_sidebar = !app.show_mcp_sidebar;
         }
-        Command::AddAgent { agent, image } => {
-            add_agent(app, &agent, image.as_deref(), tx);
+        Command::AddAgent { agent, image, project, branch } => {
+            add_agent(app, &agent, image.as_deref(), project.as_deref(), branch.as_deref(), tx);
         }
         Command::Env { assignment } => {
             handle_env(app, assignment);
         }
         Command::Sandboxes => {
             app.show_sandbox_sidebar = !app.show_sandbox_sidebar;
+            if app.show_sandbox_sidebar {
+                app.refresh_sidebar_modified_files();
+            }
         }
         Command::Reconnect => {
             let panel_idx = app.focused_panel;
@@ -702,6 +866,7 @@ async fn handle_command(
                 if let Some((ssh_port, key_path)) = ssh_info {
                     let agent_name = panel.agent_name.clone();
                     let env = panel.env.clone();
+                    let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
                     let tx = tx.clone();
                     panel.chat_history.push(ChatMessage {
                         role: MessageRole::System,
@@ -710,7 +875,7 @@ async fn handle_command(
                     tokio::spawn(async move {
                         match super::terminal::connect_ssh(
                             ssh_port, key_path, 80, 24,
-                            &agent_name, &env, panel_idx, tx.clone(),
+                            &agent_name, &env, workdir.as_deref(), panel_idx, tx.clone(),
                         ).await {
                             Ok(handle) => {
                                 let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -753,6 +918,13 @@ async fn handle_command(
                     app.system_messages.push(msg);
                 }
             } else {
+                // Teardown project mount before removing the panel.
+                if let Some(mut pm) = app.panels[idx].project_mount.take() {
+                    if let Err(e) = pm.teardown() {
+                        eprintln!("Warning: project mount teardown failed: {}", e);
+                    }
+                }
+
                 let sandbox_arc = app.panels[idx].sandbox.take();
                 let agent_name = app.panels[idx].agent_name.clone();
 
@@ -822,6 +994,240 @@ async fn handle_command(
         Command::Zoom => {
             if !app.panels.is_empty() {
                 app.zoomed = !app.zoomed;
+            }
+        }
+        Command::Branches => {
+            let project_dir = app.project_path.as_ref();
+            if let Some(dir) = project_dir {
+                let output = std::process::Command::new("git")
+                    .args(["branch", "--list", "nanosb/*"])
+                    .current_dir(dir)
+                    .output();
+                let msg = match output {
+                    Ok(out) => {
+                        let branches = String::from_utf8_lossy(&out.stdout);
+                        if branches.trim().is_empty() {
+                            "No nanosb branches found.".to_string()
+                        } else {
+                            format!("Nanosb branches:\n{}", branches)
+                        }
+                    }
+                    Err(e) => format!("Failed to list branches: {}", e),
+                };
+                let chat_msg = ChatMessage {
+                    role: MessageRole::System,
+                    content: msg,
+                };
+                if let Some(panel) = app.focused_panel_mut() {
+                    panel.chat_history.push(chat_msg);
+                } else {
+                    app.system_messages.push(chat_msg);
+                }
+            } else {
+                let msg = ChatMessage {
+                    role: MessageRole::System,
+                    content: "No project configured. Use --project flag when launching nanosb.".to_string(),
+                };
+                if let Some(panel) = app.focused_panel_mut() {
+                    panel.chat_history.push(msg);
+                } else {
+                    app.system_messages.push(msg);
+                }
+            }
+        }
+        Command::GitSync { action } => {
+            let panel_idx = app.focused_panel;
+            match action.as_deref() {
+                None => {
+                    // Show sync status
+                    let auto = app.panels.get(panel_idx)
+                        .and_then(|p| p.sync_override)
+                        .unwrap_or(app.settings.gitsync.auto_sync);
+                    let status_label = if auto { "ON (unsafe)" } else { "OFF (safe)" };
+                    let has_branch = app.panels.get(panel_idx)
+                        .and_then(|p| p.project_mount.as_ref())
+                        .map(|pm| !pm.created_branches.is_empty())
+                        .unwrap_or(false);
+                    let branch_info = if has_branch {
+                        app.panels.get(panel_idx)
+                            .and_then(|p| p.project_mount.as_ref())
+                            .and_then(|pm| pm.created_branches.first())
+                            .map(|(_, b)| format!("Branch: {}", b))
+                            .unwrap_or_default()
+                    } else {
+                        "No source branch created yet".to_string()
+                    };
+                    let msg = format!(
+                        "Git sync: {}\nNotify on commit: {}\n{}",
+                        status_label,
+                        if app.settings.gitsync.notify_on_commit { "ON" } else { "OFF" },
+                        branch_info,
+                    );
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        panel.chat_history.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: msg,
+                        });
+                    }
+                }
+                Some("on") => {
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        panel.sync_override = Some(true);
+                        panel.chat_history.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: "Auto-sync ENABLED for this panel.\n\
+                                      WARNING: Agent commits will be fetched to your local branch automatically.\n\
+                                      This can be unsafe — use /gitsync off to disable.".to_string(),
+                        });
+                        // Create source branch if deferred
+                        if let Some(ref mut pm) = panel.project_mount {
+                            if pm.created_branches.is_empty() {
+                                if let Err(e) = pm.create_source_branch_and_fetch() {
+                                    panel.chat_history.push(ChatMessage {
+                                        role: MessageRole::System,
+                                        content: format!("Failed to create source branch: {}", e),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Some("off") => {
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        panel.sync_override = Some(false);
+                        panel.chat_history.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: "Auto-sync DISABLED for this panel.".to_string(),
+                        });
+                    }
+                }
+                Some("now") => {
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        if let Some(ref mut pm) = panel.project_mount {
+                            // Create source branch if deferred
+                            if pm.created_branches.is_empty() {
+                                if let Err(e) = pm.create_source_branch_and_fetch() {
+                                    panel.chat_history.push(ChatMessage {
+                                        role: MessageRole::System,
+                                        content: format!("Failed to create source branch: {}", e),
+                                    });
+                                    return;
+                                }
+                            }
+                            // Fetch current state
+                            if let Some(ref wt_base) = pm.worktree_base {
+                                if let Some((source, branch)) = pm.created_branches.first() {
+                                    let refspec = format!("{}:{}", branch, branch);
+                                    let ok = std::process::Command::new("git")
+                                        .args(["fetch", &wt_base.to_string_lossy(), &refspec, "--force"])
+                                        .current_dir(source)
+                                        .output()
+                                        .map(|o| o.status.success())
+                                        .unwrap_or(false);
+                                    let msg = if ok {
+                                        format!("Synced to branch '{}'.", branch)
+                                    } else {
+                                        "Sync failed. Check clone state.".to_string()
+                                    };
+                                    panel.chat_history.push(ChatMessage {
+                                        role: MessageRole::System,
+                                        content: msg,
+                                    });
+                                }
+                            }
+                        } else {
+                            panel.chat_history.push(ChatMessage {
+                                role: MessageRole::System,
+                                content: "No project mount for this panel.".to_string(),
+                            });
+                        }
+                    }
+                }
+                _ => {} // parse_gitsync already validates
+            }
+        }
+        Command::Open { tool } => {
+            let panel_idx = app.focused_panel;
+            let clone_path = app.panels.get(panel_idx)
+                .and_then(|p| p.project_mount.as_ref())
+                .and_then(|pm| pm.worktree_base.clone());
+
+            let clone_path = match clone_path {
+                Some(p) => p,
+                None => {
+                    app.set_status_message("No project clone for this panel.");
+                    return;
+                }
+            };
+
+            // Use the explicit tool arg, or fall back to settings preference
+            let editor_pref = tool.as_deref()
+                .unwrap_or(&app.settings.tools.editor);
+
+            // Handle custom command template
+            if let Some(ref cmd_template) = app.settings.tools.custom_command {
+                if editor_pref == "custom" || (editor_pref == "auto" && crate::settings::resolve_tool("auto").is_none()) {
+                    let cmd = cmd_template.replace("{path}", &clone_path.to_string_lossy());
+                    let parts: Vec<&str> = cmd.split_whitespace().collect();
+                    if let Some((bin, args)) = parts.split_first() {
+                        let _ = std::process::Command::new(bin)
+                            .args(args)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    }
+                    app.set_status_message("Opened with custom command.");
+                    return;
+                }
+            }
+
+            let resolved = crate::settings::resolve_tool(editor_pref);
+
+            match resolved {
+                Some((binary, true)) => {
+                    // TUI tool: send event to trigger suspend-and-launch in event loop
+                    app.set_status_message(format!("Opening in {}...", binary));
+                    let _ = tx.send(AppEvent::OpenTuiTool {
+                        binary: binary.to_string(),
+                        path: clone_path,
+                    });
+                }
+                Some((binary, false)) => {
+                    // GUI tool: fire-and-forget
+                    let _ = std::process::Command::new(binary)
+                        .arg(&clone_path)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                    app.set_status_message(format!("Opened in {}.", binary));
+                }
+                None => {
+                    // On macOS, try `open -a <AppName>` for known GUI apps
+                    // whose shell command isn't on PATH.
+                    #[cfg(target_os = "macos")]
+                    if let Some(app_name) = crate::settings::macos_app_name(editor_pref) {
+                        let ok = std::process::Command::new("open")
+                            .args(["-a", app_name])
+                            .arg(&clone_path)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false);
+                        if ok {
+                            app.set_status_message(format!("Opened in {}.", app_name));
+                            return;
+                        }
+                    }
+
+                    app.set_status_message(format!(
+                        "No tool '{}' found. Install gitui, lazygit, or VS Code.",
+                        editor_pref,
+                    ));
+                }
             }
         }
     }
@@ -956,6 +1362,8 @@ fn add_agent(
     app: &mut App,
     agent: &str,
     image: Option<&str>,
+    project: Option<&str>,
+    branch: Option<&str>,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let image_name = match image {
@@ -993,11 +1401,26 @@ fn add_agent(
 
     // Build sandbox config.
     // Agent VMs need enough memory for the agent CLI + runtime overhead.
-    let config = SandboxConfig::builder()
+    let project_path = project
+        .map(std::path::PathBuf::from)
+        .or_else(|| app.project_path.clone());
+
+    let mut builder = SandboxConfig::builder()
         .name(format!("tui-{}", agent))
         .image(&image_name)
-        .memory_mb(1024)
-        .build();
+        .memory_mb(1024);
+
+    if let Some(ref pp) = project_path {
+        builder = builder.project(pp, branch);
+    }
+
+    let mut config = builder.build();
+
+    // Pass auto_sync setting to project config so sandbox creation
+    // knows whether to use setup() or setup_deferred().
+    if let Some(ref mut proj) = config.project {
+        proj.auto_sync = app.settings.gitsync.auto_sync;
+    }
 
     // Spawn sandbox creation in the background so the event loop stays responsive.
     let tx = tx.clone();
@@ -1008,11 +1431,15 @@ fn add_agent(
 
                 match sandbox.start().await {
                     Ok(()) => {
+                        // Take the project mount from the sandbox so we can
+                        // store it on the panel for teardown on kill.
+                        let project_mount = sandbox.take_project_mount();
                         let sb = Arc::new(Mutex::new(sandbox));
                         let _ = tx.send(AppEvent::SandboxReady {
                             panel_idx,
                             sandbox: sb,
                             short_id,
+                            project_mount,
                         });
                     }
                     Err(e) => {
