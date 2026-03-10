@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: McpSources
+
+registries:
+  smithery:
+    url: https://registry.smithery.ai
+    type: smithery
+    description: Smithery MCP registry - community-driven MCP server discovery
+
+  official:
+    url: https://github.com/modelcontextprotocol/servers
+    type: github
+    description: Official MCP server repository maintained by Anthropic
+
+  mcp-run:
+    url: https://www.mcp.run
+    type: mcp-run
+    description: Hosted MCP servers with managed infrastructure
