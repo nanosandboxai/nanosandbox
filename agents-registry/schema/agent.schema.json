@@ -63,8 +63,8 @@
               },
               "source": {
                 "type": "string",
-                "enum": ["smithery", "official", "mcp-run", "custom"],
-                "description": "Which registry this MCP comes from"
+                "enum": ["official", "smithery", "glama", "pulsemcp", "mcp-run", "mcp-get", "opentools", "github-mcp", "custom"],
+                "description": "Which registry this MCP comes from (must match a key in mcps/sources.yaml or 'custom')"
               },
               "package": {
                 "type": "string",

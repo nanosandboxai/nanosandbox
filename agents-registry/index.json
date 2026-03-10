@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "updated_at": "2026-03-10T21:51:56Z",
+  "updated_at": "2026-03-10T22:13:16Z",
   "registry_url": "https://github.com/devdone-labs/agents-registry",
   "agents": [
     {
@@ -145,9 +145,14 @@
   "mcps": {
     "custom": [],
     "sources": [
-      "smithery",
       "official",
-      "mcp-run"
+      "smithery",
+      "glama",
+      "pulsemcp",
+      "mcp-run",
+      "mcp-get",
+      "opentools",
+      "github-mcp"
     ]
   }
 }
