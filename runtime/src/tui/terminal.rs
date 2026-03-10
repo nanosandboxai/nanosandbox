@@ -446,6 +446,34 @@ pub fn extract_urls(data: &[u8], prev_buffer: &[u8]) -> (Vec<String>, Vec<u8>) {
     (urls, new_buffer)
 }
 
+/// Extract URLs from the parsed vt100 terminal screen.
+///
+/// Unlike `extract_urls` (which operates on raw SSH bytes), this function reads
+/// the vt100 screen contents — clean text with ANSI escape sequences already
+/// stripped. This correctly handles URLs rendered by TUI applications (ink,
+/// ratatui) where escape sequences for cursor positioning appear between
+/// wrapped URL line fragments.
+///
+/// The screen text is preprocessed: each row is stripped of leading/trailing
+/// box-drawing characters and whitespace, then rows are rejoined. The existing
+/// `extract_urls` logic handles newline-wrapped URLs from there.
+pub fn extract_urls_from_screen(screen: &vt100::Screen) -> Vec<String> {
+    let contents = screen.contents();
+    // Strip TUI border characters and leading/trailing whitespace per line,
+    // then rejoin so extract_urls can handle \n line-wraps.
+    let preprocessed: String = contents
+        .lines()
+        .map(|line| {
+            line.trim_matches(|c: char| {
+                c.is_whitespace() || ('\u{2500}'..='\u{257F}').contains(&c)
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (urls, _) = extract_urls(preprocessed.as_bytes(), &[]);
+    urls
+}
+
 /// Check if a character is valid within a URL (not a URL terminator).
 fn is_url_char(c: char) -> bool {
     // URL-safe characters per RFC 3986 + percent-encoding.
@@ -698,6 +726,63 @@ mod tests {
             !urls2.iter().any(|u| u.starts_with("https://platform.claude.com")),
             "Should not open nested redirect_uri as separate URL, got: {:?}",
             urls2
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_from_screen_tui_rendered() {
+        // Simulate a TUI app (e.g. Claude Code / ink) rendering a long OAuth URL
+        // using cursor positioning. The raw SSH data contains ANSI escapes between
+        // URL line fragments which previously caused truncation.
+        let mut parser = vt100::Parser::new(24, 80, 0);
+
+        // Write the URL across multiple screen rows using cursor positioning
+        // (simulating how ink/ratatui renders wrapped text).
+        parser.process(b"\x1b[5;1HBrowser didn't open? Use the url below to sign in");
+        parser.process(b"\x1b[7;1Hhttps://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-");
+        parser.process(b"\x1b[8;1H5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com");
+        parser.process(b"\x1b[9;1H%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key&state=JeexkYr0rbPV2DlpQ2");
+        parser.process(b"\x1b[11;1HPaste code here if prompted >");
+
+        let urls = extract_urls_from_screen(parser.screen());
+
+        assert_eq!(urls.len(), 1, "should find exactly one URL, got: {:?}", urls);
+        assert!(
+            urls[0].contains("client_id=9d1c250a"),
+            "URL should contain client_id, got: {}",
+            urls[0]
+        );
+        assert!(
+            urls[0].contains("state=JeexkYr0rbPV2DlpQ2"),
+            "URL should contain full state param, got: {}",
+            urls[0]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_from_screen_with_borders() {
+        // Simulate a TUI app that draws box borders around the URL area.
+        let mut parser = vt100::Parser::new(24, 60, 0);
+
+        parser.process("┌──────────────────────────────────────────────────────────┐".as_bytes());
+        parser.process(b"\x1b[2;1H");
+        parser.process("│ https://claude.ai/oauth/authorize?code=true&client_i │".as_bytes());
+        parser.process(b"\x1b[3;1H");
+        parser.process("│ d=abc-123&response_type=code&state=xyz               │".as_bytes());
+        parser.process(b"\x1b[4;1H");
+        parser.process("│                                                      │".as_bytes());
+        parser.process(b"\x1b[5;1H");
+        parser.process("│ Paste code here if prompted >                        │".as_bytes());
+        parser.process(b"\x1b[6;1H");
+        parser.process("└──────────────────────────────────────────────────────────┘".as_bytes());
+
+        let urls = extract_urls_from_screen(parser.screen());
+
+        assert_eq!(urls.len(), 1, "should find exactly one URL, got: {:?}", urls);
+        assert!(
+            urls[0].contains("state=xyz"),
+            "URL should contain state param, got: {}",
+            urls[0]
         );
     }
 }

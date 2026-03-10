@@ -104,8 +104,6 @@ pub struct AgentPanel {
     pub last_terminal_size: (u16, u16),
     /// URLs already opened in the host browser (dedup within session).
     pub opened_urls: HashSet<String>,
-    /// Trailing bytes from the last TerminalData chunk for cross-chunk URL detection.
-    pub terminal_url_buffer: Vec<u8>,
     /// Active project mount for this panel's sandbox.
     pub project_mount: Option<crate::project::ProjectMount>,
     /// Last known HEAD SHA in the clone (for commit auto-sync detection).
@@ -135,7 +133,6 @@ impl AgentPanel {
             terminal_handle: None,
             last_terminal_size: (80, 24),
             opened_urls: HashSet::new(),
-            terminal_url_buffer: Vec::new(),
             project_mount: None,
             last_known_head: None,
             base_commit: None,

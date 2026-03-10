@@ -219,17 +219,16 @@ pub async fn run_tui(project_path: Option<std::path::PathBuf>) -> anyhow::Result
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
                     if let Some(ref mut term) = panel.terminal {
                         term.process_bytes(&data);
-                    }
 
-                    // Scan for URLs and auto-open in host browser.
-                    let prev_buffer = std::mem::take(&mut panel.terminal_url_buffer);
-                    let (urls, new_buffer) =
-                        super::terminal::extract_urls(&data, &prev_buffer);
-                    panel.terminal_url_buffer = new_buffer;
-
-                    for url in urls {
-                        if panel.opened_urls.insert(url.clone()) {
-                            super::terminal::open_url_in_browser(&url);
+                        // Scan the parsed screen for URLs and auto-open in host browser.
+                        // Using the vt100 screen contents (not raw bytes) so that ANSI
+                        // escape sequences from TUI apps don't truncate long URLs.
+                        let urls =
+                            super::terminal::extract_urls_from_screen(term.screen());
+                        for url in urls {
+                            if panel.opened_urls.insert(url.clone()) {
+                                super::terminal::open_url_in_browser(&url);
+                            }
                         }
                     }
                 }
@@ -852,7 +851,6 @@ async fn handle_command(
                 panel.terminal = None;
                 panel.terminal_handle = None;
                 panel.opened_urls.clear();
-                panel.terminal_url_buffer.clear();
 
                 let ssh_info = if let Some(ref sb_arc) = panel.sandbox {
                     let sb = sb_arc.lock().await;
