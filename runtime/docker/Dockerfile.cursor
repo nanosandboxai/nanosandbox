@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=dd-agents-base:latest
+ARG BASE_IMAGE=agents-registry/base:latest
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.description="Cursor agent for DD sandboxes"
@@ -12,5 +12,6 @@ RUN curl -fsSL https://cursor.com/install | bash \
 RUN cursor-agent --help > /dev/null 2>&1 || true \
     && test -x /usr/local/bin/cursor-agent \
     && echo "Cursor CLI: OK"
+RUN rm -rf /workspace/*
 
 CMD ["/usr/local/bin/nanosb-init.sh"]

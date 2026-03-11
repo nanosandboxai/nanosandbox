@@ -46,7 +46,7 @@ if [ ! -x "$NANOSB" ]; then
 fi
 
 for AGENT in "${AGENTS[@]}"; do
-    IMAGE="${REGISTRY_HOST}/dd-agent-${AGENT}:${TAG}"
+    IMAGE="${REGISTRY_HOST}/agents-registry/${AGENT}:${TAG}"
     echo "--- Testing ${AGENT} (${IMAGE}) ---"
 
     # Step 1: Pull image from local registry

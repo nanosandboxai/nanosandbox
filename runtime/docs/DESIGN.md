@@ -62,7 +62,7 @@ pub struct SandboxConfig {
     /// Unique name for the sandbox
     pub name: String,
     
-    /// OCI image reference (e.g., "ghcr.io/devdone-labs/dd-agents:latest")
+    /// OCI image reference (e.g., "ghcr.io/devdone-labs/agents-registry/claude:latest")
     pub image: String,
     
     /// CPU cores to allocate
@@ -239,7 +239,7 @@ async fn main() -> Result<()> {
     // Create sandbox
     let config = SandboxConfig::builder()
         .name("my-sandbox")
-        .image("ghcr.io/devdone-labs/dd-agents:latest")
+        .image("ghcr.io/devdone-labs/agents-registry/claude:latest")
         .cpus(2)
         .memory_mb(4096)
         .build();

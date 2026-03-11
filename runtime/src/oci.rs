@@ -298,7 +298,11 @@ impl OciBundle {
         let rootfs_path = bundle_path.join("rootfs");
         let config_path = bundle_path.join("config.json");
 
-        std::fs::create_dir_all(&rootfs_path)?;
+        std::fs::create_dir_all(&rootfs_path).map_err(|e| {
+            crate::error::Error::SandboxCreationFailed(format!(
+                "Create bundle dir {}: {}", rootfs_path.display(), e
+            ))
+        })?;
 
         Ok(Self {
             path: bundle_path,
@@ -310,7 +314,11 @@ impl OciBundle {
     /// Write the OCI config to the bundle
     pub fn write_config(&self, config: &serde_json::Value) -> crate::error::Result<()> {
         let content = serde_json::to_string_pretty(config)?;
-        std::fs::write(&self.config_path, content)?;
+        std::fs::write(&self.config_path, &content).map_err(|e| {
+            crate::error::Error::SandboxCreationFailed(format!(
+                "Write bundle config {}: {}", self.config_path.display(), e
+            ))
+        })?;
         Ok(())
     }
 

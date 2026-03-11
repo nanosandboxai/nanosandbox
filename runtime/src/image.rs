@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tar::Archive;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, info};
 
 /// Marker file name to indicate a Windows layer was fully imported
@@ -427,12 +428,19 @@ impl ImageManager {
                         digest_short, layer_desc.size
                     );
 
-                    let file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
-                        Error::ImagePullFailed(format!("Create temp file: {}", e))
+                    // Ensure blobs directory exists (defensive: may have been cleaned
+                    // between ImageManager::new() and this download task)
+                    tokio::fs::create_dir_all(&blobs_dir).await.map_err(|e| {
+                        Error::ImagePullFailed(format!("Create blobs dir: {}", e))
                     })?;
 
+                    let mut file =
+                        tokio::fs::File::create(&temp_path).await.map_err(|e| {
+                            Error::ImagePullFailed(format!("Create temp file: {}", e))
+                        })?;
+
                     client_clone
-                        .pull_blob(&reference_clone, &layer_desc, file)
+                        .pull_blob(&reference_clone, &layer_desc, &mut file)
                         .await
                         .map_err(|e| {
                             Error::ImagePullFailed(format!(
@@ -441,9 +449,20 @@ impl ImageManager {
                             ))
                         })?;
 
+                    // Flush and sync to disk before rename (pull_blob doesn't flush)
+                    file.shutdown().await.map_err(|e| {
+                        Error::ImagePullFailed(format!("Flush layer {}: {}", digest_short, e))
+                    })?;
+                    drop(file);
+
                     // Atomic rename from temp to final path
                     tokio::fs::rename(&temp_path, &blob_path).await.map_err(|e| {
-                        Error::ImagePullFailed(format!("Rename blob {}: {}", digest_short, e))
+                        let temp_exists = std::path::Path::new(&temp_path).exists();
+                        let dir_exists = std::path::Path::new(&blobs_dir).exists();
+                        Error::ImagePullFailed(format!(
+                            "Rename blob {}: {} (temp_exists={}, dir_exists={})",
+                            digest_short, e, temp_exists, dir_exists
+                        ))
                     })?;
 
                     debug!("Downloaded layer: {}", digest_short);
@@ -473,13 +492,16 @@ impl ImageManager {
 
         if !config_path.exists() {
             debug!("Downloading config blob: {}", config_digest_short);
-            let file = tokio::fs::File::create(&config_path)
+            let mut file = tokio::fs::File::create(&config_path)
                 .await
                 .map_err(|e| Error::ImagePullFailed(format!("Create config file: {}", e)))?;
             client
-                .pull_blob(&reference, &manifest.config, file)
+                .pull_blob(&reference, &manifest.config, &mut file)
                 .await
                 .map_err(|e| Error::ImagePullFailed(format!("Pull config: {}", e)))?;
+            file.shutdown().await.map_err(|e| {
+                Error::ImagePullFailed(format!("Flush config blob: {}", e))
+            })?;
         }
 
         let total_size: u64 = manifest.layers.iter().map(|l| l.size as u64).sum();
@@ -580,7 +602,11 @@ impl ImageManager {
         let start = Instant::now();
         info!("Creating rootfs at {:?} from {} layers", dest, layers.len());
 
-        fs::create_dir_all(dest)?;
+        fs::create_dir_all(dest).map_err(|e| {
+            Error::LayerExtractionFailed(format!(
+                "Create rootfs dir {}: {}", dest.display(), e
+            ))
+        })?;
 
         let blobs_dir = self.blobs_dir();
         let num_layers = layers.len();
@@ -609,7 +635,11 @@ impl ImageManager {
                         // Check if layer is gzipped by reading magic bytes
                         let mut header = [0u8; 2];
                         {
-                            let mut peek = File::open(&blob_path)?;
+                            let mut peek = File::open(&blob_path).map_err(|e| {
+                                Error::LayerExtractionFailed(format!(
+                                    "Open blob {}: {}", blob_path.display(), e
+                                ))
+                            })?;
                             let _ = peek.read_exact(&mut header);
                         }
                         let is_gzipped = header[0] == 0x1f && header[1] == 0x8b;
@@ -626,7 +656,11 @@ impl ImageManager {
                                     num_layers,
                                     digest_short
                                 );
-                                let in_file = File::open(&blob_path)?;
+                                let in_file = File::open(&blob_path).map_err(|e| {
+                                    Error::LayerExtractionFailed(format!(
+                                        "Open blob for decompress {}: {}", blob_path.display(), e
+                                    ))
+                                })?;
                                 let mut decoder = GzDecoder::new(in_file);
                                 // Write to temp file for atomic rename
                                 let temp_path = blobs_dir.join(format!(
@@ -634,7 +668,11 @@ impl ImageManager {
                                     digest_short,
                                     std::process::id()
                                 ));
-                                let mut out_file = File::create(&temp_path)?;
+                                let mut out_file = File::create(&temp_path).map_err(|e| {
+                                    Error::LayerExtractionFailed(format!(
+                                        "Create temp tar {}: {}", temp_path.display(), e
+                                    ))
+                                })?;
                                 std::io::copy(&mut decoder, &mut out_file)
                                     .map_err(|e| {
                                         Error::LayerExtractionFailed(format!(
@@ -643,7 +681,12 @@ impl ImageManager {
                                         ))
                                     })?;
                                 // Atomic rename to final path
-                                fs::rename(&temp_path, &tar_path)?;
+                                fs::rename(&temp_path, &tar_path).map_err(|e| {
+                                    Error::LayerExtractionFailed(format!(
+                                        "Rename decompressed tar {} -> {}: {}",
+                                        temp_path.display(), tar_path.display(), e
+                                    ))
+                                })?;
                             } else {
                                 debug!(
                                     "Layer {}/{} already decompressed: {}",
@@ -694,7 +737,11 @@ impl ImageManager {
                 num_layers,
                 tar_path.file_name().unwrap_or_default()
             );
-            let file = File::open(tar_path)?;
+            let file = File::open(tar_path).map_err(|e| {
+                Error::LayerExtractionFailed(format!(
+                    "Open tar {}: {}", tar_path.display(), e
+                ))
+            })?;
             let mut archive = Archive::new(file);
             archive.set_preserve_permissions(true);
             archive.set_preserve_ownerships(false);
@@ -1142,9 +1189,9 @@ mod tests {
         assert_eq!(ref1.repository, "library/alpine");
         assert_eq!(ref1.tag, "latest");
 
-        let ref2 = ImageRef::parse("ghcr.io/devdone-labs/dd-agents:v1.0").unwrap();
+        let ref2 = ImageRef::parse("ghcr.io/devdone-labs/agents-registry/claude:v1.0").unwrap();
         assert_eq!(ref2.registry, "ghcr.io");
-        assert_eq!(ref2.repository, "devdone-labs/dd-agents");
+        assert_eq!(ref2.repository, "devdone-labs/agents-registry/claude");
         assert_eq!(ref2.tag, "v1.0");
 
         let ref3 = ImageRef::parse("python:3.12-slim").unwrap();

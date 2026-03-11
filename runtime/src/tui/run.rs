@@ -1372,7 +1372,7 @@ fn add_agent(
 ) {
     let image_name = match image {
         Some(img) => img.to_string(),
-        None => format!("localhost:5050/agent-{}:latest", agent),
+        None => format!("ghcr.io/devdone-labs/agents-registry/{}:latest", agent),
     };
 
     let mut panel = AgentPanel::new(agent);

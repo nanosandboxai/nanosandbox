@@ -172,6 +172,13 @@ fn preload_libkrunfw() {
 /// executes this binary will have the entitlement.
 #[cfg(target_os = "macos")]
 fn ensure_hypervisor_entitlement(exe_path: &Path) -> std::result::Result<(), String> {
+    // Fast path: check if the binary already has the hypervisor entitlement.
+    // This avoids the expensive (and race-prone) codesign operation when
+    // the binary is already correctly signed.
+    if has_hypervisor_entitlement(exe_path) {
+        return Ok(());
+    }
+
     const ENTITLEMENTS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -181,19 +188,36 @@ fn ensure_hypervisor_entitlement(exe_path: &Path) -> std::result::Result<(), Str
 </dict>
 </plist>"#;
 
-    // Write entitlements to a temp file
-    let ent_path = std::env::temp_dir().join("nanosb-entitlements.plist");
+    // Write entitlements to a per-PID temp file to avoid races between
+    // concurrent sandbox launches.
+    let ent_path = std::env::temp_dir().join(format!(
+        "nanosb-entitlements-{}.plist",
+        std::process::id()
+    ));
     std::fs::write(&ent_path, ENTITLEMENTS_XML)
         .map_err(|e| format!("Failed to write entitlements file: {}", e))?;
 
-    let output = std::process::Command::new("codesign")
-        .args(["--force", "--sign", "-", "--entitlements"])
-        .arg(&ent_path)
-        .arg(exe_path)
-        .output()
-        .map_err(|e| format!("codesign failed to execute: {}", e))?;
+    // Retry once on failure (concurrent codesign on same binary can race)
+    for attempt in 0..2u32 {
+        let output = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "-", "--entitlements"])
+            .arg(&ent_path)
+            .arg(exe_path)
+            .output()
+            .map_err(|e| format!("codesign failed to execute: {}", e))?;
 
-    if !output.status.success() {
+        if output.status.success() {
+            let _ = std::fs::remove_file(&ent_path);
+            return Ok(());
+        }
+
+        if attempt == 0 {
+            // Brief pause before retry
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            continue;
+        }
+
+        let _ = std::fs::remove_file(&ent_path);
         return Err(format!(
             "codesign failed ({}): {}",
             output.status,
@@ -202,6 +226,23 @@ fn ensure_hypervisor_entitlement(exe_path: &Path) -> std::result::Result<(), Str
     }
 
     Ok(())
+}
+
+/// Check whether the binary already has the hypervisor entitlement.
+#[cfg(target_os = "macos")]
+fn has_hypervisor_entitlement(exe_path: &Path) -> bool {
+    let output = std::process::Command::new("codesign")
+        .args(["-d", "--entitlements", "-", "--xml"])
+        .arg(exe_path)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.contains("com.apple.security.hypervisor")
+        }
+        _ => false,
+    }
 }
 
 /// State tracked per sandbox for the libkrun backend

@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=dd-agents-base:latest
+ARG BASE_IMAGE=agents-registry/base:latest
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.description="Codex agent for DD sandboxes"
@@ -7,5 +7,6 @@ RUN npm install -g @openai/codex \
     && npm cache clean --force
 
 RUN codex --version && echo "Codex: OK"
+RUN rm -rf /workspace/*
 
 CMD ["/usr/local/bin/nanosb-init.sh"]

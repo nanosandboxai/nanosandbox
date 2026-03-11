@@ -19,26 +19,26 @@ Minimal Docker images containing AI coding agent CLIs for use in sandboxed devel
 
 ```bash
 # Pull the agent you need
-docker pull ghcr.io/devdone-labs/dd-agent-claude:latest
-docker pull ghcr.io/devdone-labs/dd-agent-goose:latest
-docker pull ghcr.io/devdone-labs/dd-agent-codex:latest
-docker pull ghcr.io/devdone-labs/dd-agent-cursor:latest
+docker pull ghcr.io/devdone-labs/agents-registry/claude:latest
+docker pull ghcr.io/devdone-labs/agents-registry/goose:latest
+docker pull ghcr.io/devdone-labs/agents-registry/codex:latest
+docker pull ghcr.io/devdone-labs/agents-registry/cursor:latest
 ```
 
 #### Run an Agent
 
 ```bash
 # Run Claude Code
-docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-claude:latest claude
+docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/agents-registry/claude:latest claude
 
 # Run Goose
-docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-goose:latest goose
+docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/agents-registry/goose:latest goose
 
 # Run Codex
-docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-codex:latest codex
+docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/agents-registry/codex:latest codex
 
 # Run Cursor CLI
-docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-cursor:latest cursor-agent
+docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/agents-registry/cursor:latest cursor-agent
 ```
 
 ### Windows
@@ -48,23 +48,23 @@ docker run -it --rm -v $(pwd):/workspace ghcr.io/devdone-labs/dd-agent-cursor:la
 #### Pull an Agent Image
 
 ```powershell
-docker pull ghcr.io/devdone-labs/dd-agent-claude:latest
+docker pull ghcr.io/devdone-labs/agents-registry/claude:latest
 ```
 
 #### Run an Agent
 
 ```powershell
 # Run Claude Code
-docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/dd-agent-claude:latest claude
+docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/agents-registry/claude:latest claude
 
 # Run Goose
-docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/dd-agent-goose:latest goose
+docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/agents-registry/goose:latest goose
 
 # Run Codex
-docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/dd-agent-codex:latest codex
+docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/agents-registry/codex:latest codex
 
 # Run Cursor CLI
-docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/dd-agent-cursor:latest cursor-agent
+docker run -it --rm -v ${PWD}:C:\workspace ghcr.io/devdone-labs/agents-registry/cursor:latest cursor-agent
 ```
 
 ### With API Keys
@@ -76,7 +76,7 @@ Most agents require API keys. Pass them as environment variables:
 docker run -it --rm \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -v $(pwd):/workspace \
-  ghcr.io/devdone-labs/dd-agent-claude:latest claude
+  ghcr.io/devdone-labs/agents-registry/claude:latest claude
 ```
 
 ```powershell
@@ -84,7 +84,7 @@ docker run -it --rm \
 docker run -it --rm `
   -e ANTHROPIC_API_KEY=$env:ANTHROPIC_API_KEY `
   -v ${PWD}:C:\workspace `
-  ghcr.io/devdone-labs/dd-agent-claude:latest claude
+  ghcr.io/devdone-labs/agents-registry/claude:latest claude
 ```
 
 ## Image Details
@@ -95,15 +95,15 @@ Each agent ships as its own image, built on a shared Alpine base:
 
 - **Base:** Alpine 3.20 + Node.js 22 + agent-gateway + MCP packages
 - **Platforms:** linux/amd64, linux/arm64
-- **Registry pattern:** `ghcr.io/devdone-labs/dd-agent-<name>`
+- **Registry pattern:** `ghcr.io/devdone-labs/agents-registry/<name>`
 
 | Image | Registry | Est. Size |
 |-------|----------|-----------|
-| `dd-agents-base` | `ghcr.io/devdone-labs/dd-agents-base` | ~150 MB |
-| `dd-agent-claude` | `ghcr.io/devdone-labs/dd-agent-claude` | ~200 MB |
-| `dd-agent-goose` | `ghcr.io/devdone-labs/dd-agent-goose` | ~180 MB |
-| `dd-agent-codex` | `ghcr.io/devdone-labs/dd-agent-codex` | ~200 MB |
-| `dd-agent-cursor` | `ghcr.io/devdone-labs/dd-agent-cursor` | ~180 MB |
+| `base` | `ghcr.io/devdone-labs/agents-registry/base` | ~150 MB |
+| `claude` | `ghcr.io/devdone-labs/agents-registry/claude` | ~200 MB |
+| `goose` | `ghcr.io/devdone-labs/agents-registry/goose` | ~180 MB |
+| `codex` | `ghcr.io/devdone-labs/agents-registry/codex` | ~200 MB |
+| `cursor` | `ghcr.io/devdone-labs/agents-registry/cursor` | ~180 MB |
 
 | Tag | Description |
 |-----|-------------|
@@ -145,11 +145,11 @@ Each agent has its own slim Alpine-based image built on a shared base:
 
 | Image | Base | Added CLI | Est. Size |
 |-------|------|-----------|-----------|
-| `dd-agents-base` | Alpine 3.20 + Node.js 22 + agent-gateway + MCP packages | - | ~150MB |
-| `dd-agent-claude` | dd-agents-base | @anthropic-ai/claude-code | ~200MB |
-| `dd-agent-goose` | dd-agents-base | goose binary | ~180MB |
-| `dd-agent-codex` | dd-agents-base | @openai/codex | ~200MB |
-| `dd-agent-cursor` | dd-agents-base | cursor-agent binary | ~180MB |
+| `base` | Alpine 3.20 + Node.js 22 + agent-gateway + MCP packages | - | ~150MB |
+| `claude` | base | @anthropic-ai/claude-code | ~200MB |
+| `goose` | base | goose binary | ~180MB |
+| `codex` | base | @openai/codex | ~200MB |
+| `cursor` | base | cursor-agent binary | ~180MB |
 
 ### Context Sharing Between Agents
 

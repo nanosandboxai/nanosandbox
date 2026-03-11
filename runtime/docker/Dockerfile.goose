@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=dd-agents-base:latest
+ARG BASE_IMAGE=agents-registry/base:latest
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.description="Goose agent for DD sandboxes"
@@ -24,5 +24,6 @@ RUN set -eux; \
     && rm -rf /tmp/goose.tar.bz2
 
 RUN goose --version && echo "Goose: OK"
+RUN rm -rf /workspace/*
 
 CMD ["/usr/local/bin/nanosb-init.sh"]

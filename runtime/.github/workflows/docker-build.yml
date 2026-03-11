@@ -29,7 +29,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  BASE_IMAGE_NAME: ${{ github.repository_owner }}/dd-agents-base
+  IMAGE_PREFIX: devdone-labs/agents-registry
 
 jobs:
   # ===========================================================================
@@ -55,13 +55,13 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.AGENTS_REGISTRY_PAT }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/base
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=
@@ -79,19 +79,35 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
   # ===========================================================================
+  # Compute which agents to build (all, or a single one from dispatch input)
+  # ===========================================================================
+  setup-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      agents: ${{ steps.set-agents.outputs.agents }}
+    steps:
+      - name: Determine agent matrix
+        id: set-agents
+        run: |
+          if [ -n "${{ inputs.agent }}" ]; then
+            echo 'agents=["${{ inputs.agent }}"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'agents=["claude","goose","codex","cursor"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  # ===========================================================================
   # Build per-agent images in parallel (depend on base)
   # ===========================================================================
   build-agent:
-    needs: build-base
+    needs: [build-base, setup-matrix]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     strategy:
       matrix:
-        agent: [claude, goose, codex, cursor]
+        agent: ${{ fromJSON(needs.setup-matrix.outputs.agents) }}
       fail-fast: false
-    if: ${{ inputs.agent == '' || inputs.agent == matrix.agent }}
 
     steps:
       - name: Checkout repository
@@ -106,13 +122,13 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.AGENTS_REGISTRY_PAT }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/dd-agent-${{ matrix.agent }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.agent }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
@@ -128,7 +144,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:latest
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/base:${{ needs.build-base.outputs.base-tag }}
           cache-from: type=gha,scope=${{ matrix.agent }}
           cache-to: type=gha,scope=${{ matrix.agent }},mode=max
           platforms: linux/amd64,linux/arm64
@@ -136,7 +152,7 @@ jobs:
       - name: Generate build summary
         run: |
           echo "## ${{ matrix.agent }} Agent Image" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ github.repository_owner }}/dd-agent-${{ matrix.agent }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.agent }}\`" >> $GITHUB_STEP_SUMMARY
           echo "### Tags" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY

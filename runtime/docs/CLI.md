@@ -41,7 +41,7 @@ nanosb pull <IMAGE>
 nanosb pull alpine:3.19
 
 # Pull from GitHub Container Registry
-nanosb pull ghcr.io/devdone-labs/my-image:latest
+nanosb pull ghcr.io/devdone-labs/agents-registry/claude:latest
 
 # Pull with JSON output
 nanosb --format json pull python:3.12-slim

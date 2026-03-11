@@ -1,12 +1,12 @@
-//! End-to-end tests for DD-Agents running in Nanosandbox
+//! End-to-end tests for agents from agents-registry running in Nanosandbox
 //!
-//! These tests verify that all AI coding agents from the dd-agents-registry
+//! These tests verify that all AI coding agents from the agents-registry
 //! can be executed within sandboxes managed by Nanosandbox.
 //!
 //! ## Platform Support
 //!
-//! - **Linux**: Uses `ghcr.io/devdone-labs/dd-agents:latest` (Linux image)
-//! - **Windows**: Uses `ghcr.io/devdone-labs/dd-agents-windows:503e063` (Windows image)
+//! - **Linux/macOS**: Uses `ghcr.io/devdone-labs/agents-registry/<agent>:latest`
+//! - **Windows**: Uses `ghcr.io/devdone-labs/dd-agents-windows:503e063` (legacy)
 //!
 //! ## Agents Tested
 //!
@@ -44,7 +44,7 @@ struct AgentDef {
     version_args: &'static [&'static str],
 }
 
-/// All agents available in dd-agents-registry
+/// All agents available in agents-registry
 const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "Claude Code",
@@ -72,17 +72,10 @@ const AGENTS: &[AgentDef] = &[
 // Platform-specific Image Configuration
 // =============================================================================
 
-/// DD-Agents image for Linux
-#[cfg(target_os = "linux")]
-const DD_AGENTS_IMAGE: &str = "ghcr.io/devdone-labs/dd-agents:latest";
-
-/// DD-Agents image for macOS (uses Linux image via libkrun)
-#[cfg(target_os = "macos")]
-const DD_AGENTS_IMAGE: &str = "ghcr.io/devdone-labs/dd-agents:latest";
-
-/// DD-Agents image for Windows (separate package for Windows containers)
-#[cfg(target_os = "windows")]
-const DD_AGENTS_IMAGE: &str = "ghcr.io/devdone-labs/dd-agents-windows:503e063";
+/// Build the image reference for a given agent
+fn agent_image(agent_command: &str) -> String {
+    format!("ghcr.io/devdone-labs/agents-registry/{}:latest", agent_command)
+}
 
 // =============================================================================
 // Helper Functions
@@ -95,10 +88,10 @@ async fn runtime_available() -> bool {
 }
 
 /// Create a sandbox configuration for agent testing
-fn create_agent_sandbox_config(sandbox_name: &str) -> SandboxConfig {
+fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig {
     SandboxConfig::builder()
         .name(sandbox_name)
-        .image(DD_AGENTS_IMAGE)
+        .image(image)
         .cpus(2)
         .memory_mb(1024)
         .build()
@@ -193,7 +186,7 @@ async fn test_agent_version(
     println!("\n========================================");
     println!("  Testing {} Agent", agent_name);
     println!("========================================");
-    println!("Image: {}", DD_AGENTS_IMAGE);
+    println!("Image: {}", agent_image(command));
     println!("Command: {} {}", command, args.join(" "));
 
     // Check runtime availability - skip if not met (this is expected in some environments)
@@ -207,7 +200,7 @@ async fn test_agent_version(
 
     // Create sandbox
     let sandbox_name = format!("agent-test-{}", command.replace('-', "_"));
-    let config = create_agent_sandbox_config(&sandbox_name);
+    let config = create_agent_sandbox_config(&sandbox_name, &agent_image(command));
 
     println!("\n[Step 1] Creating sandbox...");
     let sandbox_result = Sandbox::create(config).await;
@@ -279,9 +272,9 @@ async fn test_agent_version(
             // Runtime was available but image couldn't be pulled
             let msg = format!(
                 "Sandbox creation failed (image pull error): {}\n\
-                 Ensure the dd-agents image is available:\n\
+                 Ensure the agent image is available:\n\
                  docker pull {}",
-                e, DD_AGENTS_IMAGE
+                e, agent_image(command)
             );
             println!("[FAIL] {}", msg);
             Err(AgentTestResult::Failed(msg))
@@ -295,8 +288,7 @@ async fn test_agent_version(
 
 /// Test all agents in sequence - requires runtime and image to be available
 ///
-/// This test pulls the dd-agents image and verifies all agents can execute
-/// their version commands successfully.
+/// This test verifies all agents can execute their version commands successfully.
 ///
 /// This test will FAIL if:
 /// - Runtime is available but image cannot be pulled
@@ -307,9 +299,9 @@ async fn test_agent_version(
 #[ignore]
 async fn test_all_agents_version() {
     println!("\n========================================");
-    println!("  DD-Agents Comprehensive Test");
+    println!("  Agents Registry Comprehensive Test");
     println!("========================================");
-    println!("Image: {}", DD_AGENTS_IMAGE);
+    println!("Image pattern: ghcr.io/devdone-labs/agents-registry/<agent>:latest");
     println!("Testing {} agents\n", AGENTS.len());
 
     // Check runtime - skip entire test if not met
@@ -330,7 +322,7 @@ async fn test_all_agents_version() {
         println!("\n--- Testing {} ---", agent.name);
 
         let sandbox_name = format!("all-agents-{}", agent.command.replace('-', "_"));
-        let config = create_agent_sandbox_config(&sandbox_name);
+        let config = create_agent_sandbox_config(&sandbox_name, &agent_image(agent.command));
 
         match Sandbox::create(config).await {
             Ok(mut sandbox) => {
@@ -390,9 +382,7 @@ async fn test_all_agents_version() {
     // Fail the test if any agent failed
     if image_pull_failed {
         panic!(
-            "Image pull failed. Ensure the dd-agents image is available:\n\
-             docker pull {}",
-            DD_AGENTS_IMAGE
+            "Image pull failed. Ensure agent images are available at ghcr.io/devdone-labs/agents-registry/"
         );
     }
 
@@ -409,16 +399,17 @@ async fn test_all_agents_version() {
 // Image Pull Test
 // =============================================================================
 
-/// Test pulling the dd-agents image
+/// Test pulling an agent image from agents-registry
 #[tokio::test]
-async fn test_pull_dd_agents_image() {
+async fn test_pull_agents_registry_image() {
     use nanosandbox::image::ImageManager;
     use tempfile::TempDir;
 
     println!("\n========================================");
-    println!("  DD-Agents Image Pull Test");
+    println!("  Agents Registry Image Pull Test");
     println!("========================================");
-    println!("Image: {}", DD_AGENTS_IMAGE);
+    let image = agent_image("claude");
+    println!("Image: {}", image);
 
     let temp_dir = TempDir::new().unwrap();
     let manager = ImageManager::new(temp_dir.path().to_path_buf()).unwrap();
@@ -426,7 +417,7 @@ async fn test_pull_dd_agents_image() {
     println!("\n[Step 1] Pulling image...");
     println!("[INFO] This may take several minutes on first run");
 
-    match manager.pull(DD_AGENTS_IMAGE).await {
+    match manager.pull(&image).await {
         Ok(pulled) => {
             println!("[OK] Image pulled successfully");
             println!("     Layers: {}", pulled.layers.len());
@@ -443,7 +434,7 @@ async fn test_pull_dd_agents_image() {
                 );
             }
 
-            println!("\n[PASS] DD-Agents image pull test passed");
+            println!("\n[PASS] Agents registry image pull test passed");
         }
         Err(e) => {
             println!("[SKIP] Image pull failed: {}", e);
@@ -472,7 +463,7 @@ async fn test_agents_environment_report() {
     println!("[Platform]");
     println!("  OS: {}", std::env::consts::OS);
     println!("  Arch: {}", std::env::consts::ARCH);
-    println!("  Image: {}", DD_AGENTS_IMAGE);
+    println!("  Image pattern: ghcr.io/devdone-labs/agents-registry/<agent>:latest");
 
     // Runtime
     println!("\n[Runtime Status]");

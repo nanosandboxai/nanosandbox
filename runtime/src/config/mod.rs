@@ -12,7 +12,7 @@ pub struct SandboxConfig {
     /// Unique name for the sandbox
     pub name: String,
 
-    /// OCI image reference (e.g., "ghcr.io/devdone-labs/dd-agents:latest")
+    /// OCI image reference (e.g., "ghcr.io/devdone-labs/agents-registry/claude:latest")
     pub image: String,
 
     /// CPU cores to allocate

@@ -147,9 +147,9 @@ registry-down:
 # Build and push base image to local registry
 # --load ensures buildx loads the image into the local daemon so push works
 agents-build-base:
-	docker build --load -f docker/Dockerfile.base -t $(REGISTRY_HOST)/agents-base:$(BASE_IMAGE_TAG) .
-	docker push $(REGISTRY_HOST)/agents-base:$(BASE_IMAGE_TAG)
-	@echo "Base image pushed to $(REGISTRY_HOST)/agents-base:$(BASE_IMAGE_TAG)"
+	docker build --load -f docker/Dockerfile.base -t $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) .
+	docker push $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG)
+	@echo "Base image pushed to $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG)"
 
 # Build and push a single agent (usage: make agents-build-one AGENT=claude)
 agents-build-one:
@@ -157,19 +157,19 @@ ifndef AGENT
 	$(error AGENT is required. Usage: make agents-build-one AGENT=claude)
 endif
 	docker build --load -f docker/Dockerfile.$(AGENT) \
-		--build-arg BASE_IMAGE=$(REGISTRY_HOST)/agents-base:$(BASE_IMAGE_TAG) \
-		-t $(REGISTRY_HOST)/agent-$(AGENT):$(BASE_IMAGE_TAG) .
-	docker push $(REGISTRY_HOST)/agent-$(AGENT):$(BASE_IMAGE_TAG)
-	@echo "$(AGENT) image pushed to $(REGISTRY_HOST)/agent-$(AGENT):$(BASE_IMAGE_TAG)"
+		--build-arg BASE_IMAGE=$(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) \
+		-t $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG) .
+	docker push $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG)
+	@echo "$(AGENT) image pushed to $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG)"
 
 # Build and push all agent images (builds base first)
 agents-build: agents-build-base
 	@for agent in $(AGENTS); do \
 		echo "Building $$agent..."; \
 		docker build --load -f docker/Dockerfile.$$agent \
-			--build-arg BASE_IMAGE=$(REGISTRY_HOST)/agents-base:$(BASE_IMAGE_TAG) \
-			-t $(REGISTRY_HOST)/agent-$$agent:$(BASE_IMAGE_TAG) . \
-		&& docker push $(REGISTRY_HOST)/agent-$$agent:$(BASE_IMAGE_TAG) \
+			--build-arg BASE_IMAGE=$(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) \
+			-t $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) . \
+		&& docker push $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) \
 		|| exit 1; \
 	done
 	@echo "All agent images built and pushed"
@@ -178,7 +178,7 @@ agents-build: agents-build-base
 agents-test:
 	@for agent in $(AGENTS); do \
 		echo "Testing $$agent..."; \
-		docker run --rm $(REGISTRY_HOST)/agent-$$agent:$(BASE_IMAGE_TAG) $$agent --version \
+		docker run --rm $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) $$agent --version \
 		&& echo "  $$agent: OK" \
 		|| echo "  $$agent: FAILED"; \
 	done
