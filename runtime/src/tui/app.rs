@@ -11,11 +11,11 @@ use super::commands::{self, Command, ParseResult};
 use super::terminal::{SshTerminal, SshTerminalHandle};
 use super::text_input::TextInput;
 
-/// Operating mode for a panel's input.
+/// Operating mode for a panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelMode {
-    /// Messages are sent to the agent via send_message.
-    Agent,
+    /// Loading animation — sandbox is booting or SSH is connecting.
+    Loading,
     /// Embedded SSH terminal — keystrokes forwarded to remote PTY.
     Terminal,
 }
@@ -82,14 +82,10 @@ pub struct AgentPanel {
     /// The sandbox instance backing this agent, wrapped in Arc<Mutex<>> for
     /// shared access between the event loop and background streaming tasks.
     pub sandbox: Option<Arc<Mutex<Sandbox>>>,
-    /// Chat history for this panel.
+    /// Chat history for this panel (kept for /copy, but not rendered in panels).
     pub chat_history: Vec<ChatMessage>,
     /// Current input buffer with cursor tracking and multiline support.
     pub input: TextInput,
-    /// Vertical scroll offset for the chat view.
-    pub scroll_offset: u16,
-    /// Whether the agent is currently streaming output.
-    pub is_streaming: bool,
     /// Short identifier for the sandbox.
     pub sandbox_id_short: String,
     /// Per-panel environment variables (e.g., API keys).
@@ -128,6 +124,12 @@ pub struct AgentPanel {
     pub forwarded_ports: HashSet<u16>,
     /// SSH port-forward child processes (killed on panel close).
     pub port_forward_children: Vec<std::process::Child>,
+    /// Animation tick counter for the loading border sweep.
+    pub loading_tick: u16,
+    /// Error message shown below the logo when sandbox creation or SSH fails.
+    pub loading_error: Option<String>,
+    /// Whether a reconnect is in progress (suppresses auto-kill on disconnect).
+    pub reconnecting: bool,
 }
 
 impl AgentPanel {
@@ -139,11 +141,9 @@ impl AgentPanel {
             sandbox: None,
             chat_history: Vec::new(),
             input: TextInput::new(),
-            scroll_offset: 0,
-            is_streaming: false,
             sandbox_id_short: String::new(),
             env: HashMap::new(),
-            mode: PanelMode::Agent,
+            mode: PanelMode::Loading,
             last_input_width: 40,
             terminal: None,
             terminal_handle: None,
@@ -158,6 +158,9 @@ impl AgentPanel {
             ssh_key_path: None,
             forwarded_ports: HashSet::new(),
             port_forward_children: Vec::new(),
+            loading_tick: 0,
+            loading_error: None,
+            reconnecting: false,
         }
     }
 }
@@ -724,32 +727,6 @@ impl App {
         }
     }
 
-    /// Append output text from an agent to the given panel.
-    ///
-    /// If the last message in the panel is already from the agent,
-    /// the text is appended to it (streaming). Otherwise a new agent
-    /// message is created.
-    pub fn append_agent_output(&mut self, panel_idx: usize, text: &str, _is_stderr: bool) {
-        if let Some(panel) = self.panels.get_mut(panel_idx) {
-            if let Some(last) = panel.chat_history.last_mut() {
-                if last.role == MessageRole::Agent {
-                    last.content.push_str(text);
-                    return;
-                }
-            }
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::Agent,
-                content: text.to_string(),
-            });
-        }
-    }
-
-    /// Mark an agent as finished streaming.
-    pub fn mark_agent_done(&mut self, panel_idx: usize, _exit_code: i32) {
-        if let Some(panel) = self.panels.get_mut(panel_idx) {
-            panel.is_streaming = false;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -867,9 +844,9 @@ mod tests {
     }
 
     #[test]
-    fn test_panel_default_mode_is_agent() {
+    fn test_panel_default_mode_is_loading() {
         let panel = AgentPanel::new("test");
-        assert_eq!(panel.mode, PanelMode::Agent);
+        assert_eq!(panel.mode, PanelMode::Loading);
     }
 
     #[test]

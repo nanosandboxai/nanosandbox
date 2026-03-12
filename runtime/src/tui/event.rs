@@ -11,10 +11,6 @@ use crate::Sandbox;
 pub enum AppEvent {
     /// A terminal input event (key press, mouse, resize, etc.).
     Terminal(CrosstermEvent),
-    /// Output from an agent: panel index, text content, and whether streaming is complete.
-    AgentOutput(usize, String, bool),
-    /// An agent process finished: panel index and exit code.
-    AgentDone(usize, i32),
     /// Periodic tick for UI refresh.
     Tick,
     /// Sandbox creation started for a panel: index and status message.

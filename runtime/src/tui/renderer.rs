@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::app::{App, AgentPanel, InputFocus, MessageRole, PanelMode, SidebarFilesTab};
+use super::app::{App, AgentPanel, InputFocus, PanelMode, SidebarFilesTab};
 use super::commands::autocomplete;
 use super::grid::grid_dimensions;
 use super::theme::{Theme, ThemeName};
@@ -402,13 +402,14 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             }
             Line::from(spans)
         } else {
+            // Loading mode
             let mut spans = vec![
                 Span::styled(" Esc", Style::new().fg(theme.accent)),
                 Span::raw(" global bar  "),
                 Span::styled("Tab", Style::new().fg(theme.accent)),
                 Span::raw(" next panel  "),
-                Span::styled("Shift+Enter", Style::new().fg(theme.accent)),
-                Span::raw(" newline  "),
+                Span::styled("Loading...", Style::new().fg(theme.warning)),
+                Span::raw("  "),
                 Span::styled("^F", Style::new().fg(theme.accent)),
                 Span::raw(if app.zoomed { " restore" } else { " maximize" }),
             ];
@@ -858,17 +859,17 @@ fn render_panel(
     panel: &mut AgentPanel,
     index: usize,
     is_focused: bool,
-    is_input_focused: bool,
-    autocomplete_index: Option<usize>,
+    _is_input_focused: bool,
+    _autocomplete_index: Option<usize>,
     theme: &Theme,
 ) {
     // Status indicator.
-    let status_indicator = if panel.is_streaming {
-        Span::styled("◌ ", Style::new().fg(theme.warning))
+    let status_indicator = if panel.mode == PanelMode::Loading {
+        Span::styled("\u{25cc} ", Style::new().fg(theme.warning))
     } else if panel.sandbox.is_some() {
-        Span::styled("● ", Style::new().fg(theme.success))
+        Span::styled("\u{25cf} ", Style::new().fg(theme.success))
     } else {
-        Span::styled("○ ", Style::new().fg(theme.text_muted))
+        Span::styled("\u{25cb} ", Style::new().fg(theme.text_muted))
     };
 
     // Build title line.
@@ -879,7 +880,7 @@ fn render_panel(
     };
 
     let mode_label = match panel.mode {
-        PanelMode::Agent => "",
+        PanelMode::Loading => "",
         PanelMode::Terminal => "",
     };
 
@@ -963,161 +964,126 @@ fn render_panel(
         return;
     }
 
-    // Compute dynamic input height.
-    let prompt_len: u16 = 2; // "> " or "$ "
-    let content_width = (inner_area.width.saturating_sub(prompt_len) as usize).max(1);
-
-    // Cache width for key handler.
-    panel.last_input_width = content_width as u16;
-
-    let input_height = if is_input_focused {
-        (panel.input.visual_line_count(content_width) as u16)
-            .max(1)
-            .min(MAX_INPUT_HEIGHT.min(inner_area.height.saturating_sub(1)))
-    } else {
-        1
-    };
-
-    // Split inner area into chat area and input bar.
-    let [chat_area, input_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(input_height),
-    ])
-    .areas(inner_area);
-
-    // Render chat messages.
-    render_chat(frame, chat_area, panel, theme);
-
-    // Render input bar — cursor only shows when this panel's input is focused.
-    render_input(frame, input_area, panel, is_input_focused, theme);
-
-    // Render autocomplete popup if panel input is focused.
-    if is_input_focused && panel.input.text().starts_with('/') {
-        render_autocomplete(frame, chat_area, input_area, panel.input.text(), autocomplete_index, theme);
-    }
+    // Loading mode: render centered logo with animated border sweep.
+    render_loading_animation(frame, inner_area, panel, theme);
 }
 
-/// Render the chat message area for a panel.
-fn render_chat(frame: &mut Frame, area: Rect, panel: &AgentPanel, theme: &Theme) {
-    let lines: Vec<Line> = panel
-        .chat_history
-        .iter()
-        .flat_map(|msg| {
-            let (prefix, style) = match msg.role {
-                MessageRole::User => (
-                    "You: ",
-                    Style::new().fg(theme.success),
-                ),
-                MessageRole::Agent => (
-                    "",
-                    Style::new().fg(theme.text),
-                ),
-                MessageRole::System => (
-                    "! ",
-                    Style::new().fg(theme.warning),
-                ),
-            };
+/// Render the loading animation: centered `</>` logo with sweeping border accent.
+///
+/// The logo box is 7 chars wide and 3 chars tall (using rounded Unicode corners).
+/// A 3-cell accent segment sweeps clockwise around the 16-position perimeter,
+/// advancing one step per tick (250ms) for a 4-second revolution.
+fn render_loading_animation(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &AgentPanel,
+    theme: &Theme,
+) {
+    let box_width: u16 = 7;
+    let box_height: u16 = 3;
 
-            // Split content into lines, preserving multi-line messages.
-            msg.content
-                .lines()
-                .enumerate()
-                .map(|(i, line_text)| {
-                    if i == 0 && !prefix.is_empty() {
-                        Line::from(vec![
-                            Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
-                            Span::styled(line_text, style),
-                        ])
-                    } else {
-                        Line::from(Span::styled(line_text, style))
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    // Account for error message below logo.
+    let total_height = if panel.loading_error.is_some() {
+        box_height + 2
+    } else {
+        box_height
+    };
 
-    // scroll_offset uses "lines from bottom" semantics: 0 = pinned to bottom.
-    // Convert to "lines from top" for Paragraph::scroll().
-    let viewport_width = area.width.max(1);
-    let total_visual: u16 = lines
-        .iter()
-        .map(|l| {
-            let w = l.width() as u16;
-            if w == 0 {
-                1
-            } else {
-                w.div_ceil(viewport_width)
+    // Center the block in the area.
+    if area.width < box_width || area.height < total_height {
+        return;
+    }
+    let x = area.x + (area.width - box_width) / 2;
+    let y = area.y + (area.height - total_height) / 2;
+
+    // Perimeter: top(7) + right(1) + bottom(7) + left(1) = 16 cells.
+    let perimeter: u16 = (box_width + box_height - 2) * 2;
+    let accent_pos = panel.loading_tick % perimeter;
+    let accent_len: u16 = 4;
+
+    let is_accent = |p: u16| -> bool {
+        for offset in 0..accent_len {
+            if (accent_pos + offset) % perimeter == p {
+                return true;
             }
-        })
-        .sum();
-    let max_from_top = total_visual.saturating_sub(area.height);
-    let from_top = max_from_top.saturating_sub(panel.scroll_offset);
-
-    let paragraph = Paragraph::new(lines)
-        .scroll((from_top, 0))
-        .wrap(Wrap { trim: false });
-
-    frame.render_widget(paragraph, area);
-}
-
-/// Render the input bar at the bottom of a panel with multiline wrapping and real cursor.
-fn render_input(frame: &mut Frame, area: Rect, panel: &AgentPanel, is_focused: bool, theme: &Theme) {
-    let prompt = match panel.mode {
-        PanelMode::Agent => "> ",
-        PanelMode::Terminal => "> ",
-    };
-
-    let prompt_len = prompt.len() as u16;
-    let content_width = (area.width.saturating_sub(prompt_len) as usize).max(1);
-
-    let visual_lines = panel.input.visual_lines(content_width);
-
-    // Compute scroll offset if content exceeds area height.
-    let viewport_height = area.height as usize;
-    let scroll_offset = if is_focused {
-        let (cursor_row, _) = panel.input.cursor_visual_position(content_width);
-        if cursor_row >= viewport_height {
-            cursor_row - viewport_height + 1
-        } else {
-            0
         }
-    } else {
-        0
+        false
     };
 
-    let prompt_style = if is_focused {
-        Style::new().fg(theme.accent)
-    } else {
-        Style::new().fg(theme.text_muted)
-    };
+    let muted = Style::new().fg(theme.text_muted);
+    let accent = Style::new().fg(theme.accent);
+    let bold_text = Style::new().fg(theme.text).add_modifier(Modifier::BOLD);
 
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, vl) in visual_lines.iter().enumerate().skip(scroll_offset).take(viewport_height) {
-        let text_slice = &panel.input.text()[vl.byte_start..vl.byte_end];
-        let prefix = if i == 0 {
-            Span::styled(prompt, prompt_style)
-        } else {
-            Span::styled("  ", prompt_style)
+    // Perimeter position mapping (clockwise starting top-left):
+    //   Top:    positions 0..7       (left to right)
+    //   Right:  position 7           (middle of right side)
+    //   Bottom: positions 8..15      (right to left)
+    //   Left:   position 15          (middle of left side)
+
+    // ── Top row: ╭─────╮ ──
+    for col in 0..box_width {
+        let perim_pos = col;
+        let style = if is_accent(perim_pos) { accent } else { muted };
+        let ch = match col {
+            0 => "\u{256d}",
+            c if c == box_width - 1 => "\u{256e}",
+            _ => "\u{2500}",
         };
-        lines.push(Line::from(vec![prefix, Span::raw(text_slice)]));
+        let span = Paragraph::new(ch).style(style);
+        frame.render_widget(span, Rect::new(x + col, y, 1, 1));
     }
 
-    // Handle empty input.
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(prompt, prompt_style)));
+    // ── Middle row: │ </> │ ──
+    let mid_y = y + 1;
+    // Left border (perimeter position = perimeter - 1 = 15)
+    let left_pos = perimeter - 1;
+    let left_style = if is_accent(left_pos) { accent } else { muted };
+    frame.render_widget(
+        Paragraph::new("\u{2502}").style(left_style),
+        Rect::new(x, mid_y, 1, 1),
+    );
+    // Logo text: " </> "
+    frame.render_widget(
+        Paragraph::new(" </> ").style(bold_text),
+        Rect::new(x + 1, mid_y, 5, 1),
+    );
+    // Right border (perimeter position = box_width = 7)
+    let right_pos = box_width;
+    let right_style = if is_accent(right_pos) { accent } else { muted };
+    frame.render_widget(
+        Paragraph::new("\u{2502}").style(right_style),
+        Rect::new(x + box_width - 1, mid_y, 1, 1),
+    );
+
+    // ── Bottom row: ╰─────╯ ── (right to left in perimeter)
+    let bot_y = y + 2;
+    for col in 0..box_width {
+        // Bottom goes right-to-left: col 6→pos 8, col 5→pos 9, ..., col 0→pos 14
+        let perim_pos = box_width + 1 + (box_width - 1 - col);
+        let style = if is_accent(perim_pos) { accent } else { muted };
+        let ch = match col {
+            0 => "\u{2570}",
+            c if c == box_width - 1 => "\u{256f}",
+            _ => "\u{2500}",
+        };
+        let span = Paragraph::new(ch).style(style);
+        frame.render_widget(span, Rect::new(x + col, bot_y, 1, 1));
     }
 
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, area);
-
-    // Place real terminal cursor when focused.
-    if is_focused {
-        let (cursor_row, cursor_col) = panel.input.cursor_visual_position(content_width);
-        let visual_row = cursor_row.saturating_sub(scroll_offset);
-        let x = area.x + prompt_len + (cursor_col as u16).min(area.width.saturating_sub(prompt_len + 1));
-        let y = area.y + visual_row as u16;
-        if y < area.y + area.height {
-            frame.set_cursor_position((x, y));
+    // ── Error message below logo ──
+    if let Some(ref error) = panel.loading_error {
+        let error_y = bot_y + 2;
+        if error_y < area.y + area.height {
+            let max_width = area.width as usize;
+            let truncated = if error.len() > max_width {
+                format!("{}...", &error[..max_width.saturating_sub(3)])
+            } else {
+                error.clone()
+            };
+            let error_widget = Paragraph::new(truncated)
+                .style(Style::new().fg(theme.error))
+                .alignment(Alignment::Center);
+            frame.render_widget(error_widget, Rect::new(area.x, error_y, area.width, 1));
         }
     }
 }

@@ -145,19 +145,9 @@ pub async fn run_tui(
                     handle_key_event(&mut app, key, &tx).await;
                 }
             }
-            AppEvent::AgentOutput(panel_idx, text, is_stderr) => {
-                app.append_agent_output(panel_idx, &text, is_stderr);
-            }
-            AppEvent::AgentDone(panel_idx, exit_code) => {
-                app.mark_agent_done(panel_idx, exit_code);
-            }
-            AppEvent::SandboxCreating { panel_idx, message } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.chat_history.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: message,
-                    });
-                }
+            AppEvent::SandboxCreating { panel_idx, .. } => {
+                // Loading animation replaces status messages; nothing to do.
+                let _ = panel_idx;
             }
             AppEvent::SandboxReady { panel_idx, sandbox, short_id, project_mount } => {
                 // Get SSH info before storing sandbox
@@ -177,10 +167,6 @@ pub async fn run_tui(
                         panel.ssh_host_port = Some(port);
                         panel.ssh_key_path = Some(key.clone());
                     }
-                    panel.chat_history.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: format!("Sandbox {} started. Connecting SSH terminal...", short_id),
-                    });
                 }
                 // Initiate SSH connection if SSH info is available
                 if let Some((ssh_port, key_path)) = ssh_info {
@@ -212,10 +198,7 @@ pub async fn run_tui(
             }
             AppEvent::SandboxFailed { panel_idx, error } => {
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.chat_history.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: error,
-                    });
+                    panel.loading_error = Some(error);
                 }
             }
             AppEvent::SshConnected { panel_idx, handle } => {
@@ -224,8 +207,8 @@ pub async fn run_tui(
                     panel.terminal = Some(super::terminal::SshTerminal::new(cols, rows));
                     panel.terminal_handle = Some(handle);
                     panel.mode = PanelMode::Terminal;
-                    // Clear chat history - terminal takes over the display
-                    panel.chat_history.clear();
+                    panel.reconnecting = false;
+                    panel.loading_error = None;
                 }
             }
             AppEvent::TerminalData { panel_idx, data } => {
@@ -273,24 +256,44 @@ pub async fn run_tui(
                 }
             }
             AppEvent::SshDisconnected { panel_idx, error } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.mode = PanelMode::Agent;
-                    panel.terminal = None;
-                    panel.terminal_handle = None;
-                    if let Some(err) = error {
-                        panel.chat_history.push(ChatMessage {
-                            role: MessageRole::System,
-                            content: format!("SSH disconnected: {}", err),
-                        });
-                    } else {
-                        panel.chat_history.push(ChatMessage {
-                            role: MessageRole::System,
-                            content: "SSH session ended.".to_string(),
-                        });
+                // Check if this is a reconnect attempt that failed.
+                let is_reconnecting = app.panels.get(panel_idx)
+                    .is_some_and(|p| p.reconnecting);
+
+                if is_reconnecting {
+                    // Reconnect failed: revert to loading screen with error.
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        panel.terminal = None;
+                        panel.terminal_handle = None;
+                        panel.mode = PanelMode::Loading;
+                        panel.loading_error = error.map(|e| format!("Reconnect failed: {}", e));
+                        panel.reconnecting = false;
+                        panel.loading_tick = 0;
+                    }
+                } else {
+                    // Genuine disconnect: kill sandbox and close panel.
+                    if let Some((name, sandbox_arc)) = kill_panel_at(&mut app, panel_idx) {
+                        if let Some(sb) = sandbox_arc {
+                            spawn_sandbox_destroy(sb);
+                        }
+
+                        let msg = if let Some(err) = error {
+                            format!("'{}' disconnected: {}", name, err)
+                        } else {
+                            format!("'{}' session ended.", name)
+                        };
+                        app.set_status_message(msg);
                     }
                 }
             }
             AppEvent::Tick => {
+                // Increment loading animation counter for all loading panels.
+                for panel in app.panels.iter_mut() {
+                    if panel.mode == PanelMode::Loading {
+                        panel.loading_tick = panel.loading_tick.wrapping_add(1);
+                    }
+                }
+
                 // Flush pending URLs whose 2s debounce window has elapsed.
                 let now = std::time::Instant::now();
                 let debounce = std::time::Duration::from_secs(2);
@@ -523,12 +526,92 @@ fn print_validation_results(validation: &crate::runtime::ValidationResult) {
     }
 }
 
+/// Kill a panel's sandbox, teardown its project mount, and remove it from the panel list.
+/// Returns the agent name and optional sandbox Arc for background destruction.
+fn kill_panel_at(app: &mut App, idx: usize) -> Option<(String, Option<Arc<Mutex<Sandbox>>>)> {
+    if idx >= app.panels.len() {
+        return None;
+    }
+
+    // Teardown project mount.
+    if let Some(mut pm) = app.panels[idx].project_mount.take() {
+        let _ = pm.teardown();
+    }
+
+    // Kill SSH port-forward processes.
+    for child in &mut app.panels[idx].port_forward_children {
+        let _ = child.kill();
+    }
+
+    let sandbox_arc = app.panels[idx].sandbox.take();
+    let agent_name = app.panels[idx].agent_name.clone();
+
+    app.panels.remove(idx);
+    if app.panels.is_empty() {
+        app.focused_panel = 0;
+        app.focus_global();
+        app.zoomed = false;
+    } else if app.focused_panel >= app.panels.len() {
+        app.focused_panel = app.panels.len() - 1;
+    }
+
+    Some((agent_name, sandbox_arc))
+}
+
+/// Spawn a background task to destroy a sandbox.
+fn spawn_sandbox_destroy(sandbox_arc: Arc<Mutex<Sandbox>>) {
+    tokio::spawn(async move {
+        match Arc::try_unwrap(sandbox_arc) {
+            Ok(mutex) => {
+                let sandbox = mutex.into_inner();
+                let _ = sandbox.destroy().await;
+            }
+            Err(arc) => {
+                let mut sb = arc.lock().await;
+                let _ = sb.stop().await;
+            }
+        }
+    });
+}
+
 /// Handle a single key event.
 async fn handle_key_event(
     app: &mut App,
     key: KeyEvent,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
+    // Loading mode: swallow all keystrokes except navigation.
+    if app.input_focus == InputFocus::Panel {
+        if let Some(panel) = app.panels.get(app.focused_panel) {
+            if panel.mode == PanelMode::Loading {
+                match key.code {
+                    KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        app.focus_prev();
+                    }
+                    KeyCode::BackTab => {
+                        app.focus_prev();
+                    }
+                    KeyCode::Tab => {
+                        app.focus_next();
+                    }
+                    KeyCode::Esc => {
+                        app.focus_global();
+                    }
+                    KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.focus_global();
+                    }
+                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !app.panels.is_empty() {
+                            app.zoomed = !app.zoomed;
+                        }
+                    }
+                    _ => {} // Swallow everything else
+                }
+                return;
+            }
+        }
+    }
+
     // Terminal mode: forward keystrokes to SSH, intercept only navigation keys.
     if app.input_focus == InputFocus::Panel {
         if let Some(panel) = app.panels.get(app.focused_panel) {
@@ -713,11 +796,6 @@ async fn handle_key_event(
                 }
             }
 
-            // Reset scroll to bottom so the user sees command output / their message.
-            if let Some(panel) = app.focused_panel_mut() {
-                panel.scroll_offset = 0;
-            }
-
             let result = app.handle_submit();
             match result {
                 SubmitResult::Command(cmd) => {
@@ -729,8 +807,8 @@ async fn handle_key_event(
                         content: msg,
                     });
                 }
-                SubmitResult::Message(msg) => {
-                    handle_message(app, &msg, tx);
+                SubmitResult::Message(_msg) => {
+                    // Panels are terminal-only; messages are not sent.
                 }
                 SubmitResult::Empty | SubmitResult::NoPanel => {
                     // Nothing to do.
@@ -793,9 +871,6 @@ async fn handle_key_event(
                 let (row, _) = app.active_input().cursor_visual_position(width);
                 if row > 0 {
                     app.handle_move_up(width);
-                } else if let Some(panel) = app.focused_panel_mut() {
-                    // scroll_offset = lines from bottom; adding moves up
-                    panel.scroll_offset = panel.scroll_offset.saturating_add(1);
                 }
             }
         }
@@ -812,20 +887,7 @@ async fn handle_key_event(
                 let (row, _) = app.active_input().cursor_visual_position(width);
                 if row + 1 < total_lines {
                     app.handle_move_down(width);
-                } else if let Some(panel) = app.focused_panel_mut() {
-                    // scroll_offset = lines from bottom; subtracting moves down
-                    panel.scroll_offset = panel.scroll_offset.saturating_sub(1);
                 }
-            }
-        }
-        KeyCode::PageUp => {
-            if let Some(panel) = app.focused_panel_mut() {
-                panel.scroll_offset = panel.scroll_offset.saturating_add(10);
-            }
-        }
-        KeyCode::PageDown => {
-            if let Some(panel) = app.focused_panel_mut() {
-                panel.scroll_offset = panel.scroll_offset.saturating_sub(10);
             }
         }
 
@@ -945,6 +1007,10 @@ async fn handle_command(
                 panel.terminal_handle = None;
                 panel.opened_urls.clear();
                 panel.pending_urls.clear();
+                panel.reconnecting = true;
+                panel.mode = PanelMode::Loading;
+                panel.loading_error = None;
+                panel.loading_tick = 0;
                 // Kill SSH port-forward processes and allow re-forwarding.
                 for child in &mut panel.port_forward_children {
                     let _ = child.kill();
@@ -966,10 +1032,6 @@ async fn handle_command(
                     let env = panel.env.clone();
                     let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
                     let tx = tx.clone();
-                    panel.chat_history.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: "Reconnecting SSH terminal...".to_string(),
-                    });
                     tokio::spawn(async move {
                         match super::terminal::connect_ssh(
                             ssh_port, key_path, 80, 24,
@@ -987,10 +1049,8 @@ async fn handle_command(
                         }
                     });
                 } else {
-                    panel.chat_history.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: "No sandbox running. Cannot reconnect SSH.".to_string(),
-                    });
+                    panel.loading_error = Some("No sandbox running. Cannot reconnect SSH.".to_string());
+                    panel.reconnecting = false;
                 }
             } else {
                 app.set_system_message(ChatMessage {
@@ -1010,52 +1070,15 @@ async fn handle_command(
                     role: MessageRole::System,
                     content: format!("No panel {}.", idx),
                 });
-            } else {
-                // Teardown project mount before removing the panel.
-                if let Some(mut pm) = app.panels[idx].project_mount.take() {
-                    if let Err(e) = pm.teardown() {
-                        eprintln!("Warning: project mount teardown failed: {}", e);
-                    }
+            } else if let Some((agent_name, sandbox_arc)) = kill_panel_at(app, idx) {
+                if let Some(sb) = sandbox_arc {
+                    spawn_sandbox_destroy(sb);
                 }
 
-                // Kill SSH port-forward processes.
-                for child in &mut app.panels[idx].port_forward_children {
-                    let _ = child.kill();
-                }
-
-                let sandbox_arc = app.panels[idx].sandbox.take();
-                let agent_name = app.panels[idx].agent_name.clone();
-
-                app.panels.remove(idx);
-                if app.panels.is_empty() {
-                    app.focused_panel = 0;
-                    app.focus_global();
-                    app.zoomed = false;
-                } else if app.focused_panel >= app.panels.len() {
-                    app.focused_panel = app.panels.len() - 1;
-                }
-
-                // Destroy the sandbox in the background.
-                if let Some(sb_arc) = sandbox_arc {
-                    tokio::spawn(async move {
-                        match Arc::try_unwrap(sb_arc) {
-                            Ok(mutex) => {
-                                let sandbox = mutex.into_inner();
-                                let _ = sandbox.destroy().await;
-                            }
-                            Err(arc) => {
-                                let mut sb = arc.lock().await;
-                                let _ = sb.stop().await;
-                            }
-                        }
-                    });
-                }
-
-                let msg = ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: format!("Killed '{}'.", agent_name),
-                };
-                app.set_system_message(msg);
+                });
             }
         }
         Command::McpList
@@ -1493,10 +1516,6 @@ fn add_agent(
     };
 
     let mut panel = AgentPanel::new(agent);
-    panel.chat_history.push(ChatMessage {
-        role: MessageRole::System,
-        content: format!("Launching {} (image: {})...", agent, image_name),
-    });
 
     // Auto-detect API keys from host environment.
     for (key, _is_required) in &required_api_keys(agent) {
@@ -1593,16 +1612,12 @@ fn add_agent_from_config(
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let display_name = config.name.clone();
-    let image_name = config.image.clone();
+    let _image_name = config.image.clone();
 
     // Use the sandbox key (e.g. "claude", "codex") as agent_name so that
     // agent_cli_command() can resolve the correct startup command.
     let mut panel = AgentPanel::new(key);
     panel.display_name = Some(display_name.clone());
-    panel.chat_history.push(ChatMessage {
-        role: MessageRole::System,
-        content: format!("Launching {} (image: {})...", display_name, image_name),
-    });
 
     // Copy env vars from config to panel.
     for (k, v) in &config.env {
@@ -1659,87 +1674,6 @@ fn add_agent_from_config(
     });
 }
 
-/// Handle a regular user message by streaming it to the sandbox.
-fn handle_message(
-    app: &mut App,
-    msg: &str,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) {
-    let panel_idx = app.focused_panel;
-    let panel = match app.panels.get_mut(panel_idx) {
-        Some(p) => p,
-        None => return,
-    };
-
-    // Check if the panel has a sandbox.
-    let sandbox = match panel.sandbox.as_ref() {
-        Some(sb) => Arc::clone(sb),
-        None => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: "No sandbox attached to this panel.".to_string(),
-            });
-            return;
-        }
-    };
-
-    // Don't send if already streaming.
-    if panel.is_streaming {
-        panel.chat_history.push(ChatMessage {
-            role: MessageRole::System,
-            content: "Agent is still processing. Please wait.".to_string(),
-        });
-        return;
-    }
-
-    panel.is_streaming = true;
-
-    let agent_name = panel.agent_name.clone();
-    let message = msg.to_string();
-    let tx = tx.clone();
-
-    // Forward API keys: merge host env with panel-specific env (panel takes priority).
-    let mut env: HashMap<String, String> = [
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-    ]
-    .iter()
-    .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
-    .collect();
-    env.extend(panel.env.clone());
-
-    // Spawn a background task for the streaming send_message call.
-    tokio::spawn(async move {
-        let sb = sandbox.lock().await;
-        let tx_cb = tx.clone();
-        let cb_panel_idx = panel_idx;
-
-        let result = sb
-            .send_message(&message, &agent_name, "", &env, move |text, is_stderr| {
-                let _ = tx_cb.send(AppEvent::AgentOutput(
-                    cb_panel_idx,
-                    text.to_string(),
-                    is_stderr,
-                ));
-            })
-            .await;
-
-        match result {
-            Ok(exit_code) => {
-                let _ = tx.send(AppEvent::AgentDone(panel_idx, exit_code));
-            }
-            Err(e) => {
-                let _ = tx.send(AppEvent::AgentOutput(
-                    panel_idx,
-                    format!("\nError: {}", e),
-                    true,
-                ));
-                let _ = tx.send(AppEvent::AgentDone(panel_idx, -1));
-            }
-        }
-    });
-}
 
 /// Handle `/env` — set or list panel environment variables.
 fn handle_env(app: &mut App, assignment: Option<(String, String)>) {
