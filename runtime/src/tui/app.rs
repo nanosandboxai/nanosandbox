@@ -159,6 +159,8 @@ pub struct AgentPanel {
     pub loading_error: Option<String>,
     /// Whether a reconnect is in progress (suppresses auto-kill on disconnect).
     pub reconnecting: bool,
+    /// Whether this panel is visible in the grid. Hidden panels keep running.
+    pub visible: bool,
 }
 
 impl AgentPanel {
@@ -190,6 +192,7 @@ impl AgentPanel {
             loading_tick: 0,
             loading_error: None,
             reconnecting: false,
+            visible: true,
         }
     }
 }
@@ -499,10 +502,10 @@ impl App {
         }
     }
 
-    /// Move focus to the next panel.
+    /// Move focus to the next visible panel.
     pub fn focus_next(&mut self) {
-        if !self.panels.is_empty() {
-            self.focused_panel = (self.focused_panel + 1) % self.panels.len();
+        if let Some(next) = self.next_visible_panel(self.focused_panel) {
+            self.focused_panel = next;
             self.input_focus = InputFocus::Panel;
             if self.show_sandbox_sidebar {
                 self.refresh_sidebar_modified_files();
@@ -510,17 +513,87 @@ impl App {
         }
     }
 
-    /// Move focus to the previous panel.
+    /// Move focus to the previous visible panel.
     pub fn focus_prev(&mut self) {
-        if !self.panels.is_empty() {
-            self.focused_panel = if self.focused_panel == 0 {
-                self.panels.len() - 1
-            } else {
-                self.focused_panel - 1
-            };
+        if let Some(prev) = self.prev_visible_panel(self.focused_panel) {
+            self.focused_panel = prev;
             self.input_focus = InputFocus::Panel;
             if self.show_sandbox_sidebar {
                 self.refresh_sidebar_modified_files();
+            }
+        }
+    }
+
+    /// Find the next visible panel index after `start`, wrapping around.
+    pub fn next_visible_panel(&self, start: usize) -> Option<usize> {
+        let len = self.panels.len();
+        if len == 0 {
+            return None;
+        }
+        for offset in 1..=len {
+            let idx = (start + offset) % len;
+            if self.panels[idx].visible {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Find the previous visible panel index before `start`, wrapping around.
+    pub fn prev_visible_panel(&self, start: usize) -> Option<usize> {
+        let len = self.panels.len();
+        if len == 0 {
+            return None;
+        }
+        for offset in 1..=len {
+            let idx = (start + len - offset) % len;
+            if self.panels[idx].visible {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Count the number of visible panels.
+    pub fn visible_panel_count(&self) -> usize {
+        self.panels.iter().filter(|p| p.visible).count()
+    }
+
+    /// Resolve an optional target string to a panel index.
+    ///
+    /// - `None` returns the currently focused panel index.
+    /// - A string that parses as `usize` is treated as a 0-indexed panel number.
+    /// - Otherwise, matches against `display_name` (case-insensitive) then `agent_name`.
+    pub fn resolve_panel_target(&self, target: Option<&str>) -> Option<usize> {
+        match target {
+            None => {
+                if self.focused_panel < self.panels.len() {
+                    Some(self.focused_panel)
+                } else {
+                    None
+                }
+            }
+            Some(s) => {
+                if let Ok(idx) = s.parse::<usize>() {
+                    if idx < self.panels.len() {
+                        return Some(idx);
+                    }
+                    return None;
+                }
+                let lower = s.to_lowercase();
+                for (i, panel) in self.panels.iter().enumerate() {
+                    if let Some(ref dn) = panel.display_name {
+                        if dn.to_lowercase() == lower {
+                            return Some(i);
+                        }
+                    }
+                }
+                for (i, panel) in self.panels.iter().enumerate() {
+                    if panel.agent_name.to_lowercase() == lower {
+                        return Some(i);
+                    }
+                }
+                None
             }
         }
     }

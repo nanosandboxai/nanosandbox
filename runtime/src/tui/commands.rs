@@ -9,8 +9,16 @@ pub enum Command {
     Help,
     /// Clear the current panel output.
     Clear,
-    /// Close the focused panel.
-    Close,
+    /// Close (hide) a panel. Sandbox keeps running.
+    Close {
+        /// Target: panel index or name, or None for focused panel.
+        target: Option<String>,
+    },
+    /// Show a previously hidden panel.
+    Open {
+        /// Target: panel index or name, or None for last-hidden panel.
+        target: Option<String>,
+    },
     /// Add a new agent panel, optionally with a custom image.
     AddAgent {
         /// Agent name.
@@ -64,8 +72,8 @@ pub enum Command {
     },
     /// Kill (destroy) a sandbox and remove its panel.
     Kill {
-        /// 1-indexed panel number, or None to kill focused panel.
-        panel: Option<usize>,
+        /// Panel target: index or name, or None to kill focused panel.
+        panel: Option<String>,
     },
     /// Reconnect SSH terminal for the focused panel.
     Reconnect,
@@ -83,7 +91,7 @@ pub enum Command {
         action: Option<String>,
     },
     /// Open clone directory in an external tool.
-    Open {
+    Edit {
         /// Tool override, or None for preferred/auto-detected.
         tool: Option<String>,
     },
@@ -113,7 +121,7 @@ const ALL_COMMANDS: &[&str] = &[
     "/add", "/focus", "/kill", "/reconnect", "/env",
     "/zoom", "/branches",
     "/gitsync", "/gitsync on", "/gitsync off", "/gitsync now",
-    "/open",
+    "/open", "/edit",
     "/sandboxes",
     "/theme", "/theme nanosandbox", "/theme nanosandbox-light",
     "/theme dracula", "/theme catppuccin", "/theme tokyo-night", "/theme nord",
@@ -147,7 +155,10 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/quit" | "/q" => ParseResult::Ok(Command::Quit),
         "/help" => ParseResult::Ok(Command::Help),
         "/clear" => ParseResult::Ok(Command::Clear),
-        "/close" => ParseResult::Ok(Command::Close),
+        "/close" => {
+            let target = parts.get(1).map(|s| s.to_string());
+            ParseResult::Ok(Command::Close { target })
+        }
 
         "/add" => parse_add(&parts),
         "/focus" => parse_focus(&parts),
@@ -161,8 +172,12 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/branches" => ParseResult::Ok(Command::Branches),
         "/gitsync" => parse_gitsync(&parts),
         "/open" => {
+            let target = parts.get(1).map(|s| s.to_string());
+            ParseResult::Ok(Command::Open { target })
+        }
+        "/edit" => {
             let tool = parts.get(1).map(|s| s.to_string());
-            ParseResult::Ok(Command::Open { tool })
+            ParseResult::Ok(Command::Edit { tool })
         }
         "/theme" => parse_theme(&parts),
 
@@ -377,15 +392,7 @@ fn parse_env(parts: &[&str]) -> ParseResult {
 
 fn parse_kill(parts: &[&str]) -> ParseResult {
     match parts.get(1) {
-        Some(n) => match n.parse::<usize>() {
-            Ok(panel) => ParseResult::Ok(Command::Kill { panel: Some(panel) }),
-            Err(_) => ParseResult::Err(format!(
-                "'{}' is not a valid panel number.\n\
-                 Usage: /kill [n]  (0-indexed, or omit for focused panel)\n\
-                 Example: /kill 0",
-                n,
-            )),
-        },
+        Some(n) => ParseResult::Ok(Command::Kill { panel: Some(n.to_string()) }),
         None => ParseResult::Ok(Command::Kill { panel: None }),
     }
 }
@@ -711,14 +718,16 @@ mod tests {
     fn test_parse_kill_with_number() {
         assert_eq!(
             parse_command_verbose("/kill 2"),
-            ParseResult::Ok(Command::Kill { panel: Some(2) }),
+            ParseResult::Ok(Command::Kill { panel: Some("2".to_string()) }),
         );
     }
 
     #[test]
-    fn test_parse_kill_invalid_number() {
-        let result = parse_command_verbose("/kill abc");
-        assert!(matches!(result, ParseResult::Err(_)));
+    fn test_parse_kill_with_name() {
+        assert_eq!(
+            parse_command_verbose("/kill claude"),
+            ParseResult::Ok(Command::Kill { panel: Some("claude".to_string()) }),
+        );
     }
 
     #[test]
@@ -801,15 +810,44 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_open_default() {
-        assert_eq!(parse_command("/open"), Some(Command::Open { tool: None }));
+    fn test_parse_open_no_arg() {
+        assert_eq!(parse_command("/open"), Some(Command::Open { target: None }));
     }
 
     #[test]
-    fn test_parse_open_specific_tool() {
+    fn test_parse_open_with_name() {
         assert_eq!(
-            parse_command("/open gitui"),
-            Some(Command::Open { tool: Some("gitui".to_string()) })
+            parse_command("/open claude"),
+            Some(Command::Open { target: Some("claude".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_edit_default() {
+        assert_eq!(parse_command("/edit"), Some(Command::Edit { tool: None }));
+    }
+
+    #[test]
+    fn test_parse_edit_specific_tool() {
+        assert_eq!(
+            parse_command("/edit gitui"),
+            Some(Command::Edit { tool: Some("gitui".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_close_no_arg() {
+        assert_eq!(
+            parse_command("/close"),
+            Some(Command::Close { target: None }),
+        );
+    }
+
+    #[test]
+    fn test_parse_close_with_name() {
+        assert_eq!(
+            parse_command("/close claude"),
+            Some(Command::Close { target: Some("claude".to_string()) }),
         );
     }
 }

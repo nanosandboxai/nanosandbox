@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         1
     };
 
-    let show_header = app.panels.is_empty();
+    let show_header = app.visible_panel_count() == 0;
     let is_branded = matches!(
         app.theme_name,
         ThemeName::Nanosandbox | ThemeName::NanosandboxLight
@@ -65,7 +65,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_global_input(frame, global_input_area, app);
     render_status_bar(frame, status_area, app);
 
-    if app.panels.is_empty() {
+    if app.visible_panel_count() == 0 {
         if is_branded {
             render_branded_welcome(frame, body_area, app);
         } else {
@@ -358,7 +358,7 @@ fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
 /// Render the status bar with keybinding hints.
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme;
-    let hints = if app.panels.is_empty() {
+    let hints = if app.visible_panel_count() == 0 {
         Line::from(vec![
             Span::styled(" /add <agent>", Style::new().fg(theme.accent)),
             Span::raw(" new panel  "),
@@ -382,7 +382,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         ];
         if app.zoomed {
             spans.push(Span::styled(
-                format!("  [{}/{}]", app.focused_panel, app.panels.len()),
+                format!("  [{}/{}]", app.focused_panel, app.visible_panel_count()),
                 Style::new().fg(theme.warning),
             ));
         }
@@ -407,7 +407,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             ];
             if app.zoomed {
                 spans.push(Span::styled(
-                    format!("  [{}/{}]", app.focused_panel, app.panels.len()),
+                    format!("  [{}/{}]", app.focused_panel, app.visible_panel_count()),
                     Style::new().fg(theme.warning),
                 ));
             }
@@ -426,7 +426,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             ];
             if app.zoomed {
                 spans.push(Span::styled(
-                    format!("  [{}/{}]", app.focused_panel, app.panels.len()),
+                    format!("  [{}/{}]", app.focused_panel, app.visible_panel_count()),
                     Style::new().fg(theme.warning),
                 ));
             }
@@ -592,7 +592,9 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
         for (i, panel) in app.panels.iter().enumerate() {
             let is_focused = i == app.focused_panel;
 
-            let status = if panel.mode == PanelMode::Terminal {
+            let status = if !panel.visible {
+                Span::styled("◻ ", Style::new().fg(theme.text_muted))
+            } else if panel.mode == PanelMode::Terminal {
                 Span::styled("● ", Style::new().fg(theme.success))
             } else if panel.sandbox.is_some() {
                 Span::styled("◌ ", Style::new().fg(theme.warning))
@@ -600,7 +602,9 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("○ ", Style::new().fg(theme.text_muted))
             };
 
-            let name_style = if is_focused {
+            let name_style = if !panel.visible {
+                Style::new().fg(theme.text_muted)
+            } else if is_focused {
                 Style::new().fg(theme.text).add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(theme.text)
@@ -626,12 +630,19 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw("")
             };
 
+            let hidden_label = if !panel.visible {
+                Span::styled(" [hidden]", Style::new().fg(theme.text_muted))
+            } else {
+                Span::raw("")
+            };
+
             lines.push(Line::from(vec![
                 Span::raw(format!(" [{}] ", i)),
                 status,
                 Span::styled(panel.display_name.as_deref().unwrap_or(&panel.agent_name), name_style),
                 Span::styled(sid, Style::new().fg(theme.text_muted)),
                 sync_label,
+                hidden_label,
                 Span::styled(focus_marker, Style::new().fg(theme.accent)),
             ]));
         }
@@ -778,10 +789,16 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(widget, area);
 }
 
-/// Render the panel grid based on the number of panels.
+/// Render the panel grid based on the number of visible panels.
 fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
-    let panel_count = app.panels.len();
-    if panel_count == 0 {
+    // Collect visible panel indices.
+    let visible_indices: Vec<usize> = app.panels.iter().enumerate()
+        .filter(|(_, p)| p.visible)
+        .map(|(i, _)| i)
+        .collect();
+
+    let visible_count = visible_indices.len();
+    if visible_count == 0 {
         return;
     }
 
@@ -795,7 +812,7 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
     // Zoomed mode: render only the focused panel at full width.
     if app.zoomed {
         let idx = app.focused_panel;
-        if idx < panel_count {
+        if idx < app.panels.len() && app.panels[idx].visible {
             let is_focused = true;
             let is_input_focused = app.input_focus == InputFocus::Panel;
             let ac_idx = if is_input_focused {
@@ -819,7 +836,7 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let (rows, cols) = grid_dimensions(panel_count);
+    let (rows, cols) = grid_dimensions(visible_count);
     if rows == 0 || cols == 0 {
         return;
     }
@@ -830,15 +847,15 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     let row_areas = Layout::vertical(row_constraints).split(area);
 
-    let mut panel_idx = 0;
+    let mut vi = 0; // index into visible_indices
 
     for row in 0..rows {
-        if panel_idx >= panel_count {
+        if vi >= visible_count {
             break;
         }
 
         // Determine how many columns this row actually has.
-        let cols_in_row = cols.min(panel_count - panel_idx);
+        let cols_in_row = cols.min(visible_count - vi);
 
         let col_constraints: Vec<Constraint> = (0..cols_in_row)
             .map(|_| Constraint::Ratio(1, cols_in_row as u32))
@@ -846,7 +863,8 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
         let col_areas = Layout::horizontal(col_constraints).split(row_areas[row]);
 
         for col in 0..cols_in_row {
-            if panel_idx < panel_count {
+            if vi < visible_count {
+                let panel_idx = visible_indices[vi];
                 let is_focused = panel_idx == app.focused_panel;
                 let is_input_focused = is_focused && app.input_focus == InputFocus::Panel;
                 let ac_idx = if is_input_focused {
@@ -866,7 +884,7 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
                     &mut app.panel_areas,
                     sel_ref,
                 );
-                panel_idx += 1;
+                vi += 1;
             }
         }
     }

@@ -567,8 +567,20 @@ fn kill_panel_at(app: &mut App, idx: usize) -> Option<(String, Option<Arc<Mutex<
         app.focused_panel = 0;
         app.focus_global();
         app.zoomed = false;
-    } else if app.focused_panel >= app.panels.len() {
-        app.focused_panel = app.panels.len() - 1;
+    } else {
+        if app.focused_panel >= app.panels.len() {
+            app.focused_panel = app.panels.len() - 1;
+        }
+        // Ensure focused panel is visible.
+        if !app.panels[app.focused_panel].visible {
+            if let Some(next) = app.next_visible_panel(app.focused_panel) {
+                app.focused_panel = next;
+            } else {
+                app.focused_panel = 0;
+                app.focus_global();
+                app.zoomed = false;
+            }
+        }
     }
 
     Some((agent_name, sandbox_arc))
@@ -940,8 +952,9 @@ async fn handle_command(
                     "                                Add a new agent panel\n",
                     "  /sandboxes                    Toggle sandbox sidebar\n",
                     "  /focus <n>                    Focus panel n (0-indexed)\n",
-                    "  /close                        Close focused panel\n",
-                    "  /kill [n]                     Kill sandbox & remove panel (0-indexed)\n",
+                    "  /close [n|name]               Hide panel (sandbox keeps running)\n",
+                    "  /open [n|name]                Show a hidden panel\n",
+                    "  /kill [n|name]                Kill sandbox & remove panel\n",
                     "  /copy                         Copy panel content to clipboard\n",
                     "  /zoom                         Toggle panel zoom (Ctrl+F)\n",
                     "  /clear                        Clear chat history\n",
@@ -956,7 +969,7 @@ async fn handle_command(
                     "  /mcp enable <name>            Enable MCP server\n",
                     "  /mcp disable <name>           Disable MCP server\n",
                     "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
-                    "  /open [tool]                  Open clone in external tool\n",
+                    "  /edit [tool]                  Open clone in external tool\n",
                     "  /quit                         Exit the TUI\n",
                     "\n",
                     "  Press Esc to dismiss.\n",
@@ -971,28 +984,83 @@ async fn handle_command(
                 app.system_messages.clear();
             }
         }
-        Command::Close => {
-            if !app.panels.is_empty() {
-                let idx = app.focused_panel;
-                app.panels.remove(idx);
-                if app.panels.is_empty() {
+        Command::Close { target } => {
+            let idx = match app.resolve_panel_target(target.as_deref()) {
+                Some(i) => i,
+                None => {
+                    let msg = match target {
+                        Some(t) => format!("No panel matching '{}'.", t),
+                        None => "No panels to close.".to_string(),
+                    };
+                    app.set_system_message(ChatMessage {
+                        role: MessageRole::System,
+                        content: msg,
+                    });
+                    return;
+                }
+            };
+
+            if !app.panels[idx].visible {
+                app.set_status_message("Panel is already hidden.");
+                return;
+            }
+
+            app.panels[idx].visible = false;
+            let name = app.panels[idx].display_name.as_deref()
+                .unwrap_or(&app.panels[idx].agent_name).to_string();
+            app.set_status_message(format!("Hidden '{}'. Use /open to show.", name));
+
+            if app.focused_panel == idx {
+                if let Some(next) = app.next_visible_panel(idx) {
+                    app.focused_panel = next;
+                } else {
                     app.focused_panel = 0;
                     app.focus_global();
                     app.zoomed = false;
-                } else if app.focused_panel >= app.panels.len() {
-                    app.focused_panel = app.panels.len() - 1;
                 }
-            } else {
-                app.set_system_message(ChatMessage {
-                    role: MessageRole::System,
-                    content: "No panels to close.".to_string(),
-                });
+            }
+        }
+        Command::Open { target } => {
+            let idx = match target.as_deref() {
+                None => {
+                    // No arg: find the most recently hidden panel (highest index).
+                    app.panels.iter().enumerate().rev()
+                        .find(|(_, p)| !p.visible)
+                        .map(|(i, _)| i)
+                }
+                Some(s) => app.resolve_panel_target(Some(s)),
+            };
+
+            match idx {
+                Some(i) if i < app.panels.len() => {
+                    if app.panels[i].visible {
+                        app.set_status_message("Panel is already visible.");
+                    } else {
+                        app.panels[i].visible = true;
+                        let name = app.panels[i].display_name.as_deref()
+                            .unwrap_or(&app.panels[i].agent_name).to_string();
+                        app.set_status_message(format!("Showing '{}'.", name));
+                        app.focused_panel = i;
+                        app.focus_panel_input();
+                    }
+                }
+                _ => {
+                    let msg = match target {
+                        Some(t) => format!("No hidden panel matching '{}'.", t),
+                        None => "No hidden panels.".to_string(),
+                    };
+                    app.set_status_message(msg);
+                }
             }
         }
         Command::Focus { panel } => {
             if panel < app.panels.len() {
-                app.focused_panel = panel;
-                app.focus_panel_input();
+                if !app.panels[panel].visible {
+                    app.set_status_message("Panel is hidden. Use /open to show it first.");
+                } else {
+                    app.focused_panel = panel;
+                    app.focus_panel_input();
+                }
             } else {
                 app.set_system_message(ChatMessage {
                     role: MessageRole::System,
@@ -1076,17 +1144,22 @@ async fn handle_command(
             }
         }
         Command::Kill { panel } => {
-            let idx = match panel {
-                Some(n) => n,
-                None => app.focused_panel,
+            let idx = match app.resolve_panel_target(panel.as_deref()) {
+                Some(i) => i,
+                None => {
+                    let msg = match panel {
+                        Some(t) => format!("No panel matching '{}'.", t),
+                        None => "No panels to kill.".to_string(),
+                    };
+                    app.set_system_message(ChatMessage {
+                        role: MessageRole::System,
+                        content: msg,
+                    });
+                    return;
+                }
             };
 
-            if idx >= app.panels.len() {
-                app.set_system_message(ChatMessage {
-                    role: MessageRole::System,
-                    content: format!("No panel {}.", idx),
-                });
-            } else if let Some((agent_name, sandbox_arc)) = kill_panel_at(app, idx) {
+            if let Some((agent_name, sandbox_arc)) = kill_panel_at(app, idx) {
                 if let Some(sb) = sandbox_arc {
                     spawn_sandbox_destroy(sb);
                 }
@@ -1270,7 +1343,7 @@ async fn handle_command(
                 _ => {} // parse_gitsync already validates
             }
         }
-        Command::Open { tool } => {
+        Command::Edit { tool } => {
             let panel_idx = app.focused_panel;
             let clone_path = app.panels.get(panel_idx)
                 .and_then(|p| p.project_mount.as_ref())
