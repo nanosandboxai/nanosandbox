@@ -7,9 +7,38 @@ use tokio::sync::Mutex;
 
 use crate::Sandbox;
 
+use ratatui::layout::Rect;
+
 use super::commands::{self, Command, ParseResult};
 use super::terminal::{SshTerminal, SshTerminalHandle};
 use super::text_input::TextInput;
+
+/// State for an active mouse text selection within a panel.
+#[derive(Debug, Clone)]
+pub struct MouseSelection {
+    /// Index of the panel where the selection started.
+    pub panel_idx: usize,
+    /// Starting position in terminal coordinates (row, col) relative to the
+    /// panel's inner area (i.e., vt100 screen coordinates).
+    pub start: (u16, u16),
+    /// Current end position in terminal coordinates (row, col).
+    pub end: (u16, u16),
+    /// Whether the mouse button is still held (drag in progress).
+    pub dragging: bool,
+}
+
+impl MouseSelection {
+    /// Return (start, end) normalized so start comes before end in row-major order.
+    pub fn normalized(&self) -> ((u16, u16), (u16, u16)) {
+        if self.start.0 < self.end.0
+            || (self.start.0 == self.end.0 && self.start.1 <= self.end.1)
+        {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        }
+    }
+}
 
 /// Operating mode for a panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +246,11 @@ pub struct App {
     pub theme: &'static super::theme::Theme,
     /// Name of the active theme (for display and persistence).
     pub theme_name: super::theme::ThemeName,
+    /// Active mouse text selection (at most one at a time across all panels).
+    pub mouse_selection: Option<MouseSelection>,
+    /// Cached panel inner areas from the last render, used to map mouse
+    /// coordinates to panel-relative terminal positions.
+    pub panel_areas: Vec<(usize, Rect)>,
 }
 
 impl Default for App {
@@ -256,6 +290,8 @@ impl App {
             status_message: None,
             theme,
             theme_name,
+            mouse_selection: None,
+            panel_areas: Vec::new(),
         }
     }
 

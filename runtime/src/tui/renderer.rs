@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::app::{App, AgentPanel, InputFocus, PanelMode, SidebarFilesTab};
+use super::app::{App, AgentPanel, InputFocus, MouseSelection, PanelMode, SidebarFilesTab};
 use super::commands::autocomplete;
 use super::grid::grid_dimensions;
 use super::theme::{Theme, ThemeName};
@@ -774,7 +774,12 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    // Clear cached panel areas before re-recording.
+    app.panel_areas.clear();
+
     let theme = app.theme;
+    let selection = app.mouse_selection.clone();
+    let sel_ref = selection.as_ref();
 
     // Zoomed mode: render only the focused panel at full width.
     if app.zoomed {
@@ -796,6 +801,8 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
                 is_input_focused,
                 ac_idx,
                 theme,
+                &mut app.panel_areas,
+                sel_ref,
             );
         }
         return;
@@ -845,6 +852,8 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
                     is_input_focused,
                     ac_idx,
                     theme,
+                    &mut app.panel_areas,
+                    sel_ref,
                 );
                 panel_idx += 1;
             }
@@ -862,6 +871,8 @@ fn render_panel(
     _is_input_focused: bool,
     _autocomplete_index: Option<usize>,
     theme: &Theme,
+    panel_areas: &mut Vec<(usize, Rect)>,
+    selection: Option<&MouseSelection>,
 ) {
     // Status indicator.
     let status_indicator = if panel.mode == PanelMode::Loading {
@@ -926,6 +937,9 @@ fn render_panel(
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
+    // Record inner area for mouse hit-testing.
+    panel_areas.push((index, inner_area));
+
     if inner_area.height < 2 || inner_area.width < 2 {
         return;
     }
@@ -951,6 +965,14 @@ fn render_panel(
             let pseudo_term = tui_term::widget::PseudoTerminal::new(term.screen());
             frame.render_widget(pseudo_term, inner_area);
 
+            // Overlay selection highlighting if this panel has an active selection.
+            if let Some(sel) = selection {
+                if sel.panel_idx == index {
+                    let (start, end) = sel.normalized();
+                    render_selection_overlay(frame, inner_area, start, end, theme);
+                }
+            }
+
             // Place cursor at the terminal's cursor position when focused.
             if is_focused {
                 let cursor = term.screen().cursor_position();
@@ -966,6 +988,42 @@ fn render_panel(
 
     // Loading mode: render centered logo with animated border sweep.
     render_loading_animation(frame, inner_area, panel, theme);
+}
+
+/// Render selection highlighting by modifying buffer cells in the selected range.
+fn render_selection_overlay(
+    frame: &mut Frame,
+    inner_area: Rect,
+    start: (u16, u16),
+    end: (u16, u16),
+    theme: &Theme,
+) {
+    let buf = frame.buffer_mut();
+
+    for row in start.0..=end.0 {
+        let abs_y = inner_area.y + row;
+        if abs_y >= inner_area.y + inner_area.height {
+            break;
+        }
+
+        let col_start = if row == start.0 { start.1 } else { 0 };
+        let col_end = if row == end.0 {
+            end.1
+        } else {
+            inner_area.width.saturating_sub(1)
+        };
+
+        for col in col_start..=col_end {
+            let abs_x = inner_area.x + col;
+            if abs_x >= inner_area.x + inner_area.width {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((abs_x, abs_y)) {
+                cell.fg = theme.selection_fg;
+                cell.bg = theme.selection_bg;
+            }
+        }
+    }
 }
 
 /// Render the loading animation: centered `</>` logo with sweeping border accent.

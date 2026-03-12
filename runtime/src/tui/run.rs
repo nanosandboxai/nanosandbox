@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use ratatui::crossterm::event::{
     Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+    EnableMouseCapture, DisableMouseCapture,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -20,7 +22,7 @@ use tokio::sync::{mpsc, Mutex};
 use crate::config::{McpServerConfig, SandboxConfig};
 use crate::Sandbox;
 
-use super::app::{AgentPanel, App, ChatMessage, InputFocus, MessageRole, PanelMode, SidebarFilesTab, SubmitResult};
+use super::app::{AgentPanel, App, ChatMessage, InputFocus, MessageRole, MouseSelection, PanelMode, SidebarFilesTab, SubmitResult};
 use super::commands::{self, Command};
 use super::event::{spawn_terminal_event_reader, AppEvent};
 use super::renderer;
@@ -85,7 +87,7 @@ pub async fn run_tui(
     // Set up terminal.
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -95,7 +97,7 @@ pub async fn run_tui(
     let saved_stderr_for_hook = saved_stderr;
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         // Restore stderr so the panic message is visible.
         if saved_stderr_for_hook >= 0 {
             unsafe {
@@ -141,8 +143,16 @@ pub async fn run_tui(
     while let Some(event) = rx.recv().await {
         match event {
             AppEvent::Terminal(crossterm_event) => {
-                if let CrosstermEvent::Key(key) = crossterm_event {
-                    handle_key_event(&mut app, key, &tx).await;
+                match crossterm_event {
+                    CrosstermEvent::Key(key) => {
+                        // Clear mouse selection on any keypress.
+                        app.mouse_selection = None;
+                        handle_key_event(&mut app, key, &tx).await;
+                    }
+                    CrosstermEvent::Mouse(mouse) => {
+                        handle_mouse_event(&mut app, mouse);
+                    }
+                    _ => {}
                 }
             }
             AppEvent::SandboxCreating { panel_idx, .. } => {
@@ -212,6 +222,11 @@ pub async fn run_tui(
                 }
             }
             AppEvent::TerminalData { panel_idx, data } => {
+                // Clear selection if terminal content changes in the selected panel
+                // (but not while user is actively dragging).
+                if app.mouse_selection.as_ref().is_some_and(|s| s.panel_idx == panel_idx && !s.dragging) {
+                    app.mouse_selection = None;
+                }
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
                     if let Some(ref mut term) = panel.terminal {
                         term.process_bytes(&data);
@@ -383,7 +398,7 @@ pub async fn run_tui(
             AppEvent::OpenTuiTool { binary, path } => {
                 // Suspend TUI: leave alternate screen, disable raw mode
                 let _ = disable_raw_mode();
-                let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+                let _ = execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen);
 
                 // Restore stderr so the tool can use it
                 if saved_stderr >= 0 {
@@ -413,7 +428,7 @@ pub async fn run_tui(
 
                 // Resume TUI: enter alternate screen, enable raw mode
                 let _ = enable_raw_mode();
-                let _ = execute!(terminal.backend_mut(), EnterAlternateScreen);
+                let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture);
                 terminal.clear()?;
             }
         }
@@ -428,7 +443,7 @@ pub async fn run_tui(
 
     // Restore terminal before cleanup so the user sees progress messages.
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     // Restore stderr so cleanup log messages are visible.
@@ -1485,6 +1500,116 @@ fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
             Err(format!("exited with {}", status))
         }
     }
+}
+
+/// Handle a mouse event for panel-scoped text selection.
+fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
+    let x = mouse.column;
+    let y = mouse.row;
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            // Clear any existing selection.
+            app.mouse_selection = None;
+
+            // Find which panel inner area contains (x, y).
+            if let Some((panel_idx, inner_area)) = find_panel_at(app, x, y) {
+                // Convert absolute coords to panel-relative terminal coords.
+                let term_col = x.saturating_sub(inner_area.x);
+                let term_row = y.saturating_sub(inner_area.y);
+
+                // Only start selection in terminal mode panels.
+                if app.panels.get(panel_idx).is_some_and(|p| {
+                    p.mode == PanelMode::Terminal && p.terminal.is_some()
+                }) {
+                    app.mouse_selection = Some(MouseSelection {
+                        panel_idx,
+                        start: (term_row, term_col),
+                        end: (term_row, term_col),
+                        dragging: true,
+                    });
+                }
+
+                // Focus the clicked panel.
+                if panel_idx != app.focused_panel {
+                    app.focused_panel = panel_idx;
+                    app.input_focus = InputFocus::Panel;
+                }
+            }
+        }
+
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(ref mut sel) = app.mouse_selection {
+                if sel.dragging {
+                    // Find the inner area for the selection's panel.
+                    let inner_area = app
+                        .panel_areas
+                        .iter()
+                        .find(|(idx, _)| *idx == sel.panel_idx)
+                        .map(|(_, area)| *area);
+
+                    if let Some(inner_area) = inner_area {
+                        // Clamp to panel boundaries and convert to term coords.
+                        let clamped_x = x.clamp(
+                            inner_area.x,
+                            inner_area.x + inner_area.width.saturating_sub(1),
+                        );
+                        let clamped_y = y.clamp(
+                            inner_area.y,
+                            inner_area.y + inner_area.height.saturating_sub(1),
+                        );
+                        let term_col = clamped_x.saturating_sub(inner_area.x);
+                        let term_row = clamped_y.saturating_sub(inner_area.y);
+                        sel.end = (term_row, term_col);
+                    }
+                }
+            }
+        }
+
+        MouseEventKind::Up(MouseButton::Left) => {
+            if let Some(ref mut sel) = app.mouse_selection {
+                sel.dragging = false;
+
+                // If start == end, this was a click (no drag) — just focus, don't copy.
+                if sel.start == sel.end {
+                    app.mouse_selection = None;
+                    return;
+                }
+
+                // Extract text from the vt100 screen and copy to clipboard.
+                let (start, end) = sel.normalized();
+                if let Some(panel) = app.panels.get(sel.panel_idx) {
+                    if let Some(ref term) = panel.terminal {
+                        let text =
+                            term.screen().contents_between(start.0, start.1, end.0, end.1);
+                        if !text.is_empty() {
+                            let _ = copy_to_clipboard(&text);
+                            app.set_status_message(format!(
+                                "Copied {} chars to clipboard.",
+                                text.len()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        _ => {}
+    }
+}
+
+/// Find which panel's inner area contains the given absolute coordinates.
+fn find_panel_at(app: &App, x: u16, y: u16) -> Option<(usize, ratatui::layout::Rect)> {
+    for &(panel_idx, area) in &app.panel_areas {
+        if x >= area.x
+            && x < area.x + area.width
+            && y >= area.y
+            && y < area.y + area.height
+        {
+            return Some((panel_idx, area));
+        }
+    }
+    None
 }
 
 /// Required API key environment variables for known agents.
