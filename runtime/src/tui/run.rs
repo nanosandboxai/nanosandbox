@@ -172,6 +172,11 @@ pub async fn run_tui(
                     panel.sandbox = Some(sandbox);
                     panel.sandbox_id_short = short_id.clone();
                     panel.project_mount = project_mount;
+                    // Store SSH info for later port forwarding (ssh -L).
+                    if let Some((port, ref key)) = ssh_info {
+                        panel.ssh_host_port = Some(port);
+                        panel.ssh_key_path = Some(key.clone());
+                    }
                     panel.chat_history.push(ChatMessage {
                         role: MessageRole::System,
                         content: format!("Sandbox {} started. Connecting SSH terminal...", short_id),
@@ -228,15 +233,41 @@ pub async fn run_tui(
                     if let Some(ref mut term) = panel.terminal {
                         term.process_bytes(&data);
 
-                        // Scan the parsed screen for URLs and auto-open in host browser.
-                        // Using the vt100 screen contents (not raw bytes) so that ANSI
-                        // escape sequences from TUI apps don't truncate long URLs.
+                        // Extract URLs from the parsed vt100 screen, then
+                        // validate the hostname.  TUI apps (ink.js) re-render
+                        // the screen, sometimes garbling text — host validation
+                        // rejects those broken URLs.  The first clean read is
+                        // buffered for 2s (keeping the longest per host+path),
+                        // then opened once.
                         let urls =
                             super::terminal::extract_urls_from_screen(term.screen());
+                        let now = std::time::Instant::now();
                         for url in urls {
-                            if panel.opened_urls.insert(url.clone()) {
-                                super::terminal::open_url_in_browser(&url);
+                            if !super::terminal::is_auth_url(&url) {
+                                continue;
                             }
+                            // OAuth URLs always have query parameters (?client_id=...).
+                            // Truncated URLs from partial screen renders won't have
+                            // reached the '?' yet — skip them.
+                            if !url.contains('?') {
+                                continue;
+                            }
+                            let key = super::terminal::url_dedup_key(&url);
+                            if panel.opened_urls.contains(&key) {
+                                continue;
+                            }
+                            // Keep the longest valid URL seen for each dedup key.
+                            // Reset the debounce timer when the URL grows so we
+                            // wait for the screen to stabilise after a re-render.
+                            panel.pending_urls
+                                .entry(key)
+                                .and_modify(|(existing_url, ts)| {
+                                    if url.len() > existing_url.len() {
+                                        *existing_url = url.clone();
+                                        *ts = now;
+                                    }
+                                })
+                                .or_insert((url, now));
                         }
                     }
                 }
@@ -260,6 +291,66 @@ pub async fn run_tui(
                 }
             }
             AppEvent::Tick => {
+                // Flush pending URLs whose 2s debounce window has elapsed.
+                let now = std::time::Instant::now();
+                let debounce = std::time::Duration::from_secs(2);
+                for panel in app.panels.iter_mut() {
+                    let ready: Vec<String> = panel
+                        .pending_urls
+                        .iter()
+                        .filter(|(_key, (_url, first_seen))| {
+                            now.duration_since(*first_seen) >= debounce
+                        })
+                        .map(|(key, _)| key.clone())
+                        .collect();
+                    for key in ready {
+                        if let Some((url, _)) = panel.pending_urls.remove(&key) {
+                            // Forward OAuth callback port via SSH local-port-forward.
+                            // The agent's callback server listens on 127.0.0.1 inside
+                            // the VM. gvproxy expose_port sends traffic to the VM's
+                            // network interface (192.168.127.2), which the server
+                            // doesn't bind to. SSH -L tunnels to guest localhost.
+                            if let Some(port) =
+                                super::terminal::extract_oauth_callback_port(&url)
+                            {
+                                if !panel.forwarded_ports.contains(&port) {
+                                    if let (Some(ssh_port), Some(ref key_path)) =
+                                        (panel.ssh_host_port, &panel.ssh_key_path)
+                                    {
+                                        let fwd = format!(
+                                            "{}:127.0.0.1:{}",
+                                            port, port
+                                        );
+                                        if let Ok(child) =
+                                            std::process::Command::new("ssh")
+                                                .args([
+                                                    "-L", &fwd,
+                                                    "-p", &ssh_port.to_string(),
+                                                    "-i",
+                                                    &key_path.to_string_lossy(),
+                                                    "-o", "StrictHostKeyChecking=no",
+                                                    "-o", "UserKnownHostsFile=/dev/null",
+                                                    "-o", "LogLevel=ERROR",
+                                                    "-N",
+                                                    "root@127.0.0.1",
+                                                ])
+                                                .stdin(std::process::Stdio::null())
+                                                .stdout(std::process::Stdio::null())
+                                                .stderr(std::process::Stdio::null())
+                                                .spawn()
+                                        {
+                                            panel.forwarded_ports.insert(port);
+                                            panel.port_forward_children.push(child);
+                                        }
+                                    }
+                                }
+                            }
+                            panel.opened_urls.insert(key);
+                            super::terminal::open_url_in_browser(&url);
+                        }
+                    }
+                }
+
                 // Tick down temporary status message.
                 if let Some((_, ref mut ticks)) = app.status_message {
                     *ticks = ticks.saturating_sub(1);
@@ -346,8 +437,11 @@ pub async fn run_tui(
     }
 
     // Clean up all running sandboxes (kill VMs, stop gvproxy, remove SSH keys).
-    // Teardown project mounts first (auto-commit and fetch clones).
+    // Kill SSH port-forward processes and teardown project mounts first.
     for panel in &mut app.panels {
+        for child in &mut panel.port_forward_children {
+            let _ = child.kill();
+        }
         if let Some(mut pm) = panel.project_mount.take() {
             let _ = pm.teardown();
         }
@@ -453,7 +547,8 @@ async fn handle_key_event(
                         app.focus_next();
                         return;
                     }
-                    KeyCode::Esc => {
+                    // Ctrl+G: escape to global bar (Esc is forwarded to terminal)
+                    KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         app.focus_global();
                         return;
                     }
@@ -573,9 +668,11 @@ async fn handle_key_event(
             app.focus_next();
         }
 
-        // Esc: dismiss autocomplete → return to global bar → close sidebar.
+        // Esc: dismiss popup → dismiss autocomplete → return to global bar → close sidebar.
         KeyCode::Esc => {
-            if app.autocomplete_index.is_some() {
+            if !app.system_messages.is_empty() && !app.panels.is_empty() {
+                app.system_messages.clear();
+            } else if app.autocomplete_index.is_some() {
                 app.autocomplete_index = None;
             } else if app.input_focus == InputFocus::Panel {
                 app.focus_global();
@@ -627,15 +724,10 @@ async fn handle_key_event(
                     handle_command(app, cmd, tx).await;
                 }
                 SubmitResult::CommandError(msg) => {
-                    let err = ChatMessage {
+                    app.set_system_message(ChatMessage {
                         role: MessageRole::System,
                         content: msg,
-                    };
-                    if let Some(panel) = app.focused_panel_mut() {
-                        panel.chat_history.push(err);
-                    } else {
-                        app.system_messages.push(err);
-                    }
+                    });
                 }
                 SubmitResult::Message(msg) => {
                     handle_message(app, &msg, tx);
@@ -762,7 +854,7 @@ async fn handle_command(
             }
         }
         Command::Help => {
-            let msg = ChatMessage {
+            app.set_system_message(ChatMessage {
                 role: MessageRole::System,
                 content: concat!(
                     "Available commands:\n",
@@ -775,6 +867,7 @@ async fn handle_command(
                     "  /copy                         Copy panel content to clipboard\n",
                     "  /zoom                         Toggle panel zoom (Ctrl+F)\n",
                     "  /clear                        Clear chat history\n",
+                    "  /theme [name]                 Switch colour theme\n",
                     "  /env [KEY=VALUE]              Set/list panel env vars\n",
                     "  /reconnect                    Reconnect SSH terminal\n",
                     "  /branches                     List nanosb branches in project\n",
@@ -787,15 +880,11 @@ async fn handle_command(
                     "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
                     "  /open [tool]                  Open clone in external tool\n",
                     "  /quit                         Exit the TUI\n",
-                    "  Config: Place sandbox.yml in project root for auto-start\n",
+                    "\n",
+                    "  Press Esc to dismiss.\n",
                 )
                 .to_string(),
-            };
-            if let Some(panel) = app.focused_panel_mut() {
-                panel.chat_history.push(msg);
-            } else {
-                app.system_messages.push(msg);
-            }
+            });
         }
         Command::Clear => {
             if let Some(panel) = app.focused_panel_mut() {
@@ -816,7 +905,7 @@ async fn handle_command(
                     app.focused_panel = app.panels.len() - 1;
                 }
             } else {
-                app.system_messages.push(ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: "No panels to close.".to_string(),
                 });
@@ -827,15 +916,10 @@ async fn handle_command(
                 app.focused_panel = panel;
                 app.focus_panel_input();
             } else {
-                let msg = ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: format!("No panel {}. Use /add <agent> first.", panel),
-                };
-                if let Some(p) = app.focused_panel_mut() {
-                    p.chat_history.push(msg);
-                } else {
-                    app.system_messages.push(msg);
-                }
+                });
             }
         }
         Command::McpToggle => {
@@ -860,6 +944,13 @@ async fn handle_command(
                 panel.terminal = None;
                 panel.terminal_handle = None;
                 panel.opened_urls.clear();
+                panel.pending_urls.clear();
+                // Kill SSH port-forward processes and allow re-forwarding.
+                for child in &mut panel.port_forward_children {
+                    let _ = child.kill();
+                }
+                panel.port_forward_children.clear();
+                panel.forwarded_ports.clear();
 
                 let ssh_info = if let Some(ref sb_arc) = panel.sandbox {
                     let sb = sb_arc.lock().await;
@@ -902,7 +993,7 @@ async fn handle_command(
                     });
                 }
             } else {
-                app.system_messages.push(ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: "No panel focused. Use /add <agent> first.".to_string(),
                 });
@@ -915,21 +1006,21 @@ async fn handle_command(
             };
 
             if idx >= app.panels.len() {
-                let msg = ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: format!("No panel {}.", idx),
-                };
-                if let Some(p) = app.focused_panel_mut() {
-                    p.chat_history.push(msg);
-                } else {
-                    app.system_messages.push(msg);
-                }
+                });
             } else {
                 // Teardown project mount before removing the panel.
                 if let Some(mut pm) = app.panels[idx].project_mount.take() {
                     if let Err(e) = pm.teardown() {
                         eprintln!("Warning: project mount teardown failed: {}", e);
                     }
+                }
+
+                // Kill SSH port-forward processes.
+                for child in &mut app.panels[idx].port_forward_children {
+                    let _ = child.kill();
                 }
 
                 let sandbox_arc = app.panels[idx].sandbox.take();
@@ -964,11 +1055,7 @@ async fn handle_command(
                     role: MessageRole::System,
                     content: format!("Killed '{}'.", agent_name),
                 };
-                if let Some(p) = app.focused_panel_mut() {
-                    p.chat_history.push(msg);
-                } else {
-                    app.system_messages.push(msg);
-                }
+                app.set_system_message(msg);
             }
         }
         Command::McpList
@@ -977,7 +1064,7 @@ async fn handle_command(
         | Command::McpEnable { .. }
         | Command::McpDisable { .. } => {
             if app.panels.is_empty() {
-                app.system_messages.push(ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: "MCP commands require an active panel. Use /add <agent> first."
                         .to_string(),
@@ -1025,21 +1112,12 @@ async fn handle_command(
                     role: MessageRole::System,
                     content: msg,
                 };
-                if let Some(panel) = app.focused_panel_mut() {
-                    panel.chat_history.push(chat_msg);
-                } else {
-                    app.system_messages.push(chat_msg);
-                }
+                app.set_system_message(chat_msg);
             } else {
-                let msg = ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: "No project configured. Use --project flag when launching nanosb.".to_string(),
-                };
-                if let Some(panel) = app.focused_panel_mut() {
-                    panel.chat_history.push(msg);
-                } else {
-                    app.system_messages.push(msg);
-                }
+                });
             }
         }
         Command::GitSync { action } => {
@@ -1237,6 +1315,45 @@ async fn handle_command(
                 }
             }
         }
+        Command::Theme { name } => {
+            use crate::tui::theme::{Theme, ThemeName, ALL_THEME_NAMES};
+            match name {
+                None => {
+                    // List available themes with current highlighted.
+                    let current = app.theme_name.to_string();
+                    let list: Vec<String> = ALL_THEME_NAMES
+                        .iter()
+                        .map(|n| {
+                            if *n == current {
+                                format!("  * {} (active)", n)
+                            } else {
+                                format!("    {}", n)
+                            }
+                        })
+                        .collect();
+                    let msg = format!("Available themes:\n{}", list.join("\n"));
+                    app.set_system_message(ChatMessage {
+                        role: MessageRole::System,
+                        content: msg,
+                    });
+                }
+                Some(name_str) => {
+                    // parse_theme already validated the name, but be safe.
+                    match name_str.parse::<ThemeName>() {
+                        Ok(tn) => {
+                            app.theme = Theme::by_name(tn);
+                            app.theme_name = tn;
+                            app.settings.ui.theme = tn.to_string();
+                            let _ = app.settings.save();
+                            app.set_status_message(format!("Theme set to '{}'.", tn));
+                        }
+                        Err(msg) => {
+                            app.set_status_message(msg);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1245,7 +1362,7 @@ fn handle_copy(app: &mut App) {
     let panel = match app.focused_panel_mut() {
         Some(p) => p,
         None => {
-            app.system_messages.push(ChatMessage {
+            app.set_system_message(ChatMessage {
                 role: MessageRole::System,
                 content: "No panel focused. Use /add <agent> first.".to_string(),
             });
@@ -1652,7 +1769,7 @@ fn handle_env(app: &mut App, assignment: Option<(String, String)>) {
                     });
                 }
             } else {
-                app.system_messages.push(ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: "No panel focused. Use /add <agent> first.".to_string(),
                 });
@@ -1666,7 +1783,7 @@ fn handle_env(app: &mut App, assignment: Option<(String, String)>) {
                     content: format!("Set {}.", key),
                 });
             } else {
-                app.system_messages.push(ChatMessage {
+                app.set_system_message(ChatMessage {
                     role: MessageRole::System,
                     content: "No panel focused. Use /add <agent> first.".to_string(),
                 });

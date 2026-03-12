@@ -87,6 +87,11 @@ pub enum Command {
         /// Tool override, or None for preferred/auto-detected.
         tool: Option<String>,
     },
+    /// Switch or list TUI colour themes.
+    Theme {
+        /// Theme name to switch to, or None to list available themes.
+        name: Option<String>,
+    },
 }
 
 /// Result of parsing a slash command.
@@ -110,6 +115,8 @@ const ALL_COMMANDS: &[&str] = &[
     "/gitsync", "/gitsync on", "/gitsync off", "/gitsync now",
     "/open",
     "/sandboxes",
+    "/theme", "/theme nanosandbox", "/theme nanosandbox-light",
+    "/theme dracula", "/theme catppuccin", "/theme tokyo-night", "/theme nord",
     "/mcp", "/mcp list", "/mcp add", "/mcp remove", "/mcp enable", "/mcp disable",
 ];
 
@@ -157,6 +164,7 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
             let tool = parts.get(1).map(|s| s.to_string());
             ParseResult::Ok(Command::Open { tool })
         }
+        "/theme" => parse_theme(&parts),
 
         other => ParseResult::Err(format!(
             "Unknown command: {}\nType /help for available commands.",
@@ -399,6 +407,21 @@ fn parse_gitsync(parts: &[&str]) -> ParseResult {
              - /gitsync now Sync sandbox commits to local repo once",
             other,
         )),
+    }
+}
+
+fn parse_theme(parts: &[&str]) -> ParseResult {
+    match parts.get(1) {
+        None => ParseResult::Ok(Command::Theme { name: None }),
+        Some(name) => {
+            use super::theme::ThemeName;
+            match name.parse::<ThemeName>() {
+                Ok(_) => ParseResult::Ok(Command::Theme {
+                    name: Some(name.to_string()),
+                }),
+                Err(msg) => ParseResult::Err(msg),
+            }
+        }
     }
 }
 

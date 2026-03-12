@@ -473,6 +473,73 @@ pub fn extract_urls_from_screen(screen: &vt100::Screen) -> Vec<String> {
     urls
 }
 
+/// Known OAuth/authentication domains for AI coding agents.
+///
+/// Only URLs matching these domains are auto-opened in the host browser.
+/// This prevents random URLs printed by agents from spawning browser tabs.
+const AUTH_DOMAINS: &[&str] = &[
+    "auth.openai.com",          // OpenAI Codex CLI
+    "claude.ai",                // Claude Code CLI
+    "auth.anthropic.com",       // Claude Code (token refresh)
+    "console.anthropic.com",    // Claude Code (console auth)
+    "authenticator.cursor.sh",  // Cursor IDE
+    "cursor.sh",                // Cursor IDE (device flow)
+    "www.cursor.com",           // Cursor IDE (alt)
+];
+
+/// Check whether a URL is a known OAuth authentication URL.
+///
+/// Only whitelisted auth domains are allowed to auto-open in the host
+/// browser.  This prevents agents from flooding the browser with arbitrary
+/// URLs while still supporting OAuth sign-in flows.
+pub fn is_auth_url(url: &str) -> bool {
+    let after_scheme = match url.strip_prefix("https://") {
+        Some(s) => s,
+        None => return false,
+    };
+    let authority = after_scheme
+        .split(|c: char| c == '/' || c == '?' || c == '#')
+        .next()
+        .unwrap_or("");
+    // Strip optional port
+    let host = authority.split(':').next().unwrap_or(authority);
+    AUTH_DOMAINS.iter().any(|d| host.eq_ignore_ascii_case(d))
+}
+
+
+/// Extract the `redirect_uri` localhost port from an OAuth URL.
+///
+/// OAuth flows embed `redirect_uri=http%3A%2F%2Flocalhost%3A<port>%2F...` or
+/// `redirect_uri=http://localhost:<port>/...` in the URL.  The callback server
+/// runs inside the VM, so we need to forward that port through gvproxy to the
+/// host so the browser redirect reaches the VM.
+pub fn extract_oauth_callback_port(url: &str) -> Option<u16> {
+    // Look for redirect_uri=http...localhost...:<port>
+    let redir_start = url.find("redirect_uri=")?;
+    let redir_value = &url[redir_start + "redirect_uri=".len()..];
+
+    // URL-decoded: http://localhost:<port>  or  percent-encoded: http%3A%2F%2Flocalhost%3A<port>
+    // Normalize by decoding %3A→: and %2F→/
+    let decoded = redir_value
+        .replace("%3A", ":")
+        .replace("%3a", ":")
+        .replace("%2F", "/")
+        .replace("%2f", "/");
+
+    // Find localhost:<port>
+    let after_localhost = decoded
+        .find("localhost:")
+        .map(|i| &decoded[i + "localhost:".len()..])?;
+
+    // Parse port digits
+    let port_str: String = after_localhost
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+
+    port_str.parse::<u16>().ok()
+}
+
 /// Check if a character is valid within a URL (not a URL terminator).
 fn is_url_char(c: char) -> bool {
     // URL-safe characters per RFC 3986 + percent-encoding.
@@ -483,6 +550,44 @@ fn is_url_char(c: char) -> bool {
                 | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';'
                 | '=' | '%'
         )
+}
+
+/// Extract a dedup key from a URL.
+///
+/// For **auth URLs** (matching [`AUTH_DOMAINS`]) the key is just the host.
+/// TUI apps like ink.js re-render via cursor positioning, so partial screen
+/// reads may produce truncated paths (e.g. `auth.openai.com/ous` instead of
+/// `auth.openai.com/oauth/authorize?…`).  Host-only grouping ensures the
+/// "keep longest" debounce correctly replaces truncated URLs with the full one.
+///
+/// For other URLs the key is scheme + host + path (query string stripped).
+pub fn url_dedup_key(url: &str) -> String {
+    let after_scheme = match url.strip_prefix("https://") {
+        Some(s) => s,
+        None => {
+            // Non-https: fall back to stripping query string.
+            return url
+                .find(|c| c == '?' || c == '#')
+                .map_or_else(|| url.to_string(), |pos| url[..pos].to_string());
+        }
+    };
+
+    let host = after_scheme
+        .split(|c: char| c == '/' || c == '?' || c == '#' || c == ':')
+        .next()
+        .unwrap_or(after_scheme);
+
+    // Auth URLs: dedup by host only so truncated paths still match.
+    if AUTH_DOMAINS.iter().any(|d| host.eq_ignore_ascii_case(d)) {
+        return format!("https://{}", host);
+    }
+
+    // Non-auth: keep scheme + host + path, strip query/fragment.
+    if let Some(pos) = url.find(|c| c == '?' || c == '#') {
+        url[..pos].to_string()
+    } else {
+        url.to_string()
+    }
 }
 
 /// Open a URL in the host machine's default browser.
@@ -783,5 +888,45 @@ mod tests {
             "URL should contain state param, got: {}",
             urls[0]
         );
+    }
+
+    #[test]
+    fn test_url_dedup_key_auth_url_host_only() {
+        // Auth URLs should dedup by host only, so truncated and full URLs match.
+        let truncated = "https://auth.openai.com/ous";
+        let full = "https://auth.openai.com/oauth/authorize?client_id=abc&scope=openid";
+        assert_eq!(
+            url_dedup_key(truncated),
+            url_dedup_key(full),
+            "Truncated and full auth URLs should have the same dedup key"
+        );
+        assert_eq!(url_dedup_key(full), "https://auth.openai.com");
+    }
+
+    #[test]
+    fn test_url_dedup_key_non_auth_url_keeps_path() {
+        // Non-auth URLs should keep host+path in the dedup key.
+        let url1 = "https://example.com/page1?q=1";
+        let url2 = "https://example.com/page2?q=2";
+        assert_ne!(
+            url_dedup_key(url1),
+            url_dedup_key(url2),
+            "Non-auth URLs with different paths should have different dedup keys"
+        );
+        assert_eq!(url_dedup_key(url1), "https://example.com/page1");
+    }
+
+    #[test]
+    fn test_url_dedup_key_all_auth_domains() {
+        // All whitelisted auth domains should use host-only dedup.
+        for domain in AUTH_DOMAINS {
+            let url = format!("https://{}/some/path?param=val", domain);
+            assert_eq!(
+                url_dedup_key(&url),
+                format!("https://{}", domain),
+                "Auth domain {} should use host-only dedup",
+                domain
+            );
+        }
     }
 }

@@ -8,3 +8,4 @@ pub mod renderer;
 pub mod run;
 pub mod terminal;
 pub mod text_input;
+pub mod theme;

@@ -1,6 +1,7 @@
 //! Application state for the TUI.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -104,8 +105,12 @@ pub struct AgentPanel {
     pub terminal_handle: Option<SshTerminalHandle>,
     /// Last rendered terminal area (cols, rows) for resize detection.
     pub last_terminal_size: (u16, u16),
-    /// URLs already opened in the host browser (dedup within session).
+    /// URL dedup keys already opened in the host browser.
+    /// For auth URLs the key is host-only; for others it's host+path.
     pub opened_urls: HashSet<String>,
+    /// Pending URLs waiting to be opened after a short debounce delay.
+    /// Key: dedup key, Value: (full URL, timestamp of last growth).
+    pub pending_urls: HashMap<String, (String, std::time::Instant)>,
     /// Active project mount for this panel's sandbox.
     pub project_mount: Option<crate::project::ProjectMount>,
     /// Last known HEAD SHA in the clone (for commit auto-sync detection).
@@ -115,6 +120,14 @@ pub struct AgentPanel {
     /// Per-panel sync override. Takes priority over global settings.
     /// None = use global, Some(true) = force on, Some(false) = force off.
     pub sync_override: Option<bool>,
+    /// SSH host port for port forwarding (stored from SandboxReady).
+    pub ssh_host_port: Option<u16>,
+    /// SSH private key path for port forwarding (stored from SandboxReady).
+    pub ssh_key_path: Option<PathBuf>,
+    /// Guest ports with active SSH local-port-forwards (`ssh -L`).
+    pub forwarded_ports: HashSet<u16>,
+    /// SSH port-forward child processes (killed on panel close).
+    pub port_forward_children: Vec<std::process::Child>,
 }
 
 impl AgentPanel {
@@ -136,10 +149,15 @@ impl AgentPanel {
             terminal_handle: None,
             last_terminal_size: (80, 24),
             opened_urls: HashSet::new(),
+            pending_urls: HashMap::new(),
             project_mount: None,
             last_known_head: None,
             base_commit: None,
             sync_override: None,
+            ssh_host_port: None,
+            ssh_key_path: None,
+            forwarded_ports: HashSet::new(),
+            port_forward_children: Vec::new(),
         }
     }
 }
@@ -192,6 +210,10 @@ pub struct App {
     pub settings: crate::settings::UserSettings,
     /// Temporary status message shown on the status bar (message, remaining ticks).
     pub status_message: Option<(String, u8)>,
+    /// Active colour theme (resolved at startup, switchable via `/theme`).
+    pub theme: &'static super::theme::Theme,
+    /// Name of the active theme (for display and persistence).
+    pub theme_name: super::theme::ThemeName,
 }
 
 impl Default for App {
@@ -203,6 +225,8 @@ impl Default for App {
 impl App {
     /// Create a new application with default state.
     pub fn new() -> Self {
+        let settings = crate::settings::UserSettings::load();
+        let (theme, theme_name) = super::theme::Theme::resolve(&settings.ui.theme);
         Self {
             panels: Vec::new(),
             focused_panel: 0,
@@ -225,14 +249,22 @@ impl App {
             sidebar_files_tab: SidebarFilesTab::Modified,
             sidebar_committed_scroll: 0,
             sidebar_tick_counter: 0,
-            settings: crate::settings::UserSettings::load(),
+            settings,
             status_message: None,
+            theme,
+            theme_name,
         }
     }
 
     /// Set a temporary status message that appears on the status bar for ~3 seconds.
     pub fn set_status_message(&mut self, msg: impl Into<String>) {
         self.status_message = Some((msg.into(), 12)); // 12 ticks × 250ms = 3s
+    }
+
+    /// Replace the welcome-screen system messages with a single new message.
+    pub fn set_system_message(&mut self, msg: ChatMessage) {
+        self.system_messages.clear();
+        self.system_messages.push(msg);
     }
 
     /// Refresh the cached modified files list from the focused panel's project mount.

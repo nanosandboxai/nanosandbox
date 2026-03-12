@@ -22,6 +22,10 @@ fn default_editor() -> String {
     "auto".to_string()
 }
 
+fn default_theme() -> String {
+    "nanosandbox".to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Settings structs
 // ---------------------------------------------------------------------------
@@ -70,6 +74,22 @@ impl Default for ToolSettings {
     }
 }
 
+/// UI appearance settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiSettings {
+    /// Built-in theme name (e.g. "nanosandbox", "dracula", "catppuccin").
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+        }
+    }
+}
+
 /// Top-level user settings, persisted as TOML.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct UserSettings {
@@ -79,6 +99,9 @@ pub struct UserSettings {
     /// Tool / editor settings.
     #[serde(default)]
     pub tools: ToolSettings,
+    /// UI appearance settings.
+    #[serde(default)]
+    pub ui: UiSettings,
 }
 
 impl UserSettings {

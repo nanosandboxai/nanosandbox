@@ -800,6 +800,19 @@ impl LibkrunRuntime {
             .and_then(|s| s.ssh_key_path.clone())
     }
 
+    /// Dynamically forward a guest port to the same host port via gvproxy.
+    pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
+        let sandboxes = self.sandboxes.lock().unwrap();
+        let state = sandboxes
+            .get(id)
+            .ok_or_else(|| "sandbox not found".to_string())?;
+        let gvproxy = state
+            .gvproxy
+            .as_ref()
+            .ok_or_else(|| "no gvproxy instance".to_string())?;
+        gvproxy.expose_port(port, port)
+    }
+
     /// Build a ready-to-use SSH command string for connecting to a sandbox.
     pub fn ssh_command(&self, id: &str) -> Option<String> {
         let sandboxes = self.sandboxes.lock().unwrap();

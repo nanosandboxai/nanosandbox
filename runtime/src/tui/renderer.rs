@@ -1,7 +1,7 @@
 //! Renderer that draws the TUI frames.
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
@@ -9,12 +9,19 @@ use ratatui::Frame;
 use super::app::{App, AgentPanel, InputFocus, MessageRole, PanelMode, SidebarFilesTab};
 use super::commands::autocomplete;
 use super::grid::grid_dimensions;
+use super::theme::{Theme, ThemeName};
 
 /// Maximum number of visual lines the input area can grow to.
 const MAX_INPUT_HEIGHT: u16 = 10;
 
 /// Render a full TUI frame based on the current application state.
 pub fn render(frame: &mut Frame, app: &mut App) {
+    let theme = app.theme;
+
+    // Paint the theme background on the entire frame.
+    let bg = Block::default().style(Style::new().bg(theme.background).fg(theme.text));
+    frame.render_widget(bg, frame.area());
+
     // Compute dynamic global input height.
     let global_content_width = (frame.area().width as usize).saturating_sub(3).max(1);
     let global_input_height = if app.input_focus == InputFocus::Global {
@@ -25,16 +32,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
 
     let show_header = app.panels.is_empty();
+    let is_branded = matches!(
+        app.theme_name,
+        ThemeName::Nanosandbox | ThemeName::NanosandboxLight
+    );
 
     let (body_area, global_input_area, status_area) = if show_header {
+        let header_height = 4;
         let [header_area, body_area, global_input_area, status_area] = Layout::vertical([
-            Constraint::Length(4),
+            Constraint::Length(header_height),
             Constraint::Fill(1),
             Constraint::Length(global_input_height),
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        render_header(frame, header_area);
+        if is_branded {
+            render_branded_header(frame, header_area, theme);
+        } else {
+            render_header(frame, header_area, theme);
+        }
         (body_area, global_input_area, status_area)
     } else {
         let [body_area, global_input_area, status_area] = Layout::vertical([
@@ -50,7 +66,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_status_bar(frame, status_area, app);
 
     if app.panels.is_empty() {
-        render_welcome(frame, body_area, app);
+        if is_branded {
+            render_branded_welcome(frame, body_area, app);
+        } else {
+            render_welcome(frame, body_area, app);
+        }
     } else if app.show_mcp_sidebar || app.show_sandbox_sidebar {
         let [panels_area, sidebar_area] = Layout::horizontal([
             Constraint::Percentage(70),
@@ -62,7 +82,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         if app.show_sandbox_sidebar {
             render_sandbox_sidebar(frame, sidebar_area, app);
         } else {
-            render_mcp_sidebar(frame, sidebar_area);
+            render_mcp_sidebar(frame, sidebar_area, theme);
         }
     } else {
         render_panel_grid(frame, body_area, app);
@@ -70,39 +90,195 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Render autocomplete popup for the global input bar (overlays on top of body).
     if app.input_focus == InputFocus::Global && app.global_input.text().starts_with('/') {
-        render_autocomplete(frame, body_area, global_input_area, app.global_input.text(), app.autocomplete_index);
+        render_autocomplete(frame, body_area, global_input_area, app.global_input.text(), app.autocomplete_index, theme);
+    }
+
+    // Render system message popup overlay when panels are open.
+    if !app.panels.is_empty() && !app.system_messages.is_empty() {
+        render_system_popup(frame, body_area, app, theme);
     }
 }
 
-/// Render the header with an ASCII logo (dashed box with sparkles and </>).
-fn render_header(frame: &mut Frame, area: Rect) {
-    let b = Style::new().fg(Color::DarkGray);
-    let s = Style::new().fg(Color::Cyan);
-    let w = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
+/// Render the header with a Unicode box logo and sparkles.
+fn render_header(frame: &mut Frame, area: Rect, theme: &Theme) {
+    let b = Style::new().fg(theme.text_muted);
+    let s = Style::new().fg(theme.accent);
+    let w = Style::new().fg(theme.text).add_modifier(Modifier::BOLD);
     let header = Paragraph::new(vec![
-        Line::from(vec![Span::styled("+-------+", b)]),
+        Line::from(vec![Span::styled("\u{250c}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2510}", b)]),
         Line::from(vec![
-            Span::styled("| ", b),
+            Span::styled("\u{2502} ", b),
             Span::styled("\u{2726}", s),
             Span::styled(" ", b),
             Span::styled("\u{2726}", s),
             Span::styled(" ", b),
             Span::styled("\u{2726}", s),
-            Span::styled(" |", b),
+            Span::styled(" \u{2502}", b),
         ]),
         Line::from(vec![
-            Span::styled("|  ", b),
+            Span::styled("\u{2502}  ", b),
             Span::styled("</>", w),
-            Span::styled("  |", b),
+            Span::styled("  \u{2502}", b),
         ]),
-        Line::from(vec![Span::styled("+-------+", b)]),
+        Line::from(vec![Span::styled("\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2518}", b)]),
     ])
     .alignment(Alignment::Center);
     frame.render_widget(header, area);
 }
 
+/// Render the branded nanosandbox hero header with logo, title, and tagline.
+fn render_branded_header(frame: &mut Frame, area: Rect, theme: &Theme) {
+    let a = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let w = Style::new().fg(theme.text).add_modifier(Modifier::BOLD);
+
+    //  ╭─────╮
+    //  │ </> │   NANOSANDBOX
+    //  ╰─────╯   Sandboxes for AI Code Agents
+
+    let pad = "  ";
+    let gap = "   ";
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{256d}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256e}", a),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502} ", a),
+            Span::styled("</>", a),
+            Span::styled(" \u{2502}", a),
+            Span::raw(gap),
+            Span::styled("NANOSANDBOX", a),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}", a),
+            Span::raw(gap),
+            Span::styled("Sandboxes for AI Code Agents", w),
+        ]),
+        Line::from(""),
+    ];
+
+    let header = Paragraph::new(lines);
+    frame.render_widget(header, area);
+}
+
+/// Render the branded welcome / Getting Started section for nanosandbox themes.
+fn render_branded_welcome(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme;
+
+    if !app.system_messages.is_empty() {
+        // System messages override the welcome content (e.g. /help output).
+        let lines: Vec<Line> = app
+            .system_messages
+            .iter()
+            .flat_map(|msg| {
+                let style = Style::new().fg(theme.warning);
+                msg.content
+                    .lines()
+                    .map(|line_text| Line::from(Span::styled(line_text, style)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let paragraph = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::NONE))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let a = Style::new().fg(theme.accent);
+    let ab = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let m = Style::new().fg(theme.text_muted);
+    let s = Style::new().fg(theme.success);
+    let w = Style::new().fg(theme.warning);
+    let pad = "  ";
+
+    let lines = vec![
+        // ┌─ Getting Started ───────
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{250c}\u{2500} ", a),
+            Span::styled("Getting Started", ab),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}", a),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}  ", a),
+            Span::styled("Spawn a sandbox with an AI agent:", m),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}", a),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}    ", a),
+            Span::styled("/add claude", s),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}    ", a),
+            Span::styled("/add codex", s),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}    ", a),
+            Span::styled("/add goose", s),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}", a),
+        ]),
+        // ├─ Quick Commands ───────
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{251c}\u{2500} ", a),
+            Span::styled("Quick Commands", ab),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}", a),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}    ", a),
+            Span::styled("/help", w),
+            Span::styled("          full command list", m),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}    ", a),
+            Span::styled("/theme", w),
+            Span::styled("         switch colour theme", m),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}    ", a),
+            Span::styled("/quit", w),
+            Span::styled("          exit nanosandbox", m),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2502}", a),
+        ]),
+        Line::from(vec![
+            Span::raw(pad),
+            Span::styled("\u{2514}\u{2500}\u{2500}\u{2500}", a),
+        ]),
+    ];
+
+    let welcome = Paragraph::new(lines);
+    frame.render_widget(welcome, area);
+}
+
 /// Render the persistent global input bar with multiline wrapping and real cursor.
 fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
+    let theme = app.theme;
     let is_focused = app.input_focus == InputFocus::Global;
     let prompt = "> ";
     let prompt_len = prompt.len() as u16;
@@ -127,14 +303,14 @@ fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let prompt_style = if is_focused {
-        Style::new().fg(Color::Cyan)
+        Style::new().fg(theme.accent)
     } else {
-        Style::new().fg(Color::DarkGray)
+        Style::new().fg(theme.text_muted)
     };
     let text_style = if is_focused {
         Style::default()
     } else {
-        Style::new().fg(Color::DarkGray)
+        Style::new().fg(theme.text_muted)
     };
 
     let mut lines: Vec<Line> = Vec::new();
@@ -170,32 +346,33 @@ fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
 
 /// Render the status bar with keybinding hints.
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme;
     let hints = if app.panels.is_empty() {
         Line::from(vec![
-            Span::styled(" /add <agent>", Style::new().fg(Color::Cyan)),
+            Span::styled(" /add <agent>", Style::new().fg(theme.accent)),
             Span::raw(" new panel  "),
-            Span::styled("/quit", Style::new().fg(Color::Cyan)),
+            Span::styled("/quit", Style::new().fg(theme.accent)),
             Span::raw(" exit"),
         ])
     } else if app.input_focus == InputFocus::Global {
         let mut spans = vec![
-            Span::styled(" Tab", Style::new().fg(Color::Cyan)),
+            Span::styled(" Tab", Style::new().fg(theme.accent)),
             Span::raw(" panel focus  "),
-            Span::styled("/kill", Style::new().fg(Color::Cyan)),
+            Span::styled("/kill", Style::new().fg(theme.accent)),
             Span::raw(" destroy  "),
-            Span::styled("/sb", Style::new().fg(Color::Cyan)),
+            Span::styled("/sb", Style::new().fg(theme.accent)),
             Span::raw(" sandboxes  "),
-            Span::styled("/add", Style::new().fg(Color::Cyan)),
+            Span::styled("/add", Style::new().fg(theme.accent)),
             Span::raw(" new  "),
-            Span::styled("/quit", Style::new().fg(Color::Cyan)),
+            Span::styled("/quit", Style::new().fg(theme.accent)),
             Span::raw(" exit  "),
-            Span::styled("^F", Style::new().fg(Color::Cyan)),
+            Span::styled("^F", Style::new().fg(theme.accent)),
             Span::raw(if app.zoomed { " restore" } else { " maximize" }),
         ];
         if app.zoomed {
             spans.push(Span::styled(
                 format!("  [{}/{}]", app.focused_panel, app.panels.len()),
-                Style::new().fg(Color::Yellow),
+                Style::new().fg(theme.warning),
             ));
         }
         Line::from(spans)
@@ -208,37 +385,37 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
         if in_terminal {
             let mut spans = vec![
-                Span::styled(" Esc", Style::new().fg(Color::Cyan)),
+                Span::styled(" ^G", Style::new().fg(theme.accent)),
                 Span::raw(" global bar  "),
-                Span::styled("Tab", Style::new().fg(Color::Cyan)),
+                Span::styled("Tab", Style::new().fg(theme.accent)),
                 Span::raw(" next panel  "),
-                Span::styled("SSH Terminal", Style::new().fg(Color::Green)),
+                Span::styled("SSH Terminal", Style::new().fg(theme.success)),
                 Span::raw("  "),
-                Span::styled("^F", Style::new().fg(Color::Cyan)),
+                Span::styled("^F", Style::new().fg(theme.accent)),
                 Span::raw(if app.zoomed { " restore" } else { " maximize" }),
             ];
             if app.zoomed {
                 spans.push(Span::styled(
                     format!("  [{}/{}]", app.focused_panel, app.panels.len()),
-                    Style::new().fg(Color::Yellow),
+                    Style::new().fg(theme.warning),
                 ));
             }
             Line::from(spans)
         } else {
             let mut spans = vec![
-                Span::styled(" Esc", Style::new().fg(Color::Cyan)),
+                Span::styled(" Esc", Style::new().fg(theme.accent)),
                 Span::raw(" global bar  "),
-                Span::styled("Tab", Style::new().fg(Color::Cyan)),
+                Span::styled("Tab", Style::new().fg(theme.accent)),
                 Span::raw(" next panel  "),
-                Span::styled("Shift+Enter", Style::new().fg(Color::Cyan)),
+                Span::styled("Shift+Enter", Style::new().fg(theme.accent)),
                 Span::raw(" newline  "),
-                Span::styled("^F", Style::new().fg(Color::Cyan)),
+                Span::styled("^F", Style::new().fg(theme.accent)),
                 Span::raw(if app.zoomed { " restore" } else { " maximize" }),
             ];
             if app.zoomed {
                 spans.push(Span::styled(
                     format!("  [{}/{}]", app.focused_panel, app.panels.len()),
-                    Style::new().fg(Color::Yellow),
+                    Style::new().fg(theme.warning),
                 ));
             }
             Line::from(spans)
@@ -249,19 +426,20 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let line = if let Some((ref msg, _)) = app.status_message {
         Line::from(Span::styled(
             format!(" {}", msg),
-            Style::new().fg(Color::Yellow),
+            Style::new().fg(theme.warning),
         ))
     } else {
         hints
     };
 
-    let bar = Paragraph::new(line).style(Style::new().bg(Color::DarkGray));
+    let bar = Paragraph::new(line).style(Style::new().bg(theme.status_bar_bg));
     frame.render_widget(bar, area);
 }
 
 /// Render the welcome screen shown when no panels exist.
 /// The global input bar is rendered separately by `render()`.
 fn render_welcome(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme;
     if app.system_messages.is_empty() {
         let lines = vec![
             Line::from(""),
@@ -269,20 +447,20 @@ fn render_welcome(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(""),
             Line::from(vec![
                 Span::raw("Type "),
-                Span::styled("/add <agent>", Style::new().fg(Color::Green)),
+                Span::styled("/add <agent>", Style::new().fg(theme.success)),
                 Span::raw(" to spawn a new sandbox panel."),
             ]),
             Line::from(""),
             Line::from(vec![
                 Span::raw("Examples: "),
-                Span::styled("/add claude", Style::new().fg(Color::Yellow)),
+                Span::styled("/add claude", Style::new().fg(theme.warning)),
                 Span::raw("  "),
-                Span::styled("/add codex", Style::new().fg(Color::Yellow)),
+                Span::styled("/add codex", Style::new().fg(theme.warning)),
             ]),
             Line::from(""),
             Line::from(vec![
                 Span::raw("Type "),
-                Span::styled("/help", Style::new().fg(Color::Green)),
+                Span::styled("/help", Style::new().fg(theme.success)),
                 Span::raw(" for a full list of commands."),
             ]),
         ];
@@ -296,7 +474,7 @@ fn render_welcome(frame: &mut Frame, area: Rect, app: &App) {
             .system_messages
             .iter()
             .flat_map(|msg| {
-                let style = Style::new().fg(Color::Yellow);
+                let style = Style::new().fg(theme.warning);
                 msg.content
                     .lines()
                     .map(|line_text| Line::from(Span::styled(line_text, style)))
@@ -312,39 +490,39 @@ fn render_welcome(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the MCP management sidebar.
-fn render_mcp_sidebar(frame: &mut Frame, area: Rect) {
+fn render_mcp_sidebar(frame: &mut Frame, area: Rect, theme: &Theme) {
     let lines = vec![
         Line::from(Span::styled(
             "MCP Servers",
             Style::new()
-                .fg(Color::Cyan)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("/mcp list", Style::new().fg(Color::Green)),
+            Span::styled("/mcp list", Style::new().fg(theme.success)),
             Span::raw("  list servers"),
         ]),
         Line::from(vec![
-            Span::styled("/mcp add", Style::new().fg(Color::Green)),
+            Span::styled("/mcp add", Style::new().fg(theme.success)),
             Span::raw("   add server"),
         ]),
         Line::from(vec![
-            Span::styled("/mcp remove", Style::new().fg(Color::Green)),
+            Span::styled("/mcp remove", Style::new().fg(theme.success)),
             Span::raw(" remove server"),
         ]),
         Line::from(vec![
-            Span::styled("/mcp enable", Style::new().fg(Color::Green)),
+            Span::styled("/mcp enable", Style::new().fg(theme.success)),
             Span::raw(" enable server"),
         ]),
         Line::from(vec![
-            Span::styled("/mcp disable", Style::new().fg(Color::Green)),
+            Span::styled("/mcp disable", Style::new().fg(theme.success)),
             Span::raw(" disable"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "Press /mcp to toggle this sidebar.",
-            Style::new().fg(Color::DarkGray),
+            Style::new().fg(theme.text_muted),
         )),
     ];
 
@@ -352,7 +530,7 @@ fn render_mcp_sidebar(frame: &mut Frame, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::new().fg(Color::DarkGray))
+                .border_style(Style::new().fg(theme.text_muted))
                 .title(" MCP "),
         )
         .wrap(Wrap { trim: false });
@@ -389,30 +567,31 @@ fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Render the sandbox list section of the sidebar.
 fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme;
     let inner_height = area.height.saturating_sub(2) as usize; // border top + bottom
     let mut lines = Vec::new();
 
     if app.panels.is_empty() {
         lines.push(Line::from(Span::styled(
             "No sandboxes running.",
-            Style::new().fg(Color::DarkGray),
+            Style::new().fg(theme.text_muted),
         )));
     } else {
         for (i, panel) in app.panels.iter().enumerate() {
             let is_focused = i == app.focused_panel;
 
             let status = if panel.mode == PanelMode::Terminal {
-                Span::styled("● ", Style::new().fg(Color::Green))
+                Span::styled("● ", Style::new().fg(theme.success))
             } else if panel.sandbox.is_some() {
-                Span::styled("◌ ", Style::new().fg(Color::Yellow))
+                Span::styled("◌ ", Style::new().fg(theme.warning))
             } else {
-                Span::styled("○ ", Style::new().fg(Color::DarkGray))
+                Span::styled("○ ", Style::new().fg(theme.text_muted))
             };
 
             let name_style = if is_focused {
-                Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::new().fg(theme.text).add_modifier(Modifier::BOLD)
             } else {
-                Style::new().fg(Color::White)
+                Style::new().fg(theme.text)
             };
 
             let sid = if panel.sandbox_id_short.is_empty() {
@@ -427,9 +606,9 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
                 let is_syncing = panel.sync_override
                     .unwrap_or(app.settings.gitsync.auto_sync);
                 if is_syncing {
-                    Span::styled(" [sync]", Style::new().fg(Color::Green))
+                    Span::styled(" [sync]", Style::new().fg(theme.success))
                 } else {
-                    Span::styled(" [clone]", Style::new().fg(Color::DarkGray))
+                    Span::styled(" [clone]", Style::new().fg(theme.text_muted))
                 }
             } else {
                 Span::raw("")
@@ -439,9 +618,9 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw(format!(" [{}] ", i)),
                 status,
                 Span::styled(panel.display_name.as_deref().unwrap_or(&panel.agent_name), name_style),
-                Span::styled(sid, Style::new().fg(Color::DarkGray)),
+                Span::styled(sid, Style::new().fg(theme.text_muted)),
                 sync_label,
-                Span::styled(focus_marker, Style::new().fg(Color::Cyan)),
+                Span::styled(focus_marker, Style::new().fg(theme.accent)),
             ]));
         }
     }
@@ -452,7 +631,7 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "/sb to toggle",
-            Style::new().fg(Color::DarkGray),
+            Style::new().fg(theme.text_muted),
         )));
     }
 
@@ -461,9 +640,9 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
     ) as u16;
 
     let border_style = if !app.sidebar_files_focused {
-        Style::new().fg(Color::Cyan)
+        Style::new().fg(theme.accent)
     } else {
-        Style::new().fg(Color::DarkGray)
+        Style::new().fg(theme.text_muted)
     };
 
     let sidebar = Paragraph::new(lines)
@@ -479,6 +658,7 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Render the files section of the sidebar with Modified/Committed tabs.
 fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = app.theme;
     let inner_height = area.height.saturating_sub(2) as usize; // border top + bottom
 
     // Build tab header line.
@@ -490,12 +670,12 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
 
     let (mod_style, com_style) = match app.sidebar_files_tab {
         SidebarFilesTab::Modified => (
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            Style::new().fg(Color::DarkGray),
+            Style::new().fg(theme.warning).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.text_muted),
         ),
         SidebarFilesTab::Committed => (
-            Style::new().fg(Color::DarkGray),
-            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.text_muted),
+            Style::new().fg(theme.success).add_modifier(Modifier::BOLD),
         ),
     };
 
@@ -523,12 +703,12 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
                 };
 
                 let status_color = match status_str.trim() {
-                    "M" | " M" | "MM" => Color::Yellow,
-                    "A" | " A" => Color::Green,
-                    "D" | " D" => Color::Red,
-                    "R" => Color::Blue,
-                    "??" => Color::DarkGray,
-                    _ => Color::White,
+                    "M" | " M" | "MM" => theme.warning,
+                    "A" | " A" => theme.success,
+                    "D" | " D" => theme.error,
+                    "R" => theme.info,
+                    "??" => theme.text_muted,
+                    _ => theme.text,
                 };
 
                 Line::from(vec![
@@ -536,13 +716,13 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
                         format!(" {} ", status_str),
                         Style::new().fg(status_color),
                     ),
-                    Span::styled(filename, Style::new().fg(Color::White)),
+                    Span::styled(filename, Style::new().fg(theme.text)),
                 ])
             }
             SidebarFilesTab::Committed => {
                 Line::from(Span::styled(
                     format!("  {}", entry),
-                    Style::new().fg(Color::Green),
+                    Style::new().fg(theme.success),
                 ))
             }
         };
@@ -560,14 +740,14 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
         let remaining = total_content.saturating_sub(inner_height + scroll_offset);
         if remaining > 0 {
             let hint = format!("  \u{2193} {} more", remaining);
-            lines.push(Line::from(Span::styled(hint, Style::new().fg(Color::DarkGray))));
+            lines.push(Line::from(Span::styled(hint, Style::new().fg(theme.text_muted))));
         }
     }
 
     let border_style = if app.sidebar_files_focused {
-        Style::new().fg(Color::Cyan)
+        Style::new().fg(theme.accent)
     } else {
-        Style::new().fg(Color::DarkGray)
+        Style::new().fg(theme.text_muted)
     };
 
     let title = match app.sidebar_files_tab {
@@ -593,6 +773,8 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    let theme = app.theme;
+
     // Zoomed mode: render only the focused panel at full width.
     if app.zoomed {
         let idx = app.focused_panel;
@@ -612,6 +794,7 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
                 is_focused,
                 is_input_focused,
                 ac_idx,
+                theme,
             );
         }
         return;
@@ -660,6 +843,7 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
                     is_focused,
                     is_input_focused,
                     ac_idx,
+                    theme,
                 );
                 panel_idx += 1;
             }
@@ -676,14 +860,15 @@ fn render_panel(
     is_focused: bool,
     is_input_focused: bool,
     autocomplete_index: Option<usize>,
+    theme: &Theme,
 ) {
     // Status indicator.
     let status_indicator = if panel.is_streaming {
-        Span::styled("◌ ", Style::new().fg(Color::Yellow))
+        Span::styled("◌ ", Style::new().fg(theme.warning))
     } else if panel.sandbox.is_some() {
-        Span::styled("● ", Style::new().fg(Color::Green))
+        Span::styled("● ", Style::new().fg(theme.success))
     } else {
-        Span::styled("○ ", Style::new().fg(Color::DarkGray))
+        Span::styled("○ ", Style::new().fg(theme.text_muted))
     };
 
     // Build title line.
@@ -714,22 +899,22 @@ fn render_panel(
         Span::styled(
             mode_label,
             Style::new()
-                .fg(Color::Yellow)
+                .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(env_indicator, Style::new().fg(Color::Green)),
+        Span::styled(env_indicator, Style::new().fg(theme.success)),
         Span::styled(
             format!(" [{}]", index),
-            Style::new().fg(Color::DarkGray),
+            Style::new().fg(theme.text_muted),
         ),
-        Span::styled(sandbox_label, Style::new().fg(Color::DarkGray)),
+        Span::styled(sandbox_label, Style::new().fg(theme.text_muted)),
         Span::raw(" "),
     ]);
 
     let border_color = if is_focused {
-        Color::Cyan
+        theme.accent
     } else {
-        Color::DarkGray
+        theme.text_muted
     };
 
     let block = Block::default()
@@ -801,19 +986,19 @@ fn render_panel(
     .areas(inner_area);
 
     // Render chat messages.
-    render_chat(frame, chat_area, panel);
+    render_chat(frame, chat_area, panel, theme);
 
     // Render input bar — cursor only shows when this panel's input is focused.
-    render_input(frame, input_area, panel, is_input_focused);
+    render_input(frame, input_area, panel, is_input_focused, theme);
 
     // Render autocomplete popup if panel input is focused.
     if is_input_focused && panel.input.text().starts_with('/') {
-        render_autocomplete(frame, chat_area, input_area, panel.input.text(), autocomplete_index);
+        render_autocomplete(frame, chat_area, input_area, panel.input.text(), autocomplete_index, theme);
     }
 }
 
 /// Render the chat message area for a panel.
-fn render_chat(frame: &mut Frame, area: Rect, panel: &AgentPanel) {
+fn render_chat(frame: &mut Frame, area: Rect, panel: &AgentPanel, theme: &Theme) {
     let lines: Vec<Line> = panel
         .chat_history
         .iter()
@@ -821,15 +1006,15 @@ fn render_chat(frame: &mut Frame, area: Rect, panel: &AgentPanel) {
             let (prefix, style) = match msg.role {
                 MessageRole::User => (
                     "You: ",
-                    Style::new().fg(Color::Green),
+                    Style::new().fg(theme.success),
                 ),
                 MessageRole::Agent => (
                     "",
-                    Style::new().fg(Color::White),
+                    Style::new().fg(theme.text),
                 ),
                 MessageRole::System => (
                     "! ",
-                    Style::new().fg(Color::Yellow),
+                    Style::new().fg(theme.warning),
                 ),
             };
 
@@ -876,7 +1061,7 @@ fn render_chat(frame: &mut Frame, area: Rect, panel: &AgentPanel) {
 }
 
 /// Render the input bar at the bottom of a panel with multiline wrapping and real cursor.
-fn render_input(frame: &mut Frame, area: Rect, panel: &AgentPanel, is_focused: bool) {
+fn render_input(frame: &mut Frame, area: Rect, panel: &AgentPanel, is_focused: bool, theme: &Theme) {
     let prompt = match panel.mode {
         PanelMode::Agent => "> ",
         PanelMode::Terminal => "> ",
@@ -901,9 +1086,9 @@ fn render_input(frame: &mut Frame, area: Rect, panel: &AgentPanel, is_focused: b
     };
 
     let prompt_style = if is_focused {
-        Style::new().fg(Color::Cyan)
+        Style::new().fg(theme.accent)
     } else {
-        Style::new().fg(Color::DarkGray)
+        Style::new().fg(theme.text_muted)
     };
 
     let mut lines: Vec<Line> = Vec::new();
@@ -944,6 +1129,7 @@ fn render_autocomplete(
     input_area: Rect,
     input: &str,
     selected: Option<usize>,
+    theme: &Theme,
 ) {
     let suggestions = autocomplete(input);
     if suggestions.is_empty() {
@@ -976,9 +1162,9 @@ fn render_autocomplete(
         .map(|(i, s)| {
             let is_selected = selected == Some(i);
             let style = if is_selected {
-                Style::new().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::new().fg(theme.selection_fg).bg(theme.selection_bg).add_modifier(Modifier::BOLD)
             } else {
-                Style::new().fg(Color::Cyan)
+                Style::new().fg(theme.accent)
             };
             ListItem::new(Span::styled(s.as_str(), style))
         })
@@ -987,8 +1173,46 @@ fn render_autocomplete(
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::new().fg(Color::Cyan))
+            .border_style(Style::new().fg(theme.accent))
             .title(" Commands "),
     );
     frame.render_widget(list, popup_area);
+}
+
+/// Render system messages as a centered popup overlay on top of panels.
+fn render_system_popup(frame: &mut Frame, body_area: Rect, app: &App, theme: &Theme) {
+    let text: String = app
+        .system_messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let lines: Vec<Line> = text.lines().map(|l| Line::from(l.to_string())).collect();
+    let content_height = lines.len() as u16;
+
+    // Size the popup to fit content, capped to 80% of body area.
+    let max_w = (body_area.width * 4 / 5).max(40).min(body_area.width);
+    let max_h = (body_area.height * 4 / 5).max(5).min(body_area.height);
+    let popup_h = (content_height + 2).min(max_h); // +2 for borders
+    let popup_w = max_w;
+
+    // Center the popup in body_area.
+    let x = body_area.x + (body_area.width.saturating_sub(popup_w)) / 2;
+    let y = body_area.y + (body_area.height.saturating_sub(popup_h)) / 2;
+    let popup_area = Rect::new(x, y, popup_w, popup_h);
+
+    frame.render_widget(Clear, popup_area);
+
+    let paragraph = Paragraph::new(lines)
+        .style(Style::new().fg(theme.text).bg(theme.background))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::new().fg(theme.accent))
+                .style(Style::new().bg(theme.background)),
+        )
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(paragraph, popup_area);
 }

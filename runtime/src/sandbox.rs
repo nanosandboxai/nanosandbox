@@ -616,6 +616,14 @@ impl Sandbox {
             .unwrap_or(false)
     }
 
+    /// Dynamically forward a guest port to the same host port via gvproxy.
+    pub fn expose_port(&self, port: u16) -> std::result::Result<(), String> {
+        self.runtime
+            .as_ref()
+            .ok_or_else(|| "no runtime".to_string())
+            .and_then(|r| r.expose_port(&self.id, port))
+    }
+
     /// Get the SSH host port for this sandbox (if available).
     pub fn ssh_port(&self) -> Option<u16> {
         self.runtime

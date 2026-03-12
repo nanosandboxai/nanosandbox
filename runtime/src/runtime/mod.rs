@@ -307,6 +307,22 @@ impl RuntimeBackend {
         }
     }
 
+    /// Dynamically forward a guest port to the same host port via gvproxy.
+    pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.expose_port(id, port),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, port);
+            Err("expose_port not supported on Windows".into())
+        }
+    }
+
     /// Get the SSH private key path for a sandbox (if available).
     pub fn ssh_key_path(&self, id: &str) -> Option<std::path::PathBuf> {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -648,6 +664,11 @@ impl Runtime {
     /// Get the SSH host port for a sandbox (if available).
     pub fn ssh_port(&self, id: &str) -> Option<u16> {
         self.backend.ssh_port(id)
+    }
+
+    /// Dynamically forward a guest port to the same host port via gvproxy.
+    pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
+        self.backend.expose_port(id, port)
     }
 
     /// Get the SSH private key path for a sandbox (if available).
