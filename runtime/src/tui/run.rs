@@ -6,6 +6,7 @@ use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
     Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
@@ -87,7 +88,7 @@ pub async fn run_tui(
     // Set up terminal.
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, SetCursorStyle::SteadyBar)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -97,7 +98,7 @@ pub async fn run_tui(
     let saved_stderr_for_hook = saved_stderr;
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), SetCursorStyle::DefaultUserShape, DisableMouseCapture, LeaveAlternateScreen);
         // Restore stderr so the panic message is visible.
         if saved_stderr_for_hook >= 0 {
             unsafe {
@@ -398,7 +399,7 @@ pub async fn run_tui(
             AppEvent::OpenTuiTool { binary, path } => {
                 // Suspend TUI: leave alternate screen, disable raw mode
                 let _ = disable_raw_mode();
-                let _ = execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen);
+                let _ = execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape, DisableMouseCapture, LeaveAlternateScreen);
 
                 // Restore stderr so the tool can use it
                 if saved_stderr >= 0 {
@@ -428,7 +429,7 @@ pub async fn run_tui(
 
                 // Resume TUI: enter alternate screen, enable raw mode
                 let _ = enable_raw_mode();
-                let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture);
+                let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture, SetCursorStyle::SteadyBar);
                 terminal.clear()?;
             }
         }
@@ -443,7 +444,7 @@ pub async fn run_tui(
 
     // Restore terminal before cleanup so the user sees progress messages.
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape, DisableMouseCapture, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     // Restore stderr so cleanup log messages are visible.

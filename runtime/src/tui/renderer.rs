@@ -326,20 +326,31 @@ fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Handle empty input.
     if lines.is_empty() {
-        lines.push(Line::from(Span::styled(prompt, prompt_style)));
+        if is_focused {
+            lines.push(Line::from(vec![
+                Span::styled(prompt, prompt_style),
+                Span::styled("Type / for commands...", Style::new().fg(theme.text_muted)),
+            ]));
+        } else {
+            lines.push(Line::from(Span::styled(prompt, prompt_style)));
+        }
     }
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 
-    // Place real terminal cursor when focused.
+    // Render software cursor when focused (steady, theme-aware block).
     if is_focused {
         let (cursor_row, cursor_col) = app.global_input.cursor_visual_position(content_width);
         let visual_row = cursor_row.saturating_sub(scroll_offset);
         let x = area.x + prompt_len + (cursor_col as u16).min(area.width.saturating_sub(prompt_len + 1));
         let y = area.y + visual_row as u16;
-        if y < area.y + area.height {
-            frame.set_cursor_position((x, y));
+        if y < area.y + area.height && x < area.x + area.width {
+            let buf = frame.buffer_mut();
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.bg = theme.accent;
+                cell.fg = theme.background;
+            }
         }
     }
 }
