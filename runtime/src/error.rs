@@ -73,6 +73,14 @@ pub enum Error {
     #[error("MCP server error: {0}")]
     McpServerError(String),
 
+    /// Skills operation failed
+    #[error("Skills error: {0}")]
+    SkillsError(String),
+
+    /// Agent restart operation failed
+    #[error("Agent restart error: {0}")]
+    AgentRestartError(String),
+
     // ===== Runtime Prerequisite Errors =====
     /// Platform not supported
     #[error("Platform not supported: {platform}. Supported platforms: Windows, Linux, macOS")]

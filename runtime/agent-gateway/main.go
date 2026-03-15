@@ -9,24 +9,25 @@ package main
 import (
 	"bufio"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/devdone-labs/agent-gateway/mcp"
+	"github.com/devdone-labs/agent-gateway/skills"
 )
 
-//go:embed mcp-servers.yaml
-var mcpServersYAML []byte
+// No embedded mcp-servers.yaml — all MCP servers are user-defined at runtime.
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -68,8 +69,12 @@ type SSEEvent struct {
 
 // agentSession tracks per-agent state for conversation continuity.
 type agentSession struct {
-	messageCount int
-	sessionID    string // captured from agent output (goose)
+	messageCount    int
+	sessionID       string    // captured from agent output
+	wasGenerating   bool      // was agent producing output when killed?
+	interruptReason string    // "skills_update", "mcp_update", "agent_change"
+	lastOutputTime  time.Time // when last SSE stdout event was sent
+	pid             int       // current agent process PID
 }
 
 // ---------------------------------------------------------------------------
@@ -135,49 +140,143 @@ func run(name string, args ...string) {
 // ---------------------------------------------------------------------------
 
 func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []string) {
+	message := req.Message
+
+	// Auto-inject continuation message after interrupted restart
+	if sess.wasGenerating && sess.interruptReason != "" {
+		continuation := fmt.Sprintf(
+			"Your previous operation was interrupted to apply configuration changes (%s). "+
+				"Check the current state of any files you were modifying for incomplete content, "+
+				"then continue where you left off. Do not repeat already-completed work.",
+			sess.interruptReason)
+		if message == "" {
+			message = continuation
+		} else {
+			message = continuation + "\n\n" + message
+		}
+		sess.wasGenerating = false
+		sess.interruptReason = ""
+	}
+
 	switch req.Agent {
 	case "claude", "claude-code":
 		args := []string{
-			"--print", req.Message,
+			"--print", message,
 			"--verbose",
 			"--output-format", "stream-json",
 			"--include-partial-messages",
 		}
+		if autoMode {
+			args = append(args, "--dangerously-skip-permissions")
+		}
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
 		}
-		// Add --continue for 2nd+ message to resume conversation context.
-		// Claude Code stores sessions in ~/.claude/ which persists in the VM.
-		if sess.messageCount > 0 {
+		// Use --resume with explicit session ID when available (e.g., after restart).
+		// Fall back to --continue for normal multi-turn continuation.
+		if sess.sessionID != "" {
+			args = append(args, "--resume", sess.sessionID)
+		} else if sess.messageCount > 0 {
 			args = append(args, "--continue")
 		}
 		return "claude", args
 
 	case "goose":
-		if sess.messageCount > 0 && sess.sessionID != "" {
-			return "goose", []string{"session", "resume", sess.sessionID, "--message", req.Message}
+		if sess.sessionID != "" {
+			return "goose", []string{"session", "resume", sess.sessionID, "--message", message}
 		}
-		return "goose", []string{"run", "--text", req.Message}
+		return "goose", []string{"run", "--text", message}
 
 	case "codex":
-		args := []string{"exec", "--json"}
+		if sess.sessionID != "" {
+			return "codex", []string{"resume", sess.sessionID, message}
+		}
+		args := []string{"exec"}
+		if autoMode {
+			args = append(args, "--full-auto")
+		}
+		args = append(args, "--json")
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
 		}
-		// Resume previous session if continuing a conversation.
-		if sess.messageCount > 0 && sess.sessionID != "" {
-			args = append(args, "resume", "--last")
-		}
-		args = append(args, req.Message)
+		args = append(args, message)
 		return "codex", args
 
 	case "cursor", "cursor-agent":
-		return "cursor-agent", []string{"--message", req.Message}
+		args := []string{"--message", message}
+		if autoMode {
+			args = append(args, "--force", "--trust", "--approve-mcps")
+		}
+		if sess.sessionID != "" {
+			args = append(args, "--resume", sess.sessionID)
+		}
+		return "cursor-agent", args
 
 	default:
 		// Custom/unknown agent: treat agent name as the binary
-		return req.Agent, []string{req.Message}
+		return req.Agent, []string{message}
 	}
+}
+
+// normalizeAgent returns a canonical agent name for session lookup.
+func normalizeAgent(agent string) string {
+	switch agent {
+	case "claude", "claude-code":
+		return "claude"
+	case "cursor", "cursor-agent":
+		return "cursor"
+	default:
+		return agent
+	}
+}
+
+// extractSessionID parses agent output to capture the session identifier.
+// Returns empty string if no session ID found in this line.
+func extractSessionID(agent, line string) string {
+	switch agent {
+	case "claude":
+		// Claude stream-json emits: {"type":"system","session_id":"..."}
+		var msg struct {
+			Type      string `json:"type"`
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal([]byte(line), &msg) == nil && msg.SessionID != "" {
+			return msg.SessionID
+		}
+	case "goose":
+		// Goose outputs session ID in various formats.
+		// Try JSON first, then text patterns.
+		var msg struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal([]byte(line), &msg) == nil && msg.SessionID != "" {
+			return msg.SessionID
+		}
+		// Text pattern: "session: <id>" or "Session: <id>"
+		if idx := strings.Index(strings.ToLower(line), "session:"); idx >= 0 {
+			rest := strings.TrimSpace(line[idx+len("session:"):])
+			if parts := strings.Fields(rest); len(parts) > 0 {
+				return parts[0]
+			}
+		}
+	case "codex":
+		// Codex exec --json emits: {"session_id":"sess_..."}
+		var msg struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal([]byte(line), &msg) == nil && msg.SessionID != "" {
+			return msg.SessionID
+		}
+	case "cursor":
+		// Cursor emits: {"chatId":"chat_..."}
+		var msg struct {
+			ChatID string `json:"chatId"`
+		}
+		if json.Unmarshal([]byte(line), &msg) == nil && msg.ChatID != "" {
+			return msg.ChatID
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -194,9 +293,15 @@ func sseWrite(w http.ResponseWriter, evt SSEEvent) {
 
 // streamCommand spawns a command, streams stdout/stderr as SSE, and returns
 // the exit code. It blocks until the command finishes or the context is done.
-func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args []string, env map[string]string) int {
+// When agentName and sess are provided, it tracks PID and extracts session IDs.
+func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args []string, env map[string]string, agentName string, sess *agentSession) int {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = defaultWorkDir
+
+	// Run agent commands as the 'developer' user (UID 1000, GID 1000).
+	// The agent-gateway runs as root (started by init), but agents like
+	// Claude Code refuse --dangerously-skip-permissions when running as root.
+	cmd.SysProcAttr = sysProcAttrForDeveloper()
 
 	// Build environment: inherit base env, overlay request-specific vars.
 	cmdEnv := os.Environ()
@@ -204,9 +309,14 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 		cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", k, v))
 	}
 	// Ensure basic vars are set.
-	cmdEnv = ensureEnv(cmdEnv, "HOME", "/root")
+	cmdEnv = ensureEnv(cmdEnv, "HOME", "/home/developer")
+	cmdEnv = ensureEnv(cmdEnv, "USER", "developer")
 	cmdEnv = ensureEnv(cmdEnv, "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	cmdEnv = ensureEnv(cmdEnv, "TERM", "dumb")
+	// Goose auto mode is set via environment variable.
+	if autoMode && agentName == "goose" {
+		cmdEnv = append(cmdEnv, "GOOSE_MODE=auto")
+	}
 	cmd.Env = cmdEnv
 
 	stdout, err := cmd.StdoutPipe()
@@ -225,6 +335,11 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 		return -1
 	}
 
+	// Track PID for restart support.
+	if sess != nil {
+		sess.pid = cmd.Process.Pid
+	}
+
 	// Stream stdout and stderr concurrently.
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -234,7 +349,20 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 256*1024), 1024*1024) // 1MB line buffer
 		for scanner.Scan() {
-			sseWrite(w, SSEEvent{Type: "stdout", Data: scanner.Text()})
+			line := scanner.Text()
+			sseWrite(w, SSEEvent{Type: "stdout", Data: line})
+
+			if sess != nil {
+				sess.lastOutputTime = time.Now()
+
+				// Extract session ID from agent output (first occurrence wins).
+				if sess.sessionID == "" && agentName != "" {
+					if id := extractSessionID(agentName, line); id != "" {
+						sess.sessionID = id
+						log.Printf("[agent-gateway] captured session ID for %s: %s", agentName, id)
+					}
+				}
+			}
 		}
 	}()
 
@@ -248,6 +376,11 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 	}()
 
 	wg.Wait()
+
+	// Clear PID after process exits.
+	if sess != nil {
+		sess.pid = 0
+	}
 
 	exitCode := 0
 	if err := cmd.Wait(); err != nil {
@@ -299,7 +432,8 @@ func messageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := getSession(req.Agent)
+	agentName := normalizeAgent(req.Agent)
+	sess := getSession(agentName)
 	bin, args := buildAgentCommand(&req, sess)
 
 	timeout := defaultTimeout
@@ -317,9 +451,9 @@ func messageHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	log.Printf("[agent-gateway] message #%d to %s: %s %v",
-		sess.messageCount+1, req.Agent, bin, args)
+		sess.messageCount+1, agentName, bin, args)
 
-	exitCode := streamCommand(ctx, w, bin, args, req.Env)
+	exitCode := streamCommand(ctx, w, bin, args, req.Env, agentName, sess)
 
 	code := exitCode
 	sseWrite(w, SSEEvent{Type: "exit", Code: &code})
@@ -360,7 +494,7 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[agent-gateway] exec: %s %v", req.Command, req.Args)
 
-	exitCode := streamCommand(ctx, w, req.Command, req.Args, req.Env)
+	exitCode := streamCommand(ctx, w, req.Command, req.Args, req.Env, "", nil)
 
 	code := exitCode
 	sseWrite(w, SSEEvent{Type: "exit", Code: &code})
@@ -513,17 +647,313 @@ func mcpRegenerateHandler(mgr *mcp.Manager) http.HandlerFunc {
 }
 
 // ---------------------------------------------------------------------------
+// Skills Management Handlers
+// ---------------------------------------------------------------------------
+
+func skillsListHandler(mgr *skills.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(mgr.ListSkills())
+	}
+}
+
+func skillsAddHandler(mgr *skills.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var def skills.SkillDef
+		if err := json.NewDecoder(r.Body).Decode(&def); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
+			return
+		}
+		if def.Name == "" {
+			http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+			return
+		}
+		mgr.AddSkill(def.Name, &def)
+		if err := mgr.GenerateAllConfigs(); err != nil {
+			log.Printf("[agent-gateway] WARNING: failed to regenerate skill configs: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"status":"added","name":%q}`, def.Name)
+	}
+}
+
+func skillsDeleteHandler(mgr *skills.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if name == "" {
+			http.Error(w, `{"error":"skill name required"}`, http.StatusBadRequest)
+			return
+		}
+		if mgr.GetSkill(name) == nil {
+			http.Error(w, fmt.Sprintf(`{"error":"skill %q not found"}`, name), http.StatusNotFound)
+			return
+		}
+		mgr.RemoveSkill(name)
+		if err := mgr.GenerateAllConfigs(); err != nil {
+			log.Printf("[agent-gateway] WARNING: failed to regenerate skill configs: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"removed","name":%q}`, name)
+	}
+}
+
+func skillsGetHandler(mgr *skills.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if name == "" {
+			http.Error(w, `{"error":"skill name required"}`, http.StatusBadRequest)
+			return
+		}
+		skill := mgr.GetSkill(name)
+		if skill == nil {
+			http.Error(w, fmt.Sprintf(`{"error":"skill %q not found"}`, name), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(skill)
+	}
+}
+
+func skillsRegenerateHandler(mgr *skills.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := mgr.GenerateAllConfigs(); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"regeneration failed: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"regenerated"}`)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Agent Definition Handlers
+// ---------------------------------------------------------------------------
+
+func agentGetHandler(mgr *skills.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name, prompt := mgr.GetAgentDefinition()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":      name,
+			"prompt":    prompt,
+			"auto_mode": autoMode,
+		})
+	}
+}
+
+func agentSetHandler(mgr *skills.Manager) http.HandlerFunc {
+	type setRequest struct {
+		Name   string `json:"name"`
+		Prompt string `json:"prompt"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req setRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
+			return
+		}
+		if req.Name == "" {
+			http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+			return
+		}
+		mgr.SetAgentDefinition(req.Name, req.Prompt)
+		if err := mgr.GenerateAllConfigs(); err != nil {
+			log.Printf("[agent-gateway] WARNING: failed to regenerate skill/prompt configs: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"set","name":%q}`, req.Name)
+	}
+}
+
+// BootstrapRequest is the JSON body for POST /api/v1/agent/bootstrap.
+// It sets up the complete agent configuration in one call.
+type BootstrapRequest struct {
+	AgentName  string                       `json:"agent_name"`
+	Prompt     string                       `json:"prompt"`
+	Skills     []skills.SkillDef            `json:"skills"`
+	McpServers map[string]*mcp.McpServerDef `json:"mcp_servers,omitempty"`
+	AutoMode   bool                         `json:"auto_mode"`
+}
+
+// autoMode controls whether agents run fully autonomously (no confirmation prompts).
+// Set via bootstrap request.
+var autoMode bool
+
+func agentBootstrapHandler(skillsMgr *skills.Manager, mcpMgr *mcp.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req BootstrapRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
+			return
+		}
+
+		// Set agent definition
+		if req.AgentName != "" {
+			skillsMgr.SetAgentDefinition(req.AgentName, req.Prompt)
+		}
+
+		// Set auto mode
+		autoMode = req.AutoMode
+		if autoMode {
+			log.Printf("[agent-gateway] auto mode enabled")
+		}
+
+		// Add all skills
+		for i := range req.Skills {
+			s := &req.Skills[i]
+			skillsMgr.AddSkill(s.Name, s)
+		}
+
+		// Add MCP servers if provided
+		for name, def := range req.McpServers {
+			mcpMgr.AddServer(name, def)
+		}
+
+		// Regenerate all configs
+		var errs []string
+		if err := skillsMgr.GenerateAllConfigs(); err != nil {
+			errs = append(errs, fmt.Sprintf("skills: %v", err))
+		}
+		if err := mcpMgr.GenerateAllConfigs(); err != nil {
+			errs = append(errs, fmt.Sprintf("mcp: %v", err))
+		}
+
+		if len(errs) > 0 {
+			log.Printf("[agent-gateway] WARNING: bootstrap config generation errors: %v", errs)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"status":"bootstrapped","agent":%q,"skills":%d,"mcp_servers":%d}`,
+			req.AgentName, len(req.Skills), len(req.McpServers))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Agent Restart Handler
+// ---------------------------------------------------------------------------
+
+// RestartRequest is the JSON body for POST /api/v1/agent/restart.
+type RestartRequest struct {
+	Agent  string `json:"agent"`
+	Reason string `json:"reason"` // "skills_update", "mcp_update", "agent_change"
+}
+
+// RestartResponse is returned by POST /api/v1/agent/restart.
+type RestartResponse struct {
+	SessionID     string `json:"session_id"`
+	WasGenerating bool   `json:"was_generating"`
+	Restarted     bool   `json:"restarted"`
+}
+
+func agentRestartHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req RestartRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
+			return
+		}
+
+		agentName := normalizeAgent(req.Agent)
+		if agentName == "" {
+			http.Error(w, `{"error":"agent is required"}`, http.StatusBadRequest)
+			return
+		}
+
+		sess := getSession(agentName)
+		resp := RestartResponse{
+			SessionID: sess.sessionID,
+		}
+
+		// Determine if agent was actively generating output.
+		if sess.pid > 0 && !sess.lastOutputTime.IsZero() &&
+			time.Since(sess.lastOutputTime) < 5*time.Second {
+			sess.wasGenerating = true
+			resp.WasGenerating = true
+		}
+
+		sess.interruptReason = req.Reason
+
+		// Kill the running agent process if any.
+		if sess.pid > 0 {
+			log.Printf("[agent-gateway] restarting %s (pid=%d, reason=%s, session=%s, wasGenerating=%v)",
+				agentName, sess.pid, req.Reason, sess.sessionID, sess.wasGenerating)
+
+			// SIGTERM first for graceful shutdown.
+			_ = syscall.Kill(sess.pid, syscall.SIGTERM)
+
+			// Give it 3 seconds, then SIGKILL.
+			go func(pid int) {
+				time.Sleep(3 * time.Second)
+				// Check if still alive (best effort).
+				if err := syscall.Kill(pid, 0); err == nil {
+					log.Printf("[agent-gateway] force-killing %s (pid=%d)", agentName, pid)
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			}(sess.pid)
+
+			resp.Restarted = true
+		} else {
+			log.Printf("[agent-gateway] restart requested for %s but no active process", agentName)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Route Setup
+// ---------------------------------------------------------------------------
+
+// setupMux creates and registers all HTTP routes on a new ServeMux.
+// Extracted from main() so that tests can use the same routing.
+func setupMux(mcpMgr *mcp.Manager, skillsMgr *skills.Manager) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/api/v1/health", healthHandler)
+	mux.HandleFunc("/api/v1/message", messageHandler)
+	mux.HandleFunc("/api/v1/exec", execHandler)
+	mux.HandleFunc("/api/v1/stop", stopHandler)
+
+	// MCP management routes
+	mux.HandleFunc("GET /api/v1/mcp/servers", mcpListHandler(mcpMgr))
+	mux.HandleFunc("POST /api/v1/mcp/servers", mcpAddHandler(mcpMgr))
+	mux.HandleFunc("PUT /api/v1/mcp/servers/{name}", mcpUpdateHandler(mcpMgr))
+	mux.HandleFunc("DELETE /api/v1/mcp/servers/{name}", mcpDeleteHandler(mcpMgr))
+	mux.HandleFunc("POST /api/v1/mcp/servers/{name}/enable", mcpEnableHandler(mcpMgr))
+	mux.HandleFunc("POST /api/v1/mcp/servers/{name}/disable", mcpDisableHandler(mcpMgr))
+	mux.HandleFunc("POST /api/v1/mcp/regenerate", mcpRegenerateHandler(mcpMgr))
+
+	// Skills management routes
+	mux.HandleFunc("GET /api/v1/skills", skillsListHandler(skillsMgr))
+	mux.HandleFunc("POST /api/v1/skills", skillsAddHandler(skillsMgr))
+	mux.HandleFunc("GET /api/v1/skills/{name}", skillsGetHandler(skillsMgr))
+	mux.HandleFunc("DELETE /api/v1/skills/{name}", skillsDeleteHandler(skillsMgr))
+	mux.HandleFunc("POST /api/v1/skills/regenerate", skillsRegenerateHandler(skillsMgr))
+
+	// Agent definition routes
+	mux.HandleFunc("GET /api/v1/agent", agentGetHandler(skillsMgr))
+	mux.HandleFunc("POST /api/v1/agent", agentSetHandler(skillsMgr))
+	mux.HandleFunc("POST /api/v1/agent/bootstrap", agentBootstrapHandler(skillsMgr, mcpMgr))
+	mux.HandleFunc("POST /api/v1/agent/restart", agentRestartHandler())
+
+	return mux
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 func main() {
-	// Handle --mount subcommand: direct syscall.Mount() for init scripts.
+	// Handle --mount subcommand: direct mount syscall for init scripts.
 	// util-linux's mount binary can refuse even for root in micro-VMs,
 	// so the init script uses this instead.
 	if len(os.Args) >= 5 && os.Args[1] == "--mount" {
 		// Usage: agent-gateway --mount <source> <target> <fstype>
 		src, tgt, fstype := os.Args[2], os.Args[3], os.Args[4]
-		if err := syscall.Mount(src, tgt, fstype, 0, ""); err != nil {
+		if err := sysMount(src, tgt, fstype); err != nil {
 			fmt.Fprintf(os.Stderr, "mount(%s, %s, %s) failed: %v\n", src, tgt, fstype, err)
 			os.Exit(1)
 		}
@@ -535,7 +965,7 @@ func main() {
 	flag.Parse()
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-	log.Println("[agent-gateway] starting...")
+	log.Printf("[agent-gateway] starting... (PID: %d)", os.Getpid())
 
 	// As PID 1 we must reap orphan children to avoid zombies.
 	// We do NOT ignore SIGCHLD because Go's exec.Cmd.Wait() uses waitpid()
@@ -567,33 +997,20 @@ func main() {
 	// Ensure working directory exists.
 	_ = os.MkdirAll(defaultWorkDir, 0755)
 
-	// Initialize MCP server configuration.
-	mcpMgr, err := mcp.NewManagerFromBytes(mcpServersYAML)
-	if err != nil {
-		log.Fatalf("[agent-gateway] failed to parse MCP config: %v", err)
-	}
+	// Initialize MCP manager — starts empty, users add servers at runtime.
+	mcpMgr := mcp.NewManager()
 	if err := mcpMgr.GenerateAllConfigs(); err != nil {
 		log.Printf("[agent-gateway] WARNING: failed to generate MCP configs: %v", err)
 	} else {
 		log.Println("[agent-gateway] MCP configs generated for all agents")
 	}
 
-	// Register routes.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/api/v1/health", healthHandler)
-	mux.HandleFunc("/api/v1/message", messageHandler)
-	mux.HandleFunc("/api/v1/exec", execHandler)
-	mux.HandleFunc("/api/v1/stop", stopHandler)
+	// Initialize skills manager (starts empty; populated by bootstrap or runtime API).
+	skillsMgr := skills.NewManager()
+	log.Println("[agent-gateway] skills manager initialized")
 
-	// MCP management routes
-	mux.HandleFunc("GET /api/v1/mcp/servers", mcpListHandler(mcpMgr))
-	mux.HandleFunc("POST /api/v1/mcp/servers", mcpAddHandler(mcpMgr))
-	mux.HandleFunc("PUT /api/v1/mcp/servers/{name}", mcpUpdateHandler(mcpMgr))
-	mux.HandleFunc("DELETE /api/v1/mcp/servers/{name}", mcpDeleteHandler(mcpMgr))
-	mux.HandleFunc("POST /api/v1/mcp/servers/{name}/enable", mcpEnableHandler(mcpMgr))
-	mux.HandleFunc("POST /api/v1/mcp/servers/{name}/disable", mcpDisableHandler(mcpMgr))
-	mux.HandleFunc("POST /api/v1/mcp/regenerate", mcpRegenerateHandler(mcpMgr))
+	// Register routes.
+	mux := setupMux(mcpMgr, skillsMgr)
 
 	server := &http.Server{
 		Addr:         listenAddr,
@@ -602,10 +1019,17 @@ func main() {
 		WriteTimeout: 0, // SSE streams can be long-lived
 	}
 
-	// Start HTTP server in background.
+	// Create TCP listener first to catch bind errors synchronously.
+	// This ensures we fail fast if the port is already in use.
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatalf("[agent-gateway] failed to bind to %s: %v", listenAddr, err)
+	}
+	log.Printf("[agent-gateway] listening on %s", listenAddr)
+
+	// Start HTTP server in background on the bound listener.
 	go func() {
-		log.Printf("[agent-gateway] listening on %s", listenAddr)
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != http.ErrServerClosed {
 			log.Fatalf("[agent-gateway] server error: %v", err)
 		}
 	}()

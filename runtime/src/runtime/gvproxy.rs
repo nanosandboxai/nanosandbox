@@ -260,9 +260,14 @@ impl GvproxyManager {
         );
 
         // Each gvproxy instance binds an SSH forwarding listener on 127.0.0.1.
-        // The default port is 2222, which means only one instance can run at a
-        // time. We find a free port dynamically so multiple instances coexist.
-        let ssh_port = Self::find_free_port().unwrap_or(2222);
+        // We bind to port 0 first and keep the listener open to reserve the port,
+        // then pass the assigned port to gvproxy. This prevents race conditions
+        // where multiple gvproxy instances try to use the same port.
+        let port_listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("Failed to reserve SSH port: {}", e))?;
+        let ssh_port = port_listener.local_addr()
+            .map_err(|e| format!("Failed to get reserved port: {}", e))?
+            .port();
 
         let child = Command::new(&binary)
             .arg("--listen-vfkit")
@@ -275,6 +280,10 @@ impl GvproxyManager {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to spawn gvproxy: {}", e))?;
+
+        // Close the port listener now that gvproxy has started.
+        // There's still a tiny race window, but gvproxy should bind quickly.
+        drop(port_listener);
 
         info!("gvproxy started (pid: {})", child.id());
 

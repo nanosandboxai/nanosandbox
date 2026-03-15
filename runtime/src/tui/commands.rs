@@ -100,6 +100,37 @@ pub enum Command {
         /// Theme name to switch to, or None to list available themes.
         name: Option<String>,
     },
+    /// Toggle the skills sidebar / list skills.
+    SkillsList,
+    /// Add a skill by name.
+    SkillsAdd {
+        /// Skill name from registry.
+        name: String,
+    },
+    /// Remove a skill by name.
+    SkillsRemove {
+        /// Skill name.
+        name: String,
+    },
+    /// Show details of a skill.
+    SkillsShow {
+        /// Skill name.
+        name: String,
+    },
+    /// Show current agent definition.
+    AgentShow,
+    /// Set the agent definition from registry.
+    AgentSet {
+        /// Agent name from registry.
+        name: String,
+    },
+    /// List available agents in the registry.
+    AgentList,
+    /// Show details of a registry agent.
+    AgentInfo {
+        /// Agent name.
+        name: String,
+    },
 }
 
 /// Result of parsing a slash command.
@@ -126,6 +157,8 @@ const ALL_COMMANDS: &[&str] = &[
     "/theme", "/theme nanosandbox", "/theme nanosandbox-light",
     "/theme dracula", "/theme catppuccin", "/theme tokyo-night", "/theme nord",
     "/mcp", "/mcp list", "/mcp add", "/mcp remove", "/mcp enable", "/mcp disable",
+    "/skills", "/skills list", "/skills add", "/skills remove", "/skills show",
+    "/agent", "/agent set", "/agent list", "/agent show",
 ];
 
 /// Parse a line of input into a Command, or None if it's a regular message.
@@ -180,6 +213,8 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
             ParseResult::Ok(Command::Edit { tool })
         }
         "/theme" => parse_theme(&parts),
+        "/skills" => parse_skills(&parts),
+        "/agent" => parse_agent(&parts),
 
         other => ParseResult::Err(format!(
             "Unknown command: {}\nType /help for available commands.",
@@ -429,6 +464,79 @@ fn parse_theme(parts: &[&str]) -> ParseResult {
                 Err(msg) => ParseResult::Err(msg),
             }
         }
+    }
+}
+
+fn parse_skills(parts: &[&str]) -> ParseResult {
+    match parts.get(1).copied() {
+        None | Some("list") => ParseResult::Ok(Command::SkillsList),
+        Some("add") => match parts.get(2) {
+            Some(name) => ParseResult::Ok(Command::SkillsAdd {
+                name: name.to_string(),
+            }),
+            None => ParseResult::Err(
+                "Usage: /skills add <name>\n\
+                 Example: /skills add tdd"
+                    .to_string(),
+            ),
+        },
+        Some("remove") => match parts.get(2) {
+            Some(name) => ParseResult::Ok(Command::SkillsRemove {
+                name: name.to_string(),
+            }),
+            None => ParseResult::Err(
+                "Usage: /skills remove <name>\n\
+                 Use /skills list to see active skills."
+                    .to_string(),
+            ),
+        },
+        Some("show") => match parts.get(2) {
+            Some(name) => ParseResult::Ok(Command::SkillsShow {
+                name: name.to_string(),
+            }),
+            None => ParseResult::Err(
+                "Usage: /skills show <name>\n\
+                 Use /skills list to see active skills."
+                    .to_string(),
+            ),
+        },
+        Some(sub) => ParseResult::Err(format!(
+            "Unknown skills subcommand: '{}'\n\
+             Available: /skills [list], /skills add, /skills remove, /skills show",
+            sub,
+        )),
+    }
+}
+
+fn parse_agent(parts: &[&str]) -> ParseResult {
+    match parts.get(1).copied() {
+        None => ParseResult::Ok(Command::AgentShow),
+        Some("set") => match parts.get(2) {
+            Some(name) => ParseResult::Ok(Command::AgentSet {
+                name: name.to_string(),
+            }),
+            None => ParseResult::Err(
+                "Usage: /agent set <name>\n\
+                 Example: /agent set python-developer"
+                    .to_string(),
+            ),
+        },
+        Some("list") => ParseResult::Ok(Command::AgentList),
+        Some("show") => match parts.get(2) {
+            Some(name) => ParseResult::Ok(Command::AgentInfo {
+                name: name.to_string(),
+            }),
+            None => ParseResult::Err(
+                "Usage: /agent show <name>\n\
+                 Use /agent list to see available agents."
+                    .to_string(),
+            ),
+        },
+        Some(sub) => ParseResult::Err(format!(
+            "Unknown agent subcommand: '{}'\n\
+             Available: /agent, /agent set, /agent list, /agent show",
+            sub,
+        )),
     }
 }
 
@@ -849,5 +957,131 @@ mod tests {
             parse_command("/close claude"),
             Some(Command::Close { target: Some("claude".to_string()) }),
         );
+    }
+
+    // ===== Skills command tests =====
+
+    #[test]
+    fn test_parse_skills_list() {
+        assert_eq!(parse_command("/skills"), Some(Command::SkillsList));
+        assert_eq!(parse_command("/skills list"), Some(Command::SkillsList));
+    }
+
+    #[test]
+    fn test_parse_skills_add() {
+        assert_eq!(
+            parse_command("/skills add tdd"),
+            Some(Command::SkillsAdd { name: "tdd".to_string() })
+        );
+    }
+
+    #[test]
+    fn test_parse_skills_add_missing_name() {
+        let result = parse_command_verbose("/skills add");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    #[test]
+    fn test_parse_skills_remove() {
+        assert_eq!(
+            parse_command("/skills remove tdd"),
+            Some(Command::SkillsRemove { name: "tdd".to_string() })
+        );
+    }
+
+    #[test]
+    fn test_parse_skills_remove_missing_name() {
+        let result = parse_command_verbose("/skills remove");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    #[test]
+    fn test_parse_skills_show() {
+        assert_eq!(
+            parse_command("/skills show git-workflow"),
+            Some(Command::SkillsShow { name: "git-workflow".to_string() })
+        );
+    }
+
+    #[test]
+    fn test_parse_skills_show_missing_name() {
+        let result = parse_command_verbose("/skills show");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    #[test]
+    fn test_parse_skills_unknown_subcommand() {
+        let result = parse_command_verbose("/skills foo");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown skills subcommand"));
+                assert!(msg.contains("foo"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    // ===== Agent command tests =====
+
+    #[test]
+    fn test_parse_agent_show() {
+        assert_eq!(parse_command("/agent"), Some(Command::AgentShow));
+    }
+
+    #[test]
+    fn test_parse_agent_set() {
+        assert_eq!(
+            parse_command("/agent set python-developer"),
+            Some(Command::AgentSet { name: "python-developer".to_string() })
+        );
+    }
+
+    #[test]
+    fn test_parse_agent_set_missing_name() {
+        let result = parse_command_verbose("/agent set");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    #[test]
+    fn test_parse_agent_list() {
+        assert_eq!(parse_command("/agent list"), Some(Command::AgentList));
+    }
+
+    #[test]
+    fn test_parse_agent_info() {
+        assert_eq!(
+            parse_command("/agent show rust-developer"),
+            Some(Command::AgentInfo { name: "rust-developer".to_string() })
+        );
+    }
+
+    #[test]
+    fn test_parse_agent_show_missing_name() {
+        let result = parse_command_verbose("/agent show");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    #[test]
+    fn test_parse_agent_unknown_subcommand() {
+        let result = parse_command_verbose("/agent foo");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown agent subcommand"));
+                assert!(msg.contains("foo"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_autocomplete_skills() {
+        let suggestions = autocomplete("/sk");
+        assert!(suggestions.iter().any(|s| s.starts_with("/skills")));
+    }
+
+    #[test]
+    fn test_autocomplete_agent() {
+        let suggestions = autocomplete("/ag");
+        assert!(suggestions.iter().any(|s| s.starts_with("/agent")));
     }
 }

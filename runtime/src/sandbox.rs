@@ -2,7 +2,7 @@
 //!
 //! High-level API for creating and managing sandboxed execution environments.
 
-use crate::config::McpServerConfig;
+use crate::config::{McpServerConfig, ResolvedAgentConfig, SkillDef};
 use crate::config::SandboxConfig;
 use crate::error::{Error, Result};
 use crate::image::{ImageManager, PulledImage};
@@ -750,6 +750,119 @@ impl Sandbox {
             .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
 
         runtime.disable_mcp_server(&self.id, name)
+    }
+
+    /// Add a skill to the running sandbox.
+    ///
+    /// Requires the sandbox to be in persistent (gateway) mode.
+    /// The gateway automatically regenerates all agent config files.
+    pub async fn add_skill(&self, skill: &SkillDef) -> Result<()> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot manage skills in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.add_skill(&self.id, skill)
+    }
+
+    /// Remove a skill from the running sandbox.
+    ///
+    /// Requires the sandbox to be in persistent (gateway) mode.
+    pub async fn remove_skill(&self, name: &str) -> Result<()> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot manage skills in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.remove_skill(&self.id, name)
+    }
+
+    /// List all skills in the running sandbox.
+    pub async fn list_skills(&self) -> Result<HashMap<String, SkillDef>> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot list skills in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.list_skills(&self.id)
+    }
+
+    /// Bootstrap agent definition + skills + MCPs in one call.
+    ///
+    /// Requires the sandbox to be in persistent (gateway) mode.
+    pub async fn bootstrap_agent(&self, config: &ResolvedAgentConfig) -> Result<()> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot bootstrap agent in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.bootstrap_agent(&self.id, config)
+    }
+
+    /// Set the agent definition (name + prompt).
+    ///
+    /// Requires the sandbox to be in persistent (gateway) mode.
+    pub async fn set_agent(&self, name: &str, prompt: &str) -> Result<()> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot set agent in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.set_agent(&self.id, name, prompt)
+    }
+
+    /// Restart the agent process in the running sandbox.
+    ///
+    /// Returns a JSON value with `session_id`, `was_generating`, and `restarted` fields.
+    pub async fn restart_agent(&self, reason: &str) -> Result<serde_json::Value> {
+        if self.status != SandboxStatus::Running {
+            return Err(Error::InvalidState(format!(
+                "Cannot restart agent in sandbox with {:?} status",
+                self.status
+            )));
+        }
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
+
+        runtime.restart_agent(&self.id, reason)
     }
 
     /// Configure networking in the rootfs for VM networking.

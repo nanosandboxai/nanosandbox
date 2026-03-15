@@ -38,6 +38,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod agents_registry;
 pub mod auth;
 pub mod config;
 pub mod error;
@@ -53,14 +54,16 @@ pub mod sandbox;
 pub mod tui;
 
 // Re-exports
+pub use agents_registry::AgentsRegistryClient;
 pub use auth::CredentialStore;
 pub use config::{
-    McpServerConfig, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping,
-    ProjectConfig, RegistryConfig, SandboxConfig,
+    AgentDefinition, AgentMcpRef, McpServerConfig, Mount, MountType, NetworkConfig, NetworkMode,
+    NetworkScope, PortMapping, ProjectConfig, RegistryConfig, ResolvedAgentConfig, SandboxConfig,
+    SkillDef,
 };
 pub use config::file::{find_sandbox_file, load_sandbox_file, load_sandbox_files, SandboxFile};
 pub use error::{Error, Result};
-pub use image::{ImageManager, ImageRef, PulledImage};
+pub use image::{ImageManager, ImageRef, PruneResult, PulledImage};
 pub use oci::OciBundle;
 pub use registry::{SandboxInfo, SandboxRegistry};
 pub use runtime::{detect_runtime, Runtime};

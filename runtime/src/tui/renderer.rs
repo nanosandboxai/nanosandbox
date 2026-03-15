@@ -809,6 +809,15 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
     let selection = app.mouse_selection.clone();
     let sel_ref = selection.as_ref();
 
+    // Determine if panel indices should be shown (duplicate display names).
+    let show_index = {
+        let mut seen = std::collections::HashSet::new();
+        visible_indices.iter().any(|&i| {
+            let name = app.panels[i].display_name.as_deref().unwrap_or(&app.panels[i].agent_name);
+            !seen.insert(name)
+        })
+    };
+
     // Zoomed mode: render only the focused panel at full width.
     if app.zoomed {
         let idx = app.focused_panel;
@@ -831,6 +840,7 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
                 theme,
                 &mut app.panel_areas,
                 sel_ref,
+                show_index,
             );
         }
         return;
@@ -883,6 +893,7 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
                     theme,
                     &mut app.panel_areas,
                     sel_ref,
+                    show_index,
                 );
                 vi += 1;
             }
@@ -902,6 +913,7 @@ fn render_panel(
     theme: &Theme,
     panel_areas: &mut Vec<(usize, Rect)>,
     selection: Option<&MouseSelection>,
+    show_index: bool,
 ) {
     // Status indicator.
     let status_indicator = if panel.mode == PanelMode::Loading {
@@ -912,45 +924,25 @@ fn render_panel(
         Span::styled("\u{25cb} ", Style::new().fg(theme.text_muted))
     };
 
-    // Build title line.
-    let sandbox_label = if panel.sandbox_id_short.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", panel.sandbox_id_short)
-    };
+    // Build title line: status dot + display name + optional index.
+    let display = panel.display_name.as_deref().unwrap_or(&panel.agent_name);
 
-    let mode_label = match panel.mode {
-        PanelMode::Loading => "",
-        PanelMode::Terminal => "",
-    };
-
-    let env_indicator = if panel.env.is_empty() {
-        ""
-    } else {
-        " [env]"
-    };
-
-    let title = Line::from(vec![
+    let mut title_spans = vec![
         Span::raw(" "),
         status_indicator,
-        Span::styled(
-            panel.display_name.as_deref().unwrap_or(&panel.agent_name),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            mode_label,
-            Style::new()
-                .fg(theme.warning)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(env_indicator, Style::new().fg(theme.success)),
-        Span::styled(
+        Span::styled(display, Style::new().add_modifier(Modifier::BOLD)),
+    ];
+
+    if show_index {
+        title_spans.push(Span::styled(
             format!(" [{}]", index),
             Style::new().fg(theme.text_muted),
-        ),
-        Span::styled(sandbox_label, Style::new().fg(theme.text_muted)),
-        Span::raw(" "),
-    ]);
+        ));
+    }
+
+    title_spans.push(Span::raw(" "));
+
+    let title = Line::from(title_spans);
 
     let border_color = if is_focused {
         theme.accent
@@ -960,7 +952,8 @@ fn render_panel(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(border_color))
+        .style(Style::new().bg(theme.background))
+        .border_style(Style::new().fg(border_color).bg(theme.background))
         .title(title);
 
     let inner_area = block.inner(area);
@@ -973,23 +966,22 @@ fn render_panel(
         return;
     }
 
+    // Track panel size unconditionally so last_terminal_size is correct
+    // even during Loading mode (before SSH connects).
+    let cols = inner_area.width;
+    let rows = inner_area.height;
+    if (cols, rows) != panel.last_terminal_size {
+        panel.last_terminal_size = (cols, rows);
+        if let Some(ref mut term) = panel.terminal {
+            term.resize(cols, rows);
+        }
+        if let Some(ref handle) = panel.terminal_handle {
+            let _ = handle.resize_tx.send((cols, rows));
+        }
+    }
+
     // Terminal mode: render PseudoTerminal widget for the entire inner area.
     if panel.mode == PanelMode::Terminal {
-        let cols = inner_area.width;
-        let rows = inner_area.height;
-
-        // Resize detection: update vt100 parser and notify SSH channel.
-        if (cols, rows) != panel.last_terminal_size {
-            panel.last_terminal_size = (cols, rows);
-            if let Some(ref mut term) = panel.terminal {
-                term.resize(cols, rows);
-            }
-            if let Some(ref handle) = panel.terminal_handle {
-                let _ = handle.resize_tx.send((cols, rows));
-            }
-        }
-
-        // Render the terminal screen.
         if let Some(ref term) = panel.terminal {
             let pseudo_term = tui_term::widget::PseudoTerminal::new(term.screen());
             frame.render_widget(pseudo_term, inner_area);

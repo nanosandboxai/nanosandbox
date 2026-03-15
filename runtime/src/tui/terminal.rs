@@ -97,6 +97,7 @@ pub async fn connect_ssh(
     agent_name: &str,
     env: &HashMap<String, String>,
     workdir: Option<&str>,
+    auto_mode: bool,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<SshTerminalHandle, anyhow::Error> {
@@ -117,7 +118,7 @@ pub async fn connect_ssh(
 
     // Authenticate
     let auth_result = session
-        .authenticate_publickey("root", key_with_hash)
+        .authenticate_publickey("developer", key_with_hash)
         .await?;
     if !matches!(auth_result, russh::client::AuthResult::Success) {
         anyhow::bail!("SSH public key authentication failed");
@@ -146,7 +147,11 @@ pub async fn connect_ssh(
     for (key, val) in env {
         init_commands.push_str(&format!("export {}='{}'\n", key, val.replace('\'', "'\\''")));
     }
-    if let Some(cmd) = agent_cli_command(agent_name) {
+    // Goose auto mode is set via environment variable.
+    if auto_mode && (agent_name == "goose") {
+        init_commands.push_str("export GOOSE_MODE='auto'\n");
+    }
+    if let Some(cmd) = agent_cli_command(agent_name, auto_mode) {
         init_commands.push_str(&format!("{}\n", cmd));
     }
 
@@ -163,6 +168,13 @@ pub async fn connect_ssh(
         let mut writer = write_half.make_writer();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+            // Drain any resize events queued during Loading mode so the
+            // remote PTY is at the correct size before the agent CLI starts.
+            while let Ok((cols, rows)) = resize_rx.try_recv() {
+                let _ = write_half.window_change(cols as u32, rows as u32, 0, 0).await;
+            }
+
             let _ = writer.write_all(init_commands.as_bytes()).await;
 
             // Then enter the write loop: forward keystrokes + handle resize
@@ -229,12 +241,31 @@ pub async fn connect_ssh(
 }
 
 /// Map agent name to the CLI command to auto-launch after SSH connection.
-fn agent_cli_command(agent_name: &str) -> Option<String> {
+/// When `auto_mode` is true, includes flags to skip confirmation prompts.
+fn agent_cli_command(agent_name: &str, auto_mode: bool) -> Option<String> {
     match agent_name {
-        "claude" | "claude-code" => Some("claude".to_string()),
-        "goose" => Some("goose session".to_string()),
-        "codex" => Some("codex".to_string()),
-        "cursor" | "cursor-agent" => Some("cursor-agent".to_string()),
+        "claude" | "claude-code" => {
+            if auto_mode {
+                Some("claude --dangerously-skip-permissions".to_string())
+            } else {
+                Some("claude".to_string())
+            }
+        }
+        "goose" => Some("goose session".to_string()), // auto mode via GOOSE_MODE env var
+        "codex" => {
+            if auto_mode {
+                Some("codex --full-auto".to_string())
+            } else {
+                Some("codex".to_string())
+            }
+        }
+        "cursor" | "cursor-agent" => {
+            if auto_mode {
+                Some("cursor-agent --force --trust --approve-mcps".to_string())
+            } else {
+                Some("cursor-agent".to_string())
+            }
+        }
         _ => None,
     }
 }
@@ -670,9 +701,30 @@ mod tests {
 
     #[test]
     fn test_agent_cli_command() {
-        assert_eq!(agent_cli_command("claude"), Some("claude".to_string()));
-        assert_eq!(agent_cli_command("goose"), Some("goose session".to_string()));
-        assert_eq!(agent_cli_command("unknown"), None);
+        assert_eq!(agent_cli_command("claude", false), Some("claude".to_string()));
+        assert_eq!(agent_cli_command("goose", false), Some("goose session".to_string()));
+        assert_eq!(agent_cli_command("unknown", false), None);
+    }
+
+    #[test]
+    fn test_agent_cli_command_auto_mode() {
+        assert_eq!(
+            agent_cli_command("claude", true),
+            Some("claude --dangerously-skip-permissions".to_string()),
+        );
+        assert_eq!(
+            agent_cli_command("codex", true),
+            Some("codex --full-auto".to_string()),
+        );
+        assert_eq!(
+            agent_cli_command("cursor", true),
+            Some("cursor-agent --force --trust --approve-mcps".to_string()),
+        );
+        // Goose auto mode is via env var, not CLI flag
+        assert_eq!(
+            agent_cli_command("goose", true),
+            Some("goose session".to_string()),
+        );
     }
 
     #[test]

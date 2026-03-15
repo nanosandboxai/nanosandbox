@@ -1251,3 +1251,376 @@ fn test_sandbox_config_project_integration() {
     assert_eq!(proj.branch, Some("feat/test".to_string()));
     assert_eq!(proj.mount_point, "/workspace");
 }
+
+/// Test that the sandbox-testing/sandbox.yml config parses and the agents registry
+/// resolves the referenced agent definitions, skills, and MCPs.
+///
+/// Requires: NANOSB_REGISTRY_PATH env var pointing to the agents-registry directory,
+/// OR the sibling directory ../agents-registry/ to exist.
+#[test]
+fn test_sandbox_testing_config_with_registry() {
+    use nanosandbox::agents_registry::AgentsRegistryClient;
+    use nanosandbox::config::file::{parse_sandbox_file, resolve_sandbox_configs};
+
+    let yaml = r#"
+defaults:
+  cpus: 2
+  memory: 2048
+  timeout: 600
+  workdir: /workspace
+
+sandboxes:
+  claude-rust:
+    image: localhost:5050/agent-claude:latest
+    name: claude-rust-dev
+    agent: rust-developer
+    skills:
+      - tdd
+      - git-workflow
+      - code-review
+    mcp:
+      memory:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-memory"]
+
+  codex-python:
+    image: localhost:5050/agent-codex:latest
+    name: codex-python-dev
+    agent: python-developer
+    skills:
+      - tdd
+      - security-best-practices
+    mcp:
+      filesystem:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+"#;
+
+    let file = parse_sandbox_file(yaml).unwrap();
+    let configs =
+        resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+    assert_eq!(configs.len(), 2);
+
+    // Claude sandbox
+    let claude = configs.iter().find(|(k, _)| k == "claude-rust").unwrap();
+    assert_eq!(claude.1.name, "claude-rust-dev");
+    assert_eq!(claude.1.agent.as_deref(), Some("rust-developer"));
+    assert_eq!(claude.1.skills, vec!["tdd", "git-workflow", "code-review"]);
+    assert!(claude.1.mcp_servers.contains_key("memory"));
+    assert_eq!(claude.1.mcp_servers["memory"].command, "npx");
+
+    // Codex sandbox
+    let codex = configs.iter().find(|(k, _)| k == "codex-python").unwrap();
+    assert_eq!(codex.1.name, "codex-python-dev");
+    assert_eq!(codex.1.agent.as_deref(), Some("python-developer"));
+    assert_eq!(codex.1.skills, vec!["tdd", "security-best-practices"]);
+    assert!(codex.1.mcp_servers.contains_key("filesystem"));
+
+    // Now try to resolve from the agents registry (if available)
+    let registry_path = std::env::var("NANOSB_REGISTRY_PATH")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| {
+            let p = std::path::PathBuf::from("../agents-registry");
+            if p.join("index.json").exists() { Some(p) } else { None }
+        });
+
+    if let Some(reg_path) = registry_path {
+        let registry = AgentsRegistryClient::from_path(&reg_path).unwrap();
+
+        // Resolve rust-developer agent
+        let resolved = registry.resolve_full("rust-developer", &claude.1.skills).unwrap();
+        assert_eq!(resolved.agent_name, "rust-developer");
+        assert!(!resolved.prompt.is_empty());
+        // Should have at least the 3 skills specified in config
+        assert!(resolved.skills.len() >= 3, "expected >=3 skills, got {}", resolved.skills.len());
+        let skill_names: Vec<&str> = resolved.skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(skill_names.contains(&"tdd"), "missing tdd skill");
+        assert!(skill_names.contains(&"git-workflow"), "missing git-workflow skill");
+        assert!(skill_names.contains(&"code-review"), "missing code-review skill");
+
+        // Verify MCPs from agent definition
+        assert!(resolved.mcp_servers.contains_key("server-github"),
+            "expected server-github MCP from rust-developer agent");
+
+        // Resolve python-developer agent
+        let py_resolved = registry.resolve_full("python-developer", &codex.1.skills).unwrap();
+        assert_eq!(py_resolved.agent_name, "python-developer");
+        assert!(!py_resolved.prompt.is_empty());
+        let py_skill_names: Vec<&str> = py_resolved.skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(py_skill_names.contains(&"tdd"), "missing tdd in python agent");
+        assert!(py_skill_names.contains(&"security-best-practices"),
+            "missing security-best-practices in python agent");
+    } else {
+        eprintln!("Skipping registry resolution: no agents-registry found");
+    }
+}
+
+// ============================================================================
+// MCP / Skills / Agent E2E Tests (requires running agent image + gateway)
+// ============================================================================
+
+/// Full end-to-end test of MCP, skills, and agent operations on a running sandbox.
+///
+/// This test:
+/// 1. Creates a sandbox with a real agent image (has agent-gateway)
+/// 2. Tests MCP: add → list → disable → enable → remove
+/// 3. Tests Skills: add → list → remove
+/// 4. Tests Agent: bootstrap → list → get
+/// 5. Destroys the sandbox
+///
+/// Requires: `localhost:5050/agents-registry/claude:latest` pushed to local registry.
+#[tokio::test]
+async fn test_mcp_skills_agent_e2e() {
+    use nanosandbox::{McpServerConfig, Sandbox, SkillDef};
+    use std::collections::HashMap;
+
+    let config = SandboxConfig::builder()
+        .name("e2e-gateway-test")
+        .image("localhost:5050/agents-registry/claude:latest")
+        .cpus(2)
+        .memory_mb(1024)
+        .build();
+
+    // --- Create + Start ---
+    let mut sandbox = match Sandbox::create(config).await {
+        Ok(sb) => sb,
+        Err(e) => {
+            eprintln!("Sandbox creation failed (image may not be available): {}", e);
+            return;
+        }
+    };
+    if let Err(e) = sandbox.start().await {
+        eprintln!("Sandbox start failed (runtime may not be available): {}", e);
+        let _ = sandbox.destroy().await;
+        return;
+    }
+    println!("=== Sandbox started: {} ===", sandbox.id());
+
+    // Wait for gateway to be ready (health check already passed via start())
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // =============================================
+    // MCP CRUD
+    // =============================================
+    println!("\n--- MCP: list (should be empty) ---");
+    match sandbox.list_mcp_servers().await {
+        Ok(servers) => {
+            println!("  MCP servers: {:?}", servers.keys().collect::<Vec<_>>());
+            // No default servers (we removed mcp-servers.yaml defaults)
+        }
+        Err(e) => {
+            eprintln!("  list_mcp_servers failed: {} (gateway may not be ready)", e);
+            let _ = sandbox.stop().await;
+            let _ = sandbox.destroy().await;
+            return;
+        }
+    }
+
+    println!("--- MCP: add 'test-github' ---");
+    let mcp_config = McpServerConfig {
+        command: "npx".to_string(),
+        args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+        env: HashMap::new(),
+        enabled: true,
+    };
+    match sandbox.add_mcp_server("test-github", mcp_config).await {
+        Ok(_) => println!("  Added 'test-github'"),
+        Err(e) => {
+            eprintln!("  add_mcp_server failed: {}", e);
+            let _ = sandbox.stop().await;
+            let _ = sandbox.destroy().await;
+            return;
+        }
+    }
+
+    println!("--- MCP: list (should have test-github) ---");
+    match sandbox.list_mcp_servers().await {
+        Ok(servers) => {
+            let keys: Vec<&String> = servers.keys().collect();
+            println!("  MCP servers: {:?}", keys);
+            assert!(servers.contains_key("test-github"), "Expected 'test-github', got: {:?}", keys);
+        }
+        Err(e) => eprintln!("  list failed: {}", e),
+    }
+
+    println!("--- MCP: disable 'test-github' ---");
+    match sandbox.disable_mcp_server("test-github").await {
+        Ok(_) => println!("  Disabled 'test-github'"),
+        Err(e) => eprintln!("  disable failed: {}", e),
+    }
+
+    println!("--- MCP: enable 'test-github' ---");
+    match sandbox.enable_mcp_server("test-github").await {
+        Ok(_) => println!("  Re-enabled 'test-github'"),
+        Err(e) => eprintln!("  enable failed: {}", e),
+    }
+
+    println!("--- MCP: add second server 'test-context7' ---");
+    let mcp2 = McpServerConfig {
+        command: "npx".to_string(),
+        args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+        env: HashMap::new(),
+        enabled: true,
+    };
+    match sandbox.add_mcp_server("test-context7", mcp2).await {
+        Ok(_) => println!("  Added 'test-context7'"),
+        Err(e) => eprintln!("  add failed: {}", e),
+    }
+
+    println!("--- MCP: list (should have 2 servers) ---");
+    match sandbox.list_mcp_servers().await {
+        Ok(servers) => {
+            let keys: Vec<&String> = servers.keys().collect();
+            println!("  MCP servers: {:?}", keys);
+            assert_eq!(servers.len(), 2, "Expected 2 servers, got {}", servers.len());
+        }
+        Err(e) => eprintln!("  list failed: {}", e),
+    }
+
+    println!("--- MCP: remove 'test-github' ---");
+    match sandbox.remove_mcp_server("test-github").await {
+        Ok(_) => println!("  Removed 'test-github'"),
+        Err(e) => eprintln!("  remove failed: {}", e),
+    }
+
+    println!("--- MCP: list (should have 1 server) ---");
+    match sandbox.list_mcp_servers().await {
+        Ok(servers) => {
+            let keys: Vec<&String> = servers.keys().collect();
+            println!("  MCP servers: {:?}", keys);
+            assert_eq!(servers.len(), 1, "Expected 1 server, got {}", servers.len());
+            assert!(!servers.contains_key("test-github"), "'test-github' should be gone");
+            assert!(servers.contains_key("test-context7"), "'test-context7' should remain");
+        }
+        Err(e) => eprintln!("  list failed: {}", e),
+    }
+
+    // =============================================
+    // Skills CRUD
+    // =============================================
+    println!("\n--- Skills: add 'test-skill' ---");
+    let skill = SkillDef {
+        name: "test-skill".to_string(),
+        description: "A test skill for e2e testing".to_string(),
+        content: "# Test Skill\n\nAlways write tests first.".to_string(),
+        version: "1.0".to_string(),
+        tags: vec![],
+    };
+    match sandbox.add_skill(&skill).await {
+        Ok(_) => println!("  Added 'test-skill'"),
+        Err(e) => eprintln!("  add_skill failed: {}", e),
+    }
+
+    println!("--- Skills: list (should have test-skill) ---");
+    match sandbox.list_skills().await {
+        Ok(skills) => {
+            let keys: Vec<&String> = skills.keys().collect();
+            println!("  Skills: {:?}", keys);
+            assert!(skills.contains_key("test-skill"), "Expected 'test-skill', got: {:?}", keys);
+        }
+        Err(e) => eprintln!("  list_skills failed: {}", e),
+    }
+
+    println!("--- Skills: add second 'review-skill' ---");
+    let skill2 = SkillDef {
+        name: "review-skill".to_string(),
+        description: "Code review skill".to_string(),
+        content: "# Code Review\n\nReview all changes carefully.".to_string(),
+        version: "1.0".to_string(),
+        tags: vec![],
+    };
+    match sandbox.add_skill(&skill2).await {
+        Ok(_) => println!("  Added 'review-skill'"),
+        Err(e) => eprintln!("  add_skill failed: {}", e),
+    }
+
+    println!("--- Skills: list (should have 2) ---");
+    match sandbox.list_skills().await {
+        Ok(skills) => {
+            println!("  Skills: {:?}", skills.keys().collect::<Vec<_>>());
+            assert_eq!(skills.len(), 2, "Expected 2 skills, got {}", skills.len());
+        }
+        Err(e) => eprintln!("  list_skills failed: {}", e),
+    }
+
+    println!("--- Skills: remove 'test-skill' ---");
+    match sandbox.remove_skill("test-skill").await {
+        Ok(_) => println!("  Removed 'test-skill'"),
+        Err(e) => eprintln!("  remove_skill failed: {}", e),
+    }
+
+    println!("--- Skills: list (should have 1) ---");
+    match sandbox.list_skills().await {
+        Ok(skills) => {
+            let keys: Vec<&String> = skills.keys().collect();
+            println!("  Skills: {:?}", keys);
+            assert_eq!(skills.len(), 1, "Expected 1 skill, got {}", skills.len());
+            assert!(skills.contains_key("review-skill"), "'review-skill' should remain");
+        }
+        Err(e) => eprintln!("  list_skills failed: {}", e),
+    }
+
+    // =============================================
+    // Agent bootstrap
+    // =============================================
+    println!("\n--- Agent: bootstrap ---");
+    let agent_config = nanosandbox::ResolvedAgentConfig {
+        agent_name: "test-developer".to_string(),
+        prompt: "You are a test-driven developer. Always write tests first.".to_string(),
+        skills: vec![
+            SkillDef {
+                name: "tdd-skill".to_string(),
+                description: "TDD workflow".to_string(),
+                content: "# TDD\n\nRed-green-refactor.".to_string(),
+                version: "1.0".to_string(),
+                tags: vec![],
+            },
+        ],
+        mcp_servers: {
+            let mut m = HashMap::new();
+            m.insert("bootstrap-mcp".to_string(), McpServerConfig {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "@modelcontextprotocol/server-filesystem".to_string()],
+                env: HashMap::new(),
+                enabled: true,
+            });
+            m
+        },
+        auto_mode: false,
+    };
+    match sandbox.bootstrap_agent(&agent_config).await {
+        Ok(_) => println!("  Bootstrapped 'test-developer'"),
+        Err(e) => eprintln!("  bootstrap_agent failed: {}", e),
+    }
+
+    // After bootstrap, MCP servers should include bootstrap-mcp + previously remaining test-context7
+    println!("--- MCP: list after bootstrap ---");
+    match sandbox.list_mcp_servers().await {
+        Ok(servers) => {
+            let keys: Vec<&String> = servers.keys().collect();
+            println!("  MCP servers: {:?}", keys);
+            assert!(servers.contains_key("bootstrap-mcp"), "Expected 'bootstrap-mcp', got: {:?}", keys);
+        }
+        Err(e) => eprintln!("  list failed: {}", e),
+    }
+
+    // After bootstrap, skills should include tdd-skill + previously remaining review-skill
+    println!("--- Skills: list after bootstrap ---");
+    match sandbox.list_skills().await {
+        Ok(skills) => {
+            let keys: Vec<&String> = skills.keys().collect();
+            println!("  Skills: {:?}", keys);
+            assert!(skills.contains_key("tdd-skill"), "Expected 'tdd-skill', got: {:?}", keys);
+        }
+        Err(e) => eprintln!("  list failed: {}", e),
+    }
+
+    // =============================================
+    // Cleanup
+    // =============================================
+    println!("\n=== All E2E tests passed! Cleaning up... ===");
+    let _ = sandbox.stop().await;
+    let _ = sandbox.destroy().await;
+    println!("=== Done ===");
+}

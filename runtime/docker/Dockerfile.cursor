@@ -3,9 +3,13 @@ FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.description="Cursor agent for DD sandboxes"
 
-# Install cursor CLI agent via official installer
+# Install cursor CLI agent via official installer.
+# The installer puts files under /root/.local/share/cursor-agent/ and a
+# symlink at /root/.local/bin/agent. Move the installation to /opt so
+# the non-root 'developer' user can access it.
 RUN curl -fsSL https://cursor.com/install | bash \
-    && mv /root/.local/bin/agent /usr/local/bin/cursor-agent \
+    && mv /root/.local/share/cursor-agent /opt/cursor-agent \
+    && ln -sf "$(ls -d /opt/cursor-agent/versions/*/cursor-agent)" /usr/local/bin/cursor-agent \
     && chmod +x /usr/local/bin/cursor-agent
 
 # cursor-agent does not support --version; verify it can at least start

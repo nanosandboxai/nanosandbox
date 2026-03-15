@@ -12,6 +12,7 @@ use oci_distribution::manifest::ImageIndexEntry;
 use oci_distribution::secrets::RegistryAuth;
 use oci_distribution::{Client, Reference};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tar::Archive;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Marker file name to indicate a Windows layer was fully imported
 #[cfg(target_os = "windows")]
@@ -183,6 +184,9 @@ pub struct ImageManager {
     credentials: Arc<CredentialStore>,
     /// Per-registry configurations (stored for future use)
     registry_configs: Vec<RegistryConfig>,
+    /// Per-image pull coordination: serializes concurrent pulls of the same image
+    /// so only the first caller downloads while others wait and use cached blobs.
+    inflight: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl ImageManager {
@@ -256,6 +260,7 @@ impl ImageManager {
             registry_clients,
             credentials,
             registry_configs,
+            inflight: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -305,6 +310,67 @@ impl ImageManager {
         self.cache_dir.join("extracted")
     }
 
+    /// Persist image metadata to the manifests cache.
+    ///
+    /// Writes an `ImageInfo` JSON file to `manifests/{registry}/{repo}/{tag}`.
+    /// Uses atomic temp+rename for crash safety.
+    fn save_manifest(&self, pulled: &PulledImage) -> Result<()> {
+        let ref_ = &pulled.reference;
+        let manifest_dir = self
+            .cache_dir
+            .join("manifests")
+            .join(ref_.registry.replace('/', "_"))
+            .join(ref_.repository.replace('/', "_"));
+
+        fs::create_dir_all(&manifest_dir)?;
+
+        let info = ImageInfo {
+            reference: ref_.clone(),
+            size: pulled.size,
+            pulled_at: chrono::Utc::now(),
+            layers: pulled.layers.clone(),
+            config_digest: pulled.config_digest.clone(),
+        };
+
+        let content = serde_json::to_string_pretty(&info)?;
+        let final_path = manifest_dir.join(&ref_.tag);
+        let temp_path = manifest_dir.join(format!("{}.tmp.{}", ref_.tag, uuid::Uuid::new_v4()));
+
+        fs::write(&temp_path, &content)?;
+        fs::rename(&temp_path, &final_path)?;
+
+        debug!("Saved manifest metadata: {}", ref_.full_ref());
+        Ok(())
+    }
+
+    /// Verify that a file's SHA256 matches the expected digest.
+    ///
+    /// `expected_digest` should be in the form "sha256:hex..." or just "hex...".
+    fn verify_blob_sha256(path: &Path, expected_digest: &str) -> Result<()> {
+        let expected_hex = expected_digest
+            .strip_prefix("sha256:")
+            .unwrap_or(expected_digest);
+
+        let mut file = File::open(path).map_err(|e| {
+            Error::ImagePullFailed(format!("Open blob for verification: {}", e))
+        })?;
+
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut file, &mut hasher).map_err(|e| {
+            Error::ImagePullFailed(format!("Hash blob: {}", e))
+        })?;
+
+        let actual_hex = format!("{:x}", hasher.finalize());
+        if actual_hex != expected_hex {
+            return Err(Error::ImagePullFailed(format!(
+                "Blob integrity check failed: expected sha256:{}, got sha256:{}",
+                expected_hex, actual_hex
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Pull an image from a registry using manifest-first selective download.
     ///
     /// This optimized implementation:
@@ -316,6 +382,20 @@ impl ImageManager {
     /// For fully cached images this reduces pull time from minutes to seconds.
     pub async fn pull(&self, image: &str) -> Result<PulledImage> {
         let image_ref = ImageRef::parse(image)?;
+
+        // Acquire per-image lock to serialize concurrent pulls of the same image.
+        // If another task is already pulling this image, we wait until it finishes,
+        // then proceed — the layer cache check below will find everything cached.
+        let image_key = image_ref.full_ref();
+        let per_image_lock = {
+            let mut inflight = self.inflight.lock().await;
+            inflight
+                .entry(image_key.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _pull_guard = per_image_lock.lock().await;
+
         let reference = image_ref.to_reference()?;
         let start = Instant::now();
 
@@ -421,7 +501,7 @@ impl ImageManager {
                     let blob_path = blobs_dir.join(digest_short);
                     // Write to temp file first, then atomic rename for crash safety
                     let temp_path =
-                        blobs_dir.join(format!("{}.dl.{}", digest_short, std::process::id()));
+                        blobs_dir.join(format!("{}.dl.{}", digest_short, uuid::Uuid::new_v4()));
 
                     debug!(
                         "Downloading layer {} ({} bytes)...",
@@ -455,17 +535,34 @@ impl ImageManager {
                     })?;
                     drop(file);
 
-                    // Atomic rename from temp to final path
-                    tokio::fs::rename(&temp_path, &blob_path).await.map_err(|e| {
-                        let temp_exists = std::path::Path::new(&temp_path).exists();
-                        let dir_exists = std::path::Path::new(&blobs_dir).exists();
-                        Error::ImagePullFailed(format!(
-                            "Rename blob {}: {} (temp_exists={}, dir_exists={})",
-                            digest_short, e, temp_exists, dir_exists
-                        ))
-                    })?;
+                    // Check if blob already exists (another concurrent pull may have completed)
+                    // This prevents race conditions when multiple sandboxes pull the same image.
+                    if !blob_path.exists() {
+                        // Atomic rename from temp to final path
+                        tokio::fs::rename(&temp_path, &blob_path).await.map_err(|e| {
+                            let temp_exists = std::path::Path::new(&temp_path).exists();
+                            let dir_exists = std::path::Path::new(&blobs_dir).exists();
+                            Error::ImagePullFailed(format!(
+                                "Rename blob {}: {} (temp_exists={}, dir_exists={})",
+                                digest_short, e, temp_exists, dir_exists
+                            ))
+                        })?;
+                        debug!("Downloaded layer: {}", digest_short);
+                    } else {
+                        // Another concurrent download completed first, clean up our temp file
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                        debug!("Layer {} already exists (concurrent download)", digest_short);
+                    }
 
-                    debug!("Downloaded layer: {}", digest_short);
+                    // Verify blob integrity against expected SHA256 digest
+                    let verify_path = blob_path.clone();
+                    let verify_digest = digest.to_string();
+                    tokio::task::spawn_blocking(move || {
+                        ImageManager::verify_blob_sha256(&verify_path, &verify_digest)
+                    })
+                    .await
+                    .map_err(|e| Error::ImagePullFailed(format!("Verification task: {}", e)))??;
+
                     Ok::<_, Error>(())
                 }));
             }
@@ -483,7 +580,7 @@ impl ImageManager {
             );
         }
 
-        // Step 4: Save config blob if not cached
+        // Step 4: Save config blob if not cached (atomic temp+rename)
         let config_digest = manifest.config.digest.clone();
         let config_digest_short = config_digest
             .strip_prefix("sha256:")
@@ -492,9 +589,12 @@ impl ImageManager {
 
         if !config_path.exists() {
             debug!("Downloading config blob: {}", config_digest_short);
-            let mut file = tokio::fs::File::create(&config_path)
+            let temp_path = self
+                .blobs_dir()
+                .join(format!("{}.dl.{}", config_digest_short, uuid::Uuid::new_v4()));
+            let mut file = tokio::fs::File::create(&temp_path)
                 .await
-                .map_err(|e| Error::ImagePullFailed(format!("Create config file: {}", e)))?;
+                .map_err(|e| Error::ImagePullFailed(format!("Create temp config file: {}", e)))?;
             client
                 .pull_blob(&reference, &manifest.config, &mut file)
                 .await
@@ -502,6 +602,27 @@ impl ImageManager {
             file.shutdown().await.map_err(|e| {
                 Error::ImagePullFailed(format!("Flush config blob: {}", e))
             })?;
+            drop(file);
+
+            if !config_path.exists() {
+                tokio::fs::rename(&temp_path, &config_path).await.map_err(|e| {
+                    Error::ImagePullFailed(format!(
+                        "Rename config blob {}: {}",
+                        config_digest_short, e
+                    ))
+                })?;
+            } else {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+            }
+
+            // Verify config blob integrity
+            let verify_path = config_path.clone();
+            let verify_digest = config_digest.clone();
+            tokio::task::spawn_blocking(move || {
+                Self::verify_blob_sha256(&verify_path, &verify_digest)
+            })
+            .await
+            .map_err(|e| Error::ImagePullFailed(format!("Verification task: {}", e)))??;
         }
 
         let total_size: u64 = manifest.layers.iter().map(|l| l.size as u64).sum();
@@ -513,12 +634,19 @@ impl ImageManager {
             start.elapsed()
         );
 
-        Ok(PulledImage {
+        // Step 5: Persist manifest metadata so exists()/list() work
+        let pulled = PulledImage {
             reference: image_ref,
             layers: layer_digests,
             config_digest: manifest_digest,
             size: total_size,
-        })
+        };
+
+        if let Err(e) = self.save_manifest(&pulled) {
+            warn!("Failed to save manifest metadata: {}", e);
+        }
+
+        Ok(pulled)
     }
 
     /// Check if an image exists locally (all layers cached)
@@ -666,7 +794,7 @@ impl ImageManager {
                                 let temp_path = blobs_dir.join(format!(
                                     "{}.tar.tmp.{}",
                                     digest_short,
-                                    std::process::id()
+                                    uuid::Uuid::new_v4()
                                 ));
                                 let mut out_file = File::create(&temp_path).map_err(|e| {
                                     Error::LayerExtractionFailed(format!(
@@ -680,13 +808,22 @@ impl ImageManager {
                                             digest_short, e
                                         ))
                                     })?;
-                                // Atomic rename to final path
-                                fs::rename(&temp_path, &tar_path).map_err(|e| {
-                                    Error::LayerExtractionFailed(format!(
-                                        "Rename decompressed tar {} -> {}: {}",
-                                        temp_path.display(), tar_path.display(), e
-                                    ))
-                                })?;
+                                drop(out_file); // Close file before rename
+
+                                // Check if tar already exists (concurrent decompress may have completed)
+                                if !tar_path.exists() {
+                                    // Atomic rename to final path
+                                    fs::rename(&temp_path, &tar_path).map_err(|e| {
+                                        Error::LayerExtractionFailed(format!(
+                                            "Rename decompressed tar {} -> {}: {}",
+                                            temp_path.display(), tar_path.display(), e
+                                        ))
+                                    })?;
+                                } else {
+                                    // Another concurrent decompress completed first, clean up temp file
+                                    let _ = fs::remove_file(&temp_path);
+                                    debug!("Layer {} tar already exists (concurrent decompress)", digest_short);
+                                }
                             } else {
                                 debug!(
                                     "Layer {}/{} already decompressed: {}",
@@ -1157,12 +1294,152 @@ impl ImageManager {
             fs::remove_file(&manifest_path)?;
         }
 
-        // Note: We don't remove blobs as they may be shared by other images
-        // A garbage collection process could clean up orphaned blobs
+        // Note: We don't remove blobs as they may be shared by other images.
+        // Use `nanosb cache prune --all` to garbage-collect orphaned blobs.
 
         info!("Removed image: {}", image_ref.full_ref());
         Ok(())
     }
+
+    /// Prune cached data to reclaim disk space.
+    ///
+    /// Default (`all=false`): removes orphaned bundles, decompressed `.tar` files,
+    /// and stale temp files. Compressed blobs are kept for fast re-extraction.
+    ///
+    /// With `all=true`: also removes all blobs and manifests (full cache reset).
+    pub fn prune(&self, all: bool) -> Result<PruneResult> {
+        let mut result = PruneResult::default();
+
+        // 1. Remove orphaned bundles (bundles with no registry entry, older than 1 hour)
+        let bundles_dir = self.cache_dir.join("bundles");
+        if bundles_dir.exists() {
+            if let Ok(registry) = crate::registry::SandboxRegistry::new() {
+                match registry.cleanup_orphaned_bundles(&bundles_dir) {
+                    Ok(count) => {
+                        // Re-scan to get byte count (cleanup already removed them)
+                        result.orphaned_bundles = count;
+                    }
+                    Err(e) => warn!("Failed to cleanup orphaned bundles: {}", e),
+                }
+                // Also cleanup stale registry entries
+                if let Err(e) = registry.cleanup_stale() {
+                    warn!("Failed to cleanup stale registry entries: {}", e);
+                }
+            }
+        }
+
+        // 2. Remove decompressed .tar files and stale temp files
+        let blobs_dir = self.blobs_dir();
+        if blobs_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&blobs_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+
+                    if name.ends_with(".tar") {
+                        debug!("Removing decompressed tar: {}", name);
+                        if fs::remove_file(entry.path()).is_ok() {
+                            result.decompressed_tars += 1;
+                            result.decompressed_tars_bytes += size;
+                        }
+                    } else if name.contains(".dl.") || name.contains(".tar.tmp.") {
+                        debug!("Removing stale temp file: {}", name);
+                        if fs::remove_file(entry.path()).is_ok() {
+                            result.stale_temps += 1;
+                            result.stale_temps_bytes += size;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. If --all, remove all blobs and manifests
+        if all {
+            if blobs_dir.exists() {
+                if let Ok(entries) = fs::read_dir(&blobs_dir) {
+                    for entry in entries.flatten() {
+                        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                        if fs::remove_file(entry.path()).is_ok() {
+                            result.blobs += 1;
+                            result.blobs_bytes += size;
+                        }
+                    }
+                }
+            }
+
+            let manifests_dir = self.cache_dir.join("manifests");
+            if manifests_dir.exists() {
+                result.manifests = count_files_recursive(&manifests_dir);
+                let _ = fs::remove_dir_all(&manifests_dir);
+                let _ = fs::create_dir_all(&manifests_dir);
+            }
+        }
+
+        result.total_bytes = result.orphaned_bundles_bytes
+            + result.decompressed_tars_bytes
+            + result.stale_temps_bytes
+            + result.blobs_bytes;
+
+        info!(
+            "Cache prune complete: reclaimed {} bytes",
+            result.total_bytes
+        );
+        Ok(result)
+    }
+}
+
+/// Result of a cache prune operation
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PruneResult {
+    pub orphaned_bundles: usize,
+    pub orphaned_bundles_bytes: u64,
+    pub decompressed_tars: usize,
+    pub decompressed_tars_bytes: u64,
+    pub stale_temps: usize,
+    pub stale_temps_bytes: u64,
+    pub blobs: usize,
+    pub blobs_bytes: u64,
+    pub manifests: usize,
+    pub total_bytes: u64,
+}
+
+/// Calculate total size of a directory recursively
+#[allow(dead_code)]
+fn dir_size(path: &Path) -> u64 {
+    fs::read_dir(path)
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| {
+                    if e.path().is_dir() {
+                        dir_size(&e.path())
+                    } else {
+                        e.metadata().map(|m| m.len()).unwrap_or(0)
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Count files recursively in a directory
+fn count_files_recursive(path: &Path) -> usize {
+    fs::read_dir(path)
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| {
+                    if e.path().is_dir() {
+                        count_files_recursive(&e.path())
+                    } else {
+                        1
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 /// Result of pulling an image
@@ -1207,5 +1484,124 @@ mod tests {
     fn test_image_ref_full_ref() {
         let image_ref = ImageRef::parse("alpine:3.19").unwrap();
         assert_eq!(image_ref.full_ref(), "docker.io/library/alpine:3.19");
+    }
+
+    #[tokio::test]
+    async fn test_save_manifest_roundtrip() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manager = ImageManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        let pulled = PulledImage {
+            reference: ImageRef::parse("localhost:5050/test/image:v1").unwrap(),
+            layers: vec!["sha256:abc123".to_string(), "sha256:def456".to_string()],
+            config_digest: "sha256:config789".to_string(),
+            size: 1024,
+        };
+
+        manager.save_manifest(&pulled).unwrap();
+
+        // exists() should now return true
+        assert!(manager.exists("localhost:5050/test/image:v1").await.unwrap());
+
+        // list() should return the image
+        let images = manager.list().await.unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].reference.repository, "test/image");
+        assert_eq!(images[0].reference.tag, "v1");
+        assert_eq!(images[0].size, 1024);
+        assert_eq!(images[0].layers.len(), 2);
+    }
+
+    #[test]
+    fn test_verify_blob_sha256_valid() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let blob_path = temp_dir.path().join("testblob");
+
+        let content = b"hello world";
+        std::fs::write(&blob_path, content).unwrap();
+
+        // SHA256 of "hello world"
+        let expected = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        ImageManager::verify_blob_sha256(&blob_path, expected).unwrap();
+    }
+
+    #[test]
+    fn test_verify_blob_sha256_invalid() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let blob_path = temp_dir.path().join("testblob");
+
+        std::fs::write(&blob_path, b"hello world").unwrap();
+
+        let wrong_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let result = ImageManager::verify_blob_sha256(&blob_path, wrong_digest);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("integrity check failed"));
+    }
+
+    #[test]
+    fn test_prune_removes_tars_and_temps() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manager = ImageManager::new(temp_dir.path().to_path_buf()).unwrap();
+        let blobs_dir = manager.blobs_dir();
+
+        // Create mock files
+        std::fs::write(blobs_dir.join("abc123.tar"), "decompressed").unwrap();
+        std::fs::write(blobs_dir.join("def456.tar"), "decompressed2").unwrap();
+        std::fs::write(blobs_dir.join("abc123.dl.12345"), "partial download").unwrap();
+        std::fs::write(blobs_dir.join("abc123"), "compressed blob").unwrap();
+
+        let result = manager.prune(false).unwrap();
+
+        assert_eq!(result.decompressed_tars, 2);
+        assert_eq!(result.stale_temps, 1);
+        // Compressed blob should still exist
+        assert!(blobs_dir.join("abc123").exists());
+        // Tars and temps should be gone
+        assert!(!blobs_dir.join("abc123.tar").exists());
+        assert!(!blobs_dir.join("def456.tar").exists());
+        assert!(!blobs_dir.join("abc123.dl.12345").exists());
+    }
+
+    #[test]
+    fn test_prune_preserves_blobs_by_default() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manager = ImageManager::new(temp_dir.path().to_path_buf()).unwrap();
+        let blobs_dir = manager.blobs_dir();
+
+        std::fs::write(blobs_dir.join("abc123"), "compressed blob").unwrap();
+
+        let result = manager.prune(false).unwrap();
+
+        assert_eq!(result.blobs, 0);
+        assert!(blobs_dir.join("abc123").exists());
+    }
+
+    #[test]
+    fn test_prune_all_clears_everything() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manager = ImageManager::new(temp_dir.path().to_path_buf()).unwrap();
+        let blobs_dir = manager.blobs_dir();
+
+        // Create blob + tar + manifest
+        std::fs::write(blobs_dir.join("abc123"), "compressed blob").unwrap();
+        std::fs::write(blobs_dir.join("abc123.tar"), "decompressed").unwrap();
+
+        let pulled = PulledImage {
+            reference: ImageRef::parse("test:latest").unwrap(),
+            layers: vec!["sha256:abc123".to_string()],
+            config_digest: "sha256:cfg".to_string(),
+            size: 100,
+        };
+        manager.save_manifest(&pulled).unwrap();
+
+        let result = manager.prune(true).unwrap();
+
+        // Everything should be removed
+        assert!(result.blobs > 0);
+        assert!(result.decompressed_tars > 0);
+        assert!(result.manifests > 0);
+        assert!(!blobs_dir.join("abc123").exists());
+        assert!(!blobs_dir.join("abc123.tar").exists());
     }
 }

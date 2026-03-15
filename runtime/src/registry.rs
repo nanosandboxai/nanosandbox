@@ -172,6 +172,66 @@ impl SandboxRegistry {
         Ok(removed)
     }
 
+    /// Clean up orphaned bundle directories (bundles without registry entries).
+    ///
+    /// Catches the reverse case from `cleanup_stale()`: when a process crashes
+    /// between bundle creation and sandbox registration, the bundle directory
+    /// (potentially GBs) leaks on disk with no registry entry.
+    /// Only removes bundles older than 1 hour to avoid racing with in-flight creation.
+    pub fn cleanup_orphaned_bundles(&self, bundles_dir: &std::path::Path) -> Result<usize> {
+        if !bundles_dir.exists() {
+            return Ok(0);
+        }
+
+        let registered_ids: std::collections::HashSet<String> = self
+            .list()?
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+
+        let one_hour_ago = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(3600);
+        let mut removed = 0;
+
+        for entry in fs::read_dir(bundles_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name().to_string_lossy().to_string();
+            if registered_ids.contains(&name) {
+                continue;
+            }
+
+            // Only remove if older than 1 hour (safety margin for in-flight creation)
+            let is_old = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|mtime| mtime < one_hour_ago)
+                .unwrap_or(false);
+
+            if !is_old {
+                debug!("Skipping recent orphaned bundle: {} (less than 1 hour old)", name);
+                continue;
+            }
+
+            info!("Cleaning up orphaned bundle: {}", name);
+            if let Err(e) = fs::remove_dir_all(entry.path()) {
+                warn!("Failed to remove orphaned bundle {}: {}", name, e);
+            } else {
+                removed += 1;
+            }
+        }
+
+        if removed > 0 {
+            info!("Cleaned up {} orphaned bundles", removed);
+        }
+
+        Ok(removed)
+    }
+
     /// Get count of sandboxes by status
     pub fn count_by_status(&self) -> Result<std::collections::HashMap<SandboxStatus, usize>> {
         let mut counts = std::collections::HashMap::new();

@@ -18,6 +18,27 @@ type Manager struct {
 	config McpConfig
 }
 
+// NewManager creates an empty Manager with built-in agent config paths.
+// No default MCP servers — all servers are user-defined at runtime.
+func NewManager() *Manager {
+	return &Manager{
+		config: McpConfig{
+			Version: "1",
+			Defaults: McpDefaults{
+				TimeoutSec:        30,
+				StartupTimeoutSec: 10,
+			},
+			Servers: make(map[string]*McpServerDef),
+			Agents: map[string]*AgentMcpConfig{
+				"claude": {ConfigPath: "/home/developer/.mcp.json", Format: "claude"},
+				"goose":  {ConfigPath: "/home/developer/.config/goose/config.yaml", Format: "goose"},
+				"codex":  {ConfigPath: "/home/developer/.codex/config.toml", Format: "codex"},
+				"cursor": {ConfigPath: "/home/developer/.cursor/mcp.json", Format: "cursor"},
+			},
+		},
+	}
+}
+
 // NewManagerFromBytes creates a Manager from raw YAML bytes.
 func NewManagerFromBytes(data []byte) (*Manager, error) {
 	var cfg McpConfig

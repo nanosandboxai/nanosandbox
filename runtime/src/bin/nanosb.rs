@@ -60,6 +60,18 @@ mod cli {
         /// Override timeout (seconds) for all sandboxes from config
         #[arg(long, global = true)]
         pub timeout: Option<u32>,
+
+        /// Enable auto mode (fully autonomous, no confirmation prompts) for all sandboxes
+        #[arg(long, global = true)]
+        pub auto_mode: bool,
+
+        /// Environment variables (KEY=VALUE) injected into all sandboxes
+        #[arg(short = 'e', long = "env", global = true)]
+        pub env: Vec<String>,
+
+        /// Read environment variables from a file (one KEY=VALUE per line)
+        #[arg(long = "env-file", global = true)]
+        pub env_file: Vec<String>,
     }
 
     #[derive(Subcommand)]
@@ -157,6 +169,22 @@ mod cli {
             /// Project directory (defaults to current directory)
             #[arg(long)]
             project: Option<String>,
+        },
+
+        /// Manage the image and blob cache
+        Cache {
+            #[command(subcommand)]
+            action: CacheAction,
+        },
+    }
+
+    #[derive(Subcommand)]
+    pub enum CacheAction {
+        /// Remove unused cache data to reclaim disk space
+        Prune {
+            /// Remove ALL cached data including blobs (full cache reset)
+            #[arg(long)]
+            all: bool,
         },
     }
 
@@ -276,12 +304,40 @@ mod cli {
                         .map_err(|e| anyhow::anyhow!("{}", e))?
                 };
 
+                // Auto-load .env from project directory (lowest priority).
+                // Check --project flag first, then CWD if it's a git repo.
+                let auto_env_dir = cli.project.as_ref().map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        let cwd = std::env::current_dir().ok()?;
+                        if cwd.join(".git").exists() { Some(cwd) } else { None }
+                    });
+                if let Some(ref dir) = auto_env_dir {
+                    let env_path = dir.join(".env");
+                    if env_path.exists() {
+                        let project_env = nanosandbox::config::file::load_env_file(
+                            &env_path.to_string_lossy(),
+                            dir,
+                        ).map_err(|e| anyhow::anyhow!("{}", e))?;
+                        for (_, config) in sandbox_configs.iter_mut() {
+                            for (k, v) in &project_env {
+                                // Only set if not already defined by sandbox.yml
+                                config.env.entry(k.clone()).or_insert_with(|| v.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Parse --env and --env-file into key-value pairs.
+                let cli_env = parse_env_vars(&cli.env, &cli.env_file)?;
+
                 // Apply CLI flag overrides (merge step 4).
                 nanosandbox::config::file::apply_cli_overrides(
                     &mut sandbox_configs,
                     cli.cpus,
                     cli.memory,
                     cli.timeout,
+                    cli.auto_mode,
+                    &cli_env,
                 );
 
                 // Filter to a single sandbox if --sandbox is specified.
@@ -353,6 +409,9 @@ mod cli {
             Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
             Some(Commands::Doctor) => cmd_doctor(cli.format).await,
             Some(Commands::Cleanup { project }) => cmd_cleanup(project.as_deref()).await,
+            Some(Commands::Cache { action }) => match action {
+                CacheAction::Prune { all } => cmd_cache_prune(all, cli.format).await,
+            },
         }
     }
 
@@ -430,15 +489,15 @@ mod cli {
         Ok(())
     }
 
-    /// Parse environment variables from --env flags and --env-file
+    /// Parse environment variables from --env flags and --env-file(s).
     fn parse_env_vars(
         env_args: &[String],
-        env_file: Option<&str>,
+        env_files: &[String],
     ) -> anyhow::Result<Vec<(String, String)>> {
         let mut vars = Vec::new();
 
-        // Parse --env-file first (if provided)
-        if let Some(path) = env_file {
+        // Parse --env-file(s) first (later files override earlier ones)
+        for path in env_files {
             let content = std::fs::read_to_string(path)
                 .map_err(|e| anyhow::anyhow!("Failed to read env file '{}': {}", path, e))?;
             for line in content.lines() {
@@ -497,7 +556,8 @@ mod cli {
             name.unwrap_or_else(|| format!("sandbox-{}", &uuid::Uuid::new_v4().to_string()[..8]));
 
         // Parse environment variables
-        let env_vars = parse_env_vars(env_args, env_file)?;
+        let env_files: Vec<String> = env_file.iter().map(|s| s.to_string()).collect();
+        let env_vars = parse_env_vars(env_args, &env_files)?;
 
         if verbose {
             eprintln!("Creating sandbox '{}' with image '{}'", sandbox_name, image);
@@ -1024,6 +1084,65 @@ mod cli {
             }).collect::<Vec<_>>(),
             "warnings": result.warnings,
         })
+    }
+
+    /// Prune the image/blob cache to reclaim disk space.
+    async fn cmd_cache_prune(all: bool, format: OutputFormat) -> anyhow::Result<()> {
+        let manager = ImageManager::with_default_cache()?;
+        let result = manager.prune(all)?;
+
+        match format {
+            OutputFormat::Text => {
+                if result.orphaned_bundles > 0 {
+                    println!(
+                        "Orphaned bundles removed: {} ({})",
+                        result.orphaned_bundles,
+                        format_bytes(result.orphaned_bundles_bytes)
+                    );
+                }
+                if result.decompressed_tars > 0 {
+                    println!(
+                        "Decompressed tars removed: {} ({})",
+                        result.decompressed_tars,
+                        format_bytes(result.decompressed_tars_bytes)
+                    );
+                }
+                if result.stale_temps > 0 {
+                    println!(
+                        "Stale temp files removed: {} ({})",
+                        result.stale_temps,
+                        format_bytes(result.stale_temps_bytes)
+                    );
+                }
+                if all {
+                    if result.blobs > 0 {
+                        println!(
+                            "Blobs removed: {} ({})",
+                            result.blobs,
+                            format_bytes(result.blobs_bytes)
+                        );
+                    }
+                    if result.manifests > 0 {
+                        println!("Manifests removed: {}", result.manifests);
+                    }
+                }
+
+                if result.total_bytes > 0 {
+                    println!(
+                        "\n{} Total reclaimed: {}",
+                        "✓".green(),
+                        format_bytes(result.total_bytes).bold()
+                    );
+                } else {
+                    println!("Cache is clean — nothing to prune.");
+                }
+            }
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        }
+
+        Ok(())
     }
 
     /// Clean up stale project clones and list project branches.

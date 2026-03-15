@@ -112,14 +112,47 @@ pub async fn run_tui(
     let mut app = App::new();
     app.project_path = project_path;
 
+    // Create shared image manager so all sandboxes coordinate pulls
+    // (prevents concurrent downloads of the same image layers).
+    app.image_manager = crate::image::ImageManager::with_default_cache()
+        .ok()
+        .map(Arc::new);
+
+    // Try to load agents registry from well-known locations.
+    app.registry = load_agents_registry();
+
     // Create the event channel.
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
     // Spawn terminal event reader.
     spawn_terminal_event_reader(tx.clone());
 
+    // Resolve agent definitions + skills from registry before launching.
+    let mut resolved_configs: Vec<(String, SandboxConfig)> = Vec::new();
+    for (key, mut config) in sandbox_configs {
+        if let (Some(ref registry), Some(ref agent_name)) = (&app.registry, &config.agent) {
+            match registry.resolve_full(agent_name, &config.skills) {
+                Ok(mut resolved) => {
+                    // Merge: sandbox.yml MCPs override registry MCPs
+                    for (name, mcp) in &config.mcp_servers {
+                        resolved.mcp_servers.insert(name.clone(), mcp.clone());
+                    }
+                    // Replace config MCPs with merged set
+                    config.mcp_servers = resolved.mcp_servers.clone();
+                    // Propagate auto_mode from sandbox config
+                    resolved.auto_mode = config.auto_mode;
+                    config.resolved_agent = Some(resolved);
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to resolve agent '{}': {}", agent_name, e);
+                }
+            }
+        }
+        resolved_configs.push((key, config));
+    }
+
     // Auto-start sandboxes from config file.
-    for (key, config) in sandbox_configs {
+    for (key, config) in resolved_configs {
         add_agent_from_config(&mut app, &key, config, &tx);
     }
 
@@ -181,17 +214,31 @@ pub async fn run_tui(
                 }
                 // Initiate SSH connection if SSH info is available
                 if let Some((ssh_port, key_path)) = ssh_info {
+                    // Pre-calculate panel dimensions for accurate PTY allocation.
+                    let (pty_cols, pty_rows) = {
+                        let term_size = ratatui::crossterm::terminal::size()
+                            .unwrap_or((160, 40));
+                        let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
+                        super::grid::estimate_panel_inner_size(
+                            term_size.0,
+                            term_size.1,
+                            app.visible_panel_count(),
+                            has_sidebar,
+                            app.zoomed,
+                        )
+                    };
                     if let Some(panel) = app.panels.get(panel_idx) {
                         let agent_name = panel.agent_name.clone();
                         let env = panel.env.clone();
                         let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
+                        let auto_mode = panel.auto_mode;
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             // Small delay for sshd to be fully ready
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             match super::terminal::connect_ssh(
-                                ssh_port, key_path, 80, 24,
-                                &agent_name, &env, workdir.as_deref(), panel_idx, tx.clone(),
+                                ssh_port, key_path, pty_cols, pty_rows,
+                                &agent_name, &env, workdir.as_deref(), auto_mode, panel_idx, tx.clone(),
                             ).await {
                                 Ok(handle) => {
                                     let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -968,6 +1015,14 @@ async fn handle_command(
                     "  /mcp remove <name>            Remove MCP server\n",
                     "  /mcp enable <name>            Enable MCP server\n",
                     "  /mcp disable <name>           Disable MCP server\n",
+                    "  /skills [list]                List active skills\n",
+                    "  /skills add <name>            Add skill from registry\n",
+                    "  /skills remove <name>         Remove a skill\n",
+                    "  /skills show <name>           Show skill details\n",
+                    "  /agent                        Show current agent definition\n",
+                    "  /agent set <name>             Set agent from registry\n",
+                    "  /agent list                   List available agents\n",
+                    "  /agent show <name>            Show agent details\n",
                     "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
                     "  /edit [tool]                  Open clone in external tool\n",
                     "  /quit                         Exit the TUI\n",
@@ -1085,6 +1140,19 @@ async fn handle_command(
         }
         Command::Reconnect => {
             let panel_idx = app.focused_panel;
+            // Pre-calculate panel dimensions before mutable borrow.
+            let (pty_cols, pty_rows) = {
+                let term_size = ratatui::crossterm::terminal::size()
+                    .unwrap_or((160, 40));
+                let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
+                super::grid::estimate_panel_inner_size(
+                    term_size.0,
+                    term_size.1,
+                    app.visible_panel_count(),
+                    has_sidebar,
+                    app.zoomed,
+                )
+            };
             if let Some(panel) = app.panels.get_mut(panel_idx) {
                 // Drop existing SSH connection and reset URL tracking.
                 panel.terminal = None;
@@ -1115,11 +1183,12 @@ async fn handle_command(
                     let agent_name = panel.agent_name.clone();
                     let env = panel.env.clone();
                     let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
+                    let auto_mode = panel.auto_mode;
                     let tx = tx.clone();
                     tokio::spawn(async move {
                         match super::terminal::connect_ssh(
-                            ssh_port, key_path, 80, 24,
-                            &agent_name, &env, workdir.as_deref(), panel_idx, tx.clone(),
+                            ssh_port, key_path, pty_cols, pty_rows,
+                            &agent_name, &env, workdir.as_deref(), auto_mode, panel_idx, tx.clone(),
                         ).await {
                             Ok(handle) => {
                                 let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -1466,6 +1535,47 @@ async fn handle_command(
                 }
             }
         }
+
+        // ===== Skills commands =====
+        Command::SkillsList
+        | Command::SkillsAdd { .. }
+        | Command::SkillsRemove { .. }
+        | Command::SkillsShow { .. } => {
+            if app.panels.is_empty() {
+                app.set_system_message(ChatMessage {
+                    role: MessageRole::System,
+                    content: "Skills commands require an active panel. Use /add <agent> first."
+                        .to_string(),
+                });
+            } else {
+                match cmd {
+                    Command::SkillsList => handle_skills_list(app).await,
+                    Command::SkillsAdd { name } => handle_skills_add(app, &name).await,
+                    Command::SkillsRemove { name } => handle_skills_remove(app, &name).await,
+                    Command::SkillsShow { name } => handle_skills_show(app, &name),
+                    _ => unreachable!(),
+                }
+            }
+        }
+
+        // ===== Agent commands =====
+        Command::AgentShow | Command::AgentSet { .. } => {
+            if app.panels.is_empty() {
+                app.set_system_message(ChatMessage {
+                    role: MessageRole::System,
+                    content: "Agent commands require an active panel. Use /add <agent> first."
+                        .to_string(),
+                });
+            } else {
+                match cmd {
+                    Command::AgentShow => handle_agent_show(app).await,
+                    Command::AgentSet { name } => handle_agent_set(app, &name).await,
+                    _ => unreachable!(),
+                }
+            }
+        }
+        Command::AgentList => handle_agent_list(app),
+        Command::AgentInfo { name } => handle_agent_info(app, &name),
     }
 }
 
@@ -1686,6 +1796,34 @@ fn find_panel_at(app: &App, x: u16, y: u16) -> Option<(usize, ratatui::layout::R
     None
 }
 
+/// Known agent type names for CLI command resolution and API key detection.
+const KNOWN_AGENTS: &[&str] = &["claude", "codex", "goose", "cursor"];
+
+/// Detect the base agent type from a Docker image name.
+///
+/// Extracts a known agent name from image patterns like:
+/// - `localhost:5050/agent-claude:latest` → `"claude"`
+/// - `ghcr.io/devdone-labs/agents-registry/codex:v1` → `"codex"`
+/// - `nanosb-goose:latest` → `"goose"`
+fn detect_agent_type_from_image(image: &str) -> Option<String> {
+    // Get the last path segment first, then strip the tag.
+    // This avoids confusing registry port (localhost:5050) with tag separator.
+    let last_segment = image.rsplit('/').next().unwrap_or(image);
+    // Strip tag (the part after the last colon in the segment)
+    let image_name = last_segment.split(':').next().unwrap_or(last_segment);
+
+    for agent in KNOWN_AGENTS {
+        // Match patterns: "agent-claude", "nanosb-claude", "claude", etc.
+        if image_name == *agent
+            || image_name.ends_with(&format!("-{}", agent))
+            || image_name.starts_with(&format!("{}-", agent))
+        {
+            return Some(agent.to_string());
+        }
+    }
+    None
+}
+
 /// Required API key environment variables for known agents.
 fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
     match agent {
@@ -1767,8 +1905,14 @@ fn add_agent(
 
     // Spawn sandbox creation in the background so the event loop stays responsive.
     let tx = tx.clone();
+    let image_manager = app.image_manager.clone();
     tokio::spawn(async move {
-        match Sandbox::create(config).await {
+        let create_result = if let Some(im) = image_manager {
+            Sandbox::create_with_manager(config, im).await
+        } else {
+            Sandbox::create(config).await
+        };
+        match create_result {
             Ok(mut sandbox) => {
                 let short_id = sandbox.id()[..8.min(sandbox.id().len())].to_string();
 
@@ -1807,16 +1951,21 @@ fn add_agent(
 fn add_agent_from_config(
     app: &mut App,
     key: &str,
-    config: SandboxConfig,
+    mut config: SandboxConfig,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let display_name = config.name.clone();
-    let _image_name = config.image.clone();
 
-    // Use the sandbox key (e.g. "claude", "codex") as agent_name so that
+    // Detect the base agent type from the image name so that
     // agent_cli_command() can resolve the correct startup command.
-    let mut panel = AgentPanel::new(key);
+    // e.g. "localhost:5050/agent-claude:latest" → "claude"
+    //      "ghcr.io/devdone-labs/agents-registry/codex:v1" → "codex"
+    let agent_type = detect_agent_type_from_image(&config.image)
+        .unwrap_or_else(|| key.to_string());
+
+    let mut panel = AgentPanel::new(&agent_type);
     panel.display_name = Some(display_name.clone());
+    panel.auto_mode = config.auto_mode;
 
     // Copy env vars from config to panel.
     for (k, v) in &config.env {
@@ -1824,11 +1973,29 @@ fn add_agent_from_config(
     }
 
     // Auto-detect API keys from host environment (if not already in config env).
-    for (api_key, _) in &required_api_keys(key) {
+    for (api_key, _) in &required_api_keys(&agent_type) {
         if !panel.env.contains_key(*api_key) {
             if let Ok(val) = std::env::var(api_key) {
                 panel.env.insert(api_key.to_string(), val);
             }
+        }
+    }
+
+    // If config doesn't have a project but --project flag was set,
+    // inject it into the config so the sandbox mounts it.
+    if config.project.is_none() {
+        if let Some(ref project_path) = app.project_path {
+            config.project = Some(crate::config::ProjectConfig {
+                path: project_path.clone(),
+                branch: None,
+                mount_point: "/workspace".to_string(),
+                auto_sync: app.settings.gitsync.auto_sync,
+            });
+        }
+    } else {
+        // Config has a project — just set auto_sync from settings.
+        if let Some(ref mut proj) = config.project {
+            proj.auto_sync = app.settings.gitsync.auto_sync;
         }
     }
 
@@ -1839,8 +2006,14 @@ fn add_agent_from_config(
     app.focus_panel_input();
 
     let tx = tx.clone();
+    let image_manager = app.image_manager.clone();
     tokio::spawn(async move {
-        match Sandbox::create(config).await {
+        let create_result = if let Some(im) = image_manager {
+            Sandbox::create_with_manager(config, im).await
+        } else {
+            Sandbox::create(config).await
+        };
+        match create_result {
             Ok(mut sandbox) => {
                 let short_id = sandbox.id()[..8.min(sandbox.id().len())].to_string();
 
@@ -2123,5 +2296,477 @@ async fn handle_mcp_disable(app: &mut App, name: &str) {
                 content: format!("Failed to disable MCP server '{}': {}", name, e),
             });
         }
+    }
+}
+
+// ========== Agents Registry Loader ==========
+
+/// Try to load the agents registry from well-known locations.
+///
+/// Search order:
+/// 1. `NANOSB_REGISTRY_PATH` environment variable
+/// 2. `~/.nanosandbox/agents-registry/`
+/// 3. `../agents-registry/` (sibling directory — dev setup)
+fn load_agents_registry() -> Option<crate::agents_registry::AgentsRegistryClient> {
+    use crate::agents_registry::AgentsRegistryClient;
+
+    // 1. Env var override
+    if let Ok(path) = std::env::var("NANOSB_REGISTRY_PATH") {
+        let p = std::path::Path::new(&path);
+        if p.join("index.json").exists() {
+            match AgentsRegistryClient::from_path(p) {
+                Ok(client) => return Some(client),
+                Err(e) => eprintln!("Warning: failed to load registry from {}: {}", path, e),
+            }
+        }
+    }
+
+    // 2. ~/.nanosandbox/agents-registry/
+    if let Some(home) = dirs::home_dir() {
+        let p = home.join(".nanosandbox").join("agents-registry");
+        if p.join("index.json").exists() {
+            if let Ok(client) = AgentsRegistryClient::from_path(&p) {
+                return Some(client);
+            }
+        }
+    }
+
+    // 3. Sibling directory (development layout)
+    if let Ok(cwd) = std::env::current_dir() {
+        let p = cwd.join("../agents-registry");
+        if p.join("index.json").exists() {
+            if let Ok(client) = AgentsRegistryClient::from_path(&p) {
+                return Some(client);
+            }
+        }
+    }
+
+    None
+}
+
+// ========== Skills Handlers ==========
+
+/// Handle `/skills list` — list skills installed in the gateway.
+async fn handle_skills_list(app: &mut App) {
+    let panel = match app.focused_panel_mut() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let sandbox = match panel.sandbox.as_ref() {
+        Some(sb) => Arc::clone(sb),
+        None => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: "No sandbox attached to this panel.".to_string(),
+            });
+            return;
+        }
+    };
+
+    let sb = sandbox.lock().await;
+    match sb.list_skills().await {
+        Ok(skills) => {
+            if skills.is_empty() {
+                panel.chat_history.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: "No skills configured. Use /skills add <name> to add from the registry.".to_string(),
+                });
+            } else {
+                let mut lines = Vec::new();
+                lines.push("Skills:".to_string());
+                for (name, skill) in &skills {
+                    let desc = if skill.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" - {}", skill.description)
+                    };
+                    lines.push(format!("  {}{}", name, desc));
+                }
+                panel.chat_history.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: lines.join("\n"),
+                });
+            }
+        }
+        Err(e) => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: format!("Failed to list skills: {}", e),
+            });
+        }
+    }
+}
+
+/// Handle `/skills add <name>` — resolve from registry and push to gateway.
+async fn handle_skills_add(app: &mut App, name: &str) {
+    // First resolve the skill from the registry (host-side).
+    let skill = match &app.registry {
+        Some(registry) => match registry.resolve_skill(name) {
+            Ok(s) => s,
+            Err(e) => {
+                if let Some(panel) = app.focused_panel_mut() {
+                    panel.chat_history.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: format!("Failed to resolve skill '{}': {}", name, e),
+                    });
+                }
+                return;
+            }
+        },
+        None => {
+            if let Some(panel) = app.focused_panel_mut() {
+                panel.chat_history.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
+                });
+            }
+            return;
+        }
+    };
+
+    let panel = match app.focused_panel_mut() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let sandbox = match panel.sandbox.as_ref() {
+        Some(sb) => Arc::clone(sb),
+        None => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: "No sandbox attached to this panel.".to_string(),
+            });
+            return;
+        }
+    };
+
+    let sb = sandbox.lock().await;
+    match sb.add_skill(&skill).await {
+        Ok(()) => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: format!("Skill '{}' added.", name),
+            });
+        }
+        Err(e) => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: format!("Failed to add skill '{}': {}", name, e),
+            });
+        }
+    }
+}
+
+/// Handle `/skills remove <name>`.
+async fn handle_skills_remove(app: &mut App, name: &str) {
+    let panel = match app.focused_panel_mut() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let sandbox = match panel.sandbox.as_ref() {
+        Some(sb) => Arc::clone(sb),
+        None => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: "No sandbox attached to this panel.".to_string(),
+            });
+            return;
+        }
+    };
+
+    let sb = sandbox.lock().await;
+    match sb.remove_skill(name).await {
+        Ok(()) => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: format!("Skill '{}' removed.", name),
+            });
+        }
+        Err(e) => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: format!("Failed to remove skill '{}': {}", name, e),
+            });
+        }
+    }
+}
+
+/// Handle `/skills show <name>` — show skill content from the registry.
+fn handle_skills_show(app: &mut App, name: &str) {
+    let content = match &app.registry {
+        Some(registry) => match registry.resolve_skill(name) {
+            Ok(skill) => {
+                let mut lines = Vec::new();
+                lines.push(format!("Skill: {}", skill.name));
+                if !skill.description.is_empty() {
+                    lines.push(format!("Description: {}", skill.description));
+                }
+                if !skill.version.is_empty() {
+                    lines.push(format!("Version: {}", skill.version));
+                }
+                if !skill.tags.is_empty() {
+                    lines.push(format!("Tags: {}", skill.tags.join(", ")));
+                }
+                lines.push(String::new());
+                lines.push(skill.content);
+                lines.join("\n")
+            }
+            Err(e) => format!("Skill '{}' not found: {}", name, e),
+        },
+        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
+    };
+
+    if let Some(panel) = app.focused_panel_mut() {
+        panel.chat_history.push(ChatMessage {
+            role: MessageRole::System,
+            content,
+        });
+    }
+}
+
+// ========== Agent Handlers ==========
+
+/// Handle `/agent` — show current agent info and usage hints.
+async fn handle_agent_show(app: &mut App) {
+    let panel = match app.focused_panel_mut() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let mut lines = vec![
+        "Agent definition commands:".to_string(),
+        "  /agent set <name>  - set agent definition from registry".to_string(),
+        "  /agent list        - list available agents".to_string(),
+        "  /agent show <name> - show agent details".to_string(),
+    ];
+
+    // Show current sandbox config agent if set
+    if let Some(sb) = panel.sandbox.as_ref() {
+        let sb = sb.lock().await;
+        if let Some(resolved) = sb.config().resolved_agent.as_ref() {
+            lines.insert(0, format!("Current agent: {} ({} skills, {} MCPs)",
+                resolved.agent_name,
+                resolved.skills.len(),
+                resolved.mcp_servers.len(),
+            ));
+        }
+    }
+
+    panel.chat_history.push(ChatMessage {
+        role: MessageRole::System,
+        content: lines.join("\n"),
+    });
+}
+
+/// Handle `/agent set <name>` — resolve from registry, bootstrap, and restart.
+async fn handle_agent_set(app: &mut App, name: &str) {
+    // First resolve full agent config from registry.
+    let mut resolved = match &app.registry {
+        Some(registry) => match registry.resolve_full(name, &[]) {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(panel) = app.focused_panel_mut() {
+                    panel.chat_history.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: format!("Failed to resolve agent '{}': {}", name, e),
+                    });
+                }
+                return;
+            }
+        },
+        None => {
+            if let Some(panel) = app.focused_panel_mut() {
+                panel.chat_history.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
+                });
+            }
+            return;
+        }
+    };
+
+    let panel = match app.focused_panel_mut() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let sandbox = match panel.sandbox.as_ref() {
+        Some(sb) => Arc::clone(sb),
+        None => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: "No sandbox attached to this panel.".to_string(),
+            });
+            return;
+        }
+    };
+
+    // Inherit auto_mode from sandbox config
+    let sb = sandbox.lock().await;
+    resolved.auto_mode = sb.config().auto_mode;
+    match sb.bootstrap_agent(&resolved).await {
+        Ok(()) => {
+            let skill_count = resolved.skills.len();
+            let mcp_count = resolved.mcp_servers.len();
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: format!(
+                    "Agent '{}' configured ({} skills, {} MCPs).",
+                    name, skill_count, mcp_count,
+                ),
+            });
+        }
+        Err(e) => {
+            panel.chat_history.push(ChatMessage {
+                role: MessageRole::System,
+                content: format!("Failed to set agent '{}': {}", name, e),
+            });
+        }
+    }
+}
+
+/// Handle `/agent list` — list agents from the registry (no sandbox needed).
+fn handle_agent_list(app: &mut App) {
+    let content = match &app.registry {
+        Some(registry) => {
+            let agents = registry.list_agents();
+            if agents.is_empty() {
+                "No agents in registry.".to_string()
+            } else {
+                let mut lines = Vec::new();
+                lines.push("Available agents:".to_string());
+                for entry in &agents {
+                    let desc = if entry.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" - {}", entry.description)
+                    };
+                    let tags = if entry.tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", entry.tags.join(", "))
+                    };
+                    lines.push(format!("  {}{}{}", entry.name, desc, tags));
+                }
+                lines.join("\n")
+            }
+        }
+        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
+    };
+
+    app.set_system_message(ChatMessage {
+        role: MessageRole::System,
+        content,
+    });
+}
+
+/// Handle `/agent show <name>` — show agent details from the registry.
+fn handle_agent_info(app: &mut App, name: &str) {
+    let content = match &app.registry {
+        Some(registry) => match registry.resolve_agent(name) {
+            Ok(agent) => {
+                let mut lines = Vec::new();
+                lines.push(format!("Agent: {}", agent.name));
+                if !agent.description.is_empty() {
+                    lines.push(format!("Description: {}", agent.description));
+                }
+                if !agent.tags.is_empty() {
+                    lines.push(format!("Tags: {}", agent.tags.join(", ")));
+                }
+                if !agent.skills.is_empty() {
+                    lines.push(format!("Skills: {}", agent.skills.join(", ")));
+                }
+                if !agent.mcps.is_empty() {
+                    let mcp_names: Vec<&str> = agent.mcps.iter().map(|m| m.name.as_str()).collect();
+                    lines.push(format!("MCPs: {}", mcp_names.join(", ")));
+                }
+                if !agent.prompt.is_empty() {
+                    let truncated = if agent.prompt.len() > 300 {
+                        format!("{}...", &agent.prompt[..300])
+                    } else {
+                        agent.prompt.clone()
+                    };
+                    lines.push(format!("\nPrompt:\n{}", truncated));
+                }
+                lines.join("\n")
+            }
+            Err(e) => format!("Agent '{}' not found: {}", name, e),
+        },
+        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
+    };
+
+    app.set_system_message(ChatMessage {
+        role: MessageRole::System,
+        content,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_agent_type_localhost_registry() {
+        assert_eq!(
+            detect_agent_type_from_image("localhost:5050/agent-claude:latest"),
+            Some("claude".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("localhost:5050/agent-codex:latest"),
+            Some("codex".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("localhost:5050/agent-goose:latest"),
+            Some("goose".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("localhost:5050/agent-cursor:latest"),
+            Some("cursor".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_agent_type_ghcr() {
+        assert_eq!(
+            detect_agent_type_from_image("ghcr.io/devdone-labs/agents-registry/claude:v1.0"),
+            Some("claude".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("ghcr.io/devdone-labs/agents-registry/codex:latest"),
+            Some("codex".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_agent_type_nanosb_prefix() {
+        assert_eq!(
+            detect_agent_type_from_image("nanosb-claude:latest"),
+            Some("claude".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("nanosb-goose:v2"),
+            Some("goose".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_agent_type_bare_name() {
+        assert_eq!(
+            detect_agent_type_from_image("claude"),
+            Some("claude".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("codex:latest"),
+            Some("codex".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_agent_type_unknown() {
+        assert_eq!(detect_agent_type_from_image("alpine:3.19"), None);
+        assert_eq!(detect_agent_type_from_image("my-custom-image:latest"), None);
+        assert_eq!(detect_agent_type_from_image("ubuntu"), None);
     }
 }

@@ -50,6 +50,22 @@ pub struct SandboxConfig {
     /// Optional project mount configuration.
     #[serde(default)]
     pub project: Option<ProjectConfig>,
+
+    /// Agent definition name from registry (e.g., "python-developer").
+    #[serde(default)]
+    pub agent: Option<String>,
+
+    /// Additional skill names from registry.
+    #[serde(default)]
+    pub skills: Vec<String>,
+
+    /// Fully resolved agent config (populated after registry resolution).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_agent: Option<ResolvedAgentConfig>,
+
+    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    #[serde(default)]
+    pub auto_mode: bool,
 }
 
 fn default_cpus() -> u32 {
@@ -82,6 +98,10 @@ impl Default for SandboxConfig {
             timeout_secs: default_timeout(),
             mcp_servers: HashMap::new(),
             project: None,
+            agent: None,
+            skills: Vec::new(),
+            resolved_agent: None,
+            auto_mode: false,
         }
     }
 }
@@ -240,6 +260,30 @@ impl SandboxConfigBuilder {
             mount_point: "/workspace".to_string(),
             auto_sync: false,
         });
+        self
+    }
+
+    /// Set the agent definition name (from registry).
+    pub fn agent(mut self, agent: impl Into<String>) -> Self {
+        self.config.agent = Some(agent.into());
+        self
+    }
+
+    /// Add a skill name (from registry).
+    pub fn skill(mut self, name: impl Into<String>) -> Self {
+        self.config.skills.push(name.into());
+        self
+    }
+
+    /// Set the resolved agent config.
+    pub fn resolved_agent(mut self, config: ResolvedAgentConfig) -> Self {
+        self.config.resolved_agent = Some(config);
+        self
+    }
+
+    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    pub fn auto_mode(mut self, enabled: bool) -> Self {
+        self.config.auto_mode = enabled;
         self
     }
 
@@ -524,6 +568,78 @@ pub struct McpServerConfig {
     pub enabled: bool,
 }
 
+/// Skill definition resolved from registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillDef {
+    /// Skill name (e.g., "tdd", "git-workflow")
+    pub name: String,
+    /// Human-readable description
+    #[serde(default)]
+    pub description: String,
+    /// Full markdown content of the skill
+    pub content: String,
+    /// Version string (e.g., "1.0")
+    #[serde(default)]
+    pub version: String,
+    /// Tags for categorization
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// MCP reference within an agent definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMcpRef {
+    /// MCP server name
+    pub name: String,
+    /// Source registry (e.g., "smithery", "official")
+    #[serde(default)]
+    pub source: String,
+    /// NPM/Python package name
+    #[serde(default)]
+    pub package: Option<String>,
+    /// Environment variables for the MCP server
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
+/// Agent definition resolved from registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDefinition {
+    /// Agent name (e.g., "python-developer")
+    pub name: String,
+    /// Human-readable description
+    #[serde(default)]
+    pub description: String,
+    /// System prompt for the agent
+    pub prompt: String,
+    /// Skill names to resolve
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// MCP references
+    #[serde(default)]
+    pub mcps: Vec<AgentMcpRef>,
+    /// Tags for categorization
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Fully resolved config bundle sent to gateway at boot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedAgentConfig {
+    /// Agent name
+    pub agent_name: String,
+    /// System prompt
+    pub prompt: String,
+    /// Resolved skill definitions
+    pub skills: Vec<SkillDef>,
+    /// MCP servers resolved from agent definition
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, McpServerConfig>,
+    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    #[serde(default)]
+    pub auto_mode: bool,
+}
+
 /// Configuration for mounting a project into the sandbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
@@ -695,5 +811,57 @@ mod tests {
             .build();
 
         assert!(config.project.is_none());
+    }
+
+    #[test]
+    fn test_sandbox_config_with_agent() {
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("alpine")
+            .agent("python-developer")
+            .skill("tdd")
+            .skill("git-workflow")
+            .build();
+
+        assert_eq!(config.agent, Some("python-developer".to_string()));
+        assert_eq!(config.skills, vec!["tdd", "git-workflow"]);
+        assert!(config.resolved_agent.is_none());
+    }
+
+    #[test]
+    fn test_sandbox_config_with_resolved_agent() {
+        let resolved = ResolvedAgentConfig {
+            agent_name: "python-developer".to_string(),
+            prompt: "You are a Python developer.".to_string(),
+            skills: vec![SkillDef {
+                name: "tdd".to_string(),
+                description: "TDD".to_string(),
+                content: "# TDD".to_string(),
+                version: "1.0".to_string(),
+                tags: vec![],
+            }],
+            mcp_servers: HashMap::new(),
+            auto_mode: false,
+        };
+
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("alpine")
+            .agent("python-developer")
+            .resolved_agent(resolved)
+            .build();
+
+        assert!(config.resolved_agent.is_some());
+        let r = config.resolved_agent.unwrap();
+        assert_eq!(r.agent_name, "python-developer");
+        assert_eq!(r.skills.len(), 1);
+    }
+
+    #[test]
+    fn test_sandbox_config_default_no_agent() {
+        let config = SandboxConfig::default();
+        assert!(config.agent.is_none());
+        assert!(config.skills.is_empty());
+        assert!(config.resolved_agent.is_none());
     }
 }

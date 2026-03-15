@@ -65,7 +65,7 @@ pub use containerd_windows::{ContainerdWindowsRuntime, WindowsContainerdIsolatio
 #[allow(deprecated)]
 pub use windows::{WindowsContainerRuntime, WindowsIsolation};
 
-use crate::config::McpServerConfig;
+use crate::config::{McpServerConfig, ResolvedAgentConfig, SkillDef};
 use crate::config::SandboxConfig;
 use crate::error::Result;
 
@@ -475,6 +475,114 @@ impl RuntimeBackend {
         }
     }
 
+    /// Add a skill to the running sandbox.
+    pub fn add_skill(&self, id: &str, skill: &SkillDef) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.add_skill(id, skill),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, skill);
+            Err(crate::error::Error::SkillsError(
+                "Skills not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// Remove a skill from the running sandbox.
+    pub fn remove_skill(&self, id: &str, name: &str) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.remove_skill(id, name),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, name);
+            Err(crate::error::Error::SkillsError(
+                "Skills not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// List all skills in the running sandbox.
+    pub fn list_skills(&self, id: &str) -> Result<HashMap<String, SkillDef>> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.list_skills(id),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = id;
+            Err(crate::error::Error::SkillsError(
+                "Skills not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// Bootstrap agent definition + skills + MCPs in one call.
+    pub fn bootstrap_agent(&self, id: &str, config: &ResolvedAgentConfig) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.bootstrap_agent(id, config),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, config);
+            Err(crate::error::Error::SkillsError(
+                "Agent bootstrap not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// Set the agent definition (name + prompt).
+    pub fn set_agent(&self, id: &str, name: &str, prompt: &str) -> Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.set_agent(id, name, prompt),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, name, prompt);
+            Err(crate::error::Error::SkillsError(
+                "Agent definition not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
+    /// Restart the agent process in the running sandbox.
+    pub fn restart_agent(&self, id: &str, reason: &str) -> Result<serde_json::Value> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            match self {
+                RuntimeBackend::Libkrun(r) => r.restart_agent(id, reason),
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (id, reason);
+            Err(crate::error::Error::AgentRestartError(
+                "Agent restart not supported on Windows runtime yet".to_string(),
+            ))
+        }
+    }
+
     /// Stop the sandbox/VM
     pub async fn stop(&self, id: &str) -> Result<()> {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -723,6 +831,36 @@ impl Runtime {
     /// Disable an MCP server in the running sandbox.
     pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
         self.backend.disable_mcp_server(id, name)
+    }
+
+    /// Add a skill to the running sandbox.
+    pub fn add_skill(&self, id: &str, skill: &SkillDef) -> Result<()> {
+        self.backend.add_skill(id, skill)
+    }
+
+    /// Remove a skill from the running sandbox.
+    pub fn remove_skill(&self, id: &str, name: &str) -> Result<()> {
+        self.backend.remove_skill(id, name)
+    }
+
+    /// List all skills in the running sandbox.
+    pub fn list_skills(&self, id: &str) -> Result<HashMap<String, SkillDef>> {
+        self.backend.list_skills(id)
+    }
+
+    /// Bootstrap agent definition + skills + MCPs in one call.
+    pub fn bootstrap_agent(&self, id: &str, config: &ResolvedAgentConfig) -> Result<()> {
+        self.backend.bootstrap_agent(id, config)
+    }
+
+    /// Set the agent definition (name + prompt).
+    pub fn set_agent(&self, id: &str, name: &str, prompt: &str) -> Result<()> {
+        self.backend.set_agent(id, name, prompt)
+    }
+
+    /// Restart the agent process in the running sandbox.
+    pub fn restart_agent(&self, id: &str, reason: &str) -> Result<serde_json::Value> {
+        self.backend.restart_agent(id, reason)
     }
 }
 

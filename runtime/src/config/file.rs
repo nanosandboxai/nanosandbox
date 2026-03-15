@@ -30,10 +30,18 @@ pub struct SandboxDefaults {
     pub workdir: Option<String>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
+    /// Path to a .env file to load environment variables from.
+    pub env_file: Option<String>,
     pub network: Option<NetworkDef>,
     pub mounts: Option<Vec<MountDef>>,
     pub mcp: Option<HashMap<String, McpServerConfig>>,
     pub project: Option<ProjectDef>,
+    /// Agent definition name from registry.
+    pub agent: Option<String>,
+    /// Skill names from registry.
+    pub skills: Option<Vec<String>>,
+    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    pub auto_mode: Option<bool>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -48,10 +56,18 @@ pub struct SandboxDefinition {
     pub workdir: Option<String>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
+    /// Path to a .env file to load environment variables from.
+    pub env_file: Option<String>,
     pub network: Option<NetworkDef>,
     pub mounts: Option<Vec<MountDef>>,
     pub mcp: Option<HashMap<String, McpServerConfig>>,
     pub project: Option<ProjectDef>,
+    /// Agent definition name from registry.
+    pub agent: Option<String>,
+    /// Skill names from registry.
+    pub skills: Option<Vec<String>>,
+    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    pub auto_mode: Option<bool>,
 }
 
 /// Network configuration in YAML.
@@ -121,6 +137,34 @@ pub fn expand_env_vars(input: &str) -> Result<String, String> {
     }
 
     Ok(result)
+}
+
+/// Load environment variables from a .env file.
+///
+/// Lines are parsed as KEY=VALUE. Empty lines and lines starting with `#` are
+/// skipped. The path is resolved relative to `config_dir` if not absolute.
+pub fn load_env_file(path: &str, config_dir: &Path) -> Result<HashMap<String, String>, String> {
+    let resolved = if path.starts_with('/') || path.starts_with('~') {
+        let expanded = shellexpand_tilde(path);
+        std::path::PathBuf::from(expanded)
+    } else {
+        config_dir.join(path)
+    };
+
+    let content = std::fs::read_to_string(&resolved)
+        .map_err(|e| format!("Failed to read env_file '{}': {}", resolved.display(), e))?;
+
+    let mut vars = HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            vars.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    Ok(vars)
 }
 
 /// Parse a port string like "8080:80" or "3000:3000/udp" into a PortMapping.
@@ -193,12 +237,20 @@ pub fn resolve_sandbox_configs(
             config.workdir = workdir.to_string();
         }
 
-        // Env vars: merge (defaults first, per-sandbox overrides)
+        // Env vars merge order: defaults env_file → defaults env → per-sandbox env_file → per-sandbox env
         let mut env = HashMap::new();
+        if let Some(ref path) = defaults.env_file {
+            let file_vars = load_env_file(path, config_dir)?;
+            env.extend(file_vars);
+        }
         if let Some(ref defaults_env) = defaults.env {
             for (k, v) in defaults_env {
                 env.insert(k.clone(), expand_env_vars(v)?);
             }
+        }
+        if let Some(ref path) = def.env_file {
+            let file_vars = load_env_file(path, config_dir)?;
+            env.extend(file_vars);
         }
         if let Some(ref def_env) = def.env {
             for (k, v) in def_env {
@@ -314,6 +366,19 @@ pub fn resolve_sandbox_configs(
                 auto_sync: proj.auto_sync.unwrap_or(false),
             });
         }
+
+        // Agent: per-sandbox overrides defaults
+        config.agent = def.agent.clone().or_else(|| defaults.agent.clone());
+
+        // Skills: per-sandbox replaces defaults (not merge)
+        config.skills = def
+            .skills
+            .clone()
+            .or_else(|| defaults.skills.clone())
+            .unwrap_or_default();
+
+        // Auto mode: per-sandbox overrides defaults
+        config.auto_mode = def.auto_mode.or(defaults.auto_mode).unwrap_or(false);
 
         results.push((key.clone(), config));
     }
@@ -438,6 +503,8 @@ pub fn apply_cli_overrides(
     cpus: Option<u32>,
     memory: Option<u32>,
     timeout: Option<u32>,
+    auto_mode: bool,
+    cli_env: &[(String, String)],
 ) {
     for (_, config) in configs.iter_mut() {
         if let Some(cpus) = cpus {
@@ -448,6 +515,13 @@ pub fn apply_cli_overrides(
         }
         if let Some(timeout) = timeout {
             config.timeout_secs = timeout;
+        }
+        if auto_mode {
+            config.auto_mode = true;
+        }
+        // CLI --env / --env-file override all other env sources.
+        for (k, v) in cli_env {
+            config.env.insert(k.clone(), v.clone());
         }
     }
 }
@@ -821,7 +895,7 @@ sandboxes:
         let file = parse_sandbox_file(yaml).unwrap();
         let mut configs =
             resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        apply_cli_overrides(&mut configs, Some(8), None, Some(1200));
+        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), false, &[]);
         assert_eq!(configs[0].1.cpus, 8);
         assert_eq!(configs[0].1.memory_mb, 4096);
         assert_eq!(configs[0].1.timeout_secs, 1200);
@@ -842,5 +916,232 @@ sandboxes:
         assert!(validate_name("-starts-with-hyphen").is_err());
         assert!(validate_name("ends-with-hyphen-").is_err());
         assert!(validate_name(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn test_yaml_agent_field() {
+        let yaml = r#"
+defaults:
+  image: base:latest
+  agent: python-developer
+sandboxes:
+  test: {}
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.agent,
+            Some("python-developer".to_string())
+        );
+    }
+
+    #[test]
+    fn test_yaml_skills_field() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    skills: [tdd, git-workflow]
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(configs[0].1.skills, vec!["tdd", "git-workflow"]);
+    }
+
+    #[test]
+    fn test_yaml_agent_per_sandbox_overrides_defaults() {
+        let yaml = r#"
+defaults:
+  image: base:latest
+  agent: python-developer
+  skills: [tdd]
+sandboxes:
+  test:
+    agent: rust-developer
+    skills: [git-workflow, code-review]
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.agent,
+            Some("rust-developer".to_string())
+        );
+        assert_eq!(
+            configs[0].1.skills,
+            vec!["git-workflow", "code-review"]
+        );
+    }
+
+    #[test]
+    fn test_yaml_agent_inherits_from_defaults() {
+        let yaml = r#"
+defaults:
+  image: base:latest
+  agent: python-developer
+  skills: [tdd, git-workflow]
+sandboxes:
+  test: {}
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.agent,
+            Some("python-developer".to_string())
+        );
+        assert_eq!(
+            configs[0].1.skills,
+            vec!["tdd", "git-workflow"]
+        );
+    }
+
+    #[test]
+    fn test_yaml_no_agent_no_skills() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert!(configs[0].1.agent.is_none());
+        assert!(configs[0].1.skills.is_empty());
+    }
+
+    #[test]
+    fn test_yaml_agent_with_mcp_full_config() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    agent: python-developer
+    skills: [tdd]
+    mcp:
+      github:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-github"]
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.agent,
+            Some("python-developer".to_string())
+        );
+        assert_eq!(configs[0].1.skills, vec!["tdd"]);
+        assert!(configs[0].1.mcp_servers.contains_key("github"));
+    }
+
+    #[test]
+    fn test_load_env_file_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(&env_path, "FOO=bar\nBAZ=qux\n").unwrap();
+
+        let vars = load_env_file(".env", dir.path()).unwrap();
+        assert_eq!(vars["FOO"], "bar");
+        assert_eq!(vars["BAZ"], "qux");
+    }
+
+    #[test]
+    fn test_load_env_file_comments_and_blanks() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("test.env");
+        std::fs::write(&env_path, "# comment\n\nKEY=value\n  # another\n").unwrap();
+
+        let vars = load_env_file("test.env", dir.path()).unwrap();
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars["KEY"], "value");
+    }
+
+    #[test]
+    fn test_load_env_file_not_found() {
+        let result = load_env_file("missing.env", std::path::Path::new("/tmp"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing.env"));
+    }
+
+    #[test]
+    fn test_yaml_env_file_in_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("defaults.env"), "DEFAULT_KEY=default_value\n").unwrap();
+
+        let yaml = r#"
+defaults:
+  env_file: defaults.env
+sandboxes:
+  test:
+    image: alpine:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, dir.path()).unwrap();
+        assert_eq!(configs[0].1.env["DEFAULT_KEY"], "default_value");
+    }
+
+    #[test]
+    fn test_yaml_env_file_per_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sandbox.env"), "SB_KEY=sb_value\n").unwrap();
+
+        let yaml = r#"
+sandboxes:
+  test:
+    image: alpine:latest
+    env_file: sandbox.env
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, dir.path()).unwrap();
+        assert_eq!(configs[0].1.env["SB_KEY"], "sb_value");
+    }
+
+    #[test]
+    fn test_yaml_env_file_merge_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("defaults.env"), "SHARED=from_defaults_file\nDEFAULT_ONLY=yes\n").unwrap();
+        std::fs::write(dir.path().join("sandbox.env"), "SHARED=from_sandbox_file\nSB_ONLY=yes\n").unwrap();
+
+        let yaml = r#"
+defaults:
+  env_file: defaults.env
+  env:
+    SHARED: from_defaults_env
+sandboxes:
+  test:
+    image: alpine:latest
+    env_file: sandbox.env
+    env:
+      SHARED: from_sandbox_env
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, dir.path()).unwrap();
+        // Per-sandbox inline env has highest priority
+        assert_eq!(configs[0].1.env["SHARED"], "from_sandbox_env");
+        assert_eq!(configs[0].1.env["DEFAULT_ONLY"], "yes");
+        assert_eq!(configs[0].1.env["SB_ONLY"], "yes");
+    }
+
+    #[test]
+    fn test_apply_cli_overrides_with_env() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: alpine:latest
+    env:
+      EXISTING: original
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let mut configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        let cli_env = vec![
+            ("NEW_KEY".to_string(), "new_value".to_string()),
+            ("EXISTING".to_string(), "overridden".to_string()),
+        ];
+        apply_cli_overrides(&mut configs, None, None, None, false, &cli_env);
+        assert_eq!(configs[0].1.env["NEW_KEY"], "new_value");
+        assert_eq!(configs[0].1.env["EXISTING"], "overridden");
     }
 }

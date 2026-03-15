@@ -19,7 +19,7 @@
 use super::ffi;
 use super::gvproxy::{GvproxyInstance, GvproxyManager};
 use super::ExecOutput;
-use crate::config::{McpServerConfig, MountType, NetworkScope, SandboxConfig};
+use crate::config::{McpServerConfig, MountType, NetworkScope, ResolvedAgentConfig, SandboxConfig, SkillDef};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -271,6 +271,8 @@ struct SandboxState {
     has_gateway: bool,
     /// MCP server configurations to push to the agent-gateway on start
     mcp_servers: HashMap<String, McpServerConfig>,
+    /// Resolved agent config to push to the agent-gateway on start
+    resolved_agent: Option<ResolvedAgentConfig>,
     /// Path to VM stderr log file (for diagnostics on startup failure)
     vm_log_path: Option<PathBuf>,
     /// Path to SSH private key for this sandbox
@@ -696,20 +698,52 @@ impl LibkrunRuntime {
         // Set exec with explicit environment (don't inherit host env)
         ffi::set_exec(ctx, exec_path, &exec_argv_refs, Some(&env_vars))?;
 
-        // Write .krun_config.json to the rootfs as a fallback mechanism.
-        // Note: KRUN_INIT env var (from kernel cmdline) takes priority in
-        // init.c, so this config is only used if KRUN_INIT is not set.
-        // The "args" field here uses OCI/Docker convention where args[0]
-        // is the program name.
+        // Remove config.json to prevent libkrun from reading stale commands.
+        // Note: config.json is in the bundle directory (parent of rootfs/), not inside rootfs/.
         {
-            let mut config_args = vec![exec_path.to_string()];
-            config_args.extend(exec_argv_owned.iter().cloned());
-            let config = serde_json::json!({
-                "args": config_args,
-                "env": env_vars,
-            });
-            let config_path = std::path::Path::new(rootfs_path).join(".krun_config.json");
-            let _ = std::fs::write(&config_path, config.to_string());
+            let bundle_dir = std::path::Path::new(rootfs_path).parent();
+            if let Some(dir) = bundle_dir {
+                let config_path = dir.join("config.json");
+                if config_path.exists() {
+                    let _ = std::fs::remove_file(&config_path);
+                }
+            }
+        }
+
+        // Workaround for libkrun double-init bug: /init.krun spawns the init
+        // script TWICE (once directly, once via a forked /init.krun copy).
+        // Inject a dedup lock at the top of the init script so only the first
+        // instance proceeds. This is applied at runtime regardless of what the
+        // Docker image contains.
+        {
+            let init_path = std::path::Path::new(rootfs_path)
+                .join("usr/local/bin/nanosb-init.sh");
+            if init_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&init_path) {
+                    if !content.contains("nanosb-init-lock") {
+                        let dedup_block = concat!(
+                            "# Dedup lock: libkrun spawns init script twice.\n",
+                            "# The loser must NOT exit — PID 1 (/init.krun) may\n",
+                            "# depend on its direct child staying alive.\n",
+                            "if ! mkdir /tmp/.nanosb-init-lock 2>/dev/null; then\n",
+                            "    while true; do sleep 3600; done\n",
+                            "fi\n",
+                        );
+                        // Insert after the shebang line
+                        let patched = if let Some(newline_pos) = content.find('\n') {
+                            format!(
+                                "{}\n{}\n{}",
+                                &content[..newline_pos],
+                                dedup_block,
+                                &content[newline_pos + 1..]
+                            )
+                        } else {
+                            format!("{}\n{}", content, dedup_block)
+                        };
+                        let _ = std::fs::write(&init_path, patched);
+                    }
+                }
+            }
         }
 
         // Start the VM -- this never returns on success.
@@ -766,10 +800,19 @@ impl LibkrunRuntime {
         let pub_key = std::fs::read_to_string(key_path.with_extension("pub"))
             .map_err(|e| format!("read public key: {}", e))?;
 
+        // Inject into root's authorized_keys (for admin/init access)
         let auth_keys_dir = rootfs_path.join("root/.ssh");
         std::fs::create_dir_all(&auth_keys_dir).map_err(|e| format!("mkdir .ssh: {}", e))?;
         std::fs::write(auth_keys_dir.join("authorized_keys"), &pub_key)
             .map_err(|e| format!("write authorized_keys: {}", e))?;
+
+        // Also inject into developer user's authorized_keys (for agent access).
+        // Agents like Claude Code refuse --dangerously-skip-permissions as root,
+        // so the TUI connects as 'developer' instead.
+        let dev_ssh_dir = rootfs_path.join("home/developer/.ssh");
+        std::fs::create_dir_all(&dev_ssh_dir).map_err(|e| format!("mkdir developer .ssh: {}", e))?;
+        std::fs::write(dev_ssh_dir.join("authorized_keys"), &pub_key)
+            .map_err(|e| format!("write developer authorized_keys: {}", e))?;
 
         // Set permissions (ssh is strict about this)
         #[cfg(unix)]
@@ -778,6 +821,11 @@ impl LibkrunRuntime {
             let _ = std::fs::set_permissions(&auth_keys_dir, std::fs::Permissions::from_mode(0o700));
             let _ = std::fs::set_permissions(
                 auth_keys_dir.join("authorized_keys"),
+                std::fs::Permissions::from_mode(0o600),
+            );
+            let _ = std::fs::set_permissions(&dev_ssh_dir, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::set_permissions(
+                dev_ssh_dir.join("authorized_keys"),
                 std::fs::Permissions::from_mode(0o600),
             );
             let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
@@ -820,7 +868,7 @@ impl LibkrunRuntime {
         let port = state.ssh_port?;
         let key = state.ssh_key_path.as_ref()?;
         Some(format!(
-            "ssh -p {} -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@127.0.0.1",
+            "ssh -p {} -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null developer@127.0.0.1",
             port,
             key.display(),
         ))
@@ -903,11 +951,12 @@ impl LibkrunRuntime {
                     Some(instance)
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to start gvproxy for sandbox '{}': {} -- falling back to TSI",
+                    // gvproxy failure causes fallback to TSI, which shares network namespace
+                    // between VMs and causes port conflicts. This should be treated as an error.
+                    return Err(Error::SandboxCreationFailed(format!(
+                        "Failed to start gvproxy for sandbox '{}': {}. TSI fallback disabled to prevent port conflicts between sandboxes.",
                         id, e
-                    );
-                    None
+                    )));
                 }
             }
         } else {
@@ -940,16 +989,12 @@ impl LibkrunRuntime {
             }
         }
 
-        // Write the init script directly into the rootfs. The script is embedded
-        // in the binary so it always works regardless of CWD or installation layout.
-        // This supersedes any init script from the Docker image.
+        // Ensure the init script from the Docker image is executable.
+        // The init script lives in the Docker image and is updated by rebuilding
+        // images — no binary recompilation needed.
         {
             let init_dest = rootfs_path.join("usr/local/bin/nanosb-init.sh");
-            let _ = std::fs::create_dir_all(rootfs_path.join("usr/local/bin"));
-            let script = include_str!("../../docker/nanosb-init.sh");
-            if let Err(e) = std::fs::write(&init_dest, script) {
-                warn!("Failed to write init script to rootfs: {}", e);
-            } else {
+            if init_dest.exists() {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -958,7 +1003,7 @@ impl LibkrunRuntime {
                         std::fs::Permissions::from_mode(0o755),
                     );
                 }
-                debug!("Embedded init script written to rootfs");
+                debug!("Init script found in rootfs (from Docker image)");
             }
         }
 
@@ -1025,6 +1070,7 @@ impl LibkrunRuntime {
             vm_pid: None,
             has_gateway,
             mcp_servers: config.mcp_servers.clone(),
+            resolved_agent: config.resolved_agent.clone(),
             vm_log_path: None,
             ssh_key_path,
             ssh_port: None,
@@ -1340,6 +1386,28 @@ impl LibkrunRuntime {
             }
         }
 
+        // Bootstrap agent definition + skills if resolved
+        let resolved_agent = {
+            let sandboxes = self.sandboxes.lock().unwrap();
+            let state = sandboxes.get(id).unwrap();
+            state.resolved_agent.clone()
+        };
+
+        if let Some(ref resolved) = resolved_agent {
+            info!(
+                "Bootstrapping agent '{}' with {} skills for sandbox '{}'",
+                resolved.agent_name,
+                resolved.skills.len(),
+                id
+            );
+            if let Err(e) = self.bootstrap_agent(id, resolved) {
+                warn!(
+                    "Failed to bootstrap agent for sandbox '{}': {}",
+                    id, e
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -1383,8 +1451,14 @@ impl LibkrunRuntime {
         let config_json = serde_json::to_string(&request)
             .map_err(|e| format!("Failed to serialize boot config: {}", e))?;
 
-        let exe_path = std::env::current_exe()
-            .map_err(|e| format!("Failed to get current exe path: {}", e))?;
+        // Use NANOSB_BINARY_PATH if set (for tests), otherwise use current_exe().
+        // Tests run with the test binary, but need to spawn the actual nanosb binary.
+        let exe_path = if let Ok(path_str) = std::env::var("NANOSB_BINARY_PATH") {
+            PathBuf::from(path_str)
+        } else {
+            std::env::current_exe()
+                .map_err(|e| format!("Failed to get current exe path: {}", e))?
+        };
 
         // Ensure the binary has the com.apple.security.hypervisor entitlement.
         // The binary may have lost its entitlement if cargo rebuilt it after the
@@ -2475,6 +2549,166 @@ impl LibkrunRuntime {
             Err(e) => Err(Error::McpServerError(format!(
                 "Failed to disable MCP server '{}': {}",
                 name, e
+            ))),
+        }
+    }
+
+    // ===== Skills & Agent Gateway Methods =====
+
+    /// Add a skill to the running sandbox.
+    pub fn add_skill(&self, id: &str, skill: &SkillDef) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+
+        let body = serde_json::json!({
+            "name": skill.name,
+            "description": skill.description,
+            "content": skill.content,
+            "version": skill.version,
+        });
+
+        match Self::http_post(&addr, "/api/v1/skills", &body.to_string()) {
+            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+            Ok((code, body)) => Err(Error::SkillsError(format!(
+                "Failed to add skill '{}' (HTTP {}): {}",
+                skill.name, code, body
+            ))),
+            Err(e) => Err(Error::SkillsError(format!(
+                "Failed to add skill '{}': {}",
+                skill.name, e
+            ))),
+        }
+    }
+
+    /// Remove a skill from the running sandbox.
+    pub fn remove_skill(&self, id: &str, name: &str) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+        let path = format!("/api/v1/skills/{}", name);
+
+        match Self::http_delete(&addr, &path) {
+            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+            Ok((code, body)) => Err(Error::SkillsError(format!(
+                "Failed to remove skill '{}' (HTTP {}): {}",
+                name, code, body
+            ))),
+            Err(e) => Err(Error::SkillsError(format!(
+                "Failed to remove skill '{}': {}",
+                name, e
+            ))),
+        }
+    }
+
+    /// List all skills in the running sandbox.
+    pub fn list_skills(&self, id: &str) -> Result<HashMap<String, SkillDef>> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+
+        match Self::http_get(&addr, "/api/v1/skills") {
+            Ok((code, body)) if (200..300).contains(&code) => {
+                let response: serde_json::Value =
+                    serde_json::from_str(&body).map_err(|e| {
+                        Error::SkillsError(format!("Failed to parse skills list: {}", e))
+                    })?;
+
+                let skills_val = response.get("skills").unwrap_or(&response);
+                let mut result = HashMap::new();
+
+                if let Some(obj) = skills_val.as_object() {
+                    for (name, val) in obj {
+                        if let Ok(skill) = serde_json::from_value::<SkillDef>(val.clone()) {
+                            result.insert(name.clone(), skill);
+                        }
+                    }
+                }
+
+                Ok(result)
+            }
+            Ok((code, body)) => Err(Error::SkillsError(format!(
+                "Failed to list skills (HTTP {}): {}",
+                code, body
+            ))),
+            Err(e) => Err(Error::SkillsError(format!(
+                "Failed to list skills: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Bootstrap agent definition + skills + MCPs in one call.
+    pub fn bootstrap_agent(&self, id: &str, config: &ResolvedAgentConfig) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+
+        let body = serde_json::to_string(config).map_err(|e| {
+            Error::SkillsError(format!("Failed to serialize bootstrap config: {}", e))
+        })?;
+
+        match Self::http_post(&addr, "/api/v1/agent/bootstrap", &body) {
+            Ok((code, _)) if (200..300).contains(&code) => {
+                info!(
+                    "Bootstrapped agent '{}' with {} skills, {} MCPs for sandbox '{}'",
+                    config.agent_name,
+                    config.skills.len(),
+                    config.mcp_servers.len(),
+                    id
+                );
+                Ok(())
+            }
+            Ok((code, body)) => Err(Error::SkillsError(format!(
+                "Failed to bootstrap agent '{}' (HTTP {}): {}",
+                config.agent_name, code, body
+            ))),
+            Err(e) => Err(Error::SkillsError(format!(
+                "Failed to bootstrap agent '{}': {}",
+                config.agent_name, e
+            ))),
+        }
+    }
+
+    /// Set the agent definition (name + prompt).
+    pub fn set_agent(&self, id: &str, name: &str, prompt: &str) -> Result<()> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+
+        let body = serde_json::json!({
+            "name": name,
+            "prompt": prompt,
+        });
+
+        match Self::http_post(&addr, "/api/v1/agent", &body.to_string()) {
+            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+            Ok((code, body)) => Err(Error::SkillsError(format!(
+                "Failed to set agent '{}' (HTTP {}): {}",
+                name, code, body
+            ))),
+            Err(e) => Err(Error::SkillsError(format!(
+                "Failed to set agent '{}': {}",
+                name, e
+            ))),
+        }
+    }
+
+    /// Restart the agent process in the running sandbox.
+    pub fn restart_agent(&self, id: &str, reason: &str) -> Result<serde_json::Value> {
+        let gateway_port = self.require_gateway_port(id)?;
+        let addr = format!("127.0.0.1:{}", gateway_port);
+
+        let body = serde_json::json!({ "reason": reason });
+
+        match Self::http_post(&addr, "/api/v1/agent/restart", &body.to_string()) {
+            Ok((code, resp_body)) if (200..300).contains(&code) => {
+                serde_json::from_str(&resp_body).map_err(|e| {
+                    Error::AgentRestartError(format!("Failed to parse restart response: {}", e))
+                })
+            }
+            Ok((code, body)) => Err(Error::AgentRestartError(format!(
+                "Failed to restart agent (HTTP {}): {}",
+                code, body
+            ))),
+            Err(e) => Err(Error::AgentRestartError(format!(
+                "Failed to restart agent: {}",
+                e
             ))),
         }
     }

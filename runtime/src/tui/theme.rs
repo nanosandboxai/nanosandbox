@@ -132,34 +132,46 @@ impl Theme {
 // Built-in palettes
 // ---------------------------------------------------------------------------
 
-/// Nanosandbox brand dark — coral red accent on dark terminal.
+/// Nanosandbox brand dark — coral red accent on dark background.
+///
+/// Uses only 256-color indexed palette so the theme renders correctly on all
+/// terminals, including macOS Terminal.app (no truecolor), PuTTY, GNU screen,
+/// and tmux without truecolor config.
+///
+/// Background uses `Indexed(16)` (fixed #000000 from the 6×6×6 cube) instead
+/// of ANSI `Color::Black` because ANSI colors 0-15 can be remapped by terminal
+/// themes — a "Solarized" or "Gruvbox" terminal scheme could turn ANSI Black
+/// into dark gray or blue.  Indexed 16-231 are guaranteed fixed values.
 static NANOSANDBOX: Theme = Theme {
-    background: Color::Rgb(18, 18, 18),  // #121212
-    accent: Color::Rgb(228, 88, 74),   // #E4584A
-    text: Color::White,
-    text_muted: Color::DarkGray,
+    background: Color::Indexed(16),    // #000000 — fixed pure black (not remappable)
+    accent: Color::Indexed(167),       // #D75F5F — closest 256-color to coral #E4584A
+    text: Color::Indexed(231),         // #FFFFFF — fixed pure white (not remappable)
+    text_muted: Color::Indexed(245),   // #8A8A8A — fixed medium gray
     success: Color::Green,
     warning: Color::Yellow,
     error: Color::Red,
     info: Color::Blue,
-    status_bar_bg: Color::Rgb(38, 38, 38), // #262626
-    selection_fg: Color::Black,
-    selection_bg: Color::Rgb(228, 88, 74),
+    status_bar_bg: Color::Indexed(238),// #444444 — fixed dark gray
+    selection_fg: Color::Indexed(16),  // #000000
+    selection_bg: Color::Indexed(167),
 };
 
 /// Nanosandbox brand light — coral red accent for light terminal backgrounds.
+///
+/// Uses fixed 256-color indexed palette like the dark theme for maximum
+/// terminal compatibility.
 static NANOSANDBOX_LIGHT: Theme = Theme {
-    background: Color::Rgb(250, 250, 250), // #FAFAFA
-    accent: Color::Rgb(212, 70, 58),   // #D4463A
-    text: Color::Rgb(30, 30, 30),      // #1E1E1E
-    text_muted: Color::Rgb(136, 136, 136), // #888888
-    success: Color::Rgb(46, 125, 50),  // #2E7D32
-    warning: Color::Rgb(230, 81, 0),   // #E65100
-    error: Color::Rgb(198, 40, 40),    // #C62828
-    info: Color::Rgb(21, 101, 192),    // #1565C0
-    status_bar_bg: Color::Rgb(224, 224, 224), // #E0E0E0
-    selection_fg: Color::White,
-    selection_bg: Color::Rgb(212, 70, 58),
+    background: Color::Indexed(231),   // #FFFFFF — fixed pure white (not remappable)
+    accent: Color::Indexed(167),       // #D75F5F — closest 256-color to coral #D4463A
+    text: Color::Indexed(16),          // #000000 — fixed pure black
+    text_muted: Color::Indexed(245),   // #8A8A8A — fixed medium gray
+    success: Color::Green,
+    warning: Color::Yellow,
+    error: Color::Red,
+    info: Color::Blue,
+    status_bar_bg: Color::Indexed(252),// #D0D0D0 — fixed light gray
+    selection_fg: Color::Indexed(231), // #FFFFFF
+    selection_bg: Color::Indexed(167),
 };
 
 /// Dracula — purple accent, vivid colours on dark background.
@@ -259,7 +271,7 @@ mod tests {
     fn test_resolve_invalid_falls_back() {
         let (theme, name) = Theme::resolve("garbage");
         assert_eq!(name, ThemeName::Nanosandbox);
-        assert_eq!(theme.accent, Color::Rgb(228, 88, 74));
+        assert_eq!(theme.accent, Color::Indexed(167));
     }
 
     #[test]

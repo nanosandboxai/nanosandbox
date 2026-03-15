@@ -1,6 +1,6 @@
 package mcp
 
-// McpConfig is the root configuration structure parsed from mcp-servers.yaml.
+// McpConfig is the root configuration for MCP server management.
 type McpConfig struct {
 	Version  string                     `yaml:"version"  json:"version"`
 	Defaults McpDefaults                `yaml:"defaults" json:"defaults"`

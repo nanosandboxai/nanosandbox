@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::agents_registry::AgentsRegistryClient;
+use crate::image::ImageManager;
 use crate::Sandbox;
 
 use ratatui::layout::Rect;
@@ -161,6 +163,8 @@ pub struct AgentPanel {
     pub reconnecting: bool,
     /// Whether this panel is visible in the grid. Hidden panels keep running.
     pub visible: bool,
+    /// Whether auto mode (fully autonomous) is enabled for this panel's agent.
+    pub auto_mode: bool,
 }
 
 impl AgentPanel {
@@ -193,6 +197,7 @@ impl AgentPanel {
             loading_error: None,
             reconnecting: false,
             visible: true,
+            auto_mode: false,
         }
     }
 }
@@ -254,6 +259,10 @@ pub struct App {
     /// Cached panel inner areas from the last render, used to map mouse
     /// coordinates to panel-relative terminal positions.
     pub panel_areas: Vec<(usize, Rect)>,
+    /// Agents registry client for resolving skills and agent definitions.
+    pub registry: Option<AgentsRegistryClient>,
+    /// Shared image manager for coordinated image pulling across sandboxes.
+    pub image_manager: Option<Arc<ImageManager>>,
 }
 
 impl Default for App {
@@ -295,6 +304,8 @@ impl App {
             theme_name,
             mouse_selection: None,
             panel_areas: Vec::new(),
+            registry: None,
+            image_manager: None,
         }
     }
 
