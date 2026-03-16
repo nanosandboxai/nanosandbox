@@ -66,6 +66,31 @@ pub enum AppEvent {
         /// Path to the clone directory to open.
         path: std::path::PathBuf,
     },
+    /// File upload to sandbox started (for immediate feedback).
+    UploadStarted {
+        /// Panel index.
+        panel_idx: usize,
+        /// Filename being uploaded.
+        filename: String,
+    },
+    /// File upload to sandbox completed successfully.
+    UploadComplete {
+        /// Panel index.
+        panel_idx: usize,
+        /// Original filename.
+        filename: String,
+        /// Remote path inside the VM.
+        remote_path: String,
+        /// Bytes transferred.
+        size: u64,
+    },
+    /// File upload to sandbox failed.
+    UploadFailed {
+        /// Panel index.
+        panel_idx: usize,
+        /// Error description.
+        error: String,
+    },
 }
 
 /// Spawn a background task that reads terminal events and forwards them to the channel.

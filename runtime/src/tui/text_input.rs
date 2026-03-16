@@ -66,6 +66,12 @@ impl TextInput {
         self.cursor += c.len_utf8();
     }
 
+    /// Insert a string at the cursor position.
+    pub fn insert_str(&mut self, s: &str) {
+        self.text.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
     /// Insert a newline at the cursor position.
     pub fn insert_newline(&mut self) {
         self.insert_char('\n');

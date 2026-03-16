@@ -20,7 +20,7 @@ required-features = ["cli"]
 
 [features]
 default = []
-cli = ["clap", "indicatif", "tabled", "colored", "tracing-subscriber", "ratatui", "russh", "ssh-key", "vt100", "tui-term"]
+cli = ["clap", "indicatif", "tabled", "colored", "tracing-subscriber", "ratatui", "russh", "ssh-key", "vt100", "tui-term", "arboard", "png"]
 server = ["axum", "tower"]
 
 [dependencies]
@@ -70,6 +70,8 @@ russh = { version = "0.57", optional = true }      # Async SSH2 client
 ssh-key = { version = "0.6", features = ["ed25519", "std"], optional = true } # SSH key loading
 vt100 = { version = "0.15", optional = true }      # Terminal emulation
 tui-term = { version = "0.2", optional = true }    # ratatui terminal widget
+arboard = { version = "3.6", optional = true }     # Cross-platform clipboard (image+text)
+png = { version = "0.17", optional = true }         # RGBA→PNG encoding for clipboard images
 
 # Server (optional)
 axum = { version = "0.7", optional = true }

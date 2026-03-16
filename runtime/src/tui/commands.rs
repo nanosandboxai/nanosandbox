@@ -131,6 +131,13 @@ pub enum Command {
         /// Agent name.
         name: String,
     },
+    /// Upload a file from the host into the sandbox VM.
+    Upload {
+        /// Host file path.
+        path: String,
+    },
+    /// Paste an image from the system clipboard into the sandbox VM.
+    PasteImage,
 }
 
 /// Result of parsing a slash command.
@@ -159,6 +166,7 @@ const ALL_COMMANDS: &[&str] = &[
     "/mcp", "/mcp list", "/mcp add", "/mcp remove", "/mcp enable", "/mcp disable",
     "/skills", "/skills list", "/skills add", "/skills remove", "/skills show",
     "/agent", "/agent set", "/agent list", "/agent show",
+    "/upload", "/paste-image",
 ];
 
 /// Parse a line of input into a Command, or None if it's a regular message.
@@ -215,6 +223,8 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/theme" => parse_theme(&parts),
         "/skills" => parse_skills(&parts),
         "/agent" => parse_agent(&parts),
+        "/upload" => parse_upload(&parts),
+        "/paste-image" => ParseResult::Ok(Command::PasteImage),
 
         other => ParseResult::Err(format!(
             "Unknown command: {}\nType /help for available commands.",
@@ -537,6 +547,22 @@ fn parse_agent(parts: &[&str]) -> ParseResult {
              Available: /agent, /agent set, /agent list, /agent show",
             sub,
         )),
+    }
+}
+
+fn parse_upload(parts: &[&str]) -> ParseResult {
+    match parts.get(1) {
+        Some(path) => {
+            // Rejoin in case the path was split by whitespace (unlikely for absolute paths).
+            let path = parts[1..].join(" ");
+            ParseResult::Ok(Command::Upload { path })
+        }
+        None => ParseResult::Err(
+            "Usage: /upload <host-path>\n\
+             Uploads a file from the host into the sandbox at /workspace/.uploads/\n\
+             Example: /upload /Users/me/screenshot.png"
+                .to_string(),
+        ),
     }
 }
 

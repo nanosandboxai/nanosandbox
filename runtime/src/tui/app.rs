@@ -165,6 +165,9 @@ pub struct AgentPanel {
     pub visible: bool,
     /// Whether auto mode (fully autonomous) is enabled for this panel's agent.
     pub auto_mode: bool,
+    /// Overlay notification shown on top of the terminal (message, is_error, remaining ticks).
+    /// Replaces previous notification; auto-dismissed after countdown reaches 0.
+    pub notification: Option<(String, bool, u8)>,
 }
 
 impl AgentPanel {
@@ -198,6 +201,7 @@ impl AgentPanel {
             reconnecting: false,
             visible: true,
             auto_mode: false,
+            notification: None,
         }
     }
 }

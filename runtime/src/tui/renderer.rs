@@ -994,6 +994,11 @@ fn render_panel(
                 }
             }
 
+            // Render overlay notification banner (upload success/failure).
+            if let Some((ref msg, is_error, _)) = panel.notification {
+                render_panel_notification(frame, inner_area, msg, is_error, theme);
+            }
+
             // Place cursor at the terminal's cursor position when focused.
             if is_focused {
                 let cursor = term.screen().cursor_position();
@@ -1045,6 +1050,55 @@ fn render_selection_overlay(
             }
         }
     }
+}
+
+/// Render a notification banner overlaid at the bottom of a terminal panel.
+///
+/// Draws a single-line banner with the message, replacing any previous content
+/// on that row. Success messages use the theme accent; errors use red.
+fn render_panel_notification(
+    frame: &mut Frame,
+    inner_area: Rect,
+    msg: &str,
+    is_error: bool,
+    theme: &Theme,
+) {
+    if inner_area.height < 2 || inner_area.width < 4 {
+        return;
+    }
+
+    // Place the banner on the last row of the terminal area.
+    let banner_area = Rect {
+        x: inner_area.x,
+        y: inner_area.y + inner_area.height - 1,
+        width: inner_area.width,
+        height: 1,
+    };
+
+    let fg = if is_error {
+        ratatui::style::Color::White
+    } else {
+        theme.text
+    };
+    let bg = if is_error {
+        theme.error
+    } else {
+        theme.accent
+    };
+
+    // Truncate message to fit and pad to fill the full width.
+    let max_len = banner_area.width as usize;
+    let icon = if is_error { " \u{2717} " } else { " \u{2713} " }; // ✗ / ✓
+    let display = format!("{}{}", icon, msg);
+    let truncated: String = display.chars().take(max_len).collect();
+
+    let span = Span::styled(
+        format!("{:<width$}", truncated, width = max_len),
+        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+    );
+    let paragraph = Paragraph::new(Line::from(span));
+    frame.render_widget(Clear, banner_area);
+    frame.render_widget(paragraph, banner_area);
 }
 
 /// Render the loading animation: centered `</>` logo with sweeping border accent.

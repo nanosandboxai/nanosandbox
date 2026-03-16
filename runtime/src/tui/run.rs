@@ -11,6 +11,7 @@ use ratatui::crossterm::event::{
     Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
     EnableMouseCapture, DisableMouseCapture,
+    EnableBracketedPaste, DisableBracketedPaste,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -88,7 +89,7 @@ pub async fn run_tui(
     // Set up terminal.
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, SetCursorStyle::SteadyBar)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, SetCursorStyle::SteadyBar)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -98,7 +99,7 @@ pub async fn run_tui(
     let saved_stderr_for_hook = saved_stderr;
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), SetCursorStyle::DefaultUserShape, DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), SetCursorStyle::DefaultUserShape, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
         // Restore stderr so the panic message is visible.
         if saved_stderr_for_hook >= 0 {
             unsafe {
@@ -185,6 +186,9 @@ pub async fn run_tui(
                     }
                     CrosstermEvent::Mouse(mouse) => {
                         handle_mouse_event(&mut app, mouse);
+                    }
+                    CrosstermEvent::Paste(text) => {
+                        handle_paste_event(&mut app, text, &tx);
                     }
                     _ => {}
                 }
@@ -350,10 +354,16 @@ pub async fn run_tui(
                 }
             }
             AppEvent::Tick => {
-                // Increment loading animation counter for all loading panels.
+                // Increment loading animation counter and tick down panel notifications.
                 for panel in app.panels.iter_mut() {
                     if panel.mode == PanelMode::Loading {
                         panel.loading_tick = panel.loading_tick.wrapping_add(1);
+                    }
+                    if let Some((_, _, ref mut ticks)) = panel.notification {
+                        *ticks = ticks.saturating_sub(1);
+                        if *ticks == 0 {
+                            panel.notification = None;
+                        }
                     }
                 }
 
@@ -476,8 +486,36 @@ pub async fn run_tui(
 
                 // Resume TUI: enter alternate screen, enable raw mode
                 let _ = enable_raw_mode();
-                let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture, SetCursorStyle::SteadyBar);
+                let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, SetCursorStyle::SteadyBar);
                 terminal.clear()?;
+            }
+            AppEvent::UploadStarted { panel_idx, filename } => {
+                let msg = format!("Uploading {}...", filename);
+                // Show immediately; stays until replaced by Complete/Failed.
+                // 120 ticks × 250ms = 30s (generous timeout, replaced on completion).
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.notification = Some((msg, false, 120));
+                }
+            }
+            AppEvent::UploadComplete { panel_idx, filename, remote_path, size } => {
+                let msg = format!(
+                    "Uploaded {} ({}) -> {}",
+                    filename,
+                    super::upload::format_size(size),
+                    remote_path,
+                );
+                // Show overlay notification on the panel (replaces previous, auto-dismisses).
+                // 16 ticks × 250ms = 4s.
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.notification = Some((msg, false, 16));
+                }
+            }
+            AppEvent::UploadFailed { panel_idx, error } => {
+                let msg = format!("Upload failed: {}", error);
+                // 24 ticks × 250ms = 6s (errors stay longer).
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.notification = Some((msg, true, 24));
+                }
             }
         }
 
@@ -491,7 +529,7 @@ pub async fn run_tui(
 
     // Restore terminal before cleanup so the user sees progress messages.
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape, DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     // Restore stderr so cleanup log messages are visible.
@@ -757,6 +795,43 @@ async fn handle_key_event(
                         }
                         return;
                     }
+                    // Ctrl+V: check clipboard for image, upload if found.
+                    // If no image, forward the keystroke to the terminal.
+                    // Note: Cmd+V on macOS is handled by the terminal emulator
+                    // and arrives as CrosstermEvent::Paste, handled separately.
+                    KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL)
+                        || key.modifiers.contains(KeyModifiers::SUPER) => {
+                        if let Some((panel_idx, ssh_port, key_path)) = panel_ssh_info(app) {
+                            // Clone the write channel so the async task can forward
+                            // Ctrl+V to the terminal if no clipboard image is found.
+                            let write_tx = app.panels.get(app.focused_panel)
+                                .and_then(|p| p.terminal_handle.as_ref())
+                                .map(|h| h.write_tx.clone());
+                            let tx = tx.clone();
+                            tokio::spawn(async move {
+                                let result = tokio::task::spawn_blocking(
+                                    super::upload::read_clipboard_image,
+                                )
+                                .await;
+                                match result {
+                                    Ok(Ok((png_bytes, filename))) => {
+                                        super::upload::spawn_bytes_upload(
+                                            ssh_port, key_path, png_bytes, filename,
+                                            panel_idx, tx,
+                                        );
+                                    }
+                                    Ok(Err(_)) | Err(_) => {
+                                        // No image in clipboard — forward Ctrl+V
+                                        // as a regular keystroke to the terminal.
+                                        if let Some(wtx) = write_tx {
+                                            let _ = wtx.send(vec![0x16]); // Ctrl+V = 0x16
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        return;
+                    }
                     _ => {
                         // Forward everything else to SSH terminal
                         let bytes = super::terminal::crossterm_key_to_bytes(key);
@@ -1003,6 +1078,8 @@ async fn handle_command(
                     "  /open [n|name]                Show a hidden panel\n",
                     "  /kill [n|name]                Kill sandbox & remove panel\n",
                     "  /copy                         Copy panel content to clipboard\n",
+                    "  /upload <path>                Upload host file to sandbox\n",
+                    "  /paste-image                  Paste clipboard image to sandbox\n",
                     "  /zoom                         Toggle panel zoom (Ctrl+F)\n",
                     "  /clear                        Clear chat history\n",
                     "  /theme [name]                 Switch colour theme\n",
@@ -1576,6 +1653,12 @@ async fn handle_command(
         }
         Command::AgentList => handle_agent_list(app),
         Command::AgentInfo { name } => handle_agent_info(app, &name),
+        Command::Upload { path } => {
+            handle_upload(app, &path, tx);
+        }
+        Command::PasteImage => {
+            handle_paste_image(app, tx);
+        }
     }
 }
 
@@ -1682,6 +1765,184 @@ fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
             Ok(())
         } else {
             Err(format!("exited with {}", status))
+        }
+    }
+}
+
+/// Get the SSH port and key path from the focused panel, if available.
+fn panel_ssh_info(app: &App) -> Option<(usize, u16, std::path::PathBuf)> {
+    let idx = app.focused_panel;
+    let panel = app.panels.get(idx)?;
+    let port = panel.ssh_host_port?;
+    let key = panel.ssh_key_path.clone()?;
+    Some((idx, port, key))
+}
+
+/// Resolve a user-supplied path: strip quotes, expand `~`, resolve relative paths.
+fn resolve_upload_path(raw: &str) -> std::path::PathBuf {
+    // Strip surrounding quotes.
+    let trimmed = raw.trim().trim_matches('\'').trim_matches('"');
+
+    // Expand leading ~ to home directory.
+    let expanded = if trimmed == "~" {
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"))
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        match dirs::home_dir() {
+            Some(home) => home.join(rest),
+            None => std::path::PathBuf::from(trimmed),
+        }
+    } else {
+        std::path::PathBuf::from(trimmed)
+    };
+
+    // Resolve relative paths against the current working directory.
+    if expanded.is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&expanded))
+            .unwrap_or(expanded)
+    } else {
+        expanded
+    }
+}
+
+/// Handle the `/upload <path>` command.
+fn handle_upload(app: &mut App, path: &str, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let (panel_idx, ssh_port, key_path) = match panel_ssh_info(app) {
+        Some(info) => info,
+        None => {
+            app.set_system_message(ChatMessage {
+                role: MessageRole::System,
+                content: "No active SSH session. Wait for sandbox to be ready.".to_string(),
+            });
+            return;
+        }
+    };
+
+    let host_path = resolve_upload_path(path);
+    if !host_path.exists() {
+        app.set_system_message(ChatMessage {
+            role: MessageRole::System,
+            content: format!("File not found: {}", host_path.display()),
+        });
+        return;
+    }
+    if !host_path.is_file() {
+        app.set_system_message(ChatMessage {
+            role: MessageRole::System,
+            content: format!("Not a file: {}", host_path.display()),
+        });
+        return;
+    }
+
+    let filename = host_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    app.set_status_message(format!("Uploading {}...", filename));
+
+    super::upload::spawn_file_upload(ssh_port, key_path, host_path, panel_idx, tx.clone());
+}
+
+/// Handle the `/paste-image` command.
+fn handle_paste_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let (panel_idx, ssh_port, key_path) = match panel_ssh_info(app) {
+        Some(info) => info,
+        None => {
+            app.set_system_message(ChatMessage {
+                role: MessageRole::System,
+                content: "No active SSH session. Wait for sandbox to be ready.".to_string(),
+            });
+            return;
+        }
+    };
+
+    app.set_status_message("Reading clipboard image...");
+    let tx = tx.clone();
+
+    tokio::spawn(async move {
+        // Clipboard access is blocking — run in spawn_blocking.
+        let result = tokio::task::spawn_blocking(super::upload::read_clipboard_image).await;
+
+        match result {
+            Ok(Ok((png_bytes, filename))) => {
+                super::upload::spawn_bytes_upload(
+                    ssh_port, key_path, png_bytes, filename, panel_idx, tx,
+                );
+            }
+            Ok(Err(e)) => {
+                let _ = tx.send(AppEvent::UploadFailed {
+                    panel_idx,
+                    error: e,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::UploadFailed {
+                    panel_idx,
+                    error: format!("Clipboard task panicked: {}", e),
+                });
+            }
+        }
+    });
+}
+
+/// Handle a bracketed paste event.
+///
+/// On macOS, Cmd+V is intercepted by the terminal emulator and arrives here
+/// as a `CrosstermEvent::Paste`. When the clipboard contains only an image
+/// (no text), the terminal sends an empty paste — we detect that and check
+/// the clipboard for an image to upload.
+fn handle_paste_event(
+    app: &mut App,
+    text: String,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    // If focus is on the global input bar, insert the text there.
+    if app.input_focus == InputFocus::Global {
+        app.global_input.insert_str(&text);
+        return;
+    }
+
+    // In Terminal mode: if the paste is empty (image-only clipboard via Cmd+V),
+    // check the clipboard for an image to upload.
+    if text.is_empty() {
+        if let Some((panel_idx, ssh_port, key_path)) = panel_ssh_info(app) {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let result = tokio::task::spawn_blocking(
+                    super::upload::read_clipboard_image,
+                )
+                .await;
+                match result {
+                    Ok(Ok((png_bytes, filename))) => {
+                        super::upload::spawn_bytes_upload(
+                            ssh_port, key_path, png_bytes, filename,
+                            panel_idx, tx,
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        let _ = tx.send(AppEvent::UploadFailed {
+                            panel_idx,
+                            error: e,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::UploadFailed {
+                            panel_idx,
+                            error: format!("Clipboard task panicked: {}", e),
+                        });
+                    }
+                }
+            });
+        }
+        return;
+    }
+
+    // Forward pasted text as-is to the terminal (covers drag-and-drop paths too).
+    if let Some(panel) = app.panels.get(app.focused_panel) {
+        if panel.mode == PanelMode::Terminal {
+            if let Some(ref handle) = panel.terminal_handle {
+                let _ = handle.write_tx.send(text.into_bytes());
+            }
         }
     }
 }
