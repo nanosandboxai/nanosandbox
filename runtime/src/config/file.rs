@@ -211,11 +211,13 @@ pub fn resolve_sandbox_configs(
         config.name = def.name.clone().unwrap_or_else(|| key.clone());
         validate_name(&config.name)?;
 
-        // Image (required after merge)
+        // Image (required after merge). Bare names like "claude" are normalized
+        // to the agents registry (ghcr.io/devdone-labs/agents-registry/claude:latest).
         config.image = def
             .image
             .clone()
             .or_else(|| defaults.image.clone())
+            .map(|img| super::normalize_image(&img))
             .ok_or_else(|| {
                 format!(
                     "Sandbox '{}' has no image defined (not in sandbox or defaults)",
@@ -690,7 +692,8 @@ sandboxes:
             resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].0, "test");
-        assert_eq!(configs[0].1.image, "alpine:latest");
+        // Bare names get normalized to agents registry
+        assert_eq!(configs[0].1.image, "ghcr.io/devdone-labs/agents-registry/alpine:latest");
         assert_eq!(configs[0].1.name, "test");
     }
 
@@ -714,7 +717,7 @@ sandboxes:
         let b = configs.iter().find(|(k, _)| k == "b").unwrap();
         assert_eq!(a.1.cpus, 8);
         assert_eq!(a.1.memory_mb, 4096);
-        assert_eq!(a.1.image, "default:latest");
+        assert_eq!(a.1.image, "ghcr.io/devdone-labs/agents-registry/default:latest");
         assert_eq!(b.1.cpus, 2);
     }
 

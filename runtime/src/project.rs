@@ -146,6 +146,7 @@ fn git_clone_local(
         ));
     }
 
+    ensure_nanosb_state_gitignored(clone_path);
     Ok(())
 }
 
@@ -187,7 +188,30 @@ fn git_clone_local_from_head(
         return Err(format!("git checkout -b failed in clone: {}", stderr.trim()));
     }
 
+    ensure_nanosb_state_gitignored(clone_path);
     Ok(())
+}
+
+/// Ensure `.nanosb-state` is excluded from git tracking in the clone.
+///
+/// Uses `.git/info/exclude` (local to the clone, not tracked by git) so that
+/// agent session data stored in `/workspace/.nanosb-state/` doesn't appear
+/// as uncommitted changes or get committed with user code.
+fn ensure_nanosb_state_gitignored(clone_path: &Path) {
+    let exclude_file = clone_path.join(".git/info/exclude");
+    let content = std::fs::read_to_string(&exclude_file).unwrap_or_default();
+    if !content.lines().any(|l| l.trim() == ".nanosb-state") {
+        let entry = if content.ends_with('\n') || content.is_empty() {
+            ".nanosb-state\n"
+        } else {
+            "\n.nanosb-state\n"
+        };
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&exclude_file)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()));
+    }
 }
 
 /// Compute the global clones directory for a given project source path.
@@ -240,8 +264,11 @@ fn resolve_branch_name(repo_path: &Path, desired: &str) -> String {
     desired.to_string()
 }
 
-/// Auto-commit any changes in a clone, fetch the branch back to source, and remove the clone.
-fn auto_commit_and_fetch(
+/// Auto-commit any changes in a clone and fetch the branch back to source.
+///
+/// This does NOT remove the clone directory. Use `auto_commit_fetch_and_remove`
+/// if you also want to delete the clone.
+fn auto_commit_and_sync(
     source_repo_path: &Path,
     clone_path: &Path,
     branch_name: &str,
@@ -310,9 +337,17 @@ fn auto_commit_and_fetch(
         ));
     }
 
-    // Remove the clone directory
-    let _ = std::fs::remove_dir_all(clone_path);
+    Ok(())
+}
 
+/// Auto-commit, fetch branch to source, and remove the clone directory.
+fn auto_commit_and_fetch(
+    source_repo_path: &Path,
+    clone_path: &Path,
+    branch_name: &str,
+) -> Result<(), String> {
+    auto_commit_and_sync(source_repo_path, clone_path, branch_name)?;
+    let _ = std::fs::remove_dir_all(clone_path);
     Ok(())
 }
 
@@ -711,25 +746,44 @@ impl ProjectMount {
                     .unwrap_or_default();
                 if !branch.is_empty() {
                     auto_commit_and_fetch(repo_path, &clone_base, &branch)?;
+                } else if let Some((deferred_repo, deferred_branch)) =
+                    self.deferred_branch.take()
+                {
+                    // Deferred setup: auto-commit, create branch via fetch, then remove clone
+                    auto_commit_and_fetch(&deferred_repo, &clone_base, &deferred_branch)?;
                 } else {
                     let _ = std::fs::remove_dir_all(&clone_base);
                 }
             }
 
             ProjectLayout::MultiRepo { repos, .. } => {
-                for (i, repo) in repos.iter().enumerate() {
-                    let clone_path = clone_base.join(&repo.relative_path);
-                    if clone_path.exists() {
-                        let branch = self
-                            .created_branches
-                            .get(i)
-                            .map(|(_, b)| b.clone())
-                            .unwrap_or_default();
-                        if !branch.is_empty() {
+                if !self.created_branches.is_empty() {
+                    for (i, repo) in repos.iter().enumerate() {
+                        let clone_path = clone_base.join(&repo.relative_path);
+                        if clone_path.exists() {
+                            let branch = self
+                                .created_branches
+                                .get(i)
+                                .map(|(_, b)| b.clone())
+                                .unwrap_or_default();
+                            if !branch.is_empty() {
+                                auto_commit_and_fetch(
+                                    &repo.absolute_path,
+                                    &clone_path,
+                                    &branch,
+                                )?;
+                            }
+                        }
+                    }
+                } else if let Some((_, deferred_branch)) = self.deferred_branch.take() {
+                    // Deferred setup: auto-commit and create branch for each sub-repo
+                    for repo in repos {
+                        let clone_path = clone_base.join(&repo.relative_path);
+                        if clone_path.exists() {
                             auto_commit_and_fetch(
                                 &repo.absolute_path,
                                 &clone_path,
-                                &branch,
+                                &deferred_branch,
                             )?;
                         }
                     }
@@ -745,6 +799,124 @@ impl ProjectMount {
 
         self.worktree_base = None;
         self.created_branches.clear();
+        self.deferred_branch = None;
+
+        Ok(())
+    }
+
+    /// Suspend the project mount: auto-commit changes and sync branches to source,
+    /// but **keep the clone directory intact** for later resume.
+    ///
+    /// Unlike `teardown()`, this does not delete the clone or clear internal state.
+    /// The ProjectMount can later be used with `mount_config()` or serialized into
+    /// a session file for resume.
+    pub fn suspend(&mut self) -> Result<(), String> {
+        let clone_base = match &self.worktree_base {
+            Some(base) => base.clone(),
+            None => return Ok(()),
+        };
+
+        match &self.layout {
+            ProjectLayout::SingleRepo { repo_path, .. } => {
+                let branch = self
+                    .created_branches
+                    .first()
+                    .map(|(_, b)| b.clone())
+                    .unwrap_or_default();
+                if !branch.is_empty() {
+                    auto_commit_and_sync(repo_path, &clone_base, &branch)?;
+                } else if let Some((deferred_repo, deferred_branch)) =
+                    self.deferred_branch.take()
+                {
+                    // Deferred setup: auto-commit changes and create branch in source via fetch.
+                    // The clone has a local branch; auto_commit_and_sync will commit uncommitted
+                    // changes and `git fetch` will create the branch in the source repo.
+                    auto_commit_and_sync(&deferred_repo, &clone_base, &deferred_branch)?;
+                    self.created_branches
+                        .push((deferred_repo, deferred_branch));
+                }
+            }
+
+            ProjectLayout::MultiRepo { repos, .. } => {
+                if !self.created_branches.is_empty() {
+                    for (i, repo) in repos.iter().enumerate() {
+                        let clone_path = clone_base.join(&repo.relative_path);
+                        if clone_path.exists() {
+                            let branch = self
+                                .created_branches
+                                .get(i)
+                                .map(|(_, b)| b.clone())
+                                .unwrap_or_default();
+                            if !branch.is_empty() {
+                                auto_commit_and_sync(
+                                    &repo.absolute_path,
+                                    &clone_path,
+                                    &branch,
+                                )?;
+                            }
+                        }
+                    }
+                } else if let Some((_, deferred_branch)) = self.deferred_branch.take() {
+                    // Deferred setup: auto-commit and create branch for each sub-repo
+                    for repo in repos {
+                        let clone_path = clone_base.join(&repo.relative_path);
+                        if clone_path.exists() {
+                            auto_commit_and_sync(
+                                &repo.absolute_path,
+                                &clone_path,
+                                &deferred_branch,
+                            )?;
+                            self.created_branches
+                                .push((repo.absolute_path.clone(), deferred_branch.clone()));
+                        }
+                    }
+                }
+            }
+
+            ProjectLayout::NoGit => {}
+        }
+
+        // Note: do NOT clear worktree_base or created_branches — they're needed for resume.
+        Ok(())
+    }
+
+    /// Resume from an existing clone directory (session recovery).
+    ///
+    /// Reattaches to a clone that was preserved by a previous `suspend()` call.
+    /// Validates the clone exists and restores internal state so that `mount_config()`,
+    /// `teardown()`, and `suspend()` work correctly.
+    pub fn resume(
+        &mut self,
+        clone_path: &Path,
+        branches: Vec<(PathBuf, String)>,
+    ) -> Result<(), String> {
+        if !clone_path.exists() {
+            return Err(format!(
+                "Clone directory not found for resume: {}",
+                clone_path.display()
+            ));
+        }
+
+        // Verify it's actually a git repo (or directory with git repos for multi-repo)
+        let has_git = clone_path.join(".git").exists()
+            || std::fs::read_dir(clone_path)
+                .ok()
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .any(|e| e.path().join(".git").exists())
+                })
+                .unwrap_or(false);
+
+        if !has_git {
+            return Err(format!(
+                "Clone directory has no git repo: {}",
+                clone_path.display()
+            ));
+        }
+
+        self.worktree_base = Some(clone_path.to_path_buf());
+        self.created_branches = branches;
 
         Ok(())
     }
@@ -1331,5 +1503,116 @@ mod tests {
         assert!(log.contains("agent commit"));
 
         pm.teardown().unwrap();
+    }
+
+    // ── Deferred branch: suspend() and teardown() commit uncommitted files ──
+
+    #[test]
+    fn test_suspend_deferred_commits_uncommitted_files() {
+        let tmp = TempDir::new().unwrap();
+        git_init(tmp.path());
+
+        let mut pm = ProjectMount::detect(tmp.path()).unwrap();
+        let clone_dir = pm.setup_deferred("suspdef1", &BranchStrategy::Auto).unwrap();
+
+        // Write an uncommitted file in the clone (simulates agent work)
+        std::fs::write(clone_dir.join("agent-work.txt"), "hello from agent").unwrap();
+
+        // created_branches should be empty (deferred)
+        assert!(pm.created_branches.is_empty());
+        assert!(pm.deferred_branch.is_some());
+
+        // Suspend should auto-commit and create the branch in source
+        pm.suspend().unwrap();
+
+        // Clone should still exist (suspend preserves it)
+        assert!(clone_dir.exists());
+
+        // created_branches should now be populated
+        assert_eq!(pm.created_branches.len(), 1);
+        assert!(pm.created_branches[0].1.contains("nanosb/suspdef1"));
+
+        // deferred_branch should be consumed
+        assert!(pm.deferred_branch.is_none());
+
+        // Branch should exist in source with the auto-committed file
+        let output = Command::new("git")
+            .args(["log", "--oneline", &pm.created_branches[0].1])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            log.contains("auto-save"),
+            "Expected auto-save commit in source, got: {}",
+            log
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn test_teardown_deferred_commits_uncommitted_files() {
+        let tmp = TempDir::new().unwrap();
+        git_init(tmp.path());
+
+        let mut pm = ProjectMount::detect(tmp.path()).unwrap();
+        let clone_dir = pm.setup_deferred("teardef1", &BranchStrategy::Auto).unwrap();
+
+        // Write an uncommitted file in the clone
+        std::fs::write(clone_dir.join("new-feature.txt"), "feature code").unwrap();
+
+        // created_branches should be empty (deferred)
+        assert!(pm.created_branches.is_empty());
+
+        // Teardown should auto-commit, create branch in source, and remove clone
+        pm.teardown().unwrap();
+
+        // Clone should be gone
+        assert!(!clone_dir.exists());
+
+        // Branch should exist in source with the auto-committed file
+        let output = Command::new("git")
+            .args(["log", "--oneline", "nanosb/teardef1"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            log.contains("auto-save"),
+            "Expected auto-save commit in source, got: {}",
+            log
+        );
+    }
+
+    #[test]
+    fn test_suspend_then_resume_preserves_uncommitted() {
+        let tmp = TempDir::new().unwrap();
+        git_init(tmp.path());
+
+        let mut pm = ProjectMount::detect(tmp.path()).unwrap();
+        let clone_dir = pm.setup_deferred("susres01", &BranchStrategy::Auto).unwrap();
+
+        // Write uncommitted work
+        std::fs::write(clone_dir.join("wip.txt"), "work in progress").unwrap();
+
+        // Suspend commits and syncs
+        pm.suspend().unwrap();
+        let branches = pm.created_branches.clone();
+
+        // Simulate resume: create a new ProjectMount and resume
+        let mut pm2 = ProjectMount::detect(tmp.path()).unwrap();
+        pm2.resume(&clone_dir, branches).unwrap();
+
+        // The file should still be in the clone (suspend preserved it)
+        assert!(clone_dir.join("wip.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(clone_dir.join("wip.txt")).unwrap(),
+            "work in progress"
+        );
+
+        // Clean up
+        pm2.teardown().unwrap();
     }
 }

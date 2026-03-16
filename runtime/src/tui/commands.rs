@@ -138,6 +138,8 @@ pub enum Command {
     },
     /// Paste an image from the system clipboard into the sandbox VM.
     PasteImage,
+    /// Destroy all sandboxes, remove session state, and exit.
+    Destroy,
 }
 
 /// Result of parsing a slash command.
@@ -155,7 +157,7 @@ pub enum ParseResult {
 const SUPPORTED_AGENTS: &[&str] = &["claude", "goose", "codex", "cursor"];
 
 const ALL_COMMANDS: &[&str] = &[
-    "/quit", "/q", "/help", "/clear", "/close", "/copy",
+    "/quit", "/q", "/destroy", "/help", "/clear", "/close", "/copy",
     "/add", "/focus", "/kill", "/reconnect", "/env",
     "/zoom", "/branches",
     "/gitsync", "/gitsync on", "/gitsync off", "/gitsync now",
@@ -194,6 +196,7 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
 
     match parts[0] {
         "/quit" | "/q" => ParseResult::Ok(Command::Quit),
+        "/destroy" => ParseResult::Ok(Command::Destroy),
         "/help" => ParseResult::Ok(Command::Help),
         "/clear" => ParseResult::Ok(Command::Clear),
         "/close" => {
@@ -1109,5 +1112,16 @@ mod tests {
     fn test_autocomplete_agent() {
         let suggestions = autocomplete("/ag");
         assert!(suggestions.iter().any(|s| s.starts_with("/agent")));
+    }
+
+    #[test]
+    fn test_parse_destroy() {
+        assert_eq!(parse_command("/destroy"), Some(Command::Destroy));
+    }
+
+    #[test]
+    fn test_autocomplete_destroy() {
+        let suggestions = autocomplete("/des");
+        assert!(suggestions.iter().any(|s| s == "/destroy"));
     }
 }

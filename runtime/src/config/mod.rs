@@ -106,6 +106,38 @@ impl Default for SandboxConfig {
     }
 }
 
+/// Default OCI registry for agent images.
+pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/devdone-labs/agents-registry";
+
+/// Normalize an image reference: bare names (no `/` or `.`) are treated as
+/// agent names and prefixed with the agents registry instead of Docker Hub.
+///
+/// Examples:
+/// - `"claude"` → `"ghcr.io/devdone-labs/agents-registry/claude:latest"`
+/// - `"codex:v2"` → `"ghcr.io/devdone-labs/agents-registry/codex:v2"`
+/// - `"ghcr.io/foo/bar:1.0"` → unchanged
+/// - `"alpine:3.19"` → unchanged (contains `.`)
+/// - `"localhost:5050/img"` → unchanged
+pub fn normalize_image(image: &str) -> String {
+    if image.is_empty() {
+        return image.to_string();
+    }
+    // Extract the part before any `:` tag to check for registry indicators.
+    let name_part = image.split(':').next().unwrap_or(image);
+    let has_registry = name_part.contains('/') || name_part.contains('.') || image.starts_with("localhost");
+    if has_registry {
+        image.to_string()
+    } else {
+        // Bare name like "claude" or "codex:v2" — prefix with agents registry.
+        let (name, tag) = if let Some((n, t)) = image.split_once(':') {
+            (n, t)
+        } else {
+            (image, "latest")
+        };
+        format!("{}/{}:{}", DEFAULT_AGENTS_REGISTRY, name, tag)
+    }
+}
+
 impl SandboxConfig {
     /// Create a new config builder
     pub fn builder() -> SandboxConfigBuilder {
@@ -662,6 +694,47 @@ fn default_project_mount_point() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_image_bare_agent_name() {
+        assert_eq!(
+            normalize_image("claude"),
+            "ghcr.io/devdone-labs/agents-registry/claude:latest"
+        );
+        assert_eq!(
+            normalize_image("codex"),
+            "ghcr.io/devdone-labs/agents-registry/codex:latest"
+        );
+    }
+
+    #[test]
+    fn test_normalize_image_bare_name_with_tag() {
+        assert_eq!(
+            normalize_image("claude:v2"),
+            "ghcr.io/devdone-labs/agents-registry/claude:v2"
+        );
+    }
+
+    #[test]
+    fn test_normalize_image_full_ref_unchanged() {
+        assert_eq!(
+            normalize_image("ghcr.io/devdone-labs/agents-registry/claude:latest"),
+            "ghcr.io/devdone-labs/agents-registry/claude:latest"
+        );
+        assert_eq!(
+            normalize_image("docker.io/library/alpine:3.19"),
+            "docker.io/library/alpine:3.19"
+        );
+        assert_eq!(
+            normalize_image("localhost:5050/agent-claude:latest"),
+            "localhost:5050/agent-claude:latest"
+        );
+    }
+
+    #[test]
+    fn test_normalize_image_empty() {
+        assert_eq!(normalize_image(""), "");
+    }
 
     #[test]
     fn test_mcp_server_config_defaults() {

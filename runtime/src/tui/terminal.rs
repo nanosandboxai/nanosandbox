@@ -98,6 +98,7 @@ pub async fn connect_ssh(
     env: &HashMap<String, String>,
     workdir: Option<&str>,
     auto_mode: bool,
+    is_resumed: bool,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<SshTerminalHandle, anyhow::Error> {
@@ -151,7 +152,7 @@ pub async fn connect_ssh(
     if auto_mode && (agent_name == "goose") {
         init_commands.push_str("export GOOSE_MODE='auto'\n");
     }
-    if let Some(cmd) = agent_cli_command(agent_name, auto_mode) {
+    if let Some(cmd) = agent_cli_command(agent_name, auto_mode, is_resumed) {
         init_commands.push_str(&format!("{}\n", cmd));
     }
 
@@ -241,26 +242,58 @@ pub async fn connect_ssh(
 }
 
 /// Map agent name to the CLI command to auto-launch after SSH connection.
+///
 /// When `auto_mode` is true, includes flags to skip confirmation prompts.
-fn agent_cli_command(agent_name: &str, auto_mode: bool) -> Option<String> {
+/// When `is_resumed` is true, uses the agent's session resume command so it
+/// picks up previous conversation context from `/workspace/.nanosb-state/`.
+fn agent_cli_command(agent_name: &str, auto_mode: bool, is_resumed: bool) -> Option<String> {
     match agent_name {
         "claude" | "claude-code" => {
-            if auto_mode {
+            // `claude -c` resumes the most recent conversation in the CWD.
+            // Bare `claude` always starts a fresh session.
+            if is_resumed {
+                if auto_mode {
+                    Some("claude -c --dangerously-skip-permissions".to_string())
+                } else {
+                    Some("claude -c".to_string())
+                }
+            } else if auto_mode {
                 Some("claude --dangerously-skip-permissions".to_string())
             } else {
                 Some("claude".to_string())
             }
         }
-        "goose" => Some("goose session".to_string()), // auto mode via GOOSE_MODE env var
+        "goose" => {
+            // `goose session -r` resumes the most recent session.
+            // `-r` / `--resume` is a flag, not a subcommand.
+            if is_resumed {
+                Some("goose session -r".to_string())
+            } else {
+                Some("goose session".to_string())
+            }
+            // auto mode via GOOSE_MODE env var (set in connect_ssh)
+        }
         "codex" => {
-            if auto_mode {
+            if is_resumed {
+                if auto_mode {
+                    Some("codex resume --last --full-auto".to_string())
+                } else {
+                    Some("codex resume --last".to_string())
+                }
+            } else if auto_mode {
                 Some("codex --full-auto".to_string())
             } else {
                 Some("codex".to_string())
             }
         }
         "cursor" | "cursor-agent" => {
-            if auto_mode {
+            if is_resumed {
+                if auto_mode {
+                    Some("cursor-agent --continue --force --trust --approve-mcps".to_string())
+                } else {
+                    Some("cursor-agent --continue".to_string())
+                }
+            } else if auto_mode {
                 Some("cursor-agent --force --trust --approve-mcps".to_string())
             } else {
                 Some("cursor-agent".to_string())
@@ -701,29 +734,57 @@ mod tests {
 
     #[test]
     fn test_agent_cli_command() {
-        assert_eq!(agent_cli_command("claude", false), Some("claude".to_string()));
-        assert_eq!(agent_cli_command("goose", false), Some("goose session".to_string()));
-        assert_eq!(agent_cli_command("unknown", false), None);
+        assert_eq!(agent_cli_command("claude", false, false), Some("claude".to_string()));
+        assert_eq!(agent_cli_command("goose", false, false), Some("goose session".to_string()));
+        assert_eq!(agent_cli_command("unknown", false, false), None);
     }
 
     #[test]
     fn test_agent_cli_command_auto_mode() {
         assert_eq!(
-            agent_cli_command("claude", true),
+            agent_cli_command("claude", true, false),
             Some("claude --dangerously-skip-permissions".to_string()),
         );
         assert_eq!(
-            agent_cli_command("codex", true),
+            agent_cli_command("codex", true, false),
             Some("codex --full-auto".to_string()),
         );
         assert_eq!(
-            agent_cli_command("cursor", true),
+            agent_cli_command("cursor", true, false),
             Some("cursor-agent --force --trust --approve-mcps".to_string()),
         );
         // Goose auto mode is via env var, not CLI flag
         assert_eq!(
-            agent_cli_command("goose", true),
+            agent_cli_command("goose", true, false),
             Some("goose session".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_agent_cli_command_resumed() {
+        // Claude: uses -c to continue most recent conversation
+        assert_eq!(agent_cli_command("claude", false, true), Some("claude -c".to_string()));
+        // Goose: uses -r flag to resume most recent session
+        assert_eq!(agent_cli_command("goose", false, true), Some("goose session -r".to_string()));
+        // Codex: uses resume --last
+        assert_eq!(agent_cli_command("codex", false, true), Some("codex resume --last".to_string()));
+        // Cursor: uses --continue
+        assert_eq!(agent_cli_command("cursor", false, true), Some("cursor-agent --continue".to_string()));
+    }
+
+    #[test]
+    fn test_agent_cli_command_resumed_auto_mode() {
+        assert_eq!(
+            agent_cli_command("claude", true, true),
+            Some("claude -c --dangerously-skip-permissions".to_string()),
+        );
+        assert_eq!(
+            agent_cli_command("codex", true, true),
+            Some("codex resume --last --full-auto".to_string()),
+        );
+        assert_eq!(
+            agent_cli_command("cursor", true, true),
+            Some("cursor-agent --continue --force --trust --approve-mcps".to_string()),
         );
     }
 

@@ -47,6 +47,7 @@ pub mod oci;
 pub mod registry;
 pub mod runtime;
 pub mod project;
+pub mod session;
 pub mod settings;
 pub mod sandbox;
 

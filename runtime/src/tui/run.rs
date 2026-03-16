@@ -72,6 +72,36 @@ pub async fn run_tui(
     // Brief pause so the user can see the results
     tokio::time::sleep(Duration::from_millis(800)).await;
 
+    // Check for an existing session before entering the alternate screen.
+    // This prompt is shown in the normal terminal (not the TUI) and must
+    // happen BEFORE stderr is redirected (prompt_resume uses eprintln).
+    let resume_session_data = if let Some(ref pp) = project_path {
+        if let Some(session) = crate::session::Session::load(pp) {
+            let issues = session.validate();
+            let choice = crate::session::prompt_resume(&session, &issues);
+            match choice {
+                crate::session::ResumeChoice::Resume => Some(session),
+                crate::session::ResumeChoice::Fresh | crate::session::ResumeChoice::Destroy => {
+                    // Remove old project clones.
+                    for panel in &session.panels {
+                        if let Some(ref clone_path) = panel.clone_path {
+                            if clone_path.exists() {
+                                let _ = std::fs::remove_dir_all(clone_path);
+                            }
+                        }
+                    }
+                    // Remove session file + agent state directories.
+                    let _ = crate::session::Session::delete(pp, true);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Redirect stderr to /dev/null before entering the alternate screen.
     // Native C libraries (libkrun, gvproxy) write to stderr via fprintf()
     // which bypasses Rust's logging. Without this redirect those writes
@@ -152,9 +182,14 @@ pub async fn run_tui(
         resolved_configs.push((key, config));
     }
 
-    // Auto-start sandboxes from config file.
-    for (key, config) in resolved_configs {
-        add_agent_from_config(&mut app, &key, config, &tx);
+    // Either resume a previous session or start fresh sandboxes.
+    if let Some(ref session) = resume_session_data {
+        resume_session(&mut app, session, &tx);
+    } else {
+        // Auto-start sandboxes from config file.
+        for (key, config) in resolved_configs {
+            add_agent_from_config(&mut app, &key, config, &tx);
+        }
     }
 
     // Spawn tick timer (every 250ms).
@@ -209,7 +244,11 @@ pub async fn run_tui(
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
                     panel.sandbox = Some(sandbox);
                     panel.sandbox_id_short = short_id.clone();
-                    panel.project_mount = project_mount;
+                    // Only set project_mount from sandbox if the panel doesn't
+                    // already have one (resumed sessions set it up front).
+                    if project_mount.is_some() {
+                        panel.project_mount = project_mount;
+                    }
                     // Store SSH info for later port forwarding (ssh -L).
                     if let Some((port, ref key)) = ssh_info {
                         panel.ssh_host_port = Some(port);
@@ -236,13 +275,14 @@ pub async fn run_tui(
                         let env = panel.env.clone();
                         let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
                         let auto_mode = panel.auto_mode;
+                        let is_resumed = panel.is_resumed;
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             // Small delay for sshd to be fully ready
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             match super::terminal::connect_ssh(
                                 ssh_port, key_path, pty_cols, pty_rows,
-                                &agent_name, &env, workdir.as_deref(), auto_mode, panel_idx, tx.clone(),
+                                &agent_name, &env, workdir.as_deref(), auto_mode, is_resumed, panel_idx, tx.clone(),
                             ).await {
                                 Ok(handle) => {
                                     let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -540,17 +580,57 @@ pub async fn run_tui(
         }
     }
 
-    // Clean up all running sandboxes (kill VMs, stop gvproxy, remove SSH keys).
-    // Kill SSH port-forward processes and teardown project mounts first.
+    // Determine whether to suspend (preserve session) or fully teardown.
+    // Suspend when: project is mounted AND /quit (not /destroy).
+    let should_suspend = app.project_path.is_some() && !app.destroy_on_quit;
+
+    // Kill SSH port-forward processes in all cases.
     for panel in &mut app.panels {
         for child in &mut panel.port_forward_children {
             let _ = child.kill();
         }
-        if let Some(mut pm) = panel.project_mount.take() {
-            let _ = pm.teardown();
+    }
+
+    if should_suspend {
+        // Suspend session: auto-commit + sync but keep clones alive.
+        eprintln!("Suspending session...");
+        for panel in &mut app.panels {
+            if let Some(ref mut pm) = panel.project_mount {
+                let _ = pm.suspend();
+            }
+        }
+
+        // Save session state for later resume.
+        if let Some(ref project_path) = app.project_path {
+            let sandbox_yml_content = crate::config::file::find_sandbox_file(project_path)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .unwrap_or_default();
+
+            let session = crate::session::Session::from_app(&app, project_path, &sandbox_yml_content);
+            if let Err(e) = session.save() {
+                eprintln!("Warning: failed to save session: {}", e);
+            } else {
+                eprintln!("Session saved. Run nanosb again to resume.");
+            }
+        }
+    } else {
+        // Full teardown: auto-commit + sync + remove clones.
+        for panel in &mut app.panels {
+            if let Some(mut pm) = panel.project_mount.take() {
+                let _ = pm.teardown();
+            }
+        }
+
+        // Delete session file if /destroy was used.
+        if app.destroy_on_quit {
+            if let Some(ref project_path) = app.project_path {
+                let _ = crate::session::Session::delete(project_path, true);
+                eprintln!("Session destroyed.");
+            }
         }
     }
 
+    // Stop/destroy all sandbox VMs.
     let sandbox_count = app
         .panels
         .iter()
@@ -1102,7 +1182,8 @@ async fn handle_command(
                     "  /agent show <name>            Show agent details\n",
                     "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
                     "  /edit [tool]                  Open clone in external tool\n",
-                    "  /quit                         Exit the TUI\n",
+                    "  /quit                         Suspend session and exit\n",
+                    "  /destroy                      Full cleanup and exit\n",
                     "\n",
                     "  Press Esc to dismiss.\n",
                 )
@@ -1261,11 +1342,12 @@ async fn handle_command(
                     let env = panel.env.clone();
                     let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
                     let auto_mode = panel.auto_mode;
+                    let is_resumed = panel.is_resumed;
                     let tx = tx.clone();
                     tokio::spawn(async move {
                         match super::terminal::connect_ssh(
                             ssh_port, key_path, pty_cols, pty_rows,
-                            &agent_name, &env, workdir.as_deref(), auto_mode, panel_idx, tx.clone(),
+                            &agent_name, &env, workdir.as_deref(), auto_mode, is_resumed, panel_idx, tx.clone(),
                         ).await {
                             Ok(handle) => {
                                 let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -1658,6 +1740,12 @@ async fn handle_command(
         }
         Command::PasteImage => {
             handle_paste_image(app, tx);
+        }
+        Command::Destroy => {
+            // Full cleanup: teardown all projects, delete session, exit.
+            // Mark for destroy so the shutdown path knows to do full teardown.
+            app.destroy_on_quit = true;
+            app.should_quit = true;
         }
     }
 }
@@ -2109,8 +2197,8 @@ fn add_agent(
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let image_name = match image {
-        Some(img) => img.to_string(),
-        None => format!("ghcr.io/devdone-labs/agents-registry/{}:latest", agent),
+        Some(img) => crate::config::normalize_image(img),
+        None => crate::config::normalize_image(agent),
     };
 
     let mut panel = AgentPanel::new(agent);
@@ -2130,12 +2218,6 @@ fn add_agent(
             panel.env.insert("GOOSE_PROVIDER".to_string(), "openai".to_string());
         }
     }
-
-    app.panels.push(panel);
-    let panel_idx = app.panels.len() - 1;
-    app.focused_panel = panel_idx;
-    app.show_welcome = false;
-    app.focus_panel_input();
 
     // Build sandbox config.
     // Agent VMs need enough memory for the agent CLI + runtime overhead.
@@ -2163,6 +2245,16 @@ fn add_agent(
     if let Some(ref mut proj) = config.project {
         proj.auto_sync = app.settings.gitsync.auto_sync;
     }
+
+    // Store the config for session persistence.
+    panel.original_config = Some(config.clone());
+    panel.display_name = Some(sandbox_name);
+
+    app.panels.push(panel);
+    let panel_idx = app.panels.len() - 1;
+    app.focused_panel = panel_idx;
+    app.show_welcome = false;
+    app.focus_panel_input();
 
     // Spawn sandbox creation in the background so the event loop stays responsive.
     let tx = tx.clone();
@@ -2260,6 +2352,9 @@ fn add_agent_from_config(
         }
     }
 
+    // Store the config for session persistence.
+    panel.original_config = Some(config.clone());
+
     app.panels.push(panel);
     let panel_idx = app.panels.len() - 1;
     app.focused_panel = panel_idx;
@@ -2307,6 +2402,137 @@ fn add_agent_from_config(
     });
 }
 
+
+/// Resume panels from a saved session.
+///
+/// For each panel in the session, this creates a fresh sandbox with the saved config
+/// but reuses the existing project clone (if still present). The agent is launched
+/// with its resume command variant so it can pick up the previous conversation.
+fn resume_session(
+    app: &mut App,
+    session: &crate::session::Session,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    for sp in &session.panels {
+        let mut config = sp.config.clone();
+
+        // Normalize the image in case the session was saved with a bare name.
+        config.image = crate::config::normalize_image(&config.image);
+
+        // Re-populate env vars from host environment (secrets are not stored in session).
+        for key in &sp.env_keys {
+            if let Ok(val) = std::env::var(key) {
+                config.env.insert(key.clone(), val);
+            }
+        }
+
+        // Set up the agent panel.
+        let agent_type = detect_agent_type_from_image(&config.image)
+            .unwrap_or_else(|| sp.agent_name.clone());
+
+        let mut panel = AgentPanel::new(&agent_type);
+        panel.display_name = sp.display_name.clone();
+        panel.auto_mode = sp.auto_mode;
+        panel.visible = sp.visible;
+        panel.original_config = Some(config.clone());
+
+        // Copy env vars from config to panel.
+        for (k, v) in &config.env {
+            panel.env.insert(k.clone(), v.clone());
+        }
+
+        // Auto-detect API keys from host environment.
+        for (api_key, _) in &required_api_keys(&agent_type) {
+            if !panel.env.contains_key(*api_key) {
+                if let Ok(val) = std::env::var(api_key) {
+                    panel.env.insert(api_key.to_string(), val);
+                }
+            }
+        }
+
+        // If the project clone still exists, mount it directly instead of
+        // creating a new one. We set config.project = None so that
+        // setup_project_mount() inside Sandbox::create() is skipped, and add
+        // the VirtioFS mount for the existing clone ourselves.
+        if let Some(ref clone_path) = sp.clone_path {
+            if clone_path.exists() {
+                // Add VirtioFS mount for existing clone directly.
+                config.mounts.push(crate::config::Mount::virtiofs(clone_path, "/workspace"));
+                // Do NOT set config.project — this skips setup_project_mount().
+                config.project = None;
+
+                // Create a ProjectMount on the panel to handle suspend/teardown.
+                if let Ok(mut pm) = crate::project::ProjectMount::detect(&session.project_path) {
+                    let _ = pm.resume(clone_path, sp.branches.clone());
+                    panel.project_mount = Some(pm);
+                }
+            } else {
+                // Clone dir is gone — create a fresh clone from the branch.
+                config.project = Some(crate::config::ProjectConfig {
+                    path: session.project_path.clone(),
+                    branch: sp
+                        .branches
+                        .first()
+                        .map(|(_, b)| b.clone()),
+                    mount_point: "/workspace".to_string(),
+                    auto_sync: app.settings.gitsync.auto_sync,
+                });
+            }
+        }
+
+        // Mark panel as resumed so agent uses resume command variant.
+        // Agent state is stored in /workspace/.nanosb-state/ (inside the clone),
+        // so it's automatically available when the clone is re-mounted.
+        panel.is_resumed = true;
+
+        app.panels.push(panel);
+        let panel_idx = app.panels.len() - 1;
+        app.focused_panel = panel_idx;
+        app.show_welcome = false;
+        app.focus_panel_input();
+
+        // Spawn sandbox creation in background.
+        let tx = tx.clone();
+        let image_manager = app.image_manager.clone();
+        tokio::spawn(async move {
+            let create_result = if let Some(im) = image_manager {
+                Sandbox::create_with_manager(config, im).await
+            } else {
+                Sandbox::create(config).await
+            };
+            match create_result {
+                Ok(mut sandbox) => {
+                    let short_id = sandbox.id()[..8.min(sandbox.id().len())].to_string();
+
+                    match sandbox.start().await {
+                        Ok(()) => {
+                            let project_mount = sandbox.take_project_mount();
+                            let sb = Arc::new(Mutex::new(sandbox));
+                            let _ = tx.send(AppEvent::SandboxReady {
+                                panel_idx,
+                                sandbox: sb,
+                                short_id,
+                                project_mount,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::SandboxFailed {
+                                panel_idx,
+                                error: format!("Failed to start sandbox: {}", e),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::SandboxFailed {
+                        panel_idx,
+                        error: format!("Failed to create sandbox: {}", e),
+                    });
+                }
+            }
+        });
+    }
+}
 
 /// Handle `/env` — set or list panel environment variables.
 fn handle_env(app: &mut App, assignment: Option<(String, String)>) {

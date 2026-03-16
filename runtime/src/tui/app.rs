@@ -165,6 +165,10 @@ pub struct AgentPanel {
     pub visible: bool,
     /// Whether auto mode (fully autonomous) is enabled for this panel's agent.
     pub auto_mode: bool,
+    /// Original SandboxConfig used to create this panel (for session persistence).
+    pub original_config: Option<crate::config::SandboxConfig>,
+    /// Whether this panel was resumed from a previous session (agent uses resume command).
+    pub is_resumed: bool,
     /// Overlay notification shown on top of the terminal (message, is_error, remaining ticks).
     /// Replaces previous notification; auto-dismissed after countdown reaches 0.
     pub notification: Option<(String, bool, u8)>,
@@ -201,6 +205,8 @@ impl AgentPanel {
             reconnecting: false,
             visible: true,
             auto_mode: false,
+            original_config: None,
+            is_resumed: false,
             notification: None,
         }
     }
@@ -267,6 +273,9 @@ pub struct App {
     pub registry: Option<AgentsRegistryClient>,
     /// Shared image manager for coordinated image pulling across sandboxes.
     pub image_manager: Option<Arc<ImageManager>>,
+    /// When true, `/quit` performs full cleanup (teardown + delete session).
+    /// Set by `/destroy` command.
+    pub destroy_on_quit: bool,
 }
 
 impl Default for App {
@@ -310,6 +319,7 @@ impl App {
             panel_areas: Vec::new(),
             registry: None,
             image_manager: None,
+            destroy_on_quit: false,
         }
     }
 

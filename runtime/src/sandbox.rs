@@ -650,6 +650,11 @@ impl Sandbox {
         self.project_mount.as_ref()
     }
 
+    /// Get a mutable reference to the active project mount, if any.
+    pub fn project_mount_mut(&mut self) -> Option<&mut crate::project::ProjectMount> {
+        self.project_mount.as_mut()
+    }
+
     /// Take ownership of the project mount (for transferring to TUI panels).
     pub fn take_project_mount(&mut self) -> Option<crate::project::ProjectMount> {
         self.project_mount.take()

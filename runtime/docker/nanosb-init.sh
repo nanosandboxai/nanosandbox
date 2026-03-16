@@ -67,6 +67,39 @@ if [ -f /etc/nanosb-mounts ]; then
 fi
 
 # ---------------------------------------------------------------
+# 2b. Link agent state dirs into /workspace/.nanosb-state/
+# ---------------------------------------------------------------
+# Agent session state (conversation history, config) is stored inside
+# the workspace clone at .nanosb-state/ so it persists across VM
+# restarts via VirtioFS. Symlink each agent's home state dir there.
+if [ -d /workspace ]; then
+    STATE_DIR="/workspace/.nanosb-state"
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+    # Claude Code: ~/.claude/ (conversations, project memory, settings)
+    # Codex:       ~/.codex/  (sessions, config.toml, AGENTS.md)
+    # Cursor:      ~/.cursor/ (mcp.json, chat state)
+    for dir in .claude .codex .cursor; do
+        mkdir -p "$STATE_DIR/$dir" 2>/dev/null || true
+        if [ -e "/home/developer/$dir" ] && [ ! -L "/home/developer/$dir" ]; then
+            rm -rf "/home/developer/$dir" 2>/dev/null || true
+        fi
+        ln -sfn "$STATE_DIR/$dir" "/home/developer/$dir" 2>/dev/null || true
+    done
+
+    # Goose: ~/.config/goose/ (sessions, config.yaml)
+    mkdir -p "$STATE_DIR/.config/goose" 2>/dev/null || true
+    mkdir -p /home/developer/.config 2>/dev/null || true
+    if [ -e /home/developer/.config/goose ] && [ ! -L /home/developer/.config/goose ]; then
+        rm -rf /home/developer/.config/goose 2>/dev/null || true
+    fi
+    ln -sfn "$STATE_DIR/.config/goose" /home/developer/.config/goose 2>/dev/null || true
+
+    chown -R developer:developer "$STATE_DIR" 2>/dev/null || true
+    echo "nanosb-init: agent state symlinks created (workspace-backed)"
+fi
+
+# ---------------------------------------------------------------
 # 3. Start sshd (background) — enables SSH health check + access
 # ---------------------------------------------------------------
 if [ -x /usr/sbin/sshd ]; then
