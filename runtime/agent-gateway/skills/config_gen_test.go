@@ -98,9 +98,13 @@ func TestGenerateClaudePrompt_Empty(t *testing.T) {
 	if err := generateClaudePrompt(path, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// File should not be created when both are empty
-	if _, err := os.Stat(path); err == nil {
-		t.Error("expected no file when agent name and prompt are empty")
+	// File should still be created with sandbox preamble even when both are empty.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read: %v", err)
+	}
+	if !strings.Contains(string(data), "Sandbox Environment") {
+		t.Error("expected sandbox preamble in empty prompt file")
 	}
 }
 
@@ -150,9 +154,13 @@ func TestGenerateGooseAll_Empty(t *testing.T) {
 	if err := generateGooseAll(path, "", "", map[string]*SkillDef{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// File should not be created when everything is empty
-	if _, err := os.Stat(path); err == nil {
-		t.Error("expected no file when everything is empty")
+	// File should still be created with sandbox preamble even when everything else is empty.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read: %v", err)
+	}
+	if !strings.Contains(string(data), "Sandbox Environment") {
+		t.Error("expected sandbox preamble in empty prompt file")
 	}
 }
 
@@ -213,8 +221,13 @@ func TestGenerateCursorPrompt_Empty(t *testing.T) {
 	if err := generateCursorPrompt(path, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := os.Stat(path); err == nil {
-		t.Error("expected no file when agent name and prompt are empty")
+	// File should still be created with sandbox preamble + frontmatter even when both are empty.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read: %v", err)
+	}
+	if !strings.Contains(string(data), "Sandbox Environment") {
+		t.Error("expected sandbox preamble in empty prompt file")
 	}
 }
 
@@ -313,5 +326,79 @@ func TestGenerateAllConfigs(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "alwaysApply: true") {
 		t.Error("expected alwaysApply in cursor mdc file")
+	}
+}
+
+func TestGenerateAllConfigs_FilteredByType(t *testing.T) {
+	// Override agentConfigs with temp dirs for this test
+	origConfigs := make(map[string]*AgentSkillConfig)
+	for k, v := range agentConfigs {
+		cp := *v
+		origConfigs[k] = &cp
+	}
+
+	dir := t.TempDir()
+	agentConfigs["claude"] = &AgentSkillConfig{
+		Format:     "claude",
+		SkillsDir:  filepath.Join(dir, "claude", "skills"),
+		PromptFile: filepath.Join(dir, "claude", "CLAUDE.md"),
+	}
+	agentConfigs["goose"] = &AgentSkillConfig{
+		Format:     "goose",
+		SkillsDir:  "",
+		PromptFile: filepath.Join(dir, "goose", ".goosehints"),
+	}
+	agentConfigs["codex"] = &AgentSkillConfig{
+		Format:     "codex",
+		SkillsDir:  filepath.Join(dir, "codex", "skills"),
+		PromptFile: filepath.Join(dir, "codex", "AGENTS.md"),
+	}
+	agentConfigs["cursor"] = &AgentSkillConfig{
+		Format:     "cursor",
+		SkillsDir:  filepath.Join(dir, "cursor", "skills"),
+		PromptFile: filepath.Join(dir, "cursor", "rules", "nanosandbox-agent.mdc"),
+	}
+
+	defer func() {
+		for k, v := range origConfigs {
+			agentConfigs[k] = v
+		}
+	}()
+
+	mgr := NewManager()
+	mgr.SetAgentType("claude")
+	mgr.SetAgentDefinition("python-developer", "You are a Python developer.")
+	mgr.AddSkill("tdd", &SkillDef{
+		Name:        "tdd",
+		Description: "Test-driven development",
+		Content:     "# TDD\n\nRed-green-refactor.",
+	})
+
+	if err := mgr.GenerateAllConfigs(); err != nil {
+		t.Fatalf("GenerateAllConfigs failed: %v", err)
+	}
+
+	// Claude files SHOULD exist
+	claudePrompt := filepath.Join(dir, "claude", "CLAUDE.md")
+	if _, err := os.Stat(claudePrompt); os.IsNotExist(err) {
+		t.Error("expected Claude CLAUDE.md to exist")
+	}
+	claudeSkill := filepath.Join(dir, "claude", "skills", "tdd", "SKILL.md")
+	if _, err := os.Stat(claudeSkill); os.IsNotExist(err) {
+		t.Error("expected Claude SKILL.md to exist")
+	}
+
+	// Other agent files should NOT exist
+	gooseHints := filepath.Join(dir, "goose", ".goosehints")
+	if _, err := os.Stat(gooseHints); !os.IsNotExist(err) {
+		t.Error("expected goose .goosehints to NOT exist when agent type is claude")
+	}
+	codexPrompt := filepath.Join(dir, "codex", "AGENTS.md")
+	if _, err := os.Stat(codexPrompt); !os.IsNotExist(err) {
+		t.Error("expected codex AGENTS.md to NOT exist when agent type is claude")
+	}
+	cursorPrompt := filepath.Join(dir, "cursor", "rules", "nanosandbox-agent.mdc")
+	if _, err := os.Stat(cursorPrompt); !os.IsNotExist(err) {
+		t.Error("expected cursor .mdc to NOT exist when agent type is claude")
 	}
 }

@@ -54,6 +54,12 @@ pub struct SessionPanel {
     /// Agent permission level.
     #[serde(default)]
     pub permissions: crate::config::Permissions,
+    /// Agent type enum (serialized as string).
+    #[serde(default)]
+    pub agent_type: Option<crate::config::AgentType>,
+    /// Model identifier.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Environment variable **keys** that were set for this panel.
     /// Values are NOT stored (security). On resume, values are re-read from host env.
     pub env_keys: Vec<String>,
@@ -228,6 +234,8 @@ impl Session {
                     branches,
                     auto_mode: panel.auto_mode,
                     permissions: panel.permissions,
+                    agent_type: panel.agent_type,
+                    model: panel.model.clone(),
                     env_keys,
                     visible: panel.visible,
                 })
@@ -409,6 +417,8 @@ mod tests {
                 branches: vec![(PathBuf::from("/tmp/repo"), "nanosb/abcd1234".to_string())],
                 auto_mode: false,
                 permissions: crate::config::Permissions::Default,
+                agent_type: None,
+                model: None,
                 env_keys: vec!["ANTHROPIC_API_KEY".to_string()],
                 visible: true,
             }],

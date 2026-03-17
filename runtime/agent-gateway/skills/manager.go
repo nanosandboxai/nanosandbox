@@ -35,6 +35,7 @@ type Manager struct {
 	skills      map[string]*SkillDef
 	agentPrompt string // current agent definition prompt
 	agentName   string // current agent definition name
+	agentType   string // "claude", "codex", "goose", "cursor" — when set, only generate for this type
 }
 
 // NewManager creates an empty skills manager.
@@ -83,6 +84,15 @@ func (m *Manager) GetSkill(name string) *SkillDef {
 	}
 	cp := *s
 	return &cp
+}
+
+// SetAgentType sets the active agent type. When set, GenerateAllConfigs
+// only generates config files for this agent type instead of all types.
+func (m *Manager) SetAgentType(agentType string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agentType = agentType
+	log.Printf("[skills] agent type set to %q", agentType)
 }
 
 // SetAgentDefinition stores the agent name and system prompt.

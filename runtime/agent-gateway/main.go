@@ -185,6 +185,12 @@ func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []strin
 		return "claude", args
 
 	case "goose":
+		if req.Model != "" {
+			if req.Env == nil {
+				req.Env = make(map[string]string)
+			}
+			req.Env["GOOSE_DEFAULT_MODEL"] = req.Model
+		}
 		if sess.sessionID != "" {
 			return "goose", []string{"session", "resume", sess.sessionID, "--message", message}
 		}
@@ -212,9 +218,19 @@ func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []strin
 		args := []string{"--message", message}
 		switch permissions {
 		case "allow_all":
-			args = append(args, "--force", "--trust", "--approve-mcps")
+			args = append(args, "--force")
+			// --trust and --approve-mcps require --print (headless mode)
+			if autoMode {
+				args = append(args, "--trust", "--approve-mcps")
+			}
 		case "accept_edits":
-			args = append(args, "--trust")
+			// --trust requires --print (headless mode)
+			if autoMode {
+				args = append(args, "--trust")
+			}
+		}
+		if req.Model != "" {
+			args = append(args, "--model", req.Model)
 		}
 		if sess.sessionID != "" {
 			args = append(args, "--resume", sess.sessionID)
@@ -790,6 +806,7 @@ type BootstrapRequest struct {
 	McpServers  map[string]*mcp.McpServerDef `json:"mcp_servers,omitempty"`
 	AutoMode    bool                         `json:"auto_mode"`
 	Permissions string                       `json:"permissions,omitempty"`
+	AgentType   string                       `json:"agent_type,omitempty"`
 }
 
 // autoMode controls whether agents run fully autonomously (no confirmation prompts).
@@ -806,6 +823,13 @@ func agentBootstrapHandler(skillsMgr *skills.Manager, mcpMgr *mcp.Manager) http.
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
 			return
+		}
+
+		// Set agent type — controls which config files are generated.
+		if req.AgentType != "" {
+			skillsMgr.SetAgentType(req.AgentType)
+			mcpMgr.SetAgentType(req.AgentType)
+			log.Printf("[agent-gateway] agent type set to %q", req.AgentType)
 		}
 
 		// Set agent definition

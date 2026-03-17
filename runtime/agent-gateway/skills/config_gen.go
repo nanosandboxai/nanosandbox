@@ -9,10 +9,36 @@ import (
 	"strings"
 )
 
-// GenerateAllConfigs writes skill files and prompt files for all configured agents.
+// sandboxPreamble is prepended to every agent prompt file to inform the agent
+// about its sandbox environment capabilities.
+const sandboxPreamble = `## Sandbox Environment
+
+You are running inside an isolated nanosandbox VM (Debian Linux). You have:
+- Full sudo access (passwordless) — use it freely to install packages and tools.
+- Node.js is pre-installed. Other runtimes (Python, Go, Rust, etc.) are NOT.
+- When a task requires a runtime or tool that is missing, install it yourself
+  using ` + "`sudo apt-get update && sudo apt-get install -y <package>`" + ` before proceeding.
+  Do NOT ask the user to install software — you have full permissions to do it.
+- The working directory is /workspace (project files are mounted here).
+- Network access is available for downloading packages and dependencies.
+
+`
+
+// GenerateAllConfigs writes skill files and prompt files for configured agents.
+// When an agent type is set, only generates for that type; otherwise generates for all.
 func (m *Manager) GenerateAllConfigs() error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	// If agent type is set, only generate for that specific type.
+	if m.agentType != "" {
+		agentCfg, ok := agentConfigs[m.agentType]
+		if !ok {
+			log.Printf("[skills] unknown agent type %q, generating for all agents", m.agentType)
+		} else {
+			return m.generateForAgentLocked(m.agentType, agentCfg)
+		}
+	}
 
 	for agentName, agentCfg := range agentConfigs {
 		if err := m.generateForAgentLocked(agentName, agentCfg); err != nil {
@@ -56,10 +82,7 @@ func generateClaudeSkills(skillsDir string, skills map[string]*SkillDef) error {
 }
 
 func generateClaudePrompt(path, agentName, prompt string) error {
-	if agentName == "" && prompt == "" {
-		return nil
-	}
-	content := fmt.Sprintf("<!-- nanosandbox agent: %s -->\n\n%s\n", agentName, prompt)
+	content := fmt.Sprintf("<!-- nanosandbox agent: %s -->\n\n%s%s\n", agentName, sandboxPreamble, prompt)
 	return writeFile(path, []byte(content))
 }
 
@@ -69,6 +92,9 @@ func generateClaudePrompt(path, agentName, prompt string) error {
 
 func generateGooseAll(path, agentName, prompt string, skills map[string]*SkillDef) error {
 	var b strings.Builder
+
+	// Sandbox environment preamble (always included)
+	b.WriteString(sandboxPreamble)
 
 	// Agent prompt section
 	if agentName != "" || prompt != "" {
@@ -101,10 +127,7 @@ func generateGooseAll(path, agentName, prompt string, skills map[string]*SkillDe
 // Prompt: /workspace/AGENTS.md
 
 func generateCodexPrompt(path, agentName, prompt string) error {
-	if agentName == "" && prompt == "" {
-		return nil
-	}
-	content := fmt.Sprintf("<!-- nanosandbox agent: %s -->\n\n%s\n", agentName, prompt)
+	content := fmt.Sprintf("<!-- nanosandbox agent: %s -->\n\n%s%s\n", agentName, sandboxPreamble, prompt)
 	return writeFile(path, []byte(content))
 }
 
@@ -113,14 +136,12 @@ func generateCodexPrompt(path, agentName, prompt string) error {
 // Prompt: /workspace/.cursor/rules/nanosandbox-agent.mdc (with alwaysApply frontmatter)
 
 func generateCursorPrompt(path, agentName, prompt string) error {
-	if agentName == "" && prompt == "" {
-		return nil
-	}
 	var b strings.Builder
 	b.WriteString("---\n")
 	b.WriteString(fmt.Sprintf("description: \"Nanosandbox agent definition: %s\"\n", agentName))
 	b.WriteString("alwaysApply: true\n")
 	b.WriteString("---\n\n")
+	b.WriteString(sandboxPreamble)
 	b.WriteString(prompt)
 	b.WriteString("\n")
 	return writeFile(path, []byte(b.String()))

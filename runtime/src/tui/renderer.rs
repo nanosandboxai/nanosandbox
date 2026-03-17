@@ -3,7 +3,7 @@
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use ratatui::Frame;
 
 use super::app::{App, AgentPanel, InputFocus, MouseSelection, PanelMode, SidebarFilesTab};
@@ -990,9 +990,15 @@ fn render_panel(
 
     // Terminal mode: render PseudoTerminal widget for the entire inner area.
     if panel.mode == PanelMode::Terminal {
-        if let Some(ref term) = panel.terminal {
+        if let Some(ref mut term) = panel.terminal {
             let pseudo_term = tui_term::widget::PseudoTerminal::new(term.screen());
             frame.render_widget(pseudo_term, inner_area);
+
+            // Show scrollbar when scrolled up from live view.
+            if term.is_scrolled_up() {
+                let max = term.scrollback_max();
+                render_scrollbar(frame, inner_area, term.scroll_offset(), max, theme);
+            }
 
             // Overlay selection highlighting if this panel has an active selection.
             if let Some(sel) = selection {
@@ -1008,7 +1014,8 @@ fn render_panel(
             }
 
             // Place cursor at the terminal's cursor position when focused.
-            if is_focused {
+            // Hide cursor when viewing scrollback (position is meaningless).
+            if is_focused && !term.is_scrolled_up() {
                 let cursor = term.screen().cursor_position();
                 let x = inner_area.x + cursor.1;
                 let y = inner_area.y + cursor.0;
@@ -1274,6 +1281,36 @@ fn render_panel_notification(
     let paragraph = Paragraph::new(Line::from(span));
     frame.render_widget(Clear, banner_area);
     frame.render_widget(paragraph, banner_area);
+}
+
+/// Render a vertical scrollbar on the right edge of a terminal panel.
+fn render_scrollbar(
+    frame: &mut Frame,
+    inner_area: Rect,
+    scroll_offset: usize,
+    scrollback_max: usize,
+    theme: &Theme,
+) {
+    if inner_area.height < 3 || scrollback_max == 0 {
+        return;
+    }
+
+    // Scrollbar position: 0 = top (most scrolled up), max = bottom (live view).
+    // Our scroll_offset: 0 = live view (bottom), max = most scrolled up (top).
+    // Invert so the thumb is at the top when fully scrolled up.
+    let position = scrollback_max.saturating_sub(scroll_offset);
+
+    let mut state = ScrollbarState::new(scrollback_max).position(position);
+
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .thumb_symbol("█")
+        .track_style(Style::default().fg(theme.text_muted))
+        .thumb_style(Style::default().fg(theme.accent));
+
+    frame.render_stateful_widget(scrollbar, inner_area, &mut state);
 }
 
 /// Render the loading animation: centered `</>` logo with sweeping border accent.

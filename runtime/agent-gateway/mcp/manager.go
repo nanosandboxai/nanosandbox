@@ -14,8 +14,9 @@ var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
 // Manager handles MCP server configuration and per-agent config generation.
 type Manager struct {
-	mu     sync.RWMutex
-	config McpConfig
+	mu        sync.RWMutex
+	config    McpConfig
+	agentType string // when set, only generate for this agent type
 }
 
 // NewManager creates an empty Manager with built-in agent config paths.
@@ -77,6 +78,15 @@ func (m *Manager) resolveEnvVars() {
 			})
 		}
 	}
+}
+
+// SetAgentType sets the active agent type. When set, GenerateAllConfigs
+// only generates config files for this agent type instead of all types.
+func (m *Manager) SetAgentType(agentType string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agentType = agentType
+	log.Printf("[mcp] agent type set to %q", agentType)
 }
 
 // ListServers returns a deep copy of all configured server definitions.

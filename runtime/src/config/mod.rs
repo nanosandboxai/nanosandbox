@@ -1,6 +1,7 @@
 //! Sandbox configuration
 
 pub mod file;
+pub mod models;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -57,6 +58,60 @@ impl std::str::FromStr for Permissions {
             "allow-all" | "allow_all" | "allowAll" => Ok(Permissions::AllowAll),
             _ => Err(format!(
                 "unknown permission level '{}': expected default, accept-edits, or allow-all",
+                s
+            )),
+        }
+    }
+}
+
+/// The type of coding agent. Determines CLI command, config format,
+/// and MCP config paths inside the sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentType {
+    Claude,
+    Codex,
+    Goose,
+    Cursor,
+}
+
+impl AgentType {
+    /// All known agent types.
+    pub const ALL: &'static [AgentType] = &[
+        AgentType::Claude,
+        AgentType::Codex,
+        AgentType::Goose,
+        AgentType::Cursor,
+    ];
+
+    /// The canonical string name for this agent type.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentType::Claude => "claude",
+            AgentType::Codex => "codex",
+            AgentType::Goose => "goose",
+            AgentType::Cursor => "cursor",
+        }
+    }
+}
+
+impl std::fmt::Display for AgentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AgentType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "claude" | "claude-code" => Ok(AgentType::Claude),
+            "codex" => Ok(AgentType::Codex),
+            "goose" => Ok(AgentType::Goose),
+            "cursor" | "cursor-agent" => Ok(AgentType::Cursor),
+            _ => Err(format!(
+                "unknown agent type '{}': expected claude, codex, goose, or cursor",
                 s
             )),
         }
@@ -133,6 +188,16 @@ pub struct SandboxConfig {
     /// Task prompt for headless mode. Required when `auto_mode` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+
+    /// Agent type (claude, codex, goose, cursor). Determines CLI command
+    /// and config format. When not specified, inferred from image name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<AgentType>,
+
+    /// Model identifier (e.g., "claude-sonnet-4-5-20250929"). Validated
+    /// against models.yaml. Translated to agent-specific flags at launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 fn default_cpus() -> u32 {
@@ -171,6 +236,8 @@ impl Default for SandboxConfig {
             auto_mode: false,
             permissions: Permissions::Default,
             prompt: None,
+            agent_type: None,
+            model: None,
         }
     }
 }
@@ -397,6 +464,18 @@ impl SandboxConfigBuilder {
     /// Set the task prompt (for headless mode).
     pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
         self.config.prompt = Some(prompt.into());
+        self
+    }
+
+    /// Set the agent type (claude, codex, goose, cursor).
+    pub fn agent_type(mut self, agent_type: AgentType) -> Self {
+        self.config.agent_type = Some(agent_type);
+        self
+    }
+
+    /// Set the model identifier (e.g., "claude-sonnet-4-5-20250929").
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.config.model = Some(model.into());
         self
     }
 
@@ -755,6 +834,11 @@ pub struct ResolvedAgentConfig {
     /// Agent permission level.
     #[serde(default)]
     pub permissions: Permissions,
+
+    /// Agent type (claude, codex, goose, cursor).
+    /// Used by the gateway to generate only the relevant config files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<AgentType>,
 }
 
 /// Configuration for mounting a project into the sandbox.
@@ -1001,6 +1085,7 @@ mod tests {
             mcp_servers: HashMap::new(),
             auto_mode: false,
             permissions: Permissions::Default,
+            agent_type: None,
         };
 
         let config = SandboxConfig::builder()
@@ -1022,5 +1107,67 @@ mod tests {
         assert!(config.agent.is_none());
         assert!(config.skills.is_empty());
         assert!(config.resolved_agent.is_none());
+    }
+
+    #[test]
+    fn test_agent_type_from_str() {
+        assert_eq!("claude".parse::<AgentType>().unwrap(), AgentType::Claude);
+        assert_eq!("claude-code".parse::<AgentType>().unwrap(), AgentType::Claude);
+        assert_eq!("codex".parse::<AgentType>().unwrap(), AgentType::Codex);
+        assert_eq!("goose".parse::<AgentType>().unwrap(), AgentType::Goose);
+        assert_eq!("cursor".parse::<AgentType>().unwrap(), AgentType::Cursor);
+        assert_eq!("cursor-agent".parse::<AgentType>().unwrap(), AgentType::Cursor);
+        assert!("unknown".parse::<AgentType>().is_err());
+    }
+
+    #[test]
+    fn test_agent_type_display() {
+        assert_eq!(AgentType::Claude.to_string(), "claude");
+        assert_eq!(AgentType::Codex.to_string(), "codex");
+        assert_eq!(AgentType::Goose.to_string(), "goose");
+        assert_eq!(AgentType::Cursor.to_string(), "cursor");
+    }
+
+    #[test]
+    fn test_agent_type_as_str() {
+        assert_eq!(AgentType::Claude.as_str(), "claude");
+        assert_eq!(AgentType::Codex.as_str(), "codex");
+    }
+
+    #[test]
+    fn test_agent_type_all() {
+        assert_eq!(AgentType::ALL.len(), 4);
+        assert!(AgentType::ALL.contains(&AgentType::Claude));
+        assert!(AgentType::ALL.contains(&AgentType::Codex));
+        assert!(AgentType::ALL.contains(&AgentType::Goose));
+        assert!(AgentType::ALL.contains(&AgentType::Cursor));
+    }
+
+    #[test]
+    fn test_agent_type_serde_roundtrip() {
+        let json = serde_json::to_string(&AgentType::Claude).unwrap();
+        assert_eq!(json, "\"claude\"");
+        let parsed: AgentType = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, AgentType::Claude);
+    }
+
+    #[test]
+    fn test_sandbox_config_with_agent_type_and_model() {
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("claude")
+            .agent_type(AgentType::Claude)
+            .model("claude-sonnet-4-5-20250929")
+            .build();
+
+        assert_eq!(config.agent_type, Some(AgentType::Claude));
+        assert_eq!(config.model, Some("claude-sonnet-4-5-20250929".to_string()));
+    }
+
+    #[test]
+    fn test_sandbox_config_default_no_type_no_model() {
+        let config = SandboxConfig::default();
+        assert!(config.agent_type.is_none());
+        assert!(config.model.is_none());
     }
 }

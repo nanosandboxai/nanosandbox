@@ -10,47 +10,64 @@ import (
 	"strings"
 )
 
-// GenerateAllConfigs writes config files for all configured agents.
+// GenerateAllConfigs writes config files for configured agents.
+// When an agent type is set, only generates for that type; otherwise generates for all.
 func (m *Manager) GenerateAllConfigs() error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	for agentName, agentCfg := range m.config.Agents {
-		servers := m.enabledServersForAgentLocked(agentName)
-
-		var data []byte
-		var err error
-
-		switch agentCfg.Format {
-		case "claude":
-			data, err = GenerateClaudeConfig(servers)
-		case "goose":
-			data, err = GenerateGooseConfig(servers)
-		case "codex":
-			data, err = GenerateCodexConfig(servers)
-		case "cursor":
-			data, err = GenerateCursorConfig(servers)
-		default:
-			log.Printf("[mcp] unknown format %q for agent %s, skipping", agentCfg.Format, agentName)
-			continue
+	// If agent type is set, only generate for that specific type.
+	if m.agentType != "" {
+		agentCfg, ok := m.config.Agents[m.agentType]
+		if ok {
+			return m.generateForAgent(m.agentType, agentCfg)
 		}
-
-		if err != nil {
-			return fmt.Errorf("generating config for %s: %w", agentName, err)
-		}
-
-		dir := filepath.Dir(agentCfg.ConfigPath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("creating dir %s: %w", dir, err)
-		}
-
-		if err := os.WriteFile(agentCfg.ConfigPath, data, 0644); err != nil {
-			return fmt.Errorf("writing %s: %w", agentCfg.ConfigPath, err)
-		}
-
-		log.Printf("[mcp] wrote %s config: %s (%d servers)", agentName, agentCfg.ConfigPath, len(servers))
+		log.Printf("[mcp] unknown agent type %q, generating for all agents", m.agentType)
 	}
 
+	for agentName, agentCfg := range m.config.Agents {
+		if err := m.generateForAgent(agentName, agentCfg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (m *Manager) generateForAgent(agentName string, agentCfg *AgentMcpConfig) error {
+	servers := m.enabledServersForAgentLocked(agentName)
+
+	var data []byte
+	var err error
+
+	switch agentCfg.Format {
+	case "claude":
+		data, err = GenerateClaudeConfig(servers)
+	case "goose":
+		data, err = GenerateGooseConfig(servers)
+	case "codex":
+		data, err = GenerateCodexConfig(servers)
+	case "cursor":
+		data, err = GenerateCursorConfig(servers)
+	default:
+		log.Printf("[mcp] unknown format %q for agent %s, skipping", agentCfg.Format, agentName)
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("generating config for %s: %w", agentName, err)
+	}
+
+	dir := filepath.Dir(agentCfg.ConfigPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating dir %s: %w", dir, err)
+	}
+
+	if err := os.WriteFile(agentCfg.ConfigPath, data, 0644); err != nil {
+		return fmt.Errorf("writing %s: %w", agentCfg.ConfigPath, err)
+	}
+
+	log.Printf("[mcp] wrote %s config: %s (%d servers)", agentName, agentCfg.ConfigPath, len(servers))
 	return nil
 }
 

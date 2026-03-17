@@ -216,6 +216,10 @@ pub struct AgentPanel {
     pub auto_mode: bool,
     /// Agent permission level.
     pub permissions: crate::config::Permissions,
+    /// Agent type (source of truth for CLI command + config format).
+    pub agent_type: Option<crate::config::AgentType>,
+    /// Model identifier for CLI flag generation (e.g., "claude-sonnet-4-5-20250929").
+    pub model: Option<String>,
     /// Headless mode state (NDJSON parsing and structured output).
     pub headless_state: Option<HeadlessState>,
     /// Original SandboxConfig used to create this panel (for session persistence).
@@ -259,6 +263,8 @@ impl AgentPanel {
             visible: true,
             auto_mode: false,
             permissions: crate::config::Permissions::Default,
+            agent_type: None,
+            model: None,
             headless_state: None,
             original_config: None,
             is_resumed: false,

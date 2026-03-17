@@ -58,9 +58,9 @@ pub mod tui;
 pub use agents_registry::AgentsRegistryClient;
 pub use auth::CredentialStore;
 pub use config::{
-    AgentDefinition, AgentMcpRef, McpServerConfig, Mount, MountType, NetworkConfig, NetworkMode,
-    NetworkScope, Permissions, PortMapping, ProjectConfig, RegistryConfig, ResolvedAgentConfig,
-    SandboxConfig, SkillDef,
+    AgentDefinition, AgentMcpRef, AgentType, McpServerConfig, Mount, MountType, NetworkConfig,
+    NetworkMode, NetworkScope, Permissions, PortMapping, ProjectConfig, RegistryConfig,
+    ResolvedAgentConfig, SandboxConfig, SkillDef,
 };
 pub use config::file::{find_sandbox_file, load_sandbox_file, load_sandbox_files, SandboxFile};
 pub use error::{Error, Result};

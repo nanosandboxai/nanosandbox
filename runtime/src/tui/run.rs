@@ -170,9 +170,10 @@ pub async fn run_tui(
                     }
                     // Replace config MCPs with merged set
                     config.mcp_servers = resolved.mcp_servers.clone();
-                    // Propagate auto_mode and permissions from sandbox config
+                    // Propagate auto_mode, permissions, and agent_type from sandbox config
                     resolved.auto_mode = config.auto_mode;
                     resolved.permissions = config.permissions;
+                    resolved.agent_type = config.agent_type;
                     config.resolved_agent = Some(resolved);
                 }
                 Err(e) => {
@@ -226,7 +227,12 @@ pub async fn run_tui(
                     CrosstermEvent::Paste(text) => {
                         handle_paste_event(&mut app, text, &tx);
                     }
-                    _ => {}
+                    CrosstermEvent::Resize(_cols, _rows) => {
+                        // ratatui picks up new size on next draw();
+                        // render_panel() detects the delta and propagates
+                        // to vt100 parser + SSH PTY.
+                    }
+                    CrosstermEvent::FocusGained | CrosstermEvent::FocusLost => {}
                 }
             }
             AppEvent::SandboxCreating { panel_idx, .. } => {
@@ -279,6 +285,7 @@ pub async fn run_tui(
                         let auto_mode = panel.auto_mode;
                         let prompt = panel.headless_state.as_ref().map(|h| h.task.clone());
                         let is_resumed = panel.is_resumed;
+                        let model = panel.model.clone();
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             // Small delay for sshd to be fully ready
@@ -287,7 +294,7 @@ pub async fn run_tui(
                                 ssh_port, key_path, pty_cols, pty_rows,
                                 &agent_name, &env, workdir.as_deref(),
                                 permissions, auto_mode, prompt.as_deref(),
-                                is_resumed, panel_idx, tx.clone(),
+                                is_resumed, model.as_deref(), panel_idx, tx.clone(),
                             ).await {
                                 Ok(handle) => {
                                     let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -1038,8 +1045,51 @@ async fn handle_key_event(
                         }
                         return;
                     }
+                    // Scrollback: Shift+PageUp/PageDown to scroll terminal history.
+                    KeyCode::PageUp if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut term) = panel.terminal {
+                                let half_page = (panel.last_terminal_size.1 as usize / 2).max(1);
+                                term.scroll_up(half_page);
+                            }
+                        }
+                        return;
+                    }
+                    KeyCode::PageDown if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut term) = panel.terminal {
+                                let half_page = (panel.last_terminal_size.1 as usize / 2).max(1);
+                                term.scroll_down(half_page);
+                            }
+                        }
+                        return;
+                    }
+                    KeyCode::Home if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut term) = panel.terminal {
+                                term.scroll_up(usize::MAX);
+                            }
+                        }
+                        return;
+                    }
+                    KeyCode::End if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut term) = panel.terminal {
+                                term.scroll_to_bottom();
+                            }
+                        }
+                        return;
+                    }
                     _ => {
-                        // Forward everything else to SSH terminal
+                        // Any forwarded keystroke snaps back to live view.
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut term) = panel.terminal {
+                                if term.is_scrolled_up() {
+                                    term.scroll_to_bottom();
+                                }
+                            }
+                        }
+                        // Forward everything else to SSH terminal.
                         let bytes = super::terminal::crossterm_key_to_bytes(key);
                         if !bytes.is_empty() {
                             if let Some(panel) = app.panels.get(app.focused_panel) {
@@ -1410,8 +1460,8 @@ async fn handle_command(
         Command::McpToggle => {
             app.show_mcp_sidebar = !app.show_mcp_sidebar;
         }
-        Command::AddAgent { agent, image, project, branch, name, auto_mode, prompt } => {
-            add_agent(app, &agent, image.as_deref(), project.as_deref(), branch.as_deref(), name.as_deref(), auto_mode, prompt.as_deref(), tx);
+        Command::AddAgent { agent, image, project, branch, name, auto_mode, prompt, model } => {
+            add_agent(app, &agent, image.as_deref(), project.as_deref(), branch.as_deref(), name.as_deref(), auto_mode, prompt.as_deref(), model.as_deref(), tx);
         }
         Command::Env { assignment } => {
             handle_env(app, assignment);
@@ -1471,13 +1521,14 @@ async fn handle_command(
                     let auto_mode = panel.auto_mode;
                     let prompt = panel.headless_state.as_ref().map(|h| h.task.clone());
                     let is_resumed = panel.is_resumed;
+                    let model = panel.model.clone();
                     let tx = tx.clone();
                     tokio::spawn(async move {
                         match super::terminal::connect_ssh(
                             ssh_port, key_path, pty_cols, pty_rows,
                             &agent_name, &env, workdir.as_deref(),
                             permissions, auto_mode, prompt.as_deref(),
-                            is_resumed, panel_idx, tx.clone(),
+                            is_resumed, model.as_deref(), panel_idx, tx.clone(),
                         ).await {
                             Ok(handle) => {
                                 let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -2257,6 +2308,29 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             }
         }
 
+        MouseEventKind::ScrollUp => {
+            if let Some((panel_idx, _)) = find_panel_at(app, x, y) {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    if panel.mode == PanelMode::Terminal {
+                        if let Some(ref mut term) = panel.terminal {
+                            term.scroll_up(3);
+                        }
+                    }
+                }
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if let Some((panel_idx, _)) = find_panel_at(app, x, y) {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    if panel.mode == PanelMode::Terminal {
+                        if let Some(ref mut term) = panel.terminal {
+                            term.scroll_down(3);
+                        }
+                    }
+                }
+            }
+        }
+
         _ => {}
     }
 }
@@ -2735,6 +2809,7 @@ fn add_agent(
     name: Option<&str>,
     auto_mode: bool,
     prompt: Option<&str>,
+    model: Option<&str>,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let image_name = match image {
@@ -2768,6 +2843,9 @@ fn add_agent(
         }
     }
 
+    // Set model selection.
+    panel.model = model.map(String::from);
+
     // Build sandbox config.
     // Agent VMs need enough memory for the agent CLI + runtime overhead.
     let project_path = project
@@ -2777,6 +2855,16 @@ fn add_agent(
     let mut builder = SandboxConfig::builder()
         .image(&image_name)
         .memory_mb(1024);
+
+    // Set agent type from agent name.
+    if let Ok(agent_type) = agent.parse::<crate::config::AgentType>() {
+        builder = builder.agent_type(agent_type);
+    }
+
+    // Set model if provided.
+    if let Some(m) = model {
+        builder = builder.model(m);
+    }
 
     if let Some(n) = name {
         builder = builder.name(n);
@@ -2857,17 +2945,18 @@ fn add_agent_from_config(
 ) {
     let display_name = config.name.clone();
 
-    // Detect the base agent type from the image name so that
-    // agent_cli_command() can resolve the correct startup command.
-    // e.g. "localhost:5050/agent-claude:latest" → "claude"
-    //      "ghcr.io/devdone-labs/agents-registry/codex:v1" → "codex"
-    let agent_type = detect_agent_type_from_image(&config.image)
+    // Detect the base agent type: explicit config.agent_type > image name > key.
+    let agent_type = config
+        .agent_type
+        .map(|t| t.to_string())
+        .or_else(|| detect_agent_type_from_image(&config.image))
         .unwrap_or_else(|| key.to_string());
 
     let mut panel = AgentPanel::new(&agent_type);
     panel.display_name = Some(display_name.clone());
     panel.auto_mode = config.auto_mode;
     panel.permissions = config.permissions;
+    panel.model = config.model.clone();
     if config.auto_mode {
         let task = config.prompt.as_deref().unwrap_or("(no prompt)");
         panel.headless_state = Some(super::app::HeadlessState::new(task));
@@ -2992,6 +3081,8 @@ fn resume_session(
             panel.headless_state = Some(super::app::HeadlessState::new(task));
         }
         panel.visible = sp.visible;
+        panel.agent_type = sp.agent_type;
+        panel.model = sp.model.clone();
         panel.original_config = Some(config.clone());
 
         // Copy env vars from config to panel.
@@ -3648,10 +3739,11 @@ async fn handle_agent_set(app: &mut App, name: &str) {
         }
     };
 
-    // Inherit auto_mode and permissions from sandbox config
+    // Inherit auto_mode, permissions, and agent_type from sandbox config
     let sb = sandbox.lock().await;
     resolved.auto_mode = sb.config().auto_mode;
     resolved.permissions = sb.config().permissions;
+    resolved.agent_type = sb.config().agent_type;
     match sb.bootstrap_agent(&resolved).await {
         Ok(()) => {
             let skill_count = resolved.skills.len();

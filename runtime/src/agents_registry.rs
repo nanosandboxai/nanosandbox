@@ -227,6 +227,7 @@ impl AgentsRegistryClient {
             mcp_servers,
             auto_mode: false,
             permissions: crate::config::Permissions::Default,
+            agent_type: None,
         })
     }
 }
@@ -612,6 +613,7 @@ Body here.
             mcp_servers: HashMap::new(),
             auto_mode: false,
             permissions: crate::config::Permissions::Default,
+            agent_type: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: ResolvedAgentConfig = serde_json::from_str(&json).unwrap();

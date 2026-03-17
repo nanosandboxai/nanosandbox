@@ -46,6 +46,8 @@ pub struct SandboxDefaults {
     pub permissions: Option<super::Permissions>,
     /// Task prompt for headless mode.
     pub prompt: Option<String>,
+    /// Model identifier (e.g., "claude-sonnet-4-5-20250929"). Inherited by sandboxes.
+    pub model: Option<String>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -76,6 +78,11 @@ pub struct SandboxDefinition {
     pub permissions: Option<super::Permissions>,
     /// Task prompt for headless mode.
     pub prompt: Option<String>,
+    /// Agent type (determines CLI command and config format). Per-sandbox only.
+    #[serde(rename = "type")]
+    pub agent_type: Option<String>,
+    /// Model identifier (e.g., "claude-sonnet-4-5-20250929").
+    pub model: Option<String>,
 }
 
 /// Network configuration in YAML.
@@ -405,6 +412,26 @@ pub fn resolve_sandbox_configs(
                 "Sandbox '{}': 'prompt' is required when 'auto_mode' is true",
                 key,
             ));
+        }
+
+        // Agent type: per-sandbox only (NOT inherited from defaults).
+        if let Some(ref type_str) = def.agent_type {
+            config.agent_type =
+                Some(type_str.parse::<super::AgentType>().map_err(|e| {
+                    format!("Sandbox '{}': {}", key, e)
+                })?);
+        }
+
+        // Model: per-sandbox overrides defaults.
+        config.model = def.model.clone().or_else(|| defaults.model.clone());
+
+        // Validate model against known models if both type and model are set.
+        if let (Some(agent_type), Some(ref model)) = (config.agent_type, &config.model) {
+            if let Some(registry) = super::models::ModelsRegistry::load() {
+                registry
+                    .validate(agent_type.as_str(), model)
+                    .map_err(|e| format!("Sandbox '{}': {}", key, e))?;
+            }
         }
 
         results.push((key.clone(), config));
@@ -1150,6 +1177,128 @@ sandboxes:
         assert_eq!(configs[0].1.env["SHARED"], "from_sandbox_env");
         assert_eq!(configs[0].1.env["DEFAULT_ONLY"], "yes");
         assert_eq!(configs[0].1.env["SB_ONLY"], "yes");
+    }
+
+    #[test]
+    fn test_yaml_agent_type_per_sandbox() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    type: claude
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.agent_type,
+            Some(crate::config::AgentType::Claude)
+        );
+    }
+
+    #[test]
+    fn test_yaml_agent_type_invalid() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    type: invalid-agent
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let result =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown agent type"));
+    }
+
+    #[test]
+    fn test_yaml_model_per_sandbox() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    type: claude
+    model: claude-sonnet-4-5-20250929
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.model,
+            Some("claude-sonnet-4-5-20250929".to_string())
+        );
+    }
+
+    #[test]
+    fn test_yaml_model_inherited_from_defaults() {
+        let yaml = r#"
+defaults:
+  model: claude-sonnet-4-5-20250929
+sandboxes:
+  test:
+    image: test:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.model,
+            Some("claude-sonnet-4-5-20250929".to_string())
+        );
+    }
+
+    #[test]
+    fn test_yaml_model_per_sandbox_overrides_defaults() {
+        let yaml = r#"
+defaults:
+  model: claude-sonnet-4-5-20250929
+sandboxes:
+  test:
+    image: test:latest
+    type: claude
+    model: claude-opus-4-20250514
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.model,
+            Some("claude-opus-4-20250514".to_string())
+        );
+    }
+
+    #[test]
+    fn test_yaml_invalid_model_for_agent_type() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    type: claude
+    model: gpt-4.1
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let result =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown model"));
+    }
+
+    #[test]
+    fn test_yaml_model_without_type_skips_validation() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    model: any-model-value
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs =
+            resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(
+            configs[0].1.model,
+            Some("any-model-value".to_string())
+        );
+        assert!(configs[0].1.agent_type.is_none());
     }
 
     #[test]

@@ -20,6 +20,10 @@ pub struct SshTerminal {
     parser: vt100::Parser,
     /// Current terminal dimensions (cols, rows).
     size: (u16, u16),
+    /// Current scrollback offset (0 = live screen, >0 = lines scrolled up).
+    scroll_offset: usize,
+    /// Whether to auto-scroll to bottom when new data arrives.
+    auto_scroll: bool,
 }
 
 impl SshTerminal {
@@ -28,6 +32,8 @@ impl SshTerminal {
         Self {
             parser: vt100::Parser::new(rows, cols, 1000),
             size: (cols, rows),
+            scroll_offset: 0,
+            auto_scroll: true,
         }
     }
 
@@ -39,14 +45,78 @@ impl SshTerminal {
     /// Feed raw bytes from the SSH channel into the terminal parser.
     pub fn process_bytes(&mut self, data: &[u8]) {
         self.parser.process(data);
+        // Keep the view pinned to the live screen when auto-scroll is on.
+        if self.auto_scroll {
+            self.scroll_offset = 0;
+            self.parser.set_scrollback(0);
+        }
     }
 
     /// Resize the terminal. Updates the vt100 parser dimensions.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         if (cols, rows) != self.size {
+            // Reset scrollback before resize — content may not align after.
+            if self.scroll_offset > 0 {
+                self.scroll_offset = 0;
+                self.parser.set_scrollback(0);
+                self.auto_scroll = true;
+            }
             self.size = (cols, rows);
             self.parser.set_size(rows, cols);
         }
+    }
+
+    /// Scroll up by N lines. Returns true if scroll position changed.
+    pub fn scroll_up(&mut self, lines: usize) -> bool {
+        let old = self.scroll_offset;
+        // The vt100 crate's visible_rows() computes `rows.len() - scrollback_offset`,
+        // so the offset must not exceed the terminal height. We also cap to the
+        // actual scrollback buffer length.
+        let rows = self.size.1 as usize;
+        self.parser.set_scrollback(rows);
+        let max = self.parser.screen().scrollback(); // clamped to min(rows, scrollback.len())
+        self.scroll_offset = (old + lines).min(max);
+        self.parser.set_scrollback(self.scroll_offset);
+        self.auto_scroll = false;
+        self.scroll_offset != old
+    }
+
+    /// Scroll down by N lines. Returns true if scroll position changed.
+    pub fn scroll_down(&mut self, lines: usize) -> bool {
+        let old = self.scroll_offset;
+        self.scroll_offset = old.saturating_sub(lines);
+        self.parser.set_scrollback(self.scroll_offset);
+        if self.scroll_offset == 0 {
+            self.auto_scroll = true;
+        }
+        self.scroll_offset != old
+    }
+
+    /// Jump to bottom (live screen).
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
+        self.parser.set_scrollback(0);
+        self.auto_scroll = true;
+    }
+
+    /// Check if currently scrolled up (not at live screen).
+    pub fn is_scrolled_up(&self) -> bool {
+        self.scroll_offset > 0
+    }
+
+    /// Get the current scroll offset.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Return the maximum scrollback lines currently available.
+    pub fn scrollback_max(&mut self) -> usize {
+        let rows = self.size.1 as usize;
+        let saved = self.scroll_offset;
+        self.parser.set_scrollback(rows);
+        let max = self.parser.screen().scrollback();
+        self.parser.set_scrollback(saved);
+        max
     }
 }
 
@@ -101,6 +171,7 @@ pub async fn connect_ssh(
     auto_mode: bool,
     prompt: Option<&str>,
     is_resumed: bool,
+    model: Option<&str>,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<SshTerminalHandle, anyhow::Error> {
@@ -146,6 +217,10 @@ pub async fn connect_ssh(
             crate::config::Permissions::Default => "smart_approve",
         };
         env_parts.push(format!("export GOOSE_MODE='{}'", goose_mode));
+        // Goose uses env var for model selection instead of CLI flag.
+        if let Some(m) = model {
+            env_parts.push(format!("export GOOSE_DEFAULT_MODEL='{}'", m));
+        }
     }
 
     // Set prompt env var for headless agents.
@@ -158,7 +233,7 @@ pub async fn connect_ssh(
         }
     }
 
-    let agent_cmd = agent_cli_command(agent_name, permissions, auto_mode, is_resumed);
+    let agent_cmd = agent_cli_command(agent_name, permissions, auto_mode, is_resumed, model);
 
     let channel = session.channel_open_session().await?;
 
@@ -312,6 +387,7 @@ fn agent_cli_command(
     permissions: crate::config::Permissions,
     auto_mode: bool,
     is_resumed: bool,
+    model: Option<&str>,
 ) -> Option<String> {
     use crate::config::Permissions;
     let effective = permissions.effective(auto_mode);
@@ -349,10 +425,14 @@ fn agent_cli_command(
                 Permissions::Default => {}
             }
 
+            if let Some(m) = model {
+                parts.extend(["--model".to_string(), m.to_string()]);
+            }
+
             Some(parts.join(" "))
         }
         "goose" => {
-            // Goose permissions handled via GOOSE_MODE env var in connect_ssh.
+            // Goose permissions and model handled via env vars in connect_ssh.
             if auto_mode {
                 Some("goose run --output-format stream-json --no-session -t \"$NANOSB_PROMPT\"".to_string())
             } else if is_resumed {
@@ -372,6 +452,9 @@ fn agent_cli_command(
                     Permissions::AllowAll => parts.push("--yolo".to_string()),
                     _ => parts.push("--full-auto".to_string()),
                 }
+                if let Some(m) = model {
+                    parts.extend(["--model".to_string(), m.to_string()]);
+                }
                 parts.push("\"$NANOSB_PROMPT\"".to_string());
                 Some(parts.join(" "))
             } else {
@@ -383,6 +466,9 @@ fn agent_cli_command(
                     Permissions::AllowAll => parts.push("--yolo".to_string()),
                     Permissions::AcceptEdits => parts.push("--full-auto".to_string()),
                     Permissions::Default => {}
+                }
+                if let Some(m) = model {
+                    parts.extend(["--model".to_string(), m.to_string()]);
                 }
                 Some(parts.join(" "))
             }
@@ -406,16 +492,26 @@ fn agent_cli_command(
 
             match effective {
                 Permissions::AllowAll => {
-                    parts.extend([
-                        "--force".to_string(),
-                        "--trust".to_string(),
-                        "--approve-mcps".to_string(),
-                    ]);
+                    parts.push("--force".to_string());
+                    // --trust and --approve-mcps require --print (headless mode)
+                    if auto_mode {
+                        parts.extend([
+                            "--trust".to_string(),
+                            "--approve-mcps".to_string(),
+                        ]);
+                    }
                 }
                 Permissions::AcceptEdits => {
-                    parts.push("--trust".to_string());
+                    // --trust requires --print (headless mode)
+                    if auto_mode {
+                        parts.push("--trust".to_string());
+                    }
                 }
                 Permissions::Default => {}
+            }
+
+            if let Some(m) = model {
+                parts.extend(["--model".to_string(), m.to_string()]);
             }
 
             Some(parts.join(" "))
@@ -857,51 +953,53 @@ mod tests {
     fn test_agent_cli_command_default_perms() {
         use crate::config::Permissions;
         assert_eq!(
-            agent_cli_command("claude", Permissions::Default, false, false),
+            agent_cli_command("claude", Permissions::Default, false, false, None),
             Some("claude".to_string()),
         );
         assert_eq!(
-            agent_cli_command("goose", Permissions::Default, false, false),
+            agent_cli_command("goose", Permissions::Default, false, false, None),
             Some("goose session".to_string()),
         );
         assert_eq!(
-            agent_cli_command("codex", Permissions::Default, false, false),
+            agent_cli_command("codex", Permissions::Default, false, false, None),
             Some("codex".to_string()),
         );
         assert_eq!(
-            agent_cli_command("cursor", Permissions::Default, false, false),
+            agent_cli_command("cursor", Permissions::Default, false, false, None),
             Some("cursor-agent".to_string()),
         );
-        assert_eq!(agent_cli_command("unknown", Permissions::Default, false, false), None);
+        assert_eq!(agent_cli_command("unknown", Permissions::Default, false, false, None), None);
     }
 
     #[test]
     fn test_agent_cli_command_allow_all_interactive() {
         use crate::config::Permissions;
-        let cmd = agent_cli_command("claude", Permissions::AllowAll, false, false).unwrap();
+        let cmd = agent_cli_command("claude", Permissions::AllowAll, false, false, None).unwrap();
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(!cmd.contains(" -p ")); // not headless (space-delimited to avoid matching inside --dangerously-skip-permissions)
 
-        let cmd = agent_cli_command("codex", Permissions::AllowAll, false, false).unwrap();
+        let cmd = agent_cli_command("codex", Permissions::AllowAll, false, false, None).unwrap();
         assert!(cmd.contains("--yolo"));
 
-        let cmd = agent_cli_command("cursor", Permissions::AllowAll, false, false).unwrap();
+        let cmd = agent_cli_command("cursor", Permissions::AllowAll, false, false, None).unwrap();
         assert!(cmd.contains("--force"));
-        assert!(cmd.contains("--trust"));
+        // --trust requires headless mode (--print)
+        assert!(!cmd.contains("--trust"));
     }
 
     #[test]
     fn test_agent_cli_command_accept_edits() {
         use crate::config::Permissions;
-        let cmd = agent_cli_command("claude", Permissions::AcceptEdits, false, false).unwrap();
+        let cmd = agent_cli_command("claude", Permissions::AcceptEdits, false, false, None).unwrap();
         assert!(cmd.contains("--permission-mode"));
         assert!(cmd.contains("acceptEdits"));
 
-        let cmd = agent_cli_command("codex", Permissions::AcceptEdits, false, false).unwrap();
+        let cmd = agent_cli_command("codex", Permissions::AcceptEdits, false, false, None).unwrap();
         assert!(cmd.contains("--full-auto"));
 
-        let cmd = agent_cli_command("cursor", Permissions::AcceptEdits, false, false).unwrap();
-        assert!(cmd.contains("--trust"));
+        // --trust requires headless mode, so not present in interactive
+        let cmd = agent_cli_command("cursor", Permissions::AcceptEdits, false, false, None).unwrap();
+        assert!(!cmd.contains("--trust"));
         assert!(!cmd.contains("--force"));
     }
 
@@ -909,42 +1007,44 @@ mod tests {
     fn test_agent_cli_command_headless() {
         use crate::config::Permissions;
         // Headless mode should use -p/exec + stream-json + AllowAll
-        let cmd = agent_cli_command("claude", Permissions::Default, true, false).unwrap();
+        let cmd = agent_cli_command("claude", Permissions::Default, true, false, None).unwrap();
         assert!(cmd.contains("-p"));
         assert!(cmd.contains("stream-json"));
         assert!(cmd.contains("--dangerously-skip-permissions")); // auto_mode forces AllowAll
         assert!(cmd.contains("$NANOSB_PROMPT"));
 
-        let cmd = agent_cli_command("codex", Permissions::Default, true, false).unwrap();
+        let cmd = agent_cli_command("codex", Permissions::Default, true, false, None).unwrap();
         assert!(cmd.contains("exec"));
         assert!(cmd.contains("--json"));
         assert!(cmd.contains("--yolo")); // auto_mode forces AllowAll
 
-        let cmd = agent_cli_command("goose", Permissions::Default, true, false).unwrap();
+        let cmd = agent_cli_command("goose", Permissions::Default, true, false, None).unwrap();
         assert!(cmd.contains("goose run"));
         assert!(cmd.contains("stream-json"));
 
-        let cmd = agent_cli_command("cursor", Permissions::Default, true, false).unwrap();
+        let cmd = agent_cli_command("cursor", Permissions::Default, true, false, None).unwrap();
         assert!(cmd.contains("-p"));
         assert!(cmd.contains("stream-json"));
         assert!(cmd.contains("--force")); // auto_mode forces AllowAll
+        assert!(cmd.contains("--trust")); // headless mode allows --trust
+        assert!(cmd.contains("--approve-mcps"));
     }
 
     #[test]
     fn test_agent_cli_command_resumed_interactive() {
         use crate::config::Permissions;
         assert_eq!(
-            agent_cli_command("claude", Permissions::Default, false, true),
+            agent_cli_command("claude", Permissions::Default, false, true, None),
             Some("claude -c".to_string()),
         );
         assert_eq!(
-            agent_cli_command("goose", Permissions::Default, false, true),
+            agent_cli_command("goose", Permissions::Default, false, true, None),
             Some("goose session -r".to_string()),
         );
-        let cmd = agent_cli_command("codex", Permissions::Default, false, true).unwrap();
+        let cmd = agent_cli_command("codex", Permissions::Default, false, true, None).unwrap();
         assert!(cmd.contains("resume --last"));
         assert_eq!(
-            agent_cli_command("cursor", Permissions::Default, false, true),
+            agent_cli_command("cursor", Permissions::Default, false, true, None),
             Some("cursor-agent --continue".to_string()),
         );
     }
@@ -952,17 +1052,54 @@ mod tests {
     #[test]
     fn test_agent_cli_command_resumed_allow_all() {
         use crate::config::Permissions;
-        let cmd = agent_cli_command("claude", Permissions::AllowAll, false, true).unwrap();
+        let cmd = agent_cli_command("claude", Permissions::AllowAll, false, true, None).unwrap();
         assert!(cmd.contains("-c"));
         assert!(cmd.contains("--dangerously-skip-permissions"));
 
-        let cmd = agent_cli_command("codex", Permissions::AllowAll, false, true).unwrap();
+        let cmd = agent_cli_command("codex", Permissions::AllowAll, false, true, None).unwrap();
         assert!(cmd.contains("resume --last"));
         assert!(cmd.contains("--yolo"));
 
-        let cmd = agent_cli_command("cursor", Permissions::AllowAll, false, true).unwrap();
+        let cmd = agent_cli_command("cursor", Permissions::AllowAll, false, true, None).unwrap();
         assert!(cmd.contains("--continue"));
         assert!(cmd.contains("--force"));
+    }
+
+    #[test]
+    fn test_agent_cli_command_with_model_claude() {
+        use crate::config::Permissions;
+        let cmd = agent_cli_command("claude", Permissions::Default, false, false, Some("claude-sonnet-4-5-20250929")).unwrap();
+        assert!(cmd.contains("--model claude-sonnet-4-5-20250929"));
+    }
+
+    #[test]
+    fn test_agent_cli_command_with_model_codex() {
+        use crate::config::Permissions;
+        let cmd = agent_cli_command("codex", Permissions::Default, false, false, Some("o4-mini")).unwrap();
+        assert!(cmd.contains("--model o4-mini"));
+    }
+
+    #[test]
+    fn test_agent_cli_command_with_model_cursor() {
+        use crate::config::Permissions;
+        let cmd = agent_cli_command("cursor", Permissions::Default, false, false, Some("sonnet-4.6")).unwrap();
+        assert!(cmd.contains("--model sonnet-4.6"));
+    }
+
+    #[test]
+    fn test_agent_cli_command_goose_no_model_flag() {
+        // Goose uses env var, not CLI flag — model should NOT appear in the command string.
+        use crate::config::Permissions;
+        let cmd = agent_cli_command("goose", Permissions::Default, false, false, Some("claude-sonnet-4-5-20250929")).unwrap();
+        assert!(!cmd.contains("--model"));
+    }
+
+    #[test]
+    fn test_agent_cli_command_model_in_headless() {
+        use crate::config::Permissions;
+        let cmd = agent_cli_command("claude", Permissions::Default, true, false, Some("claude-opus-4-20250514")).unwrap();
+        assert!(cmd.contains("--model claude-opus-4-20250514"));
+        assert!(cmd.contains("-p"));
     }
 
     #[test]

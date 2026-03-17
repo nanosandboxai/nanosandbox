@@ -35,6 +35,8 @@ pub enum Command {
         auto_mode: bool,
         /// Task prompt for headless mode (required with --auto-mode).
         prompt: Option<String>,
+        /// Optional model identifier (e.g., "claude-sonnet-4-5-20250929").
+        model: Option<String>,
     },
     /// Switch focus to a specific panel index.
     Focus {
@@ -245,9 +247,10 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         Some(a) => *a,
         None => {
             return ParseResult::Err(format!(
-                "Usage: /add <agent> [--auto-mode -p <prompt>] [--image <image>] [--project <path>] [--branch <name>] [--name <name>]\n\
+                "Usage: /add <agent> [--model <model>] [--auto-mode -p <prompt>] [--image <image>] [--project <path>] [--branch <name>] [--name <name>]\n\
                  Supported agents: {}\n\
                  Example: /add claude\n\
+                 With model: /add claude --model claude-sonnet-4-5-20250929\n\
                  Headless: /add claude --auto-mode -p \"list files\"",
                 SUPPORTED_AGENTS.join(", "),
             ));
@@ -260,6 +263,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
     let mut name = None;
     let mut auto_mode = false;
     let mut prompt = None;
+    let mut model = None;
     let mut i = 2;
 
     while i < parts.len() {
@@ -300,6 +304,16 @@ fn parse_add(parts: &[&str]) -> ParseResult {
                     ),
                 }
             }
+            "--model" => {
+                match parts.get(i + 1) {
+                    Some(v) => { model = Some(v.to_string()); i += 2; }
+                    None => return ParseResult::Err(
+                        "--model requires a value\n\
+                         Usage: /add <agent> --model <model-name>\n\
+                         Example: /add claude --model claude-sonnet-4-5-20250929".to_string(),
+                    ),
+                }
+            }
             "--auto-mode" => {
                 auto_mode = true;
                 i += 1;
@@ -323,7 +337,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
             other => {
                 return ParseResult::Err(format!(
                     "Unknown option: {}\n\
-                     Usage: /add <agent> [--auto-mode -p <prompt>] [--image <image>] [--project <path>] [--branch <name>] [--name <name>]",
+                     Usage: /add <agent> [--model <model>] [--auto-mode -p <prompt>] [--image <image>] [--project <path>] [--branch <name>] [--name <name>]",
                     other,
                 ));
             }
@@ -357,6 +371,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         name,
         auto_mode,
         prompt,
+        model,
     })
 }
 
@@ -641,6 +656,7 @@ mod tests {
                 name: None,
                 auto_mode: false,
                 prompt: None,
+                model: None,
             })
         );
     }
@@ -657,6 +673,7 @@ mod tests {
                 name: None,
                 auto_mode: false,
                 prompt: None,
+                model: None,
             })
         );
     }
@@ -751,6 +768,7 @@ mod tests {
                 name: None,
                 auto_mode: false,
                 prompt: None,
+                model: None,
             })
         );
     }
@@ -933,6 +951,7 @@ mod tests {
                 name: None,
                 auto_mode: false,
                 prompt: None,
+                model: None,
             })
         );
     }
@@ -949,6 +968,7 @@ mod tests {
                 name: None,
                 auto_mode: false,
                 prompt: None,
+                model: None,
             })
         );
     }
@@ -965,6 +985,7 @@ mod tests {
                 name: None,
                 auto_mode: true,
                 prompt: Some("list files".to_string()),
+                model: None,
             })
         );
     }
@@ -982,6 +1003,7 @@ mod tests {
                 name: None,
                 auto_mode: true,
                 prompt: Some("analyse project".to_string()),
+                model: None,
             })
         );
     }
@@ -1009,6 +1031,7 @@ mod tests {
                 name: None,
                 auto_mode: true,
                 prompt: Some("fix the bug".to_string()),
+                model: None,
             })
         );
     }
@@ -1219,6 +1242,51 @@ mod tests {
     fn test_autocomplete_agent() {
         let suggestions = autocomplete("/ag");
         assert!(suggestions.iter().any(|s| s.starts_with("/agent")));
+    }
+
+    #[test]
+    fn test_parse_add_with_model() {
+        assert_eq!(
+            parse_command_verbose("/add claude --model claude-sonnet-4-5-20250929"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: false,
+                prompt: None,
+                model: Some("claude-sonnet-4-5-20250929".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_model_missing_value() {
+        let result = parse_command_verbose("/add claude --model");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("--model requires a value"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_add_with_model_and_auto_mode() {
+        assert_eq!(
+            parse_command_verbose("/add claude --model claude-opus-4-20250514 --auto-mode -p do stuff"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: true,
+                prompt: Some("do stuff".to_string()),
+                model: Some("claude-opus-4-20250514".to_string()),
+            })
+        );
     }
 
     #[test]
