@@ -15,6 +15,103 @@ use super::commands::{self, Command, ParseResult};
 use super::terminal::{SshTerminal, SshTerminalHandle};
 use super::text_input::TextInput;
 
+/// In-memory command history with shell-like Up/Down navigation.
+pub struct CommandHistory {
+    /// Ordered list of executed commands (oldest first).
+    entries: Vec<String>,
+    /// Current navigation index. `None` = not browsing history.
+    nav_index: Option<usize>,
+    /// The input text the user was typing before they started browsing.
+    draft: String,
+}
+
+impl CommandHistory {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            nav_index: None,
+            draft: String::new(),
+        }
+    }
+
+    /// Record a successfully executed command. Skips consecutive duplicates.
+    pub fn push(&mut self, cmd: &str) {
+        let cmd = cmd.trim();
+        if cmd.is_empty() {
+            return;
+        }
+        if self.entries.last().map(|s| s.as_str()) == Some(cmd) {
+            return;
+        }
+        self.entries.push(cmd.to_string());
+        self.nav_index = None;
+        self.draft.clear();
+    }
+
+    /// Navigate to the previous (older) entry. Returns the entry text, or
+    /// `None` if already at the oldest entry or history is empty.
+    pub fn navigate_up(&mut self, current_input: &str) -> Option<&str> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        match self.nav_index {
+            None => {
+                self.draft = current_input.to_string();
+                let idx = self.entries.len() - 1;
+                self.nav_index = Some(idx);
+                Some(&self.entries[idx])
+            }
+            Some(0) => None,
+            Some(idx) => {
+                let new_idx = idx - 1;
+                self.nav_index = Some(new_idx);
+                Some(&self.entries[new_idx])
+            }
+        }
+    }
+
+    /// Navigate to the next (newer) entry. Returns `Some(text)` for an entry,
+    /// or `None` when returning past the newest entry (caller should restore draft).
+    pub fn navigate_down(&mut self) -> Option<&str> {
+        match self.nav_index {
+            None => None,
+            Some(idx) => {
+                if idx + 1 >= self.entries.len() {
+                    self.nav_index = None;
+                    None
+                } else {
+                    let new_idx = idx + 1;
+                    self.nav_index = Some(new_idx);
+                    Some(&self.entries[new_idx])
+                }
+            }
+        }
+    }
+
+    /// The saved draft text from before history browsing started.
+    pub fn draft(&self) -> &str {
+        &self.draft
+    }
+
+    /// Whether the user is currently browsing history.
+    pub fn is_navigating(&self) -> bool {
+        self.nav_index.is_some()
+    }
+
+    /// Abandon history browsing (e.g. when the user types a character).
+    pub fn reset_navigation(&mut self) {
+        self.nav_index = None;
+        self.draft.clear();
+    }
+
+    /// Clear all entries and reset navigation.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.nav_index = None;
+        self.draft.clear();
+    }
+}
+
 /// State for an active mouse text selection within a panel.
 #[derive(Debug, Clone)]
 pub struct MouseSelection {
@@ -337,6 +434,8 @@ pub struct App {
     /// When true, `/quit` performs full cleanup (teardown + delete session).
     /// Set by `/destroy` command.
     pub destroy_on_quit: bool,
+    /// Command history for shell-like Up/Down navigation in the global bar.
+    pub command_history: CommandHistory,
 }
 
 impl Default for App {
@@ -381,6 +480,7 @@ impl App {
             registry: None,
             image_manager: None,
             destroy_on_quit: false,
+            command_history: CommandHistory::new(),
         }
     }
 
@@ -726,6 +826,7 @@ impl App {
     /// Append a character to the active input buffer.
     pub fn handle_char(&mut self, c: char) {
         self.autocomplete_index = None;
+        self.command_history.reset_navigation();
         match self.input_focus {
             InputFocus::Global => {
                 self.global_input.insert_char(c);
@@ -743,6 +844,7 @@ impl App {
     /// Delete the character before the cursor in the active input.
     pub fn handle_backspace(&mut self) {
         self.autocomplete_index = None;
+        self.command_history.reset_navigation();
         match self.input_focus {
             InputFocus::Global => {
                 self.global_input.backspace();
@@ -760,6 +862,7 @@ impl App {
     /// Delete the character at the cursor in the active input.
     pub fn handle_delete(&mut self) {
         self.autocomplete_index = None;
+        self.command_history.reset_navigation();
         match self.input_focus {
             InputFocus::Global => {
                 self.global_input.delete();
@@ -1114,5 +1217,99 @@ mod tests {
         assert!(app.zoomed);
         app.zoomed = !app.zoomed;
         assert!(!app.zoomed);
+    }
+
+    // ===== CommandHistory tests =====
+
+    #[test]
+    fn test_history_new_is_empty() {
+        let history = CommandHistory::new();
+        assert!(!history.is_navigating());
+        assert_eq!(history.draft(), "");
+    }
+
+    #[test]
+    fn test_history_push_and_navigate_up() {
+        let mut history = CommandHistory::new();
+        history.push("/add claude");
+        history.push("/help");
+
+        let entry = history.navigate_up("").unwrap();
+        assert_eq!(entry, "/help");
+        let entry = history.navigate_up("").unwrap();
+        assert_eq!(entry, "/add claude");
+        assert!(history.navigate_up("").is_none());
+    }
+
+    #[test]
+    fn test_history_navigate_down_returns_to_draft() {
+        let mut history = CommandHistory::new();
+        history.push("/add claude");
+        history.push("/help");
+
+        history.navigate_up("/foo"); // saves draft "/foo", goes to /help
+        history.navigate_up("/foo"); // goes to /add claude
+
+        let entry = history.navigate_down().unwrap();
+        assert_eq!(entry, "/help");
+
+        // Past newest: back to draft
+        assert!(history.navigate_down().is_none());
+        assert_eq!(history.draft(), "/foo");
+        assert!(!history.is_navigating());
+    }
+
+    #[test]
+    fn test_history_dedup_last_entry() {
+        let mut history = CommandHistory::new();
+        history.push("/help");
+        history.push("/help"); // duplicate
+        assert!(history.navigate_up("").is_some());
+        assert!(history.navigate_up("").is_none()); // only one entry
+    }
+
+    #[test]
+    fn test_history_reset_navigation() {
+        let mut history = CommandHistory::new();
+        history.push("/help");
+        history.navigate_up("draft");
+        assert!(history.is_navigating());
+
+        history.reset_navigation();
+        assert!(!history.is_navigating());
+    }
+
+    #[test]
+    fn test_history_clear() {
+        let mut history = CommandHistory::new();
+        history.push("/help");
+        history.push("/quit");
+        history.navigate_up("draft");
+
+        history.clear();
+        assert!(!history.is_navigating());
+        assert_eq!(history.draft(), "");
+        assert!(history.navigate_up("").is_none());
+    }
+
+    #[test]
+    fn test_history_empty_string_not_stored() {
+        let mut history = CommandHistory::new();
+        history.push("");
+        history.push("  ");
+        assert!(history.navigate_up("").is_none());
+    }
+
+    #[test]
+    fn test_history_navigate_up_empty_history() {
+        let mut history = CommandHistory::new();
+        assert!(history.navigate_up("whatever").is_none());
+    }
+
+    #[test]
+    fn test_history_navigate_down_when_not_navigating() {
+        let mut history = CommandHistory::new();
+        history.push("/help");
+        assert!(history.navigate_down().is_none());
     }
 }

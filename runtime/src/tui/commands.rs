@@ -7,8 +7,6 @@ pub enum Command {
     Quit,
     /// Show help text.
     Help,
-    /// Clear the current panel output.
-    Clear,
     /// Close (hide) a panel. Sandbox keeps running.
     Close {
         /// Target: panel index or name, or None for focused panel.
@@ -146,6 +144,8 @@ pub enum Command {
     PasteImage,
     /// Destroy all sandboxes, remove session state, and exit.
     Destroy,
+    /// Clear the command history.
+    ClearHistory,
 }
 
 /// Result of parsing a slash command.
@@ -163,7 +163,7 @@ pub enum ParseResult {
 const SUPPORTED_AGENTS: &[&str] = &["claude", "goose", "codex", "cursor"];
 
 const ALL_COMMANDS: &[&str] = &[
-    "/quit", "/q", "/destroy", "/help", "/clear", "/close", "/copy",
+    "/quit", "/q", "/destroy", "/help", "/clearhistory", "/close", "/copy",
     "/add", "/focus", "/kill", "/reconnect", "/env",
     "/zoom", "/branches",
     "/gitsync", "/gitsync on", "/gitsync off", "/gitsync now",
@@ -204,7 +204,7 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/quit" | "/q" => ParseResult::Ok(Command::Quit),
         "/destroy" => ParseResult::Ok(Command::Destroy),
         "/help" => ParseResult::Ok(Command::Help),
-        "/clear" => ParseResult::Ok(Command::Clear),
+        "/clearhistory" => ParseResult::Ok(Command::ClearHistory),
         "/close" => {
             let target = parts.get(1).map(|s| s.to_string());
             ParseResult::Ok(Command::Close { target })

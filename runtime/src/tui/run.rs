@@ -1170,6 +1170,15 @@ async fn handle_key_event(
             }
         }
 
+        // Ctrl+C: clear the global input bar.
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.input_focus == InputFocus::Global {
+                app.global_input.clear();
+                app.autocomplete_index = None;
+                app.command_history.reset_navigation();
+            }
+        }
+
         // Shift+Enter or Alt+Enter: insert newline.
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::SHIFT)
@@ -1202,9 +1211,16 @@ async fn handle_key_event(
                 }
             }
 
+            // Capture raw input before handle_submit() clears the buffer.
+            let raw_input = app.current_input().to_string();
+
             let result = app.handle_submit();
             match result {
                 SubmitResult::Command(cmd) => {
+                    // Record in history (skip /clearhistory itself).
+                    if !matches!(cmd, Command::ClearHistory) {
+                        app.command_history.push(&raw_input);
+                    }
                     handle_command(app, cmd, tx).await;
                 }
                 SubmitResult::CommandError(msg) => {
@@ -1220,6 +1236,7 @@ async fn handle_key_event(
                     // Nothing to do.
                 }
             }
+            app.command_history.reset_navigation();
         }
 
         // Cursor movement: left/right.
@@ -1260,7 +1277,7 @@ async fn handle_key_event(
             app.handle_backspace();
         }
 
-        // Up/Down: autocomplete → multiline input navigation → chat scroll.
+        // Up/Down: autocomplete → multiline input navigation → history → chat scroll.
         KeyCode::Up => {
             if app.autocomplete_active() {
                 let suggestions = commands::autocomplete(app.current_input());
@@ -1277,6 +1294,12 @@ async fn handle_key_event(
                 let (row, _) = app.active_input().cursor_visual_position(width);
                 if row > 0 {
                     app.handle_move_up(width);
+                } else if app.input_focus == InputFocus::Global {
+                    let current_text = app.global_input.text().to_string();
+                    if let Some(entry) = app.command_history.navigate_up(&current_text) {
+                        let entry = entry.to_string();
+                        app.global_input.set_text(entry);
+                    }
                 }
             }
         }
@@ -1293,6 +1316,19 @@ async fn handle_key_event(
                 let (row, _) = app.active_input().cursor_visual_position(width);
                 if row + 1 < total_lines {
                     app.handle_move_down(width);
+                } else if app.input_focus == InputFocus::Global
+                    && app.command_history.is_navigating()
+                {
+                    match app.command_history.navigate_down() {
+                        Some(entry) => {
+                            let entry = entry.to_string();
+                            app.global_input.set_text(entry);
+                        }
+                        None => {
+                            let draft = app.command_history.draft().to_string();
+                            app.global_input.set_text(draft);
+                        }
+                    }
                 }
             }
         }
@@ -1337,7 +1373,6 @@ async fn handle_command(
                     "  /upload <path>                Upload host file to sandbox\n",
                     "  /paste-image                  Paste clipboard image to sandbox\n",
                     "  /zoom                         Toggle panel zoom (Ctrl+F)\n",
-                    "  /clear                        Clear chat history\n",
                     "  /theme [name]                 Switch colour theme\n",
                     "  /env [KEY=VALUE]              Set/list panel env vars\n",
                     "  /reconnect                    Reconnect SSH terminal\n",
@@ -1358,6 +1393,7 @@ async fn handle_command(
                     "  /agent show <name>            Show agent details\n",
                     "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
                     "  /edit [tool]                  Open clone in external tool\n",
+                    "  /clearhistory                 Clear command history\n",
                     "  /quit                         Suspend session and exit\n",
                     "  /destroy                      Full cleanup and exit\n",
                     "\n",
@@ -1365,13 +1401,6 @@ async fn handle_command(
                 )
                 .to_string(),
             });
-        }
-        Command::Clear => {
-            if let Some(panel) = app.focused_panel_mut() {
-                panel.chat_history.clear();
-            } else {
-                app.system_messages.clear();
-            }
         }
         Command::Close { target } => {
             let idx = match app.resolve_panel_target(target.as_deref()) {
@@ -1927,6 +1956,10 @@ async fn handle_command(
             // Mark for destroy so the shutdown path knows to do full teardown.
             app.destroy_on_quit = true;
             app.should_quit = true;
+        }
+        Command::ClearHistory => {
+            app.command_history.clear();
+            app.set_status_message("Command history cleared.");
         }
     }
 }
