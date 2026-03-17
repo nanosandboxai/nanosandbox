@@ -97,7 +97,9 @@ pub async fn connect_ssh(
     agent_name: &str,
     env: &HashMap<String, String>,
     workdir: Option<&str>,
+    permissions: crate::config::Permissions,
     auto_mode: bool,
+    prompt: Option<&str>,
     is_resumed: bool,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
@@ -125,35 +127,70 @@ pub async fn connect_ssh(
         anyhow::bail!("SSH public key authentication failed");
     }
 
-    // Open channel and request PTY + shell
-    let channel = session.channel_open_session().await?;
-    channel
-        .request_pty(
-            false,
-            "xterm-256color",
-            cols as u32,
-            rows as u32,
-            0,
-            0,
-            &[],
-        )
-        .await?;
-    channel.request_shell(false).await?;
-
     // Build the initialization commands (cd + env vars + agent CLI launch)
-    let mut init_commands = String::new();
+    let mut env_parts: Vec<String> = Vec::new();
+
     if let Some(dir) = workdir {
-        init_commands.push_str(&format!("cd '{}'\n", dir));
+        env_parts.push(format!("cd '{}'", dir));
     }
     for (key, val) in env {
-        init_commands.push_str(&format!("export {}='{}'\n", key, val.replace('\'', "'\\''")));
+        env_parts.push(format!("export {}='{}'", key, val.replace('\'', "'\\''")));
     }
-    // Goose auto mode is set via environment variable.
-    if auto_mode && (agent_name == "goose") {
-        init_commands.push_str("export GOOSE_MODE='auto'\n");
+    let effective_perms = permissions.effective(auto_mode);
+
+    // Goose permissions via GOOSE_MODE env var.
+    if agent_name == "goose" {
+        let goose_mode = match effective_perms {
+            crate::config::Permissions::AllowAll => "auto",
+            crate::config::Permissions::AcceptEdits => "smart_approve",
+            crate::config::Permissions::Default => "smart_approve",
+        };
+        env_parts.push(format!("export GOOSE_MODE='{}'", goose_mode));
     }
-    if let Some(cmd) = agent_cli_command(agent_name, auto_mode, is_resumed) {
-        init_commands.push_str(&format!("{}\n", cmd));
+
+    // Set prompt env var for headless agents.
+    if auto_mode {
+        if let Some(p) = prompt {
+            env_parts.push(format!(
+                "export NANOSB_PROMPT='{}'",
+                p.replace('\'', "'\\''")
+            ));
+        }
+    }
+
+    let agent_cmd = agent_cli_command(agent_name, permissions, auto_mode, is_resumed);
+
+    let channel = session.channel_open_session().await?;
+
+    if auto_mode {
+        // Headless: use channel.exec() to run a single compound command directly.
+        // This avoids shell stdin buffering issues and PTY requirements.
+        //
+        // Wrap the agent command with `script -qfc` to allocate a pseudo-TTY.
+        // Without a TTY, Node.js/Rust CLIs (Claude Code, Codex) default to
+        // full stdout buffering (~4-8KB), causing NDJSON lines to never flush.
+        // `script -qfc "cmd" /dev/null` forces line-buffered output via a PTY.
+        // Our ANSI stripper in parse_headless_data handles any escape sequences.
+        if let Some(cmd) = &agent_cmd {
+            let escaped_cmd = cmd.replace('"', "\\\"");
+            env_parts.push(format!("exec script -qfc \"{}\" /dev/null", escaped_cmd));
+        }
+        let compound = env_parts.join(" && ");
+        channel.exec(true, compound.as_bytes()).await?;
+    } else {
+        // Interactive: allocate PTY + shell, send init commands via stdin.
+        channel
+            .request_pty(
+                false,
+                "xterm-256color",
+                cols as u32,
+                rows as u32,
+                0,
+                0,
+                &[],
+            )
+            .await?;
+        channel.request_shell(false).await?;
     }
 
     // Split the channel into read and write halves
@@ -163,8 +200,16 @@ pub async fn connect_ssh(
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (resize_tx, mut resize_rx) = mpsc::unbounded_channel::<(u16, u16)>();
 
-    // Send init commands after a short delay (let shell start)
-    {
+    if !auto_mode {
+        // Interactive mode: send init commands to the shell via stdin
+        let mut init_commands = String::new();
+        for part in &env_parts {
+            init_commands.push_str(&format!("{}\n", part));
+        }
+        if let Some(cmd) = &agent_cmd {
+            init_commands.push_str(&format!("{}\n", cmd));
+        }
+
         use tokio::io::AsyncWriteExt;
         let mut writer = write_half.make_writer();
         tokio::spawn(async move {
@@ -192,6 +237,16 @@ pub async fn connect_ssh(
                     else => break,
                 }
             }
+        });
+    } else {
+        // Headless mode: no stdin needed (command runs via exec).
+        // Keep the channels alive but don't spawn a write loop.
+        tokio::spawn(async move {
+            let _write_half = write_half;
+            let _write_rx = write_rx;
+            let _resize_rx = resize_rx;
+            // Hold references to prevent channel close until read loop ends.
+            tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
         });
     }
 
@@ -243,61 +298,127 @@ pub async fn connect_ssh(
 
 /// Map agent name to the CLI command to auto-launch after SSH connection.
 ///
-/// When `auto_mode` is true, includes flags to skip confirmation prompts.
+/// When `auto_mode` is true (headless), the agent is launched in non-interactive
+/// print mode with stream-json output. The prompt is supplied via the
+/// `$NANOSB_PROMPT` environment variable (set by `connect_ssh`).
+///
+/// `permissions` controls the agent's approval level independently of headless mode.
+/// When `auto_mode` is true, permissions are always forced to `AllowAll`.
+///
 /// When `is_resumed` is true, uses the agent's session resume command so it
 /// picks up previous conversation context from `/workspace/.nanosb-state/`.
-fn agent_cli_command(agent_name: &str, auto_mode: bool, is_resumed: bool) -> Option<String> {
+fn agent_cli_command(
+    agent_name: &str,
+    permissions: crate::config::Permissions,
+    auto_mode: bool,
+    is_resumed: bool,
+) -> Option<String> {
+    use crate::config::Permissions;
+    let effective = permissions.effective(auto_mode);
+
     match agent_name {
         "claude" | "claude-code" => {
-            // `claude -c` resumes the most recent conversation in the CWD.
-            // Bare `claude` always starts a fresh session.
-            if is_resumed {
-                if auto_mode {
-                    Some("claude -c --dangerously-skip-permissions".to_string())
-                } else {
-                    Some("claude -c".to_string())
+            let mut parts = vec!["claude".to_string()];
+
+            if auto_mode {
+                // Headless: -p mode with stream-json for structured output
+                parts.extend([
+                    "-p".to_string(),
+                    "\"$NANOSB_PROMPT\"".to_string(),
+                    "--output-format".to_string(),
+                    "stream-json".to_string(),
+                    "--verbose".to_string(),
+                ]);
+                if is_resumed {
+                    parts.push("--continue".to_string());
                 }
-            } else if auto_mode {
-                Some("claude --dangerously-skip-permissions".to_string())
-            } else {
-                Some("claude".to_string())
+            } else if is_resumed {
+                parts.push("-c".to_string());
             }
+
+            match effective {
+                Permissions::AllowAll => {
+                    parts.push("--dangerously-skip-permissions".to_string());
+                }
+                Permissions::AcceptEdits => {
+                    parts.extend([
+                        "--permission-mode".to_string(),
+                        "acceptEdits".to_string(),
+                    ]);
+                }
+                Permissions::Default => {}
+            }
+
+            Some(parts.join(" "))
         }
         "goose" => {
-            // `goose session -r` resumes the most recent session.
-            // `-r` / `--resume` is a flag, not a subcommand.
-            if is_resumed {
+            // Goose permissions handled via GOOSE_MODE env var in connect_ssh.
+            if auto_mode {
+                Some("goose run --output-format stream-json --no-session -t \"$NANOSB_PROMPT\"".to_string())
+            } else if is_resumed {
                 Some("goose session -r".to_string())
             } else {
                 Some("goose session".to_string())
             }
-            // auto mode via GOOSE_MODE env var (set in connect_ssh)
         }
         "codex" => {
-            if is_resumed {
-                if auto_mode {
-                    Some("codex resume --last --full-auto".to_string())
-                } else {
-                    Some("codex resume --last".to_string())
+            if auto_mode {
+                let mut parts = vec![
+                    "codex".to_string(),
+                    "exec".to_string(),
+                    "--json".to_string(),
+                ];
+                match effective {
+                    Permissions::AllowAll => parts.push("--yolo".to_string()),
+                    _ => parts.push("--full-auto".to_string()),
                 }
-            } else if auto_mode {
-                Some("codex --full-auto".to_string())
+                parts.push("\"$NANOSB_PROMPT\"".to_string());
+                Some(parts.join(" "))
             } else {
-                Some("codex".to_string())
+                let mut parts = vec!["codex".to_string()];
+                if is_resumed {
+                    parts.extend(["resume".to_string(), "--last".to_string()]);
+                }
+                match effective {
+                    Permissions::AllowAll => parts.push("--yolo".to_string()),
+                    Permissions::AcceptEdits => parts.push("--full-auto".to_string()),
+                    Permissions::Default => {}
+                }
+                Some(parts.join(" "))
             }
         }
         "cursor" | "cursor-agent" => {
-            if is_resumed {
-                if auto_mode {
-                    Some("cursor-agent --continue --force --trust --approve-mcps".to_string())
-                } else {
-                    Some("cursor-agent --continue".to_string())
+            let mut parts = vec!["cursor-agent".to_string()];
+
+            if auto_mode {
+                parts.extend([
+                    "-p".to_string(),
+                    "\"$NANOSB_PROMPT\"".to_string(),
+                    "--output-format".to_string(),
+                    "stream-json".to_string(),
+                ]);
+                if is_resumed {
+                    parts.push("--continue".to_string());
                 }
-            } else if auto_mode {
-                Some("cursor-agent --force --trust --approve-mcps".to_string())
-            } else {
-                Some("cursor-agent".to_string())
+            } else if is_resumed {
+                parts.push("--continue".to_string());
             }
+
+            match effective {
+                Permissions::AllowAll => {
+                    parts.extend([
+                        "--force".to_string(),
+                        "--trust".to_string(),
+                        "--approve-mcps".to_string(),
+                    ]);
+                }
+                Permissions::AcceptEdits => {
+                    parts.push("--trust".to_string());
+                }
+                Permissions::Default => {}
+            }
+
+            Some(parts.join(" "))
         }
         _ => None,
     }
@@ -733,59 +854,115 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_cli_command() {
-        assert_eq!(agent_cli_command("claude", false, false), Some("claude".to_string()));
-        assert_eq!(agent_cli_command("goose", false, false), Some("goose session".to_string()));
-        assert_eq!(agent_cli_command("unknown", false, false), None);
-    }
-
-    #[test]
-    fn test_agent_cli_command_auto_mode() {
+    fn test_agent_cli_command_default_perms() {
+        use crate::config::Permissions;
         assert_eq!(
-            agent_cli_command("claude", true, false),
-            Some("claude --dangerously-skip-permissions".to_string()),
+            agent_cli_command("claude", Permissions::Default, false, false),
+            Some("claude".to_string()),
         );
         assert_eq!(
-            agent_cli_command("codex", true, false),
-            Some("codex --full-auto".to_string()),
-        );
-        assert_eq!(
-            agent_cli_command("cursor", true, false),
-            Some("cursor-agent --force --trust --approve-mcps".to_string()),
-        );
-        // Goose auto mode is via env var, not CLI flag
-        assert_eq!(
-            agent_cli_command("goose", true, false),
+            agent_cli_command("goose", Permissions::Default, false, false),
             Some("goose session".to_string()),
         );
+        assert_eq!(
+            agent_cli_command("codex", Permissions::Default, false, false),
+            Some("codex".to_string()),
+        );
+        assert_eq!(
+            agent_cli_command("cursor", Permissions::Default, false, false),
+            Some("cursor-agent".to_string()),
+        );
+        assert_eq!(agent_cli_command("unknown", Permissions::Default, false, false), None);
     }
 
     #[test]
-    fn test_agent_cli_command_resumed() {
-        // Claude: uses -c to continue most recent conversation
-        assert_eq!(agent_cli_command("claude", false, true), Some("claude -c".to_string()));
-        // Goose: uses -r flag to resume most recent session
-        assert_eq!(agent_cli_command("goose", false, true), Some("goose session -r".to_string()));
-        // Codex: uses resume --last
-        assert_eq!(agent_cli_command("codex", false, true), Some("codex resume --last".to_string()));
-        // Cursor: uses --continue
-        assert_eq!(agent_cli_command("cursor", false, true), Some("cursor-agent --continue".to_string()));
+    fn test_agent_cli_command_allow_all_interactive() {
+        use crate::config::Permissions;
+        let cmd = agent_cli_command("claude", Permissions::AllowAll, false, false).unwrap();
+        assert!(cmd.contains("--dangerously-skip-permissions"));
+        assert!(!cmd.contains(" -p ")); // not headless (space-delimited to avoid matching inside --dangerously-skip-permissions)
+
+        let cmd = agent_cli_command("codex", Permissions::AllowAll, false, false).unwrap();
+        assert!(cmd.contains("--yolo"));
+
+        let cmd = agent_cli_command("cursor", Permissions::AllowAll, false, false).unwrap();
+        assert!(cmd.contains("--force"));
+        assert!(cmd.contains("--trust"));
     }
 
     #[test]
-    fn test_agent_cli_command_resumed_auto_mode() {
+    fn test_agent_cli_command_accept_edits() {
+        use crate::config::Permissions;
+        let cmd = agent_cli_command("claude", Permissions::AcceptEdits, false, false).unwrap();
+        assert!(cmd.contains("--permission-mode"));
+        assert!(cmd.contains("acceptEdits"));
+
+        let cmd = agent_cli_command("codex", Permissions::AcceptEdits, false, false).unwrap();
+        assert!(cmd.contains("--full-auto"));
+
+        let cmd = agent_cli_command("cursor", Permissions::AcceptEdits, false, false).unwrap();
+        assert!(cmd.contains("--trust"));
+        assert!(!cmd.contains("--force"));
+    }
+
+    #[test]
+    fn test_agent_cli_command_headless() {
+        use crate::config::Permissions;
+        // Headless mode should use -p/exec + stream-json + AllowAll
+        let cmd = agent_cli_command("claude", Permissions::Default, true, false).unwrap();
+        assert!(cmd.contains("-p"));
+        assert!(cmd.contains("stream-json"));
+        assert!(cmd.contains("--dangerously-skip-permissions")); // auto_mode forces AllowAll
+        assert!(cmd.contains("$NANOSB_PROMPT"));
+
+        let cmd = agent_cli_command("codex", Permissions::Default, true, false).unwrap();
+        assert!(cmd.contains("exec"));
+        assert!(cmd.contains("--json"));
+        assert!(cmd.contains("--yolo")); // auto_mode forces AllowAll
+
+        let cmd = agent_cli_command("goose", Permissions::Default, true, false).unwrap();
+        assert!(cmd.contains("goose run"));
+        assert!(cmd.contains("stream-json"));
+
+        let cmd = agent_cli_command("cursor", Permissions::Default, true, false).unwrap();
+        assert!(cmd.contains("-p"));
+        assert!(cmd.contains("stream-json"));
+        assert!(cmd.contains("--force")); // auto_mode forces AllowAll
+    }
+
+    #[test]
+    fn test_agent_cli_command_resumed_interactive() {
+        use crate::config::Permissions;
         assert_eq!(
-            agent_cli_command("claude", true, true),
-            Some("claude -c --dangerously-skip-permissions".to_string()),
+            agent_cli_command("claude", Permissions::Default, false, true),
+            Some("claude -c".to_string()),
         );
         assert_eq!(
-            agent_cli_command("codex", true, true),
-            Some("codex resume --last --full-auto".to_string()),
+            agent_cli_command("goose", Permissions::Default, false, true),
+            Some("goose session -r".to_string()),
         );
+        let cmd = agent_cli_command("codex", Permissions::Default, false, true).unwrap();
+        assert!(cmd.contains("resume --last"));
         assert_eq!(
-            agent_cli_command("cursor", true, true),
-            Some("cursor-agent --continue --force --trust --approve-mcps".to_string()),
+            agent_cli_command("cursor", Permissions::Default, false, true),
+            Some("cursor-agent --continue".to_string()),
         );
+    }
+
+    #[test]
+    fn test_agent_cli_command_resumed_allow_all() {
+        use crate::config::Permissions;
+        let cmd = agent_cli_command("claude", Permissions::AllowAll, false, true).unwrap();
+        assert!(cmd.contains("-c"));
+        assert!(cmd.contains("--dangerously-skip-permissions"));
+
+        let cmd = agent_cli_command("codex", Permissions::AllowAll, false, true).unwrap();
+        assert!(cmd.contains("resume --last"));
+        assert!(cmd.contains("--yolo"));
+
+        let cmd = agent_cli_command("cursor", Permissions::AllowAll, false, true).unwrap();
+        assert!(cmd.contains("--continue"));
+        assert!(cmd.contains("--force"));
     }
 
     #[test]

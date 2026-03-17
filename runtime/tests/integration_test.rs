@@ -1588,6 +1588,7 @@ async fn test_mcp_skills_agent_e2e() {
             m
         },
         auto_mode: false,
+        permissions: nanosandbox::Permissions::Default,
     };
     match sandbox.bootstrap_agent(&agent_config).await {
         Ok(_) => println!("  Bootstrapped 'test-developer'"),

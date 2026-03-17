@@ -170,8 +170,9 @@ pub async fn run_tui(
                     }
                     // Replace config MCPs with merged set
                     config.mcp_servers = resolved.mcp_servers.clone();
-                    // Propagate auto_mode from sandbox config
+                    // Propagate auto_mode and permissions from sandbox config
                     resolved.auto_mode = config.auto_mode;
+                    resolved.permissions = config.permissions;
                     config.resolved_agent = Some(resolved);
                 }
                 Err(e) => {
@@ -274,7 +275,9 @@ pub async fn run_tui(
                         let agent_name = panel.agent_name.clone();
                         let env = panel.env.clone();
                         let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
+                        let permissions = panel.permissions;
                         let auto_mode = panel.auto_mode;
+                        let prompt = panel.headless_state.as_ref().map(|h| h.task.clone());
                         let is_resumed = panel.is_resumed;
                         let tx = tx.clone();
                         tokio::spawn(async move {
@@ -282,7 +285,9 @@ pub async fn run_tui(
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             match super::terminal::connect_ssh(
                                 ssh_port, key_path, pty_cols, pty_rows,
-                                &agent_name, &env, workdir.as_deref(), auto_mode, is_resumed, panel_idx, tx.clone(),
+                                &agent_name, &env, workdir.as_deref(),
+                                permissions, auto_mode, prompt.as_deref(),
+                                is_resumed, panel_idx, tx.clone(),
                             ).await {
                                 Ok(handle) => {
                                     let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -308,7 +313,11 @@ pub async fn run_tui(
                     let (cols, rows) = panel.last_terminal_size;
                     panel.terminal = Some(super::terminal::SshTerminal::new(cols, rows));
                     panel.terminal_handle = Some(handle);
-                    panel.mode = PanelMode::Terminal;
+                    panel.mode = if panel.auto_mode {
+                        PanelMode::Headless
+                    } else {
+                        PanelMode::Terminal
+                    };
                     panel.reconnecting = false;
                     panel.loading_error = None;
                 }
@@ -320,7 +329,16 @@ pub async fn run_tui(
                     app.mouse_selection = None;
                 }
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    if let Some(ref mut term) = panel.terminal {
+                    if panel.mode == PanelMode::Headless {
+                        // Headless: parse NDJSON lines from raw SSH bytes.
+                        if let Some(ref mut hs) = panel.headless_state {
+                            parse_headless_data(hs, &data);
+                        }
+                        // Still feed vt100 for /terminal fallback + URL extraction.
+                        if let Some(ref mut term) = panel.terminal {
+                            term.process_bytes(&data);
+                        }
+                    } else if let Some(ref mut term) = panel.terminal {
                         term.process_bytes(&data);
 
                         // Extract URLs from the parsed vt100 screen, then
@@ -366,6 +384,8 @@ pub async fn run_tui(
                 // Check if this is a reconnect attempt that failed.
                 let is_reconnecting = app.panels.get(panel_idx)
                     .is_some_and(|p| p.reconnecting);
+                let is_headless = app.panels.get(panel_idx)
+                    .is_some_and(|p| p.mode == PanelMode::Headless);
 
                 if is_reconnecting {
                     // Reconnect failed: revert to loading screen with error.
@@ -376,6 +396,33 @@ pub async fn run_tui(
                         panel.loading_error = error.map(|e| format!("Reconnect failed: {}", e));
                         panel.reconnecting = false;
                         panel.loading_tick = 0;
+                    }
+                } else if is_headless {
+                    // Headless panel: keep panel visible so user can read output.
+                    // Mark the headless state as completed/error and clean up SSH resources.
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        // Only update status if not already marked completed/error
+                        // (ExitStatus + Eof/Close both fire SshDisconnected).
+                        if let Some(ref mut hs) = panel.headless_state {
+                            if hs.status != "completed" && hs.status != "error" {
+                                if let Some(ref err) = error {
+                                    hs.agent_text.push_str(&format!("\n[process] {}\n", err));
+                                    hs.status = "error".to_string();
+                                } else {
+                                    hs.status = "completed".to_string();
+                                }
+                            }
+                        }
+                        // Drop SSH handle but keep the panel.
+                        panel.terminal_handle = None;
+
+                        let name = panel.agent_name.clone();
+                        let msg = if let Some(ref err) = error {
+                            format!("'{}' headless agent exited: {}", name, err)
+                        } else {
+                            format!("'{}' headless agent completed.", name)
+                        };
+                        app.set_status_message(msg);
                     }
                 } else {
                     // Genuine disconnect: kill sandbox and close panel.
@@ -799,6 +846,85 @@ async fn handle_key_event(
                         }
                     }
                     _ => {} // Swallow everything else
+                }
+                return;
+            }
+        }
+    }
+
+    // Headless mode: handle scroll + navigation keys only.
+    if app.input_focus == InputFocus::Panel {
+        if let Some(panel) = app.panels.get(app.focused_panel) {
+            if panel.mode == PanelMode::Headless {
+                match key.code {
+                    KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        app.focus_prev();
+                    }
+                    KeyCode::BackTab => {
+                        app.focus_prev();
+                    }
+                    KeyCode::Tab => {
+                        app.focus_next();
+                    }
+                    KeyCode::Esc => {
+                        app.focus_global();
+                    }
+                    KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.focus_global();
+                    }
+                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !app.panels.is_empty() {
+                            app.zoomed = !app.zoomed;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut hs) = panel.headless_state {
+                                hs.scroll_offset = hs.scroll_offset.saturating_sub(1);
+                                hs.auto_scroll = false;
+                            }
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut hs) = panel.headless_state {
+                                hs.scroll_offset = hs.scroll_offset.saturating_add(1);
+                                hs.auto_scroll = false;
+                            }
+                        }
+                    }
+                    KeyCode::PageUp => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut hs) = panel.headless_state {
+                                hs.scroll_offset = hs.scroll_offset.saturating_sub(20);
+                                hs.auto_scroll = false;
+                            }
+                        }
+                    }
+                    KeyCode::PageDown => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut hs) = panel.headless_state {
+                                hs.scroll_offset = hs.scroll_offset.saturating_add(20);
+                                hs.auto_scroll = false;
+                            }
+                        }
+                    }
+                    KeyCode::Home => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut hs) = panel.headless_state {
+                                hs.scroll_offset = 0;
+                                hs.auto_scroll = false;
+                            }
+                        }
+                    }
+                    KeyCode::End => {
+                        if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+                            if let Some(ref mut hs) = panel.headless_state {
+                                hs.auto_scroll = true;
+                            }
+                        }
+                    }
+                    _ => {} // Swallow other keys
                 }
                 return;
             }
@@ -1284,8 +1410,8 @@ async fn handle_command(
         Command::McpToggle => {
             app.show_mcp_sidebar = !app.show_mcp_sidebar;
         }
-        Command::AddAgent { agent, image, project, branch, name } => {
-            add_agent(app, &agent, image.as_deref(), project.as_deref(), branch.as_deref(), name.as_deref(), tx);
+        Command::AddAgent { agent, image, project, branch, name, auto_mode, prompt } => {
+            add_agent(app, &agent, image.as_deref(), project.as_deref(), branch.as_deref(), name.as_deref(), auto_mode, prompt.as_deref(), tx);
         }
         Command::Env { assignment } => {
             handle_env(app, assignment);
@@ -1341,13 +1467,17 @@ async fn handle_command(
                     let agent_name = panel.agent_name.clone();
                     let env = panel.env.clone();
                     let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
+                    let permissions = panel.permissions;
                     let auto_mode = panel.auto_mode;
+                    let prompt = panel.headless_state.as_ref().map(|h| h.task.clone());
                     let is_resumed = panel.is_resumed;
                     let tx = tx.clone();
                     tokio::spawn(async move {
                         match super::terminal::connect_ssh(
                             ssh_port, key_path, pty_cols, pty_rows,
-                            &agent_name, &env, workdir.as_deref(), auto_mode, is_resumed, panel_idx, tx.clone(),
+                            &agent_name, &env, workdir.as_deref(),
+                            permissions, auto_mode, prompt.as_deref(),
+                            is_resumed, panel_idx, tx.clone(),
                         ).await {
                             Ok(handle) => {
                                 let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
@@ -2154,6 +2284,415 @@ const KNOWN_AGENTS: &[&str] = &["claude", "codex", "goose", "cursor"];
 /// - `localhost:5050/agent-claude:latest` → `"claude"`
 /// - `ghcr.io/devdone-labs/agents-registry/codex:v1` → `"codex"`
 /// - `nanosb-goose:latest` → `"goose"`
+/// Parse raw SSH bytes as NDJSON and update the headless state.
+///
+/// Each agent emits NDJSON events in a slightly different schema, but the
+/// general pattern is the same: text deltas, tool calls, tool results, and
+/// a final result message. This parser is best-effort — non-JSON lines
+/// (shell prompts, ANSI junk) are silently ignored.
+fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    state.line_buffer.push_str(&text);
+
+    while let Some(newline_pos) = state.line_buffer.find('\n') {
+        let line = state.line_buffer[..newline_pos].trim().to_string();
+        state.line_buffer = state.line_buffer[newline_pos + 1..].to_string();
+
+        if line.is_empty() {
+            continue;
+        }
+
+        // Strip any stray ANSI escape sequences (belt-and-suspenders for non-PTY mode).
+        let clean = strip_ansi_escapes(&line);
+        let clean = clean.trim();
+        if clean.is_empty() {
+            continue;
+        }
+
+        // Try to parse as JSON
+        let json: serde_json::Value = match serde_json::from_str(clean) {
+            Ok(v) => v,
+            Err(_) => continue, // Not JSON — shell prompt, etc.
+        };
+
+        state.raw_lines.push(clean.to_string());
+
+        // Transition from "starting" once we receive any valid JSON.
+        if state.status == "starting" {
+            state.status = "running".to_string();
+        }
+
+        let event_type = json
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+
+        match event_type {
+            // =================================================================
+            // Claude Code: -p --output-format stream-json
+            // =================================================================
+
+            // Token-level streaming delta (requires --include-partial-messages)
+            "stream_event" => {
+                if let Some(delta_text) = json
+                    .pointer("/event/delta/text")
+                    .and_then(|v| v.as_str())
+                {
+                    state.agent_text.push_str(delta_text);
+                    state.status = "thinking".to_string();
+                }
+                // Tool use block start
+                if let Some(name) = json
+                    .pointer("/event/content_block/name")
+                    .and_then(|v| v.as_str())
+                {
+                    state.tool_calls.push(super::app::HeadlessToolCall {
+                        tool_name: name.to_string(),
+                        input_summary: String::new(),
+                        output_preview: String::new(),
+                        status: "running".to_string(),
+                    });
+                    state.status = "tool_use".to_string();
+                }
+            }
+            // Complete assistant turn (text + tool_use blocks in content array)
+            "assistant" => {
+                if let Some(content) = json.get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for block in content {
+                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                            state.agent_text.push_str(text);
+                            state.agent_text.push('\n');
+                        }
+                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                            let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                            let input = block.get("input").map(|v| v.to_string()).unwrap_or_default();
+                            state.tool_calls.push(super::app::HeadlessToolCall {
+                                tool_name: name.to_string(),
+                                input_summary: truncate_str(&input, 80),
+                                output_preview: String::new(),
+                                status: "running".to_string(),
+                            });
+                            state.status = "tool_use".to_string();
+                        }
+                    }
+                }
+            }
+            // Claude final result
+            "result" => {
+                if let Some(text) = json.get("result").and_then(|r| r.as_str()) {
+                    state.agent_text.push_str(text);
+                }
+                state.status = "completed".to_string();
+            }
+
+            // =================================================================
+            // Codex: exec --json (NDJSON streaming)
+            // =================================================================
+
+            // Lifecycle events (no content to extract)
+            "thread.started" | "turn.started" => {}
+            "turn.completed" => {
+                // Mark last tool as done if still running
+                if let Some(last) = state.tool_calls.last_mut() {
+                    if last.status == "running" {
+                        last.status = "done".to_string();
+                    }
+                }
+            }
+            // Item events — the main content carriers
+            "item.started" | "item.updated" | "item.completed" => {
+                if let Some(item) = json.get("item") {
+                    let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    match item_type {
+                        "agent_message" | "reasoning" => {
+                            // Text is at .item.text (NOT .item.content)
+                            if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                if event_type == "item.completed" {
+                                    state.agent_text.push_str(text);
+                                    state.agent_text.push('\n');
+                                }
+                            }
+                            state.status = "thinking".to_string();
+                        }
+                        "command_execution" => {
+                            if event_type == "item.started" {
+                                let cmd = item.get("command")
+                                    .and_then(|v| v.as_str()).unwrap_or("command");
+                                state.tool_calls.push(super::app::HeadlessToolCall {
+                                    tool_name: "command".to_string(),
+                                    input_summary: truncate_str(cmd, 80),
+                                    output_preview: String::new(),
+                                    status: "running".to_string(),
+                                });
+                                state.status = "tool_use".to_string();
+                            }
+                            if event_type == "item.completed" {
+                                if let Some(last) = state.tool_calls.last_mut() {
+                                    last.status = "done".to_string();
+                                    if let Some(output) = item.get("aggregated_output")
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        last.output_preview = truncate_str(output, 120);
+                                    }
+                                }
+                            }
+                        }
+                        "file_change" => {
+                            if event_type == "item.started" {
+                                let path = item.get("path")
+                                    .and_then(|v| v.as_str()).unwrap_or("file");
+                                state.tool_calls.push(super::app::HeadlessToolCall {
+                                    tool_name: "file_change".to_string(),
+                                    input_summary: truncate_str(path, 80),
+                                    output_preview: String::new(),
+                                    status: "running".to_string(),
+                                });
+                                state.status = "tool_use".to_string();
+                            }
+                            if event_type == "item.completed" {
+                                if let Some(last) = state.tool_calls.last_mut() {
+                                    last.status = "done".to_string();
+                                }
+                            }
+                        }
+                        "mcp_tool_call" | "web_search" => {
+                            if event_type == "item.started" {
+                                let name = item.get("tool")
+                                    .or_else(|| item.get("type"))
+                                    .and_then(|v| v.as_str()).unwrap_or("tool");
+                                let input = item.get("arguments")
+                                    .or_else(|| item.get("query"))
+                                    .map(|v| v.to_string()).unwrap_or_default();
+                                state.tool_calls.push(super::app::HeadlessToolCall {
+                                    tool_name: name.to_string(),
+                                    input_summary: truncate_str(&input, 80),
+                                    output_preview: String::new(),
+                                    status: "running".to_string(),
+                                });
+                                state.status = "tool_use".to_string();
+                            }
+                            if event_type == "item.completed" {
+                                if let Some(last) = state.tool_calls.last_mut() {
+                                    last.status = "done".to_string();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // =================================================================
+            // Goose: run --output-format stream-json
+            // =================================================================
+
+            // Message event — assistant text and tool requests
+            "message" => {
+                if let Some(content) = json.get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for block in content {
+                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match block_type {
+                            "text" => {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    state.agent_text.push_str(text);
+                                    state.agent_text.push('\n');
+                                    state.status = "thinking".to_string();
+                                }
+                            }
+                            "tool_request" => {
+                                let name = block.pointer("/tool_call/name")
+                                    .and_then(|v| v.as_str()).unwrap_or("tool");
+                                let args = block.pointer("/tool_call/arguments")
+                                    .map(|v| v.to_string()).unwrap_or_default();
+                                state.tool_calls.push(super::app::HeadlessToolCall {
+                                    tool_name: name.to_string(),
+                                    input_summary: truncate_str(&args, 80),
+                                    output_preview: String::new(),
+                                    status: "running".to_string(),
+                                });
+                                state.status = "tool_use".to_string();
+                            }
+                            "tool_response" => {
+                                // Mark matching tool call as done
+                                if let Some(last) = state.tool_calls.last_mut() {
+                                    if last.status == "running" {
+                                        last.status = "done".to_string();
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // Notification — extension log/progress messages
+            "notification" => {
+                if let Some(msg) = json.pointer("/log/message").and_then(|v| v.as_str()) {
+                    let ext = json.get("extension_id")
+                        .and_then(|v| v.as_str()).unwrap_or("ext");
+                    state.tool_calls.push(super::app::HeadlessToolCall {
+                        tool_name: ext.to_string(),
+                        input_summary: truncate_str(msg, 80),
+                        output_preview: String::new(),
+                        status: "done".to_string(),
+                    });
+                }
+            }
+            // Goose completion
+            "complete" => {
+                state.status = "completed".to_string();
+            }
+
+            // =================================================================
+            // Cursor: -p --output-format stream-json
+            // =================================================================
+
+            // Thinking deltas — token-level streaming of reasoning.
+            // Accumulate without newlines; only add a newline on "completed".
+            "thinking" => {
+                let subtype = json.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+                if subtype == "delta" {
+                    if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
+                        state.agent_text.push_str(text);
+                    }
+                    state.status = "thinking".to_string();
+                } else if subtype == "completed" {
+                    // Add a newline after the full thinking block.
+                    if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
+                        state.agent_text.push('\n');
+                    }
+                }
+            }
+
+            // Tool call lifecycle — tool name is the KEY inside the `tool_call` object.
+            // e.g. {"tool_call": {"shellToolCall": {"args": {"command": "ls"}}}}
+            "tool_call" => {
+                let subtype = json.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+                if subtype == "started" {
+                    // Extract tool name from the first key of the tool_call object.
+                    let tc_obj = json.get("tool_call").and_then(|v| v.as_object());
+                    let (name, input) = if let Some(obj) = tc_obj {
+                        let key = obj.keys().next().map(|k| k.as_str()).unwrap_or("tool");
+                        // Friendly name: strip "ToolCall" suffix.
+                        let friendly = key.strip_suffix("ToolCall").unwrap_or(key);
+                        // Extract primary arg: command, path, query, or pattern.
+                        let args = obj.values().next()
+                            .and_then(|v| v.get("args"))
+                            .and_then(|a| a.as_object());
+                        let input = args.and_then(|a| {
+                            a.get("command").or_else(|| a.get("path"))
+                                .or_else(|| a.get("query")).or_else(|| a.get("pattern"))
+                                .and_then(|v| v.as_str())
+                        }).unwrap_or("");
+                        (friendly.to_string(), input.to_string())
+                    } else {
+                        ("tool".to_string(), String::new())
+                    };
+                    state.tool_calls.push(super::app::HeadlessToolCall {
+                        tool_name: name,
+                        input_summary: truncate_str(&input, 80),
+                        output_preview: String::new(),
+                        status: "running".to_string(),
+                    });
+                    state.status = "tool_use".to_string();
+                } else if subtype == "completed" {
+                    if let Some(last) = state.tool_calls.last_mut() {
+                        last.status = "done".to_string();
+                        // Extract output preview for shell commands.
+                        if let Some(output) = json.pointer("/tool_call/shellToolCall/result/success/output")
+                            .and_then(|v| v.as_str())
+                        {
+                            last.output_preview = truncate_str(output, 120);
+                        }
+                    }
+                }
+            }
+
+            // =================================================================
+            // Lifecycle and system events
+            // =================================================================
+
+            // System init — extract model info for display
+            "system" => {
+                if let Some(model) = json.get("model").and_then(|v| v.as_str()) {
+                    state.status = format!("running ({})", model);
+                }
+            }
+
+            // Tool result events (Claude `user` with tool_result)
+            "user" => {
+                // Mark the last tool call as done when we get its result
+                if let Some(last) = state.tool_calls.last_mut() {
+                    if last.status == "running" {
+                        last.status = "done".to_string();
+                    }
+                }
+            }
+
+            // Errors — show as text so the user sees them
+            "error" | "turn.failed" => {
+                let msg = json.get("error")
+                    .and_then(|e| e.get("message").or(Some(e)))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| json.get("message").and_then(|v| v.as_str()))
+                    .unwrap_or("unknown error");
+                state.agent_text.push_str(&format!("[error] {}\n", msg));
+                state.status = "error".to_string();
+            }
+
+            // Silent lifecycle events
+            "model_change" => {}
+
+            _ => {
+                // Unknown event — try to extract text but don't add newlines
+                // (could be streaming deltas from an unknown agent).
+                if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
+                    state.agent_text.push_str(text);
+                }
+            }
+        }
+    }
+}
+
+/// Strip ANSI escape sequences from a string.
+fn strip_ansi_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // CSI sequence: ESC [ ... final_byte
+            if let Some(next) = chars.next() {
+                if next == '[' {
+                    // Consume until we hit a letter (@ through ~)
+                    for seq_char in chars.by_ref() {
+                        if seq_char.is_ascii_alphabetic() || seq_char == '~' {
+                            break;
+                        }
+                    }
+                }
+                // OSC, other escape types — skip until BEL or ST
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() > max {
+        format!("{}...", &s[..max])
+    } else {
+        s.to_string()
+    }
+}
+
 fn detect_agent_type_from_image(image: &str) -> Option<String> {
     // Get the last path segment first, then strip the tag.
     // This avoids confusing registry port (localhost:5050) with tag separator.
@@ -2194,6 +2733,8 @@ fn add_agent(
     project: Option<&str>,
     branch: Option<&str>,
     name: Option<&str>,
+    auto_mode: bool,
+    prompt: Option<&str>,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let image_name = match image {
@@ -2202,6 +2743,14 @@ fn add_agent(
     };
 
     let mut panel = AgentPanel::new(agent);
+
+    // Headless mode setup.
+    panel.auto_mode = auto_mode;
+    if auto_mode {
+        panel.permissions = crate::config::Permissions::AllowAll;
+        let task = prompt.unwrap_or("(no prompt)");
+        panel.headless_state = Some(super::app::HeadlessState::new(task));
+    }
 
     // Auto-detect API keys from host environment.
     for (key, _is_required) in &required_api_keys(agent) {
@@ -2225,14 +2774,13 @@ fn add_agent(
         .map(std::path::PathBuf::from)
         .or_else(|| app.project_path.clone());
 
-    let sandbox_name = name
-        .map(String::from)
-        .unwrap_or_else(|| format!("tui-{}", agent));
-
     let mut builder = SandboxConfig::builder()
-        .name(&sandbox_name)
         .image(&image_name)
         .memory_mb(1024);
+
+    if let Some(n) = name {
+        builder = builder.name(n);
+    }
 
     if let Some(ref pp) = project_path {
         builder = builder.project(pp, branch);
@@ -2248,7 +2796,7 @@ fn add_agent(
 
     // Store the config for session persistence.
     panel.original_config = Some(config.clone());
-    panel.display_name = Some(sandbox_name);
+    panel.display_name = name.map(String::from);
 
     app.panels.push(panel);
     let panel_idx = app.panels.len() - 1;
@@ -2319,6 +2867,11 @@ fn add_agent_from_config(
     let mut panel = AgentPanel::new(&agent_type);
     panel.display_name = Some(display_name.clone());
     panel.auto_mode = config.auto_mode;
+    panel.permissions = config.permissions;
+    if config.auto_mode {
+        let task = config.prompt.as_deref().unwrap_or("(no prompt)");
+        panel.headless_state = Some(super::app::HeadlessState::new(task));
+    }
 
     // Copy env vars from config to panel.
     for (k, v) in &config.env {
@@ -2433,6 +2986,11 @@ fn resume_session(
         let mut panel = AgentPanel::new(&agent_type);
         panel.display_name = sp.display_name.clone();
         panel.auto_mode = sp.auto_mode;
+        panel.permissions = sp.permissions;
+        if sp.auto_mode {
+            let task = config.prompt.as_deref().unwrap_or("(no prompt)");
+            panel.headless_state = Some(super::app::HeadlessState::new(task));
+        }
         panel.visible = sp.visible;
         panel.original_config = Some(config.clone());
 
@@ -3090,9 +3648,10 @@ async fn handle_agent_set(app: &mut App, name: &str) {
         }
     };
 
-    // Inherit auto_mode from sandbox config
+    // Inherit auto_mode and permissions from sandbox config
     let sb = sandbox.lock().await;
     resolved.auto_mode = sb.config().auto_mode;
+    resolved.permissions = sb.config().permissions;
     match sb.bootstrap_agent(&resolved).await {
         Ok(()) => {
             let skill_count = resolved.skills.len();

@@ -49,8 +49,11 @@ pub struct SessionPanel {
     pub clone_path: Option<PathBuf>,
     /// Branches created in source repos, as `(source_repo_path, branch_name)` pairs.
     pub branches: Vec<(PathBuf, String)>,
-    /// Whether auto mode was enabled.
+    /// Whether auto/headless mode was enabled.
     pub auto_mode: bool,
+    /// Agent permission level.
+    #[serde(default)]
+    pub permissions: crate::config::Permissions,
     /// Environment variable **keys** that were set for this panel.
     /// Values are NOT stored (security). On resume, values are re-read from host env.
     pub env_keys: Vec<String>,
@@ -224,6 +227,7 @@ impl Session {
                     clone_path,
                     branches,
                     auto_mode: panel.auto_mode,
+                    permissions: panel.permissions,
                     env_keys,
                     visible: panel.visible,
                 })
@@ -404,6 +408,7 @@ mod tests {
                 clone_path: Some(PathBuf::from("/tmp/nanosb-test-clone")),
                 branches: vec![(PathBuf::from("/tmp/repo"), "nanosb/abcd1234".to_string())],
                 auto_mode: false,
+                permissions: crate::config::Permissions::Default,
                 env_keys: vec!["ANTHROPIC_API_KEY".to_string()],
                 visible: true,
             }],

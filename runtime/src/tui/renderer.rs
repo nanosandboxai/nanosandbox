@@ -916,7 +916,9 @@ fn render_panel(
     show_index: bool,
 ) {
     // Status indicator.
-    let status_indicator = if panel.mode == PanelMode::Loading {
+    let status_indicator = if panel.mode == PanelMode::Headless {
+        Span::styled("\u{25b6} ", Style::new().fg(theme.accent))
+    } else if panel.mode == PanelMode::Loading {
         Span::styled("\u{25cc} ", Style::new().fg(theme.warning))
     } else if panel.sandbox.is_some() {
         Span::styled("\u{25cf} ", Style::new().fg(theme.success))
@@ -980,6 +982,12 @@ fn render_panel(
         }
     }
 
+    // Headless mode: render structured output from NDJSON stream.
+    if panel.mode == PanelMode::Headless {
+        render_headless_panel(frame, inner_area, panel, theme);
+        return;
+    }
+
     // Terminal mode: render PseudoTerminal widget for the entire inner area.
     if panel.mode == PanelMode::Terminal {
         if let Some(ref term) = panel.terminal {
@@ -1014,6 +1022,173 @@ fn render_panel(
 
     // Loading mode: render centered logo with animated border sweep.
     render_loading_animation(frame, inner_area, panel, theme);
+}
+
+/// Render a headless panel with structured output from NDJSON stream events.
+///
+/// Layout (3 sections):
+///   1. Header — task description + status + elapsed time
+///   2. Tools  — scrollable list of tool call log entries
+///   3. Output — scrollable agent text output
+fn render_headless_panel(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &AgentPanel,
+    theme: &Theme,
+) {
+    let state = match &panel.headless_state {
+        Some(s) => s,
+        None => {
+            let msg = Paragraph::new("Waiting for headless stream...")
+                .style(Style::new().fg(theme.text_muted))
+                .alignment(Alignment::Center);
+            frame.render_widget(msg, area);
+            return;
+        }
+    };
+
+    // Compute elapsed time.
+    let elapsed = state.started_at.elapsed();
+    let mins = elapsed.as_secs() / 60;
+    let secs = elapsed.as_secs() % 60;
+    let elapsed_str = format!("{mins}:{secs:02}");
+
+    // Divide area: header (3 lines), tools (dynamic), output (rest).
+    let tool_height = if state.tool_calls.is_empty() {
+        0
+    } else {
+        (state.tool_calls.len() as u16 + 2).min(area.height / 3) // +2 for border
+    };
+
+    let constraints = if tool_height > 0 {
+        vec![
+            Constraint::Length(3),
+            Constraint::Length(tool_height),
+            Constraint::Min(3),
+        ]
+    } else {
+        vec![
+            Constraint::Length(3),
+            Constraint::Length(0),
+            Constraint::Min(3),
+        ]
+    };
+
+    let sections = Layout::vertical(constraints).split(area);
+
+    // --- Section 1: Header ---
+    let status_color = match state.status.as_str() {
+        "thinking" | "tool_use" => theme.accent,
+        "completed" => theme.success,
+        "error" => theme.error,
+        _ if state.status.starts_with("running") => theme.accent,
+        _ => theme.text_muted,
+    };
+
+    let task_display = if state.task.len() > (area.width as usize).saturating_sub(20) {
+        let max = (area.width as usize).saturating_sub(23);
+        format!("{}...", &state.task[..max.min(state.task.len())])
+    } else {
+        state.task.clone()
+    };
+
+    let header_lines = vec![
+        Line::from(vec![
+            Span::styled("Task: ", Style::new().fg(theme.text_muted)),
+            Span::styled(task_display, Style::new().fg(theme.text)),
+        ]),
+        Line::from(vec![
+            Span::styled("Status: ", Style::new().fg(theme.text_muted)),
+            Span::styled(&state.status, Style::new().fg(status_color)),
+            Span::styled(format!("  [{elapsed_str}]"), Style::new().fg(theme.text_muted)),
+        ]),
+    ];
+
+    let header = Paragraph::new(header_lines)
+        .style(Style::new().bg(theme.background));
+    frame.render_widget(header, sections[0]);
+
+    // --- Section 2: Tool calls ---
+    if tool_height > 0 && !state.tool_calls.is_empty() {
+        let items: Vec<ListItem> = state
+            .tool_calls
+            .iter()
+            .rev()
+            .take(tool_height.saturating_sub(2) as usize)
+            .map(|tc| {
+                let icon = match tc.status.as_str() {
+                    "running" => Span::styled("~ ", Style::new().fg(theme.warning)),
+                    "done" => Span::styled("+ ", Style::new().fg(theme.success)),
+                    "error" => Span::styled("x ", Style::new().fg(theme.error)),
+                    _ => Span::styled("  ", Style::new().fg(theme.text_muted)),
+                };
+
+                let summary = if tc.input_summary.is_empty() {
+                    tc.tool_name.clone()
+                } else {
+                    format!("{}: {}", tc.tool_name, tc.input_summary)
+                };
+
+                ListItem::new(Line::from(vec![
+                    icon,
+                    Span::styled(summary, Style::new().fg(theme.text)),
+                ]))
+            })
+            .collect();
+
+        let tools_block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::new().fg(theme.text_muted))
+            .title(Span::styled(
+                " Tools ",
+                Style::new().fg(theme.text_muted),
+            ));
+
+        let tools_list = List::new(items)
+            .block(tools_block)
+            .style(Style::new().bg(theme.background));
+        frame.render_widget(tools_list, sections[1]);
+    }
+
+    // --- Section 3: Agent text output ---
+    let output_block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::new().fg(theme.text_muted))
+        .title(Span::styled(
+            " Output ",
+            Style::new().fg(theme.text_muted),
+        ));
+
+    let text = if !state.agent_text.is_empty() {
+        state.agent_text.clone()
+    } else if !state.raw_lines.is_empty() {
+        // Events received but no text yet — agent is initializing
+        "Agent initializing...".to_string()
+    } else {
+        "Waiting for agent output...".to_string()
+    };
+
+    // Auto-scroll to bottom when enabled: estimate wrapped line count and scroll to end.
+    // The output block has a top border (1 line), so visible height is height - 1.
+    let visible_height = sections[2].height.saturating_sub(1) as usize;
+    let output_width = sections[2].width.saturating_sub(2).max(1) as usize;
+    let total_lines: usize = text.lines().map(|l| {
+        let len = l.len().max(1); // empty lines count as 1
+        (len + output_width - 1) / output_width
+    }).sum::<usize>().max(1);
+
+    let scroll = if state.auto_scroll && total_lines > visible_height {
+        (total_lines - visible_height) as u16
+    } else {
+        state.scroll_offset
+    };
+
+    let output = Paragraph::new(text)
+        .block(output_block)
+        .style(Style::new().fg(theme.text).bg(theme.background))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(output, sections[2]);
 }
 
 /// Render selection highlighting by modifying buffer cells in the selected range.

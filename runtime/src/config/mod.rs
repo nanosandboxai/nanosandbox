@@ -6,6 +6,63 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Agent permission level controlling how much autonomy the agent has.
+///
+/// This is orthogonal to `auto_mode` (headless execution). An interactive
+/// terminal can run with `AllowAll` permissions, and a headless session
+/// always implies `AllowAll`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Permissions {
+    /// Agent uses its default approval mode — prompts for most actions.
+    /// Claude: default, Codex: suggest, Goose: smart_approve, Cursor: ask
+    #[default]
+    Default,
+    /// Agent auto-accepts file edits but still asks for dangerous operations.
+    /// Claude: acceptEdits, Codex: full-auto, Goose: smart_approve, Cursor: --trust
+    AcceptEdits,
+    /// Agent runs fully autonomously with no confirmation prompts.
+    /// Claude: bypassPermissions, Codex: --yolo, Goose: GOOSE_MODE=auto, Cursor: --force
+    AllowAll,
+}
+
+impl Permissions {
+    /// Return the effective permissions, clamped to `AllowAll` when headless.
+    pub fn effective(self, auto_mode: bool) -> Self {
+        if auto_mode {
+            Permissions::AllowAll
+        } else {
+            self
+        }
+    }
+}
+
+impl std::fmt::Display for Permissions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Permissions::Default => write!(f, "default"),
+            Permissions::AcceptEdits => write!(f, "accept_edits"),
+            Permissions::AllowAll => write!(f, "allow_all"),
+        }
+    }
+}
+
+impl std::str::FromStr for Permissions {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "default" => Ok(Permissions::Default),
+            "accept-edits" | "accept_edits" | "acceptEdits" => Ok(Permissions::AcceptEdits),
+            "allow-all" | "allow_all" | "allowAll" => Ok(Permissions::AllowAll),
+            _ => Err(format!(
+                "unknown permission level '{}': expected default, accept-edits, or allow-all",
+                s
+            )),
+        }
+    }
+}
+
 /// Configuration for creating a sandbox
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxConfig {
@@ -63,9 +120,19 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_agent: Option<ResolvedAgentConfig>,
 
-    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    /// Enable auto/headless mode (agent runs non-interactively with stream-json output).
+    /// Implies `permissions: AllowAll`.
     #[serde(default)]
     pub auto_mode: bool,
+
+    /// Agent permission level (default, accept_edits, allow_all).
+    /// Ignored when `auto_mode` is true (always treated as `AllowAll`).
+    #[serde(default)]
+    pub permissions: Permissions,
+
+    /// Task prompt for headless mode. Required when `auto_mode` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
 }
 
 fn default_cpus() -> u32 {
@@ -102,6 +169,8 @@ impl Default for SandboxConfig {
             skills: Vec::new(),
             resolved_agent: None,
             auto_mode: false,
+            permissions: Permissions::Default,
+            prompt: None,
         }
     }
 }
@@ -313,9 +382,21 @@ impl SandboxConfigBuilder {
         self
     }
 
-    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    /// Enable auto/headless mode.
     pub fn auto_mode(mut self, enabled: bool) -> Self {
         self.config.auto_mode = enabled;
+        self
+    }
+
+    /// Set the agent permission level.
+    pub fn permissions(mut self, permissions: Permissions) -> Self {
+        self.config.permissions = permissions;
+        self
+    }
+
+    /// Set the task prompt (for headless mode).
+    pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.config.prompt = Some(prompt.into());
         self
     }
 
@@ -667,9 +748,13 @@ pub struct ResolvedAgentConfig {
     /// MCP servers resolved from agent definition
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
-    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    /// Enable auto/headless mode.
     #[serde(default)]
     pub auto_mode: bool,
+
+    /// Agent permission level.
+    #[serde(default)]
+    pub permissions: Permissions,
 }
 
 /// Configuration for mounting a project into the sandbox.
@@ -915,6 +1000,7 @@ mod tests {
             }],
             mcp_servers: HashMap::new(),
             auto_mode: false,
+            permissions: Permissions::Default,
         };
 
         let config = SandboxConfig::builder()

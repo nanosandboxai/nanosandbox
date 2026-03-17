@@ -61,9 +61,9 @@ mod cli {
         #[arg(long, global = true)]
         pub timeout: Option<u32>,
 
-        /// Enable auto mode (fully autonomous, no confirmation prompts) for all sandboxes
+        /// Agent permission level: default, accept-edits, allow-all
         #[arg(long, global = true)]
-        pub auto_mode: bool,
+        pub permissions: Option<String>,
 
         /// Environment variables (KEY=VALUE) injected into all sandboxes
         #[arg(short = 'e', long = "env", global = true)]
@@ -330,13 +330,19 @@ mod cli {
                 // Parse --env and --env-file into key-value pairs.
                 let cli_env = parse_env_vars(&cli.env, &cli.env_file)?;
 
+                // Parse --permissions flag.
+                let cli_permissions = cli.permissions.as_deref()
+                    .map(|s| s.parse::<nanosandbox::Permissions>())
+                    .transpose()
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+
                 // Apply CLI flag overrides (merge step 4).
                 nanosandbox::config::file::apply_cli_overrides(
                     &mut sandbox_configs,
                     cli.cpus,
                     cli.memory,
                     cli.timeout,
-                    cli.auto_mode,
+                    cli_permissions,
                     &cli_env,
                 );
 

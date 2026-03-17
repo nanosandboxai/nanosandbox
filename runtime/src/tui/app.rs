@@ -49,6 +49,55 @@ pub enum PanelMode {
     Loading,
     /// Embedded SSH terminal — keystrokes forwarded to remote PTY.
     Terminal,
+    /// Headless mode — agent runs non-interactively, NDJSON output parsed into structured view.
+    Headless,
+}
+
+/// A single tool call logged in headless mode.
+pub struct HeadlessToolCall {
+    pub tool_name: String,
+    pub input_summary: String,
+    pub output_preview: String,
+    /// "running", "done", "error"
+    pub status: String,
+}
+
+/// Accumulated state from parsing NDJSON stream events in headless mode.
+pub struct HeadlessState {
+    /// The task/prompt that was sent to the agent.
+    pub task: String,
+    /// Current high-level status.
+    pub status: String,
+    /// Accumulated agent text output (text deltas concatenated).
+    pub agent_text: String,
+    /// Tool call log entries.
+    pub tool_calls: Vec<HeadlessToolCall>,
+    /// Raw NDJSON lines accumulated (for fallback display).
+    pub raw_lines: Vec<String>,
+    /// Partial line buffer for incomplete NDJSON lines spanning SSH chunks.
+    pub line_buffer: String,
+    /// Scroll offset for the output area.
+    pub scroll_offset: u16,
+    /// Whether to auto-scroll to bottom on new output.
+    pub auto_scroll: bool,
+    /// Start time for elapsed display.
+    pub started_at: std::time::Instant,
+}
+
+impl HeadlessState {
+    pub fn new(task: &str) -> Self {
+        Self {
+            task: task.to_string(),
+            status: "starting".to_string(),
+            agent_text: String::new(),
+            tool_calls: Vec::new(),
+            raw_lines: Vec::new(),
+            line_buffer: String::new(),
+            scroll_offset: 0,
+            auto_scroll: true,
+            started_at: std::time::Instant::now(),
+        }
+    }
 }
 
 /// Where keyboard input is currently directed.
@@ -163,8 +212,12 @@ pub struct AgentPanel {
     pub reconnecting: bool,
     /// Whether this panel is visible in the grid. Hidden panels keep running.
     pub visible: bool,
-    /// Whether auto mode (fully autonomous) is enabled for this panel's agent.
+    /// Whether auto/headless mode is enabled for this panel's agent.
     pub auto_mode: bool,
+    /// Agent permission level.
+    pub permissions: crate::config::Permissions,
+    /// Headless mode state (NDJSON parsing and structured output).
+    pub headless_state: Option<HeadlessState>,
     /// Original SandboxConfig used to create this panel (for session persistence).
     pub original_config: Option<crate::config::SandboxConfig>,
     /// Whether this panel was resumed from a previous session (agent uses resume command).
@@ -205,6 +258,8 @@ impl AgentPanel {
             reconnecting: false,
             visible: true,
             auto_mode: false,
+            permissions: crate::config::Permissions::Default,
+            headless_state: None,
             original_config: None,
             is_resumed: false,
             notification: None,

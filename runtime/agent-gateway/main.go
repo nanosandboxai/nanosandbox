@@ -166,8 +166,11 @@ func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []strin
 			"--output-format", "stream-json",
 			"--include-partial-messages",
 		}
-		if autoMode {
+		switch permissions {
+		case "allow_all":
 			args = append(args, "--dangerously-skip-permissions")
+		case "accept_edits":
+			args = append(args, "--permission-mode", "acceptEdits")
 		}
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
@@ -192,7 +195,10 @@ func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []strin
 			return "codex", []string{"resume", sess.sessionID, message}
 		}
 		args := []string{"exec"}
-		if autoMode {
+		switch permissions {
+		case "allow_all":
+			args = append(args, "--full-auto")
+		case "accept_edits":
 			args = append(args, "--full-auto")
 		}
 		args = append(args, "--json")
@@ -204,8 +210,11 @@ func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []strin
 
 	case "cursor", "cursor-agent":
 		args := []string{"--message", message}
-		if autoMode {
+		switch permissions {
+		case "allow_all":
 			args = append(args, "--force", "--trust", "--approve-mcps")
+		case "accept_edits":
+			args = append(args, "--trust")
 		}
 		if sess.sessionID != "" {
 			args = append(args, "--resume", sess.sessionID)
@@ -313,9 +322,14 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 	cmdEnv = ensureEnv(cmdEnv, "USER", "developer")
 	cmdEnv = ensureEnv(cmdEnv, "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	cmdEnv = ensureEnv(cmdEnv, "TERM", "dumb")
-	// Goose auto mode is set via environment variable.
-	if autoMode && agentName == "goose" {
-		cmdEnv = append(cmdEnv, "GOOSE_MODE=auto")
+	// Goose permissions are set via environment variable.
+	if agentName == "goose" {
+		switch permissions {
+		case "allow_all":
+			cmdEnv = append(cmdEnv, "GOOSE_MODE=auto")
+		case "accept_edits":
+			cmdEnv = append(cmdEnv, "GOOSE_MODE=smart_approve")
+		}
 	}
 	cmd.Env = cmdEnv
 
@@ -735,9 +749,10 @@ func agentGetHandler(mgr *skills.Manager) http.HandlerFunc {
 		name, prompt := mgr.GetAgentDefinition()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"name":      name,
-			"prompt":    prompt,
-			"auto_mode": autoMode,
+			"name":        name,
+			"prompt":      prompt,
+			"auto_mode":   autoMode,
+			"permissions": permissions,
 		})
 	}
 }
@@ -769,16 +784,21 @@ func agentSetHandler(mgr *skills.Manager) http.HandlerFunc {
 // BootstrapRequest is the JSON body for POST /api/v1/agent/bootstrap.
 // It sets up the complete agent configuration in one call.
 type BootstrapRequest struct {
-	AgentName  string                       `json:"agent_name"`
-	Prompt     string                       `json:"prompt"`
-	Skills     []skills.SkillDef            `json:"skills"`
-	McpServers map[string]*mcp.McpServerDef `json:"mcp_servers,omitempty"`
-	AutoMode   bool                         `json:"auto_mode"`
+	AgentName   string                       `json:"agent_name"`
+	Prompt      string                       `json:"prompt"`
+	Skills      []skills.SkillDef            `json:"skills"`
+	McpServers  map[string]*mcp.McpServerDef `json:"mcp_servers,omitempty"`
+	AutoMode    bool                         `json:"auto_mode"`
+	Permissions string                       `json:"permissions,omitempty"`
 }
 
 // autoMode controls whether agents run fully autonomously (no confirmation prompts).
 // Set via bootstrap request.
 var autoMode bool
+
+// permissions controls the agent permission level: "default", "accept_edits", "allow_all".
+// When auto_mode is true, permissions is forced to "allow_all".
+var permissions string
 
 func agentBootstrapHandler(skillsMgr *skills.Manager, mcpMgr *mcp.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -793,10 +813,14 @@ func agentBootstrapHandler(skillsMgr *skills.Manager, mcpMgr *mcp.Manager) http.
 			skillsMgr.SetAgentDefinition(req.AgentName, req.Prompt)
 		}
 
-		// Set auto mode
+		// Set auto mode and permissions
 		autoMode = req.AutoMode
+		permissions = req.Permissions
 		if autoMode {
-			log.Printf("[agent-gateway] auto mode enabled")
+			permissions = "allow_all"
+			log.Printf("[agent-gateway] auto mode enabled (permissions forced to allow_all)")
+		} else if permissions != "" {
+			log.Printf("[agent-gateway] permissions set to %q", permissions)
 		}
 
 		// Add all skills

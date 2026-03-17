@@ -31,6 +31,10 @@ pub enum Command {
         branch: Option<String>,
         /// Optional sandbox name.
         name: Option<String>,
+        /// Run in headless/autonomous mode.
+        auto_mode: bool,
+        /// Task prompt for headless mode (required with --auto-mode).
+        prompt: Option<String>,
     },
     /// Switch focus to a specific panel index.
     Focus {
@@ -241,9 +245,10 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         Some(a) => *a,
         None => {
             return ParseResult::Err(format!(
-                "Usage: /add <agent> [--image <image>] [--project <path>] [--branch <name>] [--name <name>]\n\
+                "Usage: /add <agent> [--auto-mode -p <prompt>] [--image <image>] [--project <path>] [--branch <name>] [--name <name>]\n\
                  Supported agents: {}\n\
-                 Example: /add claude",
+                 Example: /add claude\n\
+                 Headless: /add claude --auto-mode -p \"list files\"",
                 SUPPORTED_AGENTS.join(", "),
             ));
         }
@@ -253,6 +258,8 @@ fn parse_add(parts: &[&str]) -> ParseResult {
     let mut project = None;
     let mut branch = None;
     let mut name = None;
+    let mut auto_mode = false;
+    let mut prompt = None;
     let mut i = 2;
 
     while i < parts.len() {
@@ -293,14 +300,42 @@ fn parse_add(parts: &[&str]) -> ParseResult {
                     ),
                 }
             }
+            "--auto-mode" => {
+                auto_mode = true;
+                i += 1;
+            }
+            "-p" | "--prompt" => {
+                // Consume all remaining tokens as the prompt text.
+                let remaining: Vec<&str> = parts[i + 1..].to_vec();
+                if remaining.is_empty() {
+                    return ParseResult::Err(
+                        "--prompt requires a value\n\
+                         Usage: /add <agent> --auto-mode -p your task here".to_string(),
+                    );
+                }
+                let joined = remaining.join(" ");
+                // Strip surrounding quotes if present (users often type: -p "my task").
+                let trimmed = joined.strip_prefix('"').unwrap_or(&joined);
+                let trimmed = trimmed.strip_suffix('"').unwrap_or(trimmed);
+                prompt = Some(trimmed.to_string());
+                break; // -p consumes the rest of the input
+            }
             other => {
                 return ParseResult::Err(format!(
                     "Unknown option: {}\n\
-                     Usage: /add <agent> [--image <image>] [--project <path>] [--branch <name>] [--name <name>]",
+                     Usage: /add <agent> [--auto-mode -p <prompt>] [--image <image>] [--project <path>] [--branch <name>] [--name <name>]",
                     other,
                 ));
             }
         }
+    }
+
+    // Validate: prompt is required when auto-mode is enabled.
+    if auto_mode && prompt.is_none() {
+        return ParseResult::Err(
+            "--prompt is required with --auto-mode\n\
+             Usage: /add <agent> --auto-mode -p \"your task\"".to_string(),
+        );
     }
 
     if image.is_none() && !SUPPORTED_AGENTS.contains(&agent) {
@@ -320,6 +355,8 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         project,
         branch,
         name,
+        auto_mode,
+        prompt,
     })
 }
 
@@ -602,6 +639,8 @@ mod tests {
                 project: None,
                 branch: None,
                 name: None,
+                auto_mode: false,
+                prompt: None,
             })
         );
     }
@@ -616,6 +655,8 @@ mod tests {
                 project: None,
                 branch: None,
                 name: None,
+                auto_mode: false,
+                prompt: None,
             })
         );
     }
@@ -708,6 +749,8 @@ mod tests {
                 project: None,
                 branch: None,
                 name: None,
+                auto_mode: false,
+                prompt: None,
             })
         );
     }
@@ -888,6 +931,8 @@ mod tests {
                 project: Some("/tmp/myapp".to_string()),
                 branch: None,
                 name: None,
+                auto_mode: false,
+                prompt: None,
             })
         );
     }
@@ -902,6 +947,68 @@ mod tests {
                 project: Some("/tmp/myapp".to_string()),
                 branch: Some("feat/auth".to_string()),
                 name: None,
+                auto_mode: false,
+                prompt: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_auto_mode_with_prompt() {
+        assert_eq!(
+            parse_command_verbose("/add claude --auto-mode -p list files"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: true,
+                prompt: Some("list files".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_auto_mode_prompt_with_quotes() {
+        // Users often type: -p "analyse project" — quotes should be stripped.
+        assert_eq!(
+            parse_command_verbose("/add claude --auto-mode -p \"analyse project\""),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: true,
+                prompt: Some("analyse project".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_auto_mode_without_prompt_fails() {
+        let result = parse_command_verbose("/add claude --auto-mode");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("--prompt is required"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_add_prompt_flag() {
+        assert_eq!(
+            parse_command_verbose("/add codex --auto-mode --prompt fix the bug"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "codex".to_string(),
+                image: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: true,
+                prompt: Some("fix the bug".to_string()),
             })
         );
     }

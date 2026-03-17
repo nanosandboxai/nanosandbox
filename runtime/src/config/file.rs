@@ -40,8 +40,12 @@ pub struct SandboxDefaults {
     pub agent: Option<String>,
     /// Skill names from registry.
     pub skills: Option<Vec<String>>,
-    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    /// Enable auto/headless mode.
     pub auto_mode: Option<bool>,
+    /// Agent permission level.
+    pub permissions: Option<super::Permissions>,
+    /// Task prompt for headless mode.
+    pub prompt: Option<String>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -66,8 +70,12 @@ pub struct SandboxDefinition {
     pub agent: Option<String>,
     /// Skill names from registry.
     pub skills: Option<Vec<String>>,
-    /// Enable auto mode (fully autonomous, no confirmation prompts).
+    /// Enable auto/headless mode.
     pub auto_mode: Option<bool>,
+    /// Agent permission level.
+    pub permissions: Option<super::Permissions>,
+    /// Task prompt for headless mode.
+    pub prompt: Option<String>,
 }
 
 /// Network configuration in YAML.
@@ -382,6 +390,23 @@ pub fn resolve_sandbox_configs(
         // Auto mode: per-sandbox overrides defaults
         config.auto_mode = def.auto_mode.or(defaults.auto_mode).unwrap_or(false);
 
+        // Permissions: per-sandbox overrides defaults
+        config.permissions = def
+            .permissions
+            .or(defaults.permissions)
+            .unwrap_or(super::Permissions::Default);
+
+        // Prompt: per-sandbox overrides defaults
+        config.prompt = def.prompt.clone().or_else(|| defaults.prompt.clone());
+
+        // Validate: prompt is required when auto_mode is enabled.
+        if config.auto_mode && config.prompt.is_none() {
+            return Err(format!(
+                "Sandbox '{}': 'prompt' is required when 'auto_mode' is true",
+                key,
+            ));
+        }
+
         results.push((key.clone(), config));
     }
 
@@ -505,7 +530,7 @@ pub fn apply_cli_overrides(
     cpus: Option<u32>,
     memory: Option<u32>,
     timeout: Option<u32>,
-    auto_mode: bool,
+    permissions: Option<super::Permissions>,
     cli_env: &[(String, String)],
 ) {
     for (_, config) in configs.iter_mut() {
@@ -518,8 +543,8 @@ pub fn apply_cli_overrides(
         if let Some(timeout) = timeout {
             config.timeout_secs = timeout;
         }
-        if auto_mode {
-            config.auto_mode = true;
+        if let Some(perm) = permissions {
+            config.permissions = perm;
         }
         // CLI --env / --env-file override all other env sources.
         for (k, v) in cli_env {
@@ -898,7 +923,7 @@ sandboxes:
         let file = parse_sandbox_file(yaml).unwrap();
         let mut configs =
             resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), false, &[]);
+        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), None, &[]);
         assert_eq!(configs[0].1.cpus, 8);
         assert_eq!(configs[0].1.memory_mb, 4096);
         assert_eq!(configs[0].1.timeout_secs, 1200);
@@ -1143,7 +1168,7 @@ sandboxes:
             ("NEW_KEY".to_string(), "new_value".to_string()),
             ("EXISTING".to_string(), "overridden".to_string()),
         ];
-        apply_cli_overrides(&mut configs, None, None, None, false, &cli_env);
+        apply_cli_overrides(&mut configs, None, None, None, None, &cli_env);
         assert_eq!(configs[0].1.env["NEW_KEY"], "new_value");
         assert_eq!(configs[0].1.env["EXISTING"], "overridden");
     }
