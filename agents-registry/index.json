@@ -1,12 +1,159 @@
 {
   "version": "1.0",
-  "updated_at": "2026-03-18T15:13:54Z",
+  "updated_at": "2026-03-18T15:17:11Z",
   "registry_url": "https://github.com/devdone-labs/agents-registry",
-  "agents": [],
-  "skills": [],
+  "agents": [
+    {
+      "name": "devops-engineer",
+      "description": "DevOps engineer specializing in CI/CD, containers, and infrastructure",
+      "tags": [
+        "devops",
+        "ci-cd",
+        "docker",
+        "kubernetes",
+        "infrastructure"
+      ],
+      "skills": [
+        "git-workflow",
+        "code-review",
+        "security-best-practices",
+        "documentation"
+      ],
+      "mcps": [
+        "server-github",
+        "context7"
+      ],
+      "path": "agents/devops-engineer.yaml"
+    },
+    {
+      "name": "python-developer",
+      "description": "Senior Python developer following PEP8 and modern best practices",
+      "tags": [
+        "python",
+        "backend",
+        "testing",
+        "api"
+      ],
+      "skills": [
+        "git-workflow",
+        "tdd",
+        "code-review",
+        "security-best-practices"
+      ],
+      "mcps": [
+        "server-github",
+        "context7"
+      ],
+      "path": "agents/python-developer.yaml"
+    },
+    {
+      "name": "react-developer",
+      "description": "React/TypeScript developer building accessible, performant UIs",
+      "tags": [
+        "react",
+        "typescript",
+        "frontend",
+        "ui"
+      ],
+      "skills": [
+        "git-workflow",
+        "tdd",
+        "code-review",
+        "security-best-practices"
+      ],
+      "mcps": [
+        "server-github",
+        "context7"
+      ],
+      "path": "agents/react-developer.yaml"
+    },
+    {
+      "name": "rust-developer",
+      "description": "Rust developer focused on safety, performance, and idiomatic code",
+      "tags": [
+        "rust",
+        "systems",
+        "performance",
+        "safety"
+      ],
+      "skills": [
+        "git-workflow",
+        "tdd",
+        "code-review",
+        "security-best-practices",
+        "documentation"
+      ],
+      "mcps": [
+        "server-github",
+        "context7"
+      ],
+      "path": "agents/rust-developer.yaml"
+    }
+  ],
+  "skills": [
+    {
+      "name": "code-review",
+      "description": "Code review practices focused on correctness, clarity, and maintainability",
+      "tags": [
+        "review",
+        "quality",
+        "collaboration"
+      ],
+      "path": "skills/code-review.md"
+    },
+    {
+      "name": "documentation",
+      "description": "Technical documentation standards for code, APIs, and project docs",
+      "tags": [
+        "documentation",
+        "writing",
+        "standards"
+      ],
+      "path": "skills/documentation.md"
+    },
+    {
+      "name": "git-workflow",
+      "description": "Git workflow best practices with conventional commits and clean history",
+      "tags": [
+        "git",
+        "workflow",
+        "collaboration"
+      ],
+      "path": "skills/git-workflow.md"
+    },
+    {
+      "name": "security-best-practices",
+      "description": "Secure development practices covering OWASP top risks and common vulnerabilities",
+      "tags": [
+        "security",
+        "owasp",
+        "best-practices"
+      ],
+      "path": "skills/security-best-practices.md"
+    },
+    {
+      "name": "tdd",
+      "description": "Test-driven development workflow - red, green, refactor",
+      "tags": [
+        "testing",
+        "tdd",
+        "quality"
+      ],
+      "path": "skills/tdd.md"
+    }
+  ],
   "mcps": {
     "custom": [],
-    "sources": []
+    "sources": [
+      "official",
+      "smithery",
+      "glama",
+      "pulsemcp",
+      "mcp-run",
+      "mcp-get",
+      "opentools",
+      "github-mcp"
+    ]
   },
   "models": {
     "claude": {

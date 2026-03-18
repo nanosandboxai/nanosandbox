@@ -1,1 +1,3 @@
 .nanosb/
+__pycache__/
+*.pyc
