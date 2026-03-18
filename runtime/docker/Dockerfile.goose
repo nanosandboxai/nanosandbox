@@ -1,7 +1,7 @@
 ARG BASE_IMAGE=agents-registry/base:latest
 FROM ${BASE_IMAGE}
 
-LABEL org.opencontainers.image.description="Goose agent for DD sandboxes"
+LABEL org.opencontainers.image.description="Goose agent for nanosandbox sandboxes"
 
 # Install bzip2 (tarball extraction) and libgomp1 (OpenMP runtime required by goose)
 RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libgomp1 \

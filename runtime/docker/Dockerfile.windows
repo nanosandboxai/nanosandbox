@@ -22,7 +22,7 @@ RUN Invoke-WebRequest -Uri "https://nodejs.org/dist/v$env:NODE_VERSION/node-v$en
     Remove-Item "C:\node-v$env:NODE_VERSION-win-x64" -Force; `
     Remove-Item C:\nodejs.zip -Force
 
-# Add Node.js to PATH for npm postinstall scripts
+# Ananosandbox Node.js to PATH for npm postinstall scripts
 ENV PATH="C:\nodejs;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\system32;C:\Windows"
 
 # Configure npm to install global packages in our agents directory
@@ -111,7 +111,7 @@ RUN setx /M PATH "C:\nodejs;C:\agents\npm-global;C:\agents;%PATH%"
 USER ContainerUser
 
 # Labels
-LABEL org.opencontainers.image.source="https://github.com/devdone-labs/dd-agents-registry"
+LABEL org.opencontainers.image.source="https://github.com/nanosandboxai/agents-registry"
 LABEL org.opencontainers.image.description="Minimal Windows agent CLIs image for AI coding assistants"
 LABEL org.opencontainers.image.licenses="MIT"
 

@@ -166,16 +166,6 @@ else
                     info "Apple Silicon Macs should have HVF by default"
                 fi
 
-                # Check nanosb HVF entitlement
-                if command -v nanosb &> /dev/null; then
-                    nanosb_path="$(which nanosb)"
-                    if codesign -d --entitlements :- "$nanosb_path" 2>&1 | grep -q "com.apple.security.hypervisor"; then
-                        pass "nanosb has HVF entitlement"
-                    else
-                        warn "nanosb may not have HVF entitlement (VM creation will fail)"
-                        info "Sign with: codesign --entitlements entitlements.plist --force -s - $nanosb_path"
-                    fi
-                fi
             else
                 fail "macOS x86_64 not supported (need Apple Silicon)"
             fi

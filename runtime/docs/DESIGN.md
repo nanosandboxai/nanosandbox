@@ -62,7 +62,7 @@ pub struct SandboxConfig {
     /// Unique name for the sandbox
     pub name: String,
     
-    /// OCI image reference (e.g., "ghcr.io/devdone-labs/agents-registry/claude:latest")
+    /// OCI image reference (e.g., "ghcr.io/nanosandboxai/agents-registry/claude:latest")
     pub image: String,
     
     /// CPU cores to allocate
@@ -169,7 +169,7 @@ Support OCI Distribution Spec for pulling images:
 │       └── sha256:def456...
 ├── images/
 │   └── ghcr.io/
-│       └── devdone-labs/
+│       └── nanosandboxai/
 │           └── dd-agents/
 │               └── latest -> sha256:...
 └── sandboxes/
@@ -239,7 +239,7 @@ async fn main() -> Result<()> {
     // Create sandbox
     let config = SandboxConfig::builder()
         .name("my-sandbox")
-        .image("ghcr.io/devdone-labs/agents-registry/claude:latest")
+        .image("ghcr.io/nanosandboxai/agents-registry/claude:latest")
         .cpus(2)
         .memory_mb(4096)
         .build();

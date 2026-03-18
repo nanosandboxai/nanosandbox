@@ -520,7 +520,7 @@ async fn test_environment_report() {
 // =============================================================================
 
 /// DD-Agents Windows container image (separate package for Windows containers)
-const DD_AGENTS_WINDOWS_IMAGE: &str = "ghcr.io/devdone-labs/dd-agents-windows:503e063";
+const DD_AGENTS_WINDOWS_IMAGE: &str = "ghcr.io/nanosandboxai/dd-agents-windows:503e063";
 
 /// Agent definition for testing
 struct WindowsAgentDef {
@@ -888,7 +888,7 @@ async fn test_dd_agents_windows_report() {
     println!("[Image Configuration]");
     println!("  Image: {}", DD_AGENTS_WINDOWS_IMAGE);
     println!("  Registry: ghcr.io");
-    println!("  Repository: devdone-labs/dd-agents-windows");
+    println!("  Repository: nanosandboxai/dd-agents-windows");
     println!("  Tag: ltsc2022");
 
     println!("\n[Agents Available]");

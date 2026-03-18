@@ -227,7 +227,7 @@ pub fn resolve_sandbox_configs(
         validate_name(&config.name)?;
 
         // Image (required after merge). Bare names like "claude" are normalized
-        // to the agents registry (ghcr.io/devdone-labs/agents-registry/claude:latest).
+        // to the agents registry (ghcr.io/nanosandboxai/agents-registry/claude:latest).
         config.image = def
             .image
             .clone()
@@ -745,7 +745,7 @@ sandboxes:
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].0, "test");
         // Bare names get normalized to agents registry
-        assert_eq!(configs[0].1.image, "ghcr.io/devdone-labs/agents-registry/alpine:latest");
+        assert_eq!(configs[0].1.image, "ghcr.io/nanosandboxai/agents-registry/alpine:latest");
         assert_eq!(configs[0].1.name, "test");
     }
 
@@ -769,7 +769,7 @@ sandboxes:
         let b = configs.iter().find(|(k, _)| k == "b").unwrap();
         assert_eq!(a.1.cpus, 8);
         assert_eq!(a.1.memory_mb, 4096);
-        assert_eq!(a.1.image, "ghcr.io/devdone-labs/agents-registry/default:latest");
+        assert_eq!(a.1.image, "ghcr.io/nanosandboxai/agents-registry/default:latest");
         assert_eq!(b.1.cpus, 2);
     }
 
@@ -1269,16 +1269,21 @@ sandboxes:
 
     #[test]
     fn test_yaml_invalid_model_for_agent_type() {
-        let yaml = r#"
-sandboxes:
-  test:
-    image: test:latest
-    type: claude
-    model: gpt-4.1
-"#;
-        let file = parse_sandbox_file(yaml).unwrap();
-        let result =
-            resolve_sandbox_configs(&file, std::path::Path::new("/tmp"));
+        // Set up a temporary models.json so validation is active.
+        let dir = tempfile::tempdir().unwrap();
+        let models_path = dir.path().join("models.json");
+        std::fs::write(
+            &models_path,
+            r#"{"version":1,"agents":{"claude":{"models":["claude-opus-4-6"]}}}"#,
+        )
+        .unwrap();
+
+        let registry = crate::config::models::ModelsRegistry::load_from(&models_path)
+            .expect("test models.json should parse");
+
+        // Manually validate to test the rejection path — resolve_sandbox_configs
+        // only validates when a models config file exists at the default path.
+        let result = registry.validate("claude", "gpt-4.1");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown model"));
     }

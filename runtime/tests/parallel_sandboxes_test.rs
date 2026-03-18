@@ -6,28 +6,15 @@
 /// - Virtiofs mounts
 ///
 /// Run with: cargo test --test parallel_sandboxes_test -- --ignored
-/// NOTE: This test requires the nanosb binary to be built first:
-///   cargo build --features cli
 
 use nanosandbox::config::SandboxConfig;
 use nanosandbox::sandbox::Sandbox;
 use std::time::Duration;
 use tokio::time::timeout;
 
-/// Ensure the nanosb binary exists and is codesigned before running tests
-fn ensure_nanosb_binary() {
-    let binary_path = std::path::Path::new("target/debug/nanosb");
-    if !binary_path.exists() {
-        panic!("nanosb binary not found at {:?}. Run: cargo build --features cli", binary_path);
-    }
-    // Set the binary path as an environment variable for the runtime to use
-    std::env::set_var("NANOSB_BINARY_PATH", binary_path.canonicalize().unwrap());
-}
-
 #[tokio::test]
 #[ignore] // Requires libkrun and takes time
 async fn test_parallel_sandbox_creation() {
-    ensure_nanosb_binary();
 
     // Create two sandbox configs with different images
     let config1 = SandboxConfig::builder()
@@ -100,7 +87,6 @@ async fn test_parallel_sandbox_creation() {
 #[tokio::test]
 #[ignore]
 async fn test_rapid_sequential_sandbox_creation() {
-    ensure_nanosb_binary();
 
     // Test that sandboxes can be created quickly one after another
     // without port conflicts or resource leaks

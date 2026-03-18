@@ -234,13 +234,12 @@ Run the Windows E2E tests:
 
 ```powershell
 # Run all Windows tests
-cargo test --test windows_e2e_test --features cli
-
+cargo test --test windows_e2e_test
 # Run with output
-cargo test --test windows_e2e_test --features cli -- --nocapture
+cargo test --test windows_e2e_test -- --nocapture
 
 # Run full integration test (requires containers feature)
-cargo test --test windows_e2e_test test_full_integration --features cli -- --ignored
+cargo test --test windows_e2e_test test_full_integration -- --ignored
 ```
 
 ## Comparison with Linux/macOS

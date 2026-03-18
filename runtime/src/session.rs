@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// Schema version for forward compatibility.
-const SESSION_VERSION: u32 = 1;
+pub const SESSION_VERSION: u32 = 1;
 
 /// Persisted session state for one project directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,60 +196,6 @@ impl Session {
         }
 
         Ok(())
-    }
-
-    /// Create a session snapshot from the current TUI application state.
-    #[cfg(feature = "cli")]
-    pub fn from_app(
-        app: &crate::tui::app::App,
-        project_path: &Path,
-        sandbox_config_content: &str,
-    ) -> Self {
-        let panels: Vec<SessionPanel> = app
-            .panels
-            .iter()
-            .filter_map(|panel| {
-                // Skip panels without a saved config — they can't be recreated.
-                let config = panel.original_config.clone()?;
-
-                let clone_path = panel
-                    .project_mount
-                    .as_ref()
-                    .and_then(|pm| pm.worktree_base.clone());
-
-                let branches = panel
-                    .project_mount
-                    .as_ref()
-                    .map(|pm| pm.created_branches.clone())
-                    .unwrap_or_default();
-
-                let env_keys: Vec<String> = panel.env.keys().cloned().collect();
-
-                Some(SessionPanel {
-                    agent_name: panel.agent_name.clone(),
-                    display_name: panel.display_name.clone(),
-                    sandbox_short_id: panel.sandbox_id_short.clone(),
-                    config,
-                    clone_path,
-                    branches,
-                    auto_mode: panel.auto_mode,
-                    permissions: panel.permissions,
-                    agent_type: panel.agent_type,
-                    model: panel.model.clone(),
-                    env_keys,
-                    visible: panel.visible,
-                })
-            })
-            .collect();
-
-        Session {
-            version: SESSION_VERSION,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            project_path: project_path.to_path_buf(),
-            config_hash: config_hash(sandbox_config_content),
-            panels,
-        }
     }
 
     /// Validate that the saved session state is consistent and resumable.

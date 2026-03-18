@@ -24,9 +24,9 @@ fn test_image_ref_parsing() {
     assert_eq!(ref2.tag, "3.19");
 
     // GHCR image
-    let ref3 = ImageRef::parse("ghcr.io/devdone-labs/test:v1.0").unwrap();
+    let ref3 = ImageRef::parse("ghcr.io/nanosandboxai/test:v1.0").unwrap();
     assert_eq!(ref3.registry, "ghcr.io");
-    assert_eq!(ref3.repository, "devdone-labs/test");
+    assert_eq!(ref3.repository, "nanosandboxai/test");
     assert_eq!(ref3.tag, "v1.0");
 
     // Docker Hub user image
@@ -1589,6 +1589,7 @@ async fn test_mcp_skills_agent_e2e() {
         },
         auto_mode: false,
         permissions: nanosandbox::Permissions::Default,
+        agent_type: None,
     };
     match sandbox.bootstrap_agent(&agent_config).await {
         Ok(_) => println!("  Bootstrapped 'test-developer'"),

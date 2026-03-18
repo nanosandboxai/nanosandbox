@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/devdone-labs/agent-gateway/mcp"
-	"github.com/devdone-labs/agent-gateway/skills"
+	"github.com/nanosandboxai/agent-gateway/mcp"
+	"github.com/nanosandboxai/agent-gateway/skills"
 )
 
 // newTestServer creates a test HTTP server using the same mux as production.

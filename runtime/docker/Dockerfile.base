@@ -11,8 +11,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o agent-gateway .
 # =============================================================================
 FROM node:22-slim
 
-LABEL org.opencontainers.image.source="https://github.com/devdone-labs/dd-nanosandbox"
-LABEL org.opencontainers.image.description="Shared base image for DD agent containers"
+LABEL org.opencontainers.image.source="https://github.com/nanosandboxai/runtime"
+LABEL org.opencontainers.image.description="Shared base image for nanosandbox agent containers"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # System dependencies (agents + networking + SSH access)

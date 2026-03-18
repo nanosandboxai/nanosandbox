@@ -1,7 +1,7 @@
 ARG BASE_IMAGE=agents-registry/base:latest
 FROM ${BASE_IMAGE}
 
-LABEL org.opencontainers.image.description="Cursor agent for DD sandboxes"
+LABEL org.opencontainers.image.description="Cursor agent for nanosandbox sandboxes"
 
 # Install cursor CLI agent via official installer.
 # The installer puts files under /root/.local/share/cursor-agent/ and a

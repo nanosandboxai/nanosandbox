@@ -76,7 +76,7 @@ fn create_platform_resolver() -> PlatformResolver {
 pub struct ImageRef {
     /// Registry (e.g., "ghcr.io", "docker.io")
     pub registry: String,
-    /// Repository (e.g., "devdone-labs/dd-agents")
+    /// Repository (e.g., "nanosandboxai/dd-agents")
     pub repository: String,
     /// Tag (e.g., "latest")
     pub tag: String,
@@ -1466,9 +1466,9 @@ mod tests {
         assert_eq!(ref1.repository, "library/alpine");
         assert_eq!(ref1.tag, "latest");
 
-        let ref2 = ImageRef::parse("ghcr.io/devdone-labs/agents-registry/claude:v1.0").unwrap();
+        let ref2 = ImageRef::parse("ghcr.io/nanosandboxai/agents-registry/claude:v1.0").unwrap();
         assert_eq!(ref2.registry, "ghcr.io");
-        assert_eq!(ref2.repository, "devdone-labs/agents-registry/claude");
+        assert_eq!(ref2.repository, "nanosandboxai/agents-registry/claude");
         assert_eq!(ref2.tag, "v1.0");
 
         let ref3 = ImageRef::parse("python:3.12-slim").unwrap();

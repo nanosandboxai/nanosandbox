@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "VM-based sandbox SDK using libkrun FFI"
 license = "Apache-2.0"
-repository = "https://github.com/devdone-labs/dd-nanosandbox"
+repository = "https://github.com/nanosandboxai/runtime"
 keywords = ["sandbox", "virtualization", "containers", "isolation", "security"]
 categories = ["development-tools", "virtualization"]
 authors = ["DevDone Labs"]
@@ -13,14 +13,8 @@ authors = ["DevDone Labs"]
 name = "nanosandbox"
 path = "src/lib.rs"
 
-[[bin]]
-name = "nanosb"
-path = "src/bin/nanosb.rs"
-required-features = ["cli"]
-
 [features]
 default = []
-cli = ["clap", "indicatif", "tabled", "colored", "tracing-subscriber", "ratatui", "russh", "ssh-key", "vt100", "tui-term", "arboard", "png"]
 server = ["axum", "tower"]
 
 [dependencies]
@@ -59,19 +53,6 @@ unicode-width = "0.2"
 libc = "0.2"
 libloading = "0.8"
 
-# CLI (optional)
-clap = { version = "4", features = ["derive"], optional = true }
-indicatif = { version = "0.17", optional = true }  # Progress bars
-tabled = { version = "0.15", optional = true }     # Table formatting
-colored = { version = "2", optional = true }       # Colored output
-tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
-ratatui = { version = "0.29", optional = true }    # Terminal UI
-russh = { version = "0.57", optional = true }      # Async SSH2 client
-ssh-key = { version = "0.6", features = ["ed25519", "std"], optional = true } # SSH key loading
-vt100 = { version = "0.15", optional = true }      # Terminal emulation
-tui-term = { version = "0.2", optional = true }    # ratatui terminal widget
-arboard = { version = "3.6", optional = true }     # Cross-platform clipboard (image+text)
-png = { version = "0.17", optional = true }         # RGBA→PNG encoding for clipboard images
 
 # Server (optional)
 axum = { version = "0.7", optional = true }
@@ -86,8 +67,6 @@ tonic = "0.12"
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
-assert_cmd = "2"    # CLI testing
-predicates = "3"    # Output assertions
 
 [profile.release]
 lto = true

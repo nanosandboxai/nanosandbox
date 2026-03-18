@@ -39,11 +39,11 @@ const HCSSHIM_VERSION: &str = "0.12.9";
 
 /// URL template for downloading runhcs.exe from nanosandbox releases
 const RUNHCS_DOWNLOAD_URL: &str = 
-    "https://github.com/devdone-labs/dd-nanosandbox/releases/download/runhcs-v{VERSION}/runhcs.exe";
+    "https://github.com/nanosandboxai/runtime/releases/download/runhcs-v{VERSION}/runhcs.exe";
 
 /// URL template for downloading wclayer.exe from nanosandbox releases
 const WCLAYER_DOWNLOAD_URL: &str = 
-    "https://github.com/devdone-labs/dd-nanosandbox/releases/download/runhcs-v{VERSION}/wclayer.exe";
+    "https://github.com/nanosandboxai/runtime/releases/download/runhcs-v{VERSION}/wclayer.exe";
 
 /// Alternative: Download from hcsshim releases (if available)
 const HCSSHIM_RUNHCS_URL: &str = 

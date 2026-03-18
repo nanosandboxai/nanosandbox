@@ -51,8 +51,7 @@ pub mod session;
 pub mod settings;
 pub mod sandbox;
 
-#[cfg(feature = "cli")]
-pub mod tui;
+
 
 // Re-exports
 pub use agents_registry::AgentsRegistryClient;

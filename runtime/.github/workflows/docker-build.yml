@@ -2,14 +2,11 @@ name: Build and Push Agent Docker Images
 
 on:
   push:
-    branches:
-      - main
-      - feature/**
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
+  # pull_request:
+  #   branches:
+  #     - main
   workflow_dispatch:
     inputs:
       tag:
@@ -29,7 +26,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: devdone-labs/agents-registry
+  IMAGE_PREFIX: nanosandboxai/agents-registry
 
 jobs:
   # ===========================================================================
@@ -64,6 +61,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/base
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
             type=sha,prefix=
 
       - name: Build and push base image

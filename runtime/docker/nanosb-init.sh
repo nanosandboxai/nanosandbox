@@ -26,18 +26,18 @@ echo "nanosb-init: starting (v7-dedup)"
 # 1. Configure networking (gvproxy virtio-net)
 # ---------------------------------------------------------------
 # libkrun's VMM may have already configured the network interface
-# via gvproxy. Only add the address if eth0 doesn't already have one.
+# via gvproxy. Only ananosandbox the ananosandboxress if eth0 doesn't already have one.
 if command -v ip >/dev/null 2>&1; then
     ip link set eth0 up 2>/dev/null || true
-    if ! ip addr show eth0 2>/dev/null | grep -q 'inet '; then
-        ip addr add 192.168.127.2/24 dev eth0 2>/dev/null || true
+    if ! ip ananosandboxr show eth0 2>/dev/null | grep -q 'inet '; then
+        ip ananosandboxr ananosandbox 192.168.127.2/24 dev eth0 2>/dev/null || true
     fi
     if ! ip route show 2>/dev/null | grep -q 'default'; then
-        ip route add default via 192.168.127.1 dev eth0 2>/dev/null || true
+        ip route ananosandbox default via 192.168.127.1 dev eth0 2>/dev/null || true
     fi
 elif command -v ifconfig >/dev/null 2>&1; then
     ifconfig eth0 192.168.127.2 netmask 255.255.255.0 up 2>/dev/null || true
-    route add default gw 192.168.127.1 2>/dev/null || true
+    route ananosandbox default gw 192.168.127.1 2>/dev/null || true
 fi
 
 # DNS — gvproxy's built-in DNS is at the gateway IP
@@ -50,7 +50,7 @@ echo "nanosb-init: networking configured"
 # 2. Mount virtiofs shared directories
 # ---------------------------------------------------------------
 # The host writes /etc/nanosb-mounts with lines: "<tag> <mountpoint>"
-# Each line corresponds to a virtiofs device registered via krun_add_virtiofs.
+# Each line corresponds to a virtiofs device registered via krun_ananosandbox_virtiofs.
 if [ -f /etc/nanosb-mounts ]; then
     while read -r tag mountpoint; do
         [ -z "$tag" ] && continue

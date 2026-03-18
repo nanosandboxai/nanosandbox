@@ -58,7 +58,7 @@ echo "Checking prerequisites..."
 echo ""
 
 # Build test arguments
-CARGO_ARGS=("test" "--features" "cli" "--")
+CARGO_ARGS=("test" "--")
 
 if $verbose; then
     CARGO_ARGS+=("--nocapture")

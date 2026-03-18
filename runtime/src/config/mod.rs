@@ -124,7 +124,7 @@ pub struct SandboxConfig {
     /// Unique name for the sandbox
     pub name: String,
 
-    /// OCI image reference (e.g., "ghcr.io/devdone-labs/agents-registry/claude:latest")
+    /// OCI image reference (e.g., "ghcr.io/nanosandboxai/agents-registry/claude:latest")
     pub image: String,
 
     /// CPU cores to allocate
@@ -243,14 +243,14 @@ impl Default for SandboxConfig {
 }
 
 /// Default OCI registry for agent images.
-pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/devdone-labs/agents-registry";
+pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/agents-registry";
 
 /// Normalize an image reference: bare names (no `/` or `.`) are treated as
 /// agent names and prefixed with the agents registry instead of Docker Hub.
 ///
 /// Examples:
-/// - `"claude"` → `"ghcr.io/devdone-labs/agents-registry/claude:latest"`
-/// - `"codex:v2"` → `"ghcr.io/devdone-labs/agents-registry/codex:v2"`
+/// - `"claude"` → `"ghcr.io/nanosandboxai/agents-registry/claude:latest"`
+/// - `"codex:v2"` → `"ghcr.io/nanosandboxai/agents-registry/codex:v2"`
 /// - `"ghcr.io/foo/bar:1.0"` → unchanged
 /// - `"alpine:3.19"` → unchanged (contains `.`)
 /// - `"localhost:5050/img"` → unchanged
@@ -868,11 +868,11 @@ mod tests {
     fn test_normalize_image_bare_agent_name() {
         assert_eq!(
             normalize_image("claude"),
-            "ghcr.io/devdone-labs/agents-registry/claude:latest"
+            "ghcr.io/nanosandboxai/agents-registry/claude:latest"
         );
         assert_eq!(
             normalize_image("codex"),
-            "ghcr.io/devdone-labs/agents-registry/codex:latest"
+            "ghcr.io/nanosandboxai/agents-registry/codex:latest"
         );
     }
 
@@ -880,15 +880,15 @@ mod tests {
     fn test_normalize_image_bare_name_with_tag() {
         assert_eq!(
             normalize_image("claude:v2"),
-            "ghcr.io/devdone-labs/agents-registry/claude:v2"
+            "ghcr.io/nanosandboxai/agents-registry/claude:v2"
         );
     }
 
     #[test]
     fn test_normalize_image_full_ref_unchanged() {
         assert_eq!(
-            normalize_image("ghcr.io/devdone-labs/agents-registry/claude:latest"),
-            "ghcr.io/devdone-labs/agents-registry/claude:latest"
+            normalize_image("ghcr.io/nanosandboxai/agents-registry/claude:latest"),
+            "ghcr.io/nanosandboxai/agents-registry/claude:latest"
         );
         assert_eq!(
             normalize_image("docker.io/library/alpine:3.19"),

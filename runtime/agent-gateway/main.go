@@ -23,8 +23,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/devdone-labs/agent-gateway/mcp"
-	"github.com/devdone-labs/agent-gateway/skills"
+	"github.com/nanosandboxai/agent-gateway/mcp"
+	"github.com/nanosandboxai/agent-gateway/skills"
 )
 
 // No embedded mcp-servers.yaml — all MCP servers are user-defined at runtime.

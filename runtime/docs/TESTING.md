@@ -8,7 +8,6 @@ This document covers how to run tests for Nanosandbox, including unit tests, int
 |----------|-------|--------------|---------|
 | Unit Tests | 17 | None | `make test` |
 | Integration Tests | 19 | None | `make test` |
-| CLI Tests | 24 | None | `make test` |
 | Network E2E | 5 | Network access | `make test-e2e-network` |
 | Sandbox E2E | 1 | Runtime + KVM/HVF | `make test-e2e` |
 
@@ -40,7 +39,7 @@ make test
 make test-unit
 
 # Run with verbose output
-cargo test --features cli -- --nocapture
+cargo test -- --nocapture
 ```
 
 ### E2E Tests
@@ -59,8 +58,6 @@ Tests included:
 - `test_pull_alpine_image` - Pull alpine image from Docker Hub
 - `test_create_rootfs` - Create rootfs from pulled layers
 - `test_full_image_to_bundle_flow` - Full image to OCI bundle pipeline
-- `test_pull_alpine` (CLI) - Test `nanosb pull` command
-- `test_pull_json` (CLI) - Test JSON output format
 
 #### Full E2E Tests
 
@@ -283,7 +280,6 @@ async fn test_new_e2e_feature() {
 make help             # Show all targets
 make build            # Build debug
 make build-release    # Build release
-make build-cli        # Build CLI binary
 make test             # Run unit/integration tests
 make test-unit        # Run only unit tests
 make test-e2e         # Run all E2E tests

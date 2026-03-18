@@ -5,8 +5,8 @@
 //!
 //! ## Platform Support
 //!
-//! - **Linux/macOS**: Uses `ghcr.io/devdone-labs/agents-registry/<agent>:latest`
-//! - **Windows**: Uses `ghcr.io/devdone-labs/dd-agents-windows:503e063` (legacy)
+//! - **Linux/macOS**: Uses `ghcr.io/nanosandboxai/agents-registry/<agent>:latest`
+//! - **Windows**: Uses `ghcr.io/nanosandboxai/dd-agents-windows:503e063` (legacy)
 //!
 //! ## Agents Tested
 //!
@@ -21,13 +21,13 @@
 //!
 //! ```bash
 //! # Run all agent tests
-//! cargo test --test agents_e2e_test --features cli
+//! cargo test --test agents_e2e_test
 //!
 //! # Run with output
-//! cargo test --test agents_e2e_test --features cli -- --nocapture
+//! cargo test --test agents_e2e_test -- --nocapture
 //!
 //! # Run ignored tests (requires full runtime setup)
-//! cargo test --test agents_e2e_test --features cli -- --ignored
+//! cargo test --test agents_e2e_test -- --ignored
 //! ```
 
 use nanosandbox::config::SandboxConfig;
@@ -74,7 +74,7 @@ const AGENTS: &[AgentDef] = &[
 
 /// Build the image reference for a given agent
 fn agent_image(agent_command: &str) -> String {
-    format!("ghcr.io/devdone-labs/agents-registry/{}:latest", agent_command)
+    format!("ghcr.io/nanosandboxai/agents-registry/{}:latest", agent_command)
 }
 
 // =============================================================================
@@ -301,7 +301,7 @@ async fn test_all_agents_version() {
     println!("\n========================================");
     println!("  Agents Registry Comprehensive Test");
     println!("========================================");
-    println!("Image pattern: ghcr.io/devdone-labs/agents-registry/<agent>:latest");
+    println!("Image pattern: ghcr.io/nanosandboxai/agents-registry/<agent>:latest");
     println!("Testing {} agents\n", AGENTS.len());
 
     // Check runtime - skip entire test if not met
@@ -382,7 +382,7 @@ async fn test_all_agents_version() {
     // Fail the test if any agent failed
     if image_pull_failed {
         panic!(
-            "Image pull failed. Ensure agent images are available at ghcr.io/devdone-labs/agents-registry/"
+            "Image pull failed. Ensure agent images are available at ghcr.io/nanosandboxai/agents-registry/"
         );
     }
 
@@ -463,7 +463,7 @@ async fn test_agents_environment_report() {
     println!("[Platform]");
     println!("  OS: {}", std::env::consts::OS);
     println!("  Arch: {}", std::env::consts::ARCH);
-    println!("  Image pattern: ghcr.io/devdone-labs/agents-registry/<agent>:latest");
+    println!("  Image pattern: ghcr.io/nanosandboxai/agents-registry/<agent>:latest");
 
     // Runtime
     println!("\n[Runtime Status]");

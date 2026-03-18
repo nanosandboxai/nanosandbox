@@ -48,14 +48,14 @@ sandboxes:
 
     let claude = configs.iter().find(|(k, _)| k == "claude").unwrap();
     assert_eq!(claude.1.name, "claude-dev");
-    assert_eq!(claude.1.image, "ghcr.io/devdone-labs/agents-registry/nanosb-claude:latest"); // normalized bare name
+    assert_eq!(claude.1.image, "ghcr.io/nanosandboxai/agents-registry/nanosb-claude:latest"); // normalized bare name
     assert_eq!(claude.1.cpus, 2); // inherited
     assert_eq!(claude.1.mcp_servers.len(), 2); // github inherited + filesystem
     assert_eq!(claude.1.mcp_servers["github"].command, "npx"); // inherited
 
     let codex = configs.iter().find(|(k, _)| k == "codex").unwrap();
     assert_eq!(codex.1.name, "codex"); // key as name
-    assert_eq!(codex.1.image, "ghcr.io/devdone-labs/agents-registry/nanosb-codex:latest"); // normalized bare name
+    assert_eq!(codex.1.image, "ghcr.io/nanosandboxai/agents-registry/nanosb-codex:latest"); // normalized bare name
     assert_eq!(codex.1.cpus, 4); // overridden
     assert_eq!(codex.1.memory_mb, 4096); // inherited
     assert_eq!(codex.1.mcp_servers["github"].command, "uvx"); // overridden

@@ -50,18 +50,14 @@ The fastest way to get started on macOS:
 
 ```bash
 # Clone the repository
-git clone https://github.com/devdone-labs/dd-nanosandbox
-cd dd-nanosandbox
+git clone https://github.com/nanosandboxai/runtime
+cd runtime
 
-# Install runtime dependencies
-./scripts/install/macos.sh   # macOS Apple Silicon
-# ./scripts/install/linux.sh  # Linux
+# Build the library
+cargo build
 
-# Build the CLI
-cargo build --release --features cli
-
-# Test it works
-./target/release/nanosb run alpine:3.19 echo "Hello from sandbox!"
+# Run tests
+cargo test
 ```
 
 ### Prerequisites
@@ -88,66 +84,14 @@ Or install manually:
 ### From Source
 
 ```bash
-# Clone the repository
-git clone https://github.com/devdone-labs/dd-nanosandbox
-cd dd-nanosandbox
-
-# Build the CLI
-cargo build --release --features cli
-
-# Install globally (optional)
-cargo install --path . --features cli
+git clone https://github.com/nanosandboxai/runtime
+cd runtime
+cargo build
 ```
 
-### Verify Installation
-
-```bash
-nanosb --version
-nanosb --help
-```
+For the CLI, see the [CLI repository](https://github.com/nanosandboxai/cli).
 
 ## Quick Start
-
-### CLI Usage (Linux/macOS)
-
-```bash
-# Pull an image
-nanosb pull alpine:3.19
-
-# Run a command in a new sandbox
-nanosb run alpine echo "Hello from sandbox!"
-
-# Run Python code
-nanosb run python:3.12 python -c "print('Hello, World!')"
-
-# List cached images
-nanosb images
-
-# List running sandboxes
-nanosb ps
-
-# Stop a sandbox
-nanosb stop <sandbox-id>
-
-# Remove a sandbox
-nanosb rm <sandbox-id>
-```
-
-### CLI Usage (Windows)
-
-```powershell
-# Pull a Windows container image
-nanosb.exe pull mcr.microsoft.com/windows/nanoserver:ltsc2022
-
-# Run a command in a Windows container
-nanosb.exe run mcr.microsoft.com/windows/nanoserver:ltsc2022 cmd.exe /c "echo Hello from Windows sandbox!"
-
-# List cached images
-nanosb.exe images
-
-# List running sandboxes
-nanosb.exe ps
-```
 
 ### SDK Usage
 
@@ -177,20 +121,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `nanosb pull <image>` | Pull an image from a registry |
-| `nanosb images` | List cached images |
-| `nanosb run <image> [cmd]` | Run command in new sandbox |
-| `nanosb exec <id> <cmd>` | Execute in running sandbox |
-| `nanosb ps` | List sandboxes |
-| `nanosb stop <id>` | Stop a sandbox |
-| `nanosb rm <id>` | Remove a sandbox |
-
-For detailed CLI documentation, see [docs/CLI.md](docs/CLI.md).
 
 ## Architecture
 
@@ -245,14 +175,6 @@ The main Rust crate providing:
 - `Runtime` - Low-level libkrun FFI interface
 - `SandboxRegistry` - Sandbox state persistence
 
-### nanosb (CLI)
-
-Command-line interface for:
-
-- Image management (`nanosb pull`, `nanosb images`)
-- Sandbox operations (`nanosb run`, `nanosb exec`, `nanosb stop`, `nanosb rm`)
-- JSON output for scripting (`--format json`)
-
 ## Comparison with Alternatives
 
 | Feature | Nanosandbox | Microsandbox | Docker | gVisor |
@@ -279,8 +201,8 @@ Command-line interface for:
 
 ## Documentation
 
-- [CLI Reference](docs/CLI.md) - Command-line interface documentation
 - [Design Document](docs/DESIGN.md) - Technical design and architecture
+- [CLI](https://github.com/nanosandboxai/cli) - Command-line interface (separate repo)
 
 ## License
 
@@ -289,4 +211,4 @@ Apache-2.0
 ## Related Projects
 
 - [libkrun](https://github.com/containers/libkrun) - VM-based isolation library
-- [DD-Code](https://github.com/devdone-labs/dd-code) - IDE that uses Nanosandbox
+- [DD-Code](https://github.com/nanosandboxai/dd-code) - IDE that uses Nanosandbox

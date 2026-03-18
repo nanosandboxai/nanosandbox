@@ -419,7 +419,7 @@ async fn validate_linux_detailed() -> ValidationResult {
         result.add_error(
             "libkrun Library",
             "libkrun.so not found",
-            Some("Run: ./scripts/install/linux.sh".to_string()),
+            Some("Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string()),
         );
     } else {
         debug!("Found libkrun at: {}", libkrun_found.unwrap());
@@ -477,7 +477,7 @@ async fn validate_linux_detailed() -> ValidationResult {
     } else {
         result.add_warning(
             "gvproxy not found - outbound networking from VMs will be limited. \
-             Run: ./scripts/install/linux.sh".to_string(),
+             Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string(),
         );
     }
 
@@ -541,7 +541,7 @@ async fn validate_macos_detailed() -> ValidationResult {
         result.add_error(
             "libkrun Library",
             "libkrun.dylib not found at /opt/homebrew/lib/",
-            Some("Run: ./scripts/install/macos.sh".to_string()),
+            Some("Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string()),
         );
     } else {
         debug!("Found libkrun at /opt/homebrew/lib/libkrun.dylib");
@@ -568,7 +568,7 @@ async fn validate_macos_detailed() -> ValidationResult {
     } else {
         result.add_warning(
             "gvproxy not found - outbound networking from VMs will be limited. \
-             Run: ./scripts/install/macos.sh".to_string(),
+             Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string(),
         );
     }
 

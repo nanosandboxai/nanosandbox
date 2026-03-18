@@ -1,4 +1,4 @@
-module github.com/devdone-labs/agent-gateway
+module github.com/nanosandboxai/agent-gateway
 
 go 1.22
 

@@ -14,7 +14,6 @@ help:
 	@echo "Build targets:"
 	@echo "  build           Build in debug mode"
 	@echo "  build-release   Build in release mode"
-	@echo "  build-cli       Build CLI binary"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test            Run unit and integration tests"
@@ -52,16 +51,13 @@ build:
 build-release:
 	cargo build --release
 
-build-cli:
-	cargo build --features cli
-
 # =============================================================================
 # Test Targets
 # =============================================================================
 
 # Run all tests (including E2E - requires network)
 test:
-	cargo test --features cli
+	cargo test
 
 # Run only unit tests (lib tests)
 test-unit:
@@ -69,7 +65,7 @@ test-unit:
 
 # Run all tests with verbose output
 test-verbose:
-	cargo test --features cli -- --nocapture
+	cargo test -- --nocapture
 
 # =============================================================================
 # Setup Targets
@@ -97,7 +93,7 @@ check-prereqs-network:
 
 # Run Clippy linter
 clippy:
-	cargo clippy --features cli -- -D warnings
+	cargo clippy -- -D warnings
 
 # Format code
 fmt:
@@ -190,4 +186,4 @@ agents-list:
 
 # Full E2E test with nanosandbox
 agents-e2e:
-	@./scripts/test-agents-e2e.sh
+	cargo test --test agents_e2e_test -- --ignored --nocapture
