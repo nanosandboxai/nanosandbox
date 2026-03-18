@@ -1,0 +1,66 @@
+name: Update models list
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-models:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/models-registry
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch models from OpenRouter
+        run: |
+          HTTP_CODE=$(curl -s -o /tmp/openrouter-models.json -w "%{http_code}" \
+            https://openrouter.ai/api/v1/models)
+          echo "OpenRouter API responded with HTTP $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::OpenRouter API returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+          MODEL_COUNT=$(python3 -c "import json; d=json.load(open('/tmp/openrouter-models.json')); print(len(d.get('data',[])))")
+          echo "Fetched $MODEL_COUNT models from OpenRouter"
+
+      - name: Sync models.json
+        run: python3 scripts/update-models.py
+
+      - name: Read update summary
+        id: summary
+        run: |
+          if [ -f /tmp/models-update-summary.md ]; then
+            {
+              echo "body<<SUMMARY_EOF"
+              cat /tmp/models-update-summary.md
+              echo ""
+              echo "SUMMARY_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: sync models.json from OpenRouter"
+          title: "chore: sync models.json"
+          body: |
+            Automated sync of `models/models.json` from [OpenRouter](https://openrouter.ai/api/v1/models) public model catalog.
+
+            ${{ steps.summary.outputs.body }}
+
+            This PR was created by the daily `update-models` workflow.
+          branch: chore/update-models
+          delete-branch: true
+          labels: automated

@@ -216,12 +216,28 @@ def scan_mcps(mcps_dir: Path) -> dict:
     return {"custom": custom, "sources": sources}
 
 
+def scan_models(models_dir: Path):
+    """Load the models registry from models/models.json."""
+    models_file = models_dir / "models.json"
+    if not models_file.exists():
+        return None
+
+    content = models_file.read_text()
+    try:
+        data = json.loads(content)
+        return data.get("agents", {})
+    except json.JSONDecodeError:
+        print(f"Warning: could not parse {models_file}", file=sys.stderr)
+        return None
+
+
 def main():
     repo_root = Path(__file__).parent.parent
 
     agents = scan_agents(repo_root / "agents")
     skills = scan_skills(repo_root / "skills")
     mcps = scan_mcps(repo_root / "mcps")
+    models = scan_models(repo_root / "models")
 
     index = {
         "version": "1.0",
@@ -232,9 +248,14 @@ def main():
         "mcps": mcps,
     }
 
+    if models is not None:
+        index["models"] = models
+
     output_path = repo_root / "index.json"
     output_path.write_text(json.dumps(index, indent=2) + "\n")
-    print(f"Generated {output_path} with {len(agents)} agents, {len(skills)} skills")
+
+    models_count = sum(len(m.get("models", [])) for m in models.values()) if models else 0
+    print(f"Generated {output_path} with {len(agents)} agents, {len(skills)} skills, {models_count} models")
 
 
 if __name__ == "__main__":
