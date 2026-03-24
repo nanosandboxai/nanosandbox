@@ -48,21 +48,23 @@ async-trait = "0.1"
 dirs = "6"
 unicode-width = "0.2"
 
-# libkrun FFI support - fork child process for krun_start_enter (macOS + Linux)
-[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
-libc = "0.2"
+# libkrun FFI support (all platforms)
 libloading = "0.8"
 
+# Unix-only: fork child process for krun_start_enter
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Server (optional)
 axum = { version = "0.7", optional = true }
 tower = { version = "0.4", optional = true }
 
-# Windows containerd gRPC client
-[target.'cfg(windows)'.dependencies]
-containerd-client = "0.8"
-prost-types = "0.13"
-tonic = "0.12"
+# Windows containerd gRPC client (legacy, only needed for containerd backend)
+# Disabled by default — requires protoc to build
+# [target.'cfg(windows)'.dependencies]
+# containerd-client = "0.8"
+# prost-types = "0.13"
+# tonic = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

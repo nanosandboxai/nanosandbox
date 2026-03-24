@@ -32,17 +32,6 @@ pub(crate) mod gvproxy;
 #[path = "gvproxy_stub.rs"]
 pub(crate) mod gvproxy;
 
-// Windows containerd runtime (legacy, kept for reference)
-#[cfg(target_os = "windows")]
-pub mod containerd_windows;
-
-// Legacy Windows Container runtime (deprecated, kept for reference)
-#[cfg(target_os = "windows")]
-pub mod windows;
-
-// Legacy Windows runhcs setup (deprecated, kept for reference)
-#[cfg(target_os = "windows")]
-pub mod runhcs_setup;
 
 pub use validation::{validate_runtime_prerequisites, validate_runtime_prerequisites_detailed, ValidationResult};
 
@@ -65,13 +54,6 @@ pub fn gvproxy_available() -> bool {
     }
 }
 
-#[cfg(target_os = "windows")]
-pub use containerd_windows::{ContainerdWindowsRuntime, WindowsContainerdIsolation};
-
-// Legacy exports (deprecated, kept for backward compatibility)
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use windows::{WindowsContainerRuntime, WindowsIsolation};
 
 use crate::config::{McpServerConfig, ResolvedAgentConfig, SkillDef};
 use crate::config::SandboxConfig;
@@ -96,17 +78,12 @@ pub struct ExecOutput {
 
 /// Runtime backend enum
 ///
-/// Each platform has a single runtime backend:
-/// - Linux/macOS: `Libkrun` (direct FFI via libkrun C API)
-/// - Windows: `WindowsContainerd` (containerd + runhcs shim)
+/// All platforms use the same backend:
+/// - Linux/macOS/Windows: `Libkrun` (direct FFI via libkrun C API)
 pub enum RuntimeBackend {
     /// Direct libkrun FFI Runtime - all platforms
     /// Uses TSI networking on Windows, gvproxy on macOS/Linux
     Libkrun(LibkrunRuntime),
-
-    /// Windows containerd Runtime - Windows only (legacy)
-    #[cfg(target_os = "windows")]
-    WindowsContainerd(ContainerdWindowsRuntime),
 }
 
 impl RuntimeBackend {
@@ -114,8 +91,6 @@ impl RuntimeBackend {
     pub fn name(&self) -> &str {
         match self {
             RuntimeBackend::Libkrun(_) => "libkrun",
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(r) => r.name(),
         }
     }
 
@@ -126,8 +101,6 @@ impl RuntimeBackend {
     pub fn handles_image_pull(&self) -> bool {
         match self {
             RuntimeBackend::Libkrun(r) => r.handles_image_pull(),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => true,
         }
     }
 
@@ -140,8 +113,6 @@ impl RuntimeBackend {
     ) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.create(id, config, bundle_path).await,
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(r) => r.create(id, config, bundle_path).await,
         }
     }
 
@@ -149,8 +120,6 @@ impl RuntimeBackend {
     pub async fn start(&self, id: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.start(id).await,
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(r) => r.start(id).await,
         }
     }
 
@@ -165,10 +134,6 @@ impl RuntimeBackend {
     ) -> Result<ExecOutput> {
         match self {
             RuntimeBackend::Libkrun(r) => r.exec(id, command, args, workdir, env).await,
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(r) => {
-                r.exec(id, command, args, workdir, env).await
-            }
         }
     }
 
@@ -187,11 +152,6 @@ impl RuntimeBackend {
     {
         match self {
             RuntimeBackend::Libkrun(r) => {
-                r.exec_stream(id, command, args, workdir, env, on_output)
-                    .await
-            }
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(r) => {
                 r.exec_stream(id, command, args, workdir, env, on_output)
                     .await
             }
@@ -218,13 +178,6 @@ impl RuntimeBackend {
                 r.send_message(id, message, agent, model, env, on_output)
                     .await
             }
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, message, agent, model, env, on_output);
-                Err(crate::error::Error::ExecFailed(
-                    "Agent gateway not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -232,8 +185,6 @@ impl RuntimeBackend {
     pub fn is_persistent(&self, id: &str) -> bool {
         match self {
             RuntimeBackend::Libkrun(r) => r.is_persistent(id),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => { let _ = id; false }
         }
     }
 
@@ -241,8 +192,6 @@ impl RuntimeBackend {
     pub fn ssh_port(&self, id: &str) -> Option<u16> {
         match self {
             RuntimeBackend::Libkrun(r) => r.ssh_port(id),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => { let _ = id; None }
         }
     }
 
@@ -250,11 +199,6 @@ impl RuntimeBackend {
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
         match self {
             RuntimeBackend::Libkrun(r) => r.expose_port(id, port),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, port);
-                Err("expose_port not supported on Windows containerd runtime".into())
-            }
         }
     }
 
@@ -262,8 +206,6 @@ impl RuntimeBackend {
     pub fn ssh_key_path(&self, id: &str) -> Option<std::path::PathBuf> {
         match self {
             RuntimeBackend::Libkrun(r) => r.ssh_key_path(id),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => { let _ = id; None }
         }
     }
 
@@ -271,8 +213,6 @@ impl RuntimeBackend {
     pub fn ssh_command(&self, id: &str) -> Option<String> {
         match self {
             RuntimeBackend::Libkrun(r) => r.ssh_command(id),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => { let _ = id; None }
         }
     }
 
@@ -284,13 +224,6 @@ impl RuntimeBackend {
     ) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.push_mcp_config(id, servers),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, servers);
-                Err(crate::error::Error::McpNotSupported(
-                    "MCP not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -303,13 +236,6 @@ impl RuntimeBackend {
     ) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.add_mcp_server(id, name, config),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, name, config);
-                Err(crate::error::Error::McpNotSupported(
-                    "MCP not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -317,13 +243,6 @@ impl RuntimeBackend {
     pub fn remove_mcp_server(&self, id: &str, name: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.remove_mcp_server(id, name),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, name);
-                Err(crate::error::Error::McpNotSupported(
-                    "MCP not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -334,13 +253,6 @@ impl RuntimeBackend {
     ) -> Result<HashMap<String, McpServerConfig>> {
         match self {
             RuntimeBackend::Libkrun(r) => r.list_mcp_servers(id),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = id;
-                Err(crate::error::Error::McpNotSupported(
-                    "MCP not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -348,13 +260,6 @@ impl RuntimeBackend {
     pub fn enable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.enable_mcp_server(id, name),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, name);
-                Err(crate::error::Error::McpNotSupported(
-                    "MCP not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -362,13 +267,6 @@ impl RuntimeBackend {
     pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.disable_mcp_server(id, name),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, name);
-                Err(crate::error::Error::McpNotSupported(
-                    "MCP not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -376,13 +274,6 @@ impl RuntimeBackend {
     pub fn add_skill(&self, id: &str, skill: &SkillDef) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.add_skill(id, skill),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, skill);
-                Err(crate::error::Error::SkillsError(
-                    "Skills not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -390,13 +281,6 @@ impl RuntimeBackend {
     pub fn remove_skill(&self, id: &str, name: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.remove_skill(id, name),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, name);
-                Err(crate::error::Error::SkillsError(
-                    "Skills not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -404,13 +288,6 @@ impl RuntimeBackend {
     pub fn list_skills(&self, id: &str) -> Result<HashMap<String, SkillDef>> {
         match self {
             RuntimeBackend::Libkrun(r) => r.list_skills(id),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = id;
-                Err(crate::error::Error::SkillsError(
-                    "Skills not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -418,13 +295,6 @@ impl RuntimeBackend {
     pub fn bootstrap_agent(&self, id: &str, config: &ResolvedAgentConfig) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.bootstrap_agent(id, config),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, config);
-                Err(crate::error::Error::SkillsError(
-                    "Agent bootstrap not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -432,13 +302,6 @@ impl RuntimeBackend {
     pub fn set_agent(&self, id: &str, name: &str, prompt: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.set_agent(id, name, prompt),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, name, prompt);
-                Err(crate::error::Error::SkillsError(
-                    "Agent definition not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -446,13 +309,6 @@ impl RuntimeBackend {
     pub fn restart_agent(&self, id: &str, reason: &str) -> Result<serde_json::Value> {
         match self {
             RuntimeBackend::Libkrun(r) => r.restart_agent(id, reason),
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(_) => {
-                let _ = (id, reason);
-                Err(crate::error::Error::AgentRestartError(
-                    "Agent restart not supported on Windows containerd runtime".to_string(),
-                ))
-            }
         }
     }
 
@@ -460,8 +316,6 @@ impl RuntimeBackend {
     pub async fn stop(&self, id: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.stop(id).await,
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(r) => r.stop(id).await,
         }
     }
 
@@ -469,8 +323,6 @@ impl RuntimeBackend {
     pub async fn destroy(&self, id: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.destroy(id).await,
-            #[cfg(target_os = "windows")]
-            RuntimeBackend::WindowsContainerd(r) => r.destroy(id).await,
         }
     }
 }
