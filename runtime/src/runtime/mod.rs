@@ -6,23 +6,33 @@
 //! |----------|---------|------------|
 //! | Linux | libkrun FFI | KVM |
 //! | macOS | libkrun FFI | HVF (Hypervisor.framework) |
-//! | Windows | containerd + runhcs shim | HCS (Hyper-V/Process isolation) |
+//! | Windows | libkrun FFI (WHPX) | WHPX (Windows Hypervisor Platform) |
 //!
-//! On macOS and Linux, the libkrun FFI backend calls libkrun's C API directly
+//! On all platforms, the libkrun FFI backend calls libkrun's C API directly
 //! for VM management. Image pulling and rootfs preparation are handled by the
 //! pure-Rust ImageManager component.
 
 pub mod validation;
 
-// libkrun direct FFI backend (macOS + Linux)
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+// libkrun FFI bindings (all platforms)
 mod ffi;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(crate) mod gvproxy;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+
+// libkrun runtime backend — Unix uses fork-based subprocess, Windows uses thread-based
+#[cfg(not(target_os = "windows"))]
+mod libkrun;
+#[cfg(target_os = "windows")]
+#[path = "libkrun_windows.rs"]
 mod libkrun;
 
-// Windows containerd runtime (primary Windows runtime)
+// gvproxy networking (Unix only — uses Unix sockets)
+#[cfg(not(target_os = "windows"))]
+pub(crate) mod gvproxy;
+// gvproxy stub for Windows (always returns "not available", uses TSI fallback)
+#[cfg(target_os = "windows")]
+#[path = "gvproxy_stub.rs"]
+pub(crate) mod gvproxy;
+
+// Windows containerd runtime (legacy, kept for reference)
 #[cfg(target_os = "windows")]
 pub mod containerd_windows;
 
@@ -36,10 +46,8 @@ pub mod runhcs_setup;
 
 pub use validation::{validate_runtime_prerequisites, validate_runtime_prerequisites_detailed, ValidationResult};
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use self::libkrun::LibkrunRuntime;
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use self::libkrun::handle_boot_vm_subprocess;
 
 /// Check if gvproxy is available on this system.
@@ -92,13 +100,11 @@ pub struct ExecOutput {
 /// - Linux/macOS: `Libkrun` (direct FFI via libkrun C API)
 /// - Windows: `WindowsContainerd` (containerd + runhcs shim)
 pub enum RuntimeBackend {
-    /// Direct libkrun FFI Runtime - macOS and Linux
-    /// Uses TSI networking, no CLI binary dependency, pure-Rust image handling
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    /// Direct libkrun FFI Runtime - all platforms
+    /// Uses TSI networking on Windows, gvproxy on macOS/Linux
     Libkrun(LibkrunRuntime),
 
-    /// Windows containerd Runtime - Windows only (primary)
-    /// Uses containerd with containerd-shim-runhcs-v1 for proper layer/snapshot management
+    /// Windows containerd Runtime - Windows only (legacy)
     #[cfg(target_os = "windows")]
     WindowsContainerd(ContainerdWindowsRuntime),
 }
@@ -106,18 +112,10 @@ pub enum RuntimeBackend {
 impl RuntimeBackend {
     /// Get the runtime name
     pub fn name(&self) -> &str {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(_) => "libkrun",
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            match self {
-                RuntimeBackend::WindowsContainerd(r) => r.name(),
-            }
+        match self {
+            RuntimeBackend::Libkrun(_) => "libkrun",
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(r) => r.name(),
         }
     }
 
@@ -126,18 +124,10 @@ impl RuntimeBackend {
     /// - Libkrun: `false` -- uses ImageManager (pure Rust) via Sandbox orchestrator
     /// - Windows containerd: `true` -- containerd handles image pull + snapshots
     pub fn handles_image_pull(&self) -> bool {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.handles_image_pull(),
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            match self {
-                RuntimeBackend::WindowsContainerd(_) => true,
-            }
+        match self {
+            RuntimeBackend::Libkrun(r) => r.handles_image_pull(),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => true,
         }
     }
 
@@ -148,35 +138,19 @@ impl RuntimeBackend {
         config: &SandboxConfig,
         bundle_path: Option<&Path>,
     ) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.create(id, config, bundle_path).await,
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            match self {
-                RuntimeBackend::WindowsContainerd(r) => r.create(id, config, bundle_path).await,
-            }
+        match self {
+            RuntimeBackend::Libkrun(r) => r.create(id, config, bundle_path).await,
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(r) => r.create(id, config, bundle_path).await,
         }
     }
 
     /// Start the sandbox/VM
     pub async fn start(&self, id: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.start(id).await,
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            match self {
-                RuntimeBackend::WindowsContainerd(r) => r.start(id).await,
-            }
+        match self {
+            RuntimeBackend::Libkrun(r) => r.start(id).await,
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(r) => r.start(id).await,
         }
     }
 
@@ -189,19 +163,11 @@ impl RuntimeBackend {
         workdir: Option<&str>,
         env: &HashMap<String, String>,
     ) -> Result<ExecOutput> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.exec(id, command, args, workdir, env).await,
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            match self {
-                RuntimeBackend::WindowsContainerd(r) => {
-                    r.exec(id, command, args, workdir, env).await
-                }
+        match self {
+            RuntimeBackend::Libkrun(r) => r.exec(id, command, args, workdir, env).await,
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(r) => {
+                r.exec(id, command, args, workdir, env).await
             }
         }
     }
@@ -219,23 +185,15 @@ impl RuntimeBackend {
     where
         F: Fn(&str, bool) + Send + Sync,
     {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => {
-                    r.exec_stream(id, command, args, workdir, env, on_output)
-                        .await
-                }
+        match self {
+            RuntimeBackend::Libkrun(r) => {
+                r.exec_stream(id, command, args, workdir, env, on_output)
+                    .await
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            match self {
-                RuntimeBackend::WindowsContainerd(r) => {
-                    r.exec_stream(id, command, args, workdir, env, on_output)
-                        .await
-                }
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(r) => {
+                r.exec_stream(id, command, args, workdir, env, on_output)
+                    .await
             }
         }
     }
@@ -243,7 +201,6 @@ impl RuntimeBackend {
     /// Send a structured agent message via the gateway's /api/v1/message endpoint.
     ///
     /// Only available when the sandbox is in persistent (gateway) mode.
-    /// On Windows, this always returns an error (no gateway support yet).
     pub async fn send_message<F>(
         &self,
         id: &str,
@@ -256,102 +213,66 @@ impl RuntimeBackend {
     where
         F: Fn(&str, bool) + Send + Sync,
     {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => {
-                    r.send_message(id, message, agent, model, env, on_output)
-                        .await
-                }
+        match self {
+            RuntimeBackend::Libkrun(r) => {
+                r.send_message(id, message, agent, model, env, on_output)
+                    .await
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, message, agent, model, env, on_output);
-            Err(crate::error::Error::ExecFailed(
-                "Agent gateway not supported on Windows yet".to_string(),
-            ))
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, message, agent, model, env, on_output);
+                Err(crate::error::Error::ExecFailed(
+                    "Agent gateway not supported on Windows containerd runtime".to_string(),
+                ))
+            }
         }
     }
 
     /// Check if the sandbox is in persistent (gateway) mode.
     pub fn is_persistent(&self, id: &str) -> bool {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.is_persistent(id),
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = id;
-            false
+        match self {
+            RuntimeBackend::Libkrun(r) => r.is_persistent(id),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => { let _ = id; false }
         }
     }
 
     /// Get the SSH host port for a sandbox (if available).
     pub fn ssh_port(&self, id: &str) -> Option<u16> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.ssh_port(id),
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = id;
-            None
+        match self {
+            RuntimeBackend::Libkrun(r) => r.ssh_port(id),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => { let _ = id; None }
         }
     }
 
     /// Dynamically forward a guest port to the same host port via gvproxy.
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.expose_port(id, port),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.expose_port(id, port),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, port);
+                Err("expose_port not supported on Windows containerd runtime".into())
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, port);
-            Err("expose_port not supported on Windows".into())
         }
     }
 
     /// Get the SSH private key path for a sandbox (if available).
     pub fn ssh_key_path(&self, id: &str) -> Option<std::path::PathBuf> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.ssh_key_path(id),
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = id;
-            None
+        match self {
+            RuntimeBackend::Libkrun(r) => r.ssh_key_path(id),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => { let _ = id; None }
         }
     }
 
     /// Build a ready-to-use SSH command string for connecting to a sandbox.
     pub fn ssh_command(&self, id: &str) -> Option<String> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.ssh_command(id),
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = id;
-            None
+        match self {
+            RuntimeBackend::Libkrun(r) => r.ssh_command(id),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => { let _ = id; None }
         }
     }
 
@@ -361,19 +282,15 @@ impl RuntimeBackend {
         id: &str,
         servers: &HashMap<String, McpServerConfig>,
     ) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.push_mcp_config(id, servers),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.push_mcp_config(id, servers),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, servers);
+                Err(crate::error::Error::McpNotSupported(
+                    "MCP not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, servers);
-            Err(crate::error::Error::McpNotSupported(
-                "MCP not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
@@ -384,37 +301,29 @@ impl RuntimeBackend {
         name: &str,
         config: &McpServerConfig,
     ) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.add_mcp_server(id, name, config),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.add_mcp_server(id, name, config),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, name, config);
+                Err(crate::error::Error::McpNotSupported(
+                    "MCP not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, name, config);
-            Err(crate::error::Error::McpNotSupported(
-                "MCP not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Remove an MCP server.
     pub fn remove_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.remove_mcp_server(id, name),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.remove_mcp_server(id, name),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, name);
+                Err(crate::error::Error::McpNotSupported(
+                    "MCP not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, name);
-            Err(crate::error::Error::McpNotSupported(
-                "MCP not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
@@ -423,197 +332,145 @@ impl RuntimeBackend {
         &self,
         id: &str,
     ) -> Result<HashMap<String, McpServerConfig>> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.list_mcp_servers(id),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.list_mcp_servers(id),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = id;
+                Err(crate::error::Error::McpNotSupported(
+                    "MCP not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = id;
-            Err(crate::error::Error::McpNotSupported(
-                "MCP not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Enable an MCP server.
     pub fn enable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.enable_mcp_server(id, name),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.enable_mcp_server(id, name),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, name);
+                Err(crate::error::Error::McpNotSupported(
+                    "MCP not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, name);
-            Err(crate::error::Error::McpNotSupported(
-                "MCP not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Disable an MCP server.
     pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.disable_mcp_server(id, name),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.disable_mcp_server(id, name),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, name);
+                Err(crate::error::Error::McpNotSupported(
+                    "MCP not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, name);
-            Err(crate::error::Error::McpNotSupported(
-                "MCP not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Add a skill to the running sandbox.
     pub fn add_skill(&self, id: &str, skill: &SkillDef) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.add_skill(id, skill),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.add_skill(id, skill),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, skill);
+                Err(crate::error::Error::SkillsError(
+                    "Skills not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, skill);
-            Err(crate::error::Error::SkillsError(
-                "Skills not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Remove a skill from the running sandbox.
     pub fn remove_skill(&self, id: &str, name: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.remove_skill(id, name),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.remove_skill(id, name),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, name);
+                Err(crate::error::Error::SkillsError(
+                    "Skills not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, name);
-            Err(crate::error::Error::SkillsError(
-                "Skills not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// List all skills in the running sandbox.
     pub fn list_skills(&self, id: &str) -> Result<HashMap<String, SkillDef>> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.list_skills(id),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.list_skills(id),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = id;
+                Err(crate::error::Error::SkillsError(
+                    "Skills not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = id;
-            Err(crate::error::Error::SkillsError(
-                "Skills not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Bootstrap agent definition + skills + MCPs in one call.
     pub fn bootstrap_agent(&self, id: &str, config: &ResolvedAgentConfig) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.bootstrap_agent(id, config),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.bootstrap_agent(id, config),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, config);
+                Err(crate::error::Error::SkillsError(
+                    "Agent bootstrap not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, config);
-            Err(crate::error::Error::SkillsError(
-                "Agent bootstrap not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Set the agent definition (name + prompt).
     pub fn set_agent(&self, id: &str, name: &str, prompt: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.set_agent(id, name, prompt),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.set_agent(id, name, prompt),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, name, prompt);
+                Err(crate::error::Error::SkillsError(
+                    "Agent definition not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, name, prompt);
-            Err(crate::error::Error::SkillsError(
-                "Agent definition not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Restart the agent process in the running sandbox.
     pub fn restart_agent(&self, id: &str, reason: &str) -> Result<serde_json::Value> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.restart_agent(id, reason),
+        match self {
+            RuntimeBackend::Libkrun(r) => r.restart_agent(id, reason),
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(_) => {
+                let _ = (id, reason);
+                Err(crate::error::Error::AgentRestartError(
+                    "Agent restart not supported on Windows containerd runtime".to_string(),
+                ))
             }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = (id, reason);
-            Err(crate::error::Error::AgentRestartError(
-                "Agent restart not supported on Windows runtime yet".to_string(),
-            ))
         }
     }
 
     /// Stop the sandbox/VM
     pub async fn stop(&self, id: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.stop(id).await,
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            match self {
-                RuntimeBackend::WindowsContainerd(r) => r.stop(id).await,
-            }
+        match self {
+            RuntimeBackend::Libkrun(r) => r.stop(id).await,
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(r) => r.stop(id).await,
         }
     }
 
     /// Destroy/delete the sandbox/VM
     pub async fn destroy(&self, id: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            match self {
-                RuntimeBackend::Libkrun(r) => r.destroy(id).await,
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            match self {
-                RuntimeBackend::WindowsContainerd(r) => r.destroy(id).await,
-            }
+        match self {
+            RuntimeBackend::Libkrun(r) => r.destroy(id).await,
+            #[cfg(target_os = "windows")]
+            RuntimeBackend::WindowsContainerd(r) => r.destroy(id).await,
         }
     }
 }
@@ -621,9 +478,9 @@ impl RuntimeBackend {
 /// Detect and create the runtime for the current platform
 ///
 /// Platform runtime selection:
-/// - Linux  -> LibkrunRuntime (direct FFI, requires libkrun.so)
-/// - macOS  -> LibkrunRuntime (direct FFI, requires libkrun.dylib)
-/// - Windows -> ContainerdWindowsRuntime (containerd + runhcs shim)
+/// - Linux   -> LibkrunRuntime (direct FFI, requires libkrun.so)
+/// - macOS   -> LibkrunRuntime (direct FFI, requires libkrun.dylib)
+/// - Windows -> LibkrunRuntime (direct FFI via WHPX, requires krun.dll)
 ///
 /// # Errors
 ///
@@ -635,29 +492,11 @@ pub async fn detect_runtime() -> Result<RuntimeBackend> {
     // First, validate prerequisites
     validate_runtime_prerequisites().await?;
 
-    // Then create the platform-specific runtime
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        info!("Initializing libkrun FFI runtime - direct VM management");
-        let runtime = LibkrunRuntime::new().await?;
-        info!("Using libkrun FFI runtime");
-        Ok(RuntimeBackend::Libkrun(runtime))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        info!("Initializing Windows containerd runtime");
-        let runtime = ContainerdWindowsRuntime::new().await?;
-        info!("Using Windows containerd runtime (containerd + runhcs shim)");
-        Ok(RuntimeBackend::WindowsContainerd(runtime))
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        Err(Error::UnsupportedPlatform {
-            platform: std::env::consts::OS.to_string(),
-        })
-    }
+    // All platforms use libkrun FFI runtime
+    info!("Initializing libkrun FFI runtime - direct VM management");
+    let runtime = LibkrunRuntime::new().await?;
+    info!("Using libkrun FFI runtime");
+    Ok(RuntimeBackend::Libkrun(runtime))
 }
 
 /// Runtime wrapper for backward compatibility

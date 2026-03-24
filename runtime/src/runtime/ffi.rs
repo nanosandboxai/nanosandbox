@@ -33,6 +33,7 @@ static LIBKRUN: Mutex<Option<Library>> = Mutex::new(None);
 /// Search order:
 /// - macOS: /opt/homebrew/lib/libkrun.dylib, /usr/local/lib/libkrun.dylib
 /// - Linux: libkrun.so (system linker paths), then explicit paths
+/// - Windows: krun.dll (current dir, PATH, system dirs)
 fn load_libkrun() -> Result<Library, String> {
     #[cfg(target_os = "macos")]
     let candidates = &[
@@ -48,6 +49,13 @@ fn load_libkrun() -> Result<Library, String> {
         "/usr/local/lib/libkrun.so",
         "/usr/lib/x86_64-linux-gnu/libkrun.so",
         "/usr/lib/aarch64-linux-gnu/libkrun.so",
+    ];
+
+    #[cfg(target_os = "windows")]
+    let candidates = &[
+        "krun.dll",
+        "C:\\libkrun-win\\target\\release\\krun.dll",
+        "C:\\libkrun-win\\target\\debug\\krun.dll",
     ];
 
     let mut last_err = String::new();
