@@ -101,75 +101,64 @@ async fn validate_windows_prerequisites() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 async fn validate_windows_detailed() -> ValidationResult {
-    info!("Validating Windows containerd runtime prerequisites...");
+    info!("Validating Windows libkrun (WHPX) runtime prerequisites...");
     let mut result = ValidationResult::default();
 
-    // Check 1: Windows Containers feature
-    debug!("Checking Windows Containers feature...");
-    let containers_enabled = check_windows_feature("Containers").await;
-    if !containers_enabled {
+    // Check 1: Windows Hypervisor Platform feature
+    debug!("Checking Windows Hypervisor Platform feature...");
+    let whpx_enabled = check_windows_feature("HypervisorPlatform").await;
+    if !whpx_enabled {
         result.add_error(
-            "Windows Containers",
-            "Windows Containers feature is not enabled",
+            "Windows Hypervisor Platform",
+            "WHPX feature is not enabled",
             Some(
-                "Run: Enable-WindowsOptionalFeature -Online -FeatureName Containers -All"
+                "Run: Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All\n\
+                 Then restart the computer."
                     .to_string(),
             ),
         );
     }
 
-    // Check 2: containerd daemon running
-    debug!("Checking containerd service...");
-    let containerd_running = check_containerd_service().await;
-    if !containerd_running {
-        result.add_error(
-            "containerd Service",
-            "containerd is not running or not reachable",
-            Some(
-                "Install containerd and start the service:\n\
-                 1. Download from https://github.com/containerd/containerd/releases\n\
-                 2. Extract to C:\\Program Files\\containerd\n\
-                 3. Run: containerd.exe --register-service\n\
-                 4. Run: Start-Service containerd"
-                    .to_string(),
-            ),
-        );
-    }
-
-    // Check 3: containerd-shim-runhcs-v1.exe available
-    debug!("Checking containerd-shim-runhcs-v1...");
-    let shim_found = find_containerd_shim().await.is_some();
-    if !shim_found {
-        result.add_error(
-            "runhcs Shim",
-            "containerd-shim-runhcs-v1.exe not found",
-            Some(
-                "Build and install the runhcs shim from hcsshim:\n\
-                 1. Clone https://github.com/microsoft/hcsshim\n\
-                 2. Run: go build -o containerd-shim-runhcs-v1.exe ./cmd/containerd-shim-runhcs-v1\n\
-                 3. Copy to C:\\Program Files\\containerd\\ (same dir as containerd.exe)"
-                    .to_string(),
-            ),
-        );
-    }
-
-    // Check 4: HCS service running
-    debug!("Checking HCS service...");
-    let hcs_running = check_hcs_service().await;
-    if !hcs_running {
-        result.add_error(
-            "HCS Service",
-            "Host Compute Service (vmcompute) is not running",
-            Some("Run: Start-Service vmcompute".to_string()),
-        );
-    }
-
-    // Check 5: Hyper-V (optional, for Hyper-V isolation)
-    debug!("Checking Hyper-V feature...");
-    let hyperv_enabled = check_windows_feature("Microsoft-Hyper-V").await;
+    // Check 2: Hyper-V hypervisor (required for WHPX)
+    debug!("Checking Hyper-V...");
+    let hyperv_enabled = check_windows_feature("Microsoft-Hyper-V-Hypervisor").await;
     if !hyperv_enabled {
         result.add_warning(
-            "Hyper-V is not enabled. Only process isolation will be available.".to_string(),
+            "Hyper-V hypervisor not detected. WHPX requires the hypervisor to be active.\n\
+             Run: Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All"
+                .to_string(),
+        );
+    }
+
+    // Check 3: krun.dll loadable
+    debug!("Checking krun.dll availability...");
+    let krun_found = check_dll_loadable("krun.dll").await;
+    if !krun_found {
+        result.add_error(
+            "krun.dll",
+            "krun.dll (libkrun) not found in PATH or current directory",
+            Some(
+                "Build libkrun-win and place krun.dll in your PATH:\n\
+                 1. cd C:\\libkrun-win\n\
+                 2. .\\scripts\\build-windows.ps1\n\
+                 3. Copy target\\debug\\krun.dll to the CLI directory or add to PATH"
+                    .to_string(),
+            ),
+        );
+    }
+
+    // Check 4: libkrunfw.dll loadable
+    debug!("Checking libkrunfw.dll availability...");
+    let krunfw_found = check_dll_loadable("libkrunfw.dll").await;
+    if !krunfw_found {
+        result.add_error(
+            "libkrunfw.dll",
+            "libkrunfw.dll (kernel firmware) not found in PATH or current directory",
+            Some(
+                "Build libkrunfw-win and place libkrunfw.dll alongside krun.dll:\n\
+                 The build-windows.ps1 script creates both DLLs automatically."
+                    .to_string(),
+            ),
         );
     }
 
@@ -214,6 +203,31 @@ async fn check_hcs_service() -> bool {
             "-Command",
             "(Get-Service vmcompute -ErrorAction SilentlyContinue).Status -eq 'Running'",
         ])
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        return stdout.trim().eq_ignore_ascii_case("true");
+    }
+    false
+}
+
+/// Check if a DLL is loadable (exists in PATH, current dir, or system dirs)
+#[cfg(target_os = "windows")]
+async fn check_dll_loadable(dll_name: &str) -> bool {
+    use tokio::process::Command;
+
+    // Use PowerShell to check if the DLL exists in common locations
+    let script = format!(
+        "$paths = @('.', $env:PATH -split ';') | Where-Object {{ $_ -ne '' }}; \
+         foreach ($p in $paths) {{ if (Test-Path (Join-Path $p '{}')) {{ Write-Output 'true'; return }} }}; \
+         Write-Output 'false'",
+        dll_name
+    );
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
         .output()
         .await;
 
