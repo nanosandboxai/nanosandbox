@@ -200,8 +200,8 @@ impl LibkrunRuntime {
 
         // TSI networking (always, since no gvproxy on Windows)
         let tsi_features = match network_scope {
-            NetworkScope::Full => ffi::KRUN_TSI_HIJACK_INET | ffi::KRUN_TSI_HIJACK_UNIX,
-            NetworkScope::Restricted => ffi::KRUN_TSI_HIJACK_INET,
+            NetworkScope::Any => ffi::KRUN_TSI_HIJACK_INET | ffi::KRUN_TSI_HIJACK_UNIX,
+            NetworkScope::Public | NetworkScope::Group => ffi::KRUN_TSI_HIJACK_INET,
             NetworkScope::None => 0,
         };
         if tsi_features > 0 {
