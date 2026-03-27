@@ -65,6 +65,11 @@ pub struct SessionPanel {
     pub env_keys: Vec<String>,
     /// Whether the panel was visible in the grid.
     pub visible: bool,
+    /// Whether the user actually interacted with the agent (sent keystrokes).
+    /// When false, the agent had no conversation so resume flags (--continue)
+    /// should not be passed.
+    #[serde(default)]
+    pub had_interaction: bool,
 }
 
 /// Issues discovered when validating a saved session.
