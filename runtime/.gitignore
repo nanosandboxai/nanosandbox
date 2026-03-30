@@ -1,6 +1,13 @@
 # Rust build artifacts
 /target/
-Cargo.lock
+crates/*/target/
+
+# Submodule build artifacts
+deps/libkrun/target/
+deps/libkrunfw/linux-*/
+deps/libkrunfw/*.o
+deps/libkrunfw/*.so*
+deps/gvproxy/bin/
 
 # IDE
 .idea/
@@ -10,6 +17,7 @@ Cargo.lock
 *~
 
 docs/plans/**
+docs/superpowers/**
 
 agent-gateway/agent-gateway
 
@@ -21,5 +29,3 @@ Thumbs.db
 
 # Test artifacts
 *.log
-
-docs/superpowers/**

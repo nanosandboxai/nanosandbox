@@ -1,74 +1,16 @@
-[package]
-name = "nanosandbox"
-version = "0.1.0"
-edition = "2021"
-description = "VM-based sandbox SDK using libkrun FFI"
-license = "Apache-2.0"
-repository = "https://github.com/nanosandboxai/runtime"
-keywords = ["sandbox", "virtualization", "containers", "isolation", "security"]
-categories = ["development-tools", "virtualization"]
-authors = ["DevDone Labs"]
+[workspace]
+members = [
+    "crates/nanosandbox",
+    "crates/libkrun-sys",
+]
+resolver = "2"
 
-[lib]
-name = "nanosandbox"
-path = "src/lib.rs"
-
-[features]
-default = []
-server = ["axum", "tower"]
-
-[dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
-# Error handling
-thiserror = "2"
-anyhow = "1"
-
-# Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-toml = "0.8"
-
-# OCI/Container support
-oci-distribution = "0.11"   # For registry operations
-tar = "0.4"                 # For layer extraction
-flate2 = "1"                # For gzip decompression
-sha2 = "0.10"               # For blob integrity verification
-docker_credential = "1.3"   # For Docker config.json parsing
-
-# Utilities
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-tracing = "0.1"
-log = "0.4"         # Needed to detect existing logger for libkrun FFI safety
-env_logger = "0.11" # Needed to safely probe before krun_set_log_level calls env_logger::init()
-async-trait = "0.1"
-dirs = "6"
-unicode-width = "0.2"
-
-# libkrun FFI support (all platforms)
-libloading = "0.8"
-
-# Unix-only: fork child process for krun_start_enter
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-# Server (optional)
-axum = { version = "0.7", optional = true }
-tower = { version = "0.4", optional = true }
-
-# Windows containerd gRPC client (legacy, only needed for containerd backend)
-# Disabled by default — requires protoc to build
-# [target.'cfg(windows)'.dependencies]
-# containerd-client = "0.8"
-# prost-types = "0.13"
-# tonic = "0.12"
-
-[dev-dependencies]
-tempfile = "3"
-tokio-test = "0.4"
+# Exclude submodule workspaces — they have their own Cargo.toml
+exclude = [
+    "deps/libkrun",
+    "deps/libkrunfw",
+    "deps/gvproxy",
+]
 
 [profile.release]
 lto = true

@@ -1,0 +1,49 @@
+## Multi-distro build testing for nanosandbox runtime.
+##
+## Usage:
+##   docker compose -f docker/test-distros/docker-compose.yml build
+##   docker compose -f docker/test-distros/docker-compose.yml up
+##
+## Or test a single distro:
+##   docker compose -f docker/test-distros/docker-compose.yml build alpine
+##   docker compose -f docker/test-distros/docker-compose.yml run alpine
+##
+## All services mount the repo root as build context, so changes
+## are picked up on every build.
+
+services:
+  ubuntu:
+    build:
+      context: ../..
+      dockerfile: docker/test-distros/Dockerfile.ubuntu
+    platform: linux/amd64
+
+  debian:
+    build:
+      context: ../..
+      dockerfile: docker/test-distros/Dockerfile.debian
+    platform: linux/amd64
+
+  fedora:
+    build:
+      context: ../..
+      dockerfile: docker/test-distros/Dockerfile.fedora
+    platform: linux/amd64
+
+  archlinux:
+    build:
+      context: ../..
+      dockerfile: docker/test-distros/Dockerfile.archlinux
+    platform: linux/amd64
+
+  alpine:
+    build:
+      context: ../..
+      dockerfile: docker/test-distros/Dockerfile.alpine
+    platform: linux/amd64
+
+  opensuse:
+    build:
+      context: ../..
+      dockerfile: docker/test-distros/Dockerfile.opensuse
+    platform: linux/amd64

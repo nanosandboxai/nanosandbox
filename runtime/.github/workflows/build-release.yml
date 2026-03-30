@@ -1,0 +1,180 @@
+name: Build Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v0.1.0)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            rust_target: x86_64-unknown-linux-gnu
+            go_arch: amd64
+          - arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+            go_arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install build dependencies
+        run: bash scripts/ci/install-deps-apt.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build libkrunfw
+        if: matrix.arch == 'amd64'
+        run: cd deps/libkrunfw && make -j$(nproc)
+
+      - name: Build libkrun
+        if: matrix.arch == 'amd64'
+        run: cd deps/libkrun && make NET=1 BLK=1
+
+      - name: Build gvproxy
+        run: |
+          cd deps/gvproxy
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.go_arch }} \
+            go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
+
+      - name: Build nanosandbox
+        run: cargo build --release -p nanosandbox --target ${{ matrix.rust_target }}
+
+      - name: Build agent-gateway
+        run: |
+          cd agent-gateway
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.go_arch }} \
+            go build -ldflags="-s -w" -o agent-gateway .
+
+      - name: Package artifacts
+        run: |
+          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
+          mkdir -p dist
+
+          # nanosandbox binary
+          if [ -f "target/${{ matrix.rust_target }}/release/nanosandbox" ]; then
+            tar czf "dist/nanosandbox-linux-${{ matrix.arch }}.tar.gz" \
+              -C "target/${{ matrix.rust_target }}/release" nanosandbox
+          else
+            echo "WARNING: nanosandbox binary not found at target/${{ matrix.rust_target }}/release/nanosandbox"
+          fi
+
+          # agent-gateway binary
+          tar czf "dist/agent-gateway-linux-${{ matrix.arch }}.tar.gz" \
+            -C agent-gateway agent-gateway
+
+          # gvproxy binary
+          tar czf "dist/gvproxy-linux-${{ matrix.arch }}.tar.gz" \
+            -C deps/gvproxy gvproxy
+
+          # deps bundle: libkrun + libkrunfw + gvproxy (amd64 only for now)
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            mkdir -p dist/deps-staging/lib dist/deps-staging/bin
+            find deps/libkrun/target/release -name 'libkrun*.so*' -exec cp {} dist/deps-staging/lib/ \; 2>/dev/null || true
+            find deps/libkrunfw -name 'libkrunfw*.so*' -exec cp {} dist/deps-staging/lib/ \; 2>/dev/null || true
+            cp deps/gvproxy/gvproxy dist/deps-staging/bin/ 2>/dev/null || true
+            if [ -n "$(ls dist/deps-staging/lib/ 2>/dev/null)" ]; then
+              tar czf "dist/deps-linux-${{ matrix.arch }}.tar.gz" -C dist/deps-staging .
+            fi
+            rm -rf dist/deps-staging
+          fi
+
+          # Checksums
+          cd dist && sha256sum *.tar.gz > checksums-linux-${{ matrix.arch }}.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/
+
+  build-macos:
+    name: Build macOS arm64
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build nanosandbox
+        run: cargo build --release -p nanosandbox
+
+      - name: Build agent-gateway
+        run: |
+          cd agent-gateway
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -ldflags="-s -w" -o agent-gateway .
+
+      - name: Build gvproxy
+        run: |
+          cd deps/gvproxy
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          tar czf dist/agent-gateway-linux-arm64.tar.gz -C agent-gateway agent-gateway
+          tar czf dist/gvproxy-darwin-arm64.tar.gz -C deps/gvproxy gvproxy
+          cd dist && shasum -a 256 *.tar.gz > checksums-darwin-arm64.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-arm64
+          path: dist/
+
+  publish:
+    name: Publish to installations
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release/ \;
+          cd release && sha256sum *.tar.gz > checksums.sha256
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

@@ -1,0 +1,15 @@
+FROM archlinux:latest
+
+# Disable pacman's seccomp sandbox — it fails inside Docker containers
+RUN sed -i 's/^#\?DownloadUser/#DownloadUser/' /etc/pacman.conf && \
+    echo 'DisableSandbox' >> /etc/pacman.conf
+
+WORKDIR /build
+COPY scripts/ci/install-deps-pacman.sh /tmp/install-deps.sh
+RUN bash /tmp/install-deps.sh && rm /tmp/install-deps.sh
+
+COPY . /build
+RUN git config --global --add safe.directory /build
+
+# Build + unit tests only. No KVM needed.
+CMD ["bash", "scripts/ci/build-and-test.sh"]

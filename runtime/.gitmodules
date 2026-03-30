@@ -1,0 +1,9 @@
+[submodule "deps/libkrun"]
+	path = deps/libkrun
+	url = https://github.com/containers/libkrun.git
+[submodule "deps/libkrunfw"]
+	path = deps/libkrunfw
+	url = https://github.com/containers/libkrunfw.git
+[submodule "deps/gvproxy"]
+	path = deps/gvproxy
+	url = https://github.com/containers/gvisor-tap-vsock.git

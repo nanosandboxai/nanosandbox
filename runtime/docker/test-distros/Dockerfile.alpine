@@ -1,0 +1,12 @@
+FROM alpine:3.20
+
+WORKDIR /build
+COPY scripts/ci/install-deps-apk.sh /tmp/install-deps.sh
+RUN sh /tmp/install-deps.sh && rm /tmp/install-deps.sh
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+COPY . /build
+RUN git config --global --add safe.directory /build
+
+# Build + unit tests only. No KVM needed. Uses musl libc.
+CMD ["bash", "scripts/ci/build-and-test.sh"]

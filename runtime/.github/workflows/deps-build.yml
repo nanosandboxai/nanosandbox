@@ -1,0 +1,367 @@
+name: Deps Build
+
+# Builds libkrunfw, libkrun, gvproxy, and nanosandbox across multiple Linux distros + macOS.
+#
+# Architecture: Build kernel ONCE, distribute everywhere.
+#   1. build-kernels: compiles x86_64 + aarch64 kernel.c on a single Ubuntu runner
+#      - Cached by libkrunfw submodule hash — skips build if nothing changed
+#   2. build-linux: 6-distro matrix downloads kernel.c, compiles libkrunfw.so, builds all deps
+#   3. build-macos: downloads aarch64 kernel.c, compiles libkrunfw.dylib, builds all deps
+#
+# No KVM required — compiling != running VMs.
+# Integration tests are gated behind the "integration-tests" feature — skipped in CI.
+
+on:
+  push:
+    branches: [main, feature/**]
+    paths:
+      - 'deps/libkrun/**'
+      - 'deps/libkrunfw/**'
+      - 'deps/gvproxy/**'
+      - 'crates/libkrun-sys/**'
+      - 'crates/nanosandbox/**'
+      - 'scripts/ci/**'
+      - 'scripts/build-all.sh'
+      - '.github/workflows/deps-build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deps/libkrun/**'
+      - 'deps/libkrunfw/**'
+      - 'deps/gvproxy/**'
+      - 'crates/libkrun-sys/**'
+      - 'crates/nanosandbox/**'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─── Job 1: Build kernels once, share with all downstream jobs ───
+  # Cached by libkrunfw submodule hash — on cache hit, skips the ~15min kernel compile.
+  build-kernels:
+    name: Build kernel bundles (x86_64 + aarch64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache kernel bundles
+        id: kernel-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            kernel-x86_64.c
+            kernel-aarch64.c
+          key: kernel-bundles-${{ hashFiles('deps/libkrunfw/**') }}
+
+      - name: Install kernel build dependencies
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates git \
+            python3 python3-pyelftools \
+            bc flex bison libelf-dev cpio libssl-dev xz-utils \
+            gcc-aarch64-linux-gnu
+
+      - name: Build x86_64 kernel bundle
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          cd deps/libkrunfw
+          make kernel.c -j$(nproc)
+          cp kernel.c ../../kernel-x86_64.c
+          echo "=== x86_64 kernel.c ==="
+          ls -lh ../../kernel-x86_64.c
+
+      - name: Build aarch64 kernel bundle (cross-compile)
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          cd deps/libkrunfw
+          make clean
+          make kernel.c ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+          cp kernel.c ../../kernel-aarch64.c
+          echo "=== aarch64 kernel.c ==="
+          ls -lh ../../kernel-aarch64.c
+
+      - name: Kernel cache status
+        run: |
+          if [ "${{ steps.kernel-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "✅ Kernel cache HIT — skipped kernel build"
+          else
+            echo "🔨 Kernel cache MISS — built from source"
+          fi
+          ls -lh kernel-x86_64.c kernel-aarch64.c
+
+      - name: Upload kernel bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-bundles
+          path: |
+            kernel-x86_64.c
+            kernel-aarch64.c
+          retention-days: 7
+
+  # ─── Job 2: Multi-distro Linux builds ───
+  build-linux:
+    name: Build on ${{ matrix.distro.name }}
+    runs-on: ubuntu-latest
+    needs: build-kernels
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - { name: "Ubuntu 24.04", image: "ubuntu:24.04", script: "install-deps-apt.sh" }
+          - { name: "Debian 12", image: "debian:12", script: "install-deps-apt.sh" }
+          - { name: "Fedora 40", image: "fedora:40", script: "install-deps-dnf.sh" }
+          - { name: "Arch Linux", image: "archlinux:latest", script: "install-deps-pacman.sh" }
+          - { name: "Alpine 3.20", image: "alpine:3.20", script: "install-deps-apk.sh", musl: true }
+          - { name: "openSUSE Tumbleweed", image: "opensuse/tumbleweed:latest", script: "install-deps-zypper.sh" }
+    container:
+      image: ${{ matrix.distro.image }}
+
+    steps:
+      # Bare container images don't have git/bash — checkout needs git for submodules,
+      # and our install scripts need bash.
+      - name: Install git and bash (pre-checkout)
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update && apt-get install -y --no-install-recommends git bash ca-certificates
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y git bash
+          elif command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm git bash
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache git bash
+          elif command -v zypper >/dev/null 2>&1; then
+            zypper install -y git bash
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: bash scripts/ci/${{ matrix.distro.script }}
+
+      - name: Download kernel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-bundles
+          path: .
+
+      # musl/Alpine: patch libkrun for static linking + statx compat
+      - name: Patch libkrun for musl
+        if: matrix.distro.musl
+        shell: bash
+        run: bash scripts/ci/patch-libkrun-musl.sh
+
+      # Compile kernel.c into libkrunfw shared library (no kernel build needed)
+      - name: Build libkrunfw from kernel bundle
+        if: ${{ !matrix.distro.musl }}
+        run: |
+          cd deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.so.5 ../../kernel-x86_64.c
+          ln -sf libkrunfw.so.5 libkrunfw.so
+          echo "=== libkrunfw ==="
+          ls -lh libkrunfw.so*
+
+      # musl: compile kernel.c into static libkrunfw.a (no shared libs on musl)
+      - name: Build libkrunfw from kernel bundle (musl static)
+        if: matrix.distro.musl
+        run: |
+          cd deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -c -o libkrunfw.o ../../kernel-x86_64.c
+          ar rcs libkrunfw.a libkrunfw.o
+          echo "=== libkrunfw (static) ==="
+          ls -lh libkrunfw.a
+
+      # libkrun: pure Rust cargo build — no KVM needed
+      - name: Build libkrun
+        if: ${{ !matrix.distro.musl }}
+        shell: bash
+        run: |
+          [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+          cd deps/libkrun
+          make NET=1 BLK=1
+
+      # musl: build libkrun as staticlib (cdylib not supported on musl target)
+      # krun_input is already removed from workspace by patch-libkrun-musl.sh
+      - name: Build libkrun (musl static)
+        if: matrix.distro.musl
+        shell: bash
+        run: |
+          [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+          cd deps/libkrun
+          cargo build --release --features net,blk
+
+      # gvproxy: Go binary for user-mode networking
+      - name: Build gvproxy
+        shell: bash
+        run: |
+          [[ -f "$HOME/.bashrc" ]] && source "$HOME/.bashrc"
+          export PATH="/usr/local/go/bin:$PATH"
+          cd deps/gvproxy
+          if command -v go &>/dev/null; then
+            echo "Go version: $(go version)"
+            CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
+            echo "gvproxy built: $(ls -la gvproxy)"
+          else
+            echo "Go not available — skipping gvproxy build"
+          fi
+
+      - name: Build Rust crates
+        shell: bash
+        run: |
+          [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+          # musl: libkrun.a (staticlib) bundles Rust std — allow duplicate symbols
+          # when linking into another Rust binary (libkrun-sys, nanosandbox).
+          # OPENSSL_STATIC: link OpenSSL statically (musl produces static binaries).
+          if [ "${{ matrix.distro.musl }}" = "true" ]; then
+            export RUSTFLAGS="-C link-args=-Wl,--allow-multiple-definition"
+            export OPENSSL_STATIC=1
+          fi
+          cargo build --release -p libkrun-sys -p nanosandbox
+
+      # Unit tests only — integration tests are gated behind feature flag
+      - name: Run unit tests
+        shell: bash
+        run: |
+          [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+          if [ "${{ matrix.distro.musl }}" = "true" ]; then
+            export RUSTFLAGS="-C link-args=-Wl,--allow-multiple-definition"
+            export OPENSSL_STATIC=1
+          fi
+          cargo test -p libkrun-sys
+          cargo test -p nanosandbox
+
+      - name: Verify artifacts
+        run: |
+          echo "=== libkrunfw ==="
+          ls -lh deps/libkrunfw/libkrunfw.so* 2>/dev/null || ls -lh deps/libkrunfw/libkrunfw.a 2>/dev/null || echo "not found"
+          echo "=== libkrun ==="
+          find deps/libkrun/target/release -name 'libkrun*' -not -path '*/build/*' -not -path '*/deps/*' 2>/dev/null | head -5 || echo "not found"
+          echo "=== gvproxy ==="
+          ls -la deps/gvproxy/gvproxy 2>/dev/null || echo "not built"
+
+      - name: Upload artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-${{ matrix.distro.name }}
+          path: |
+            deps/libkrun/target/release/libkrun*.so*
+            deps/libkrunfw/libkrunfw*.so*
+            deps/gvproxy/gvproxy
+          retention-days: 7
+
+  # ─── Job 3: macOS build ───
+  build-macos:
+    name: Build on macOS (Apple Silicon)
+    runs-on: macos-latest
+    needs: build-kernels
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install macOS build dependencies
+        run: |
+          brew install lld llvm
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+
+      - name: Download kernel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-bundles
+          path: .
+
+      # Compile aarch64 kernel.c into macOS dylib (no krunvm, no Docker)
+      - name: Build libkrunfw from kernel bundle
+        run: |
+          cd deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.5.dylib ../../kernel-aarch64.c
+          ln -sf libkrunfw.5.dylib libkrunfw.dylib
+          echo "=== libkrunfw ==="
+          ls -lh libkrunfw*.dylib
+
+      - name: Install libkrunfw
+        run: |
+          sudo mkdir -p /usr/local/lib
+          sudo cp deps/libkrunfw/libkrunfw*.dylib /usr/local/lib/
+          ls -la /usr/local/lib/libkrunfw*
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      # Build our fork of libkrun against our libkrunfw
+      - name: Build libkrun
+        run: |
+          cd deps/libkrun
+          make NET=1 BLK=1
+
+      - name: Install libkrun
+        run: |
+          sudo cp deps/libkrun/target/release/libkrun*.dylib /usr/local/lib/
+          cd /usr/local/lib
+          sudo ln -sf libkrun.1.17.3.dylib libkrun.1.dylib
+          sudo ln -sf libkrun.1.dylib libkrun.dylib
+          ls -la /usr/local/lib/libkrun*
+
+      # Build gvproxy from source
+      - name: Build gvproxy
+        run: |
+          cd deps/gvproxy
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
+          echo "gvproxy built: $(ls -la gvproxy)"
+
+      - name: Build Rust crates
+        run: cargo build --release -p libkrun-sys -p nanosandbox
+
+      - name: Clippy
+        run: cargo clippy -p nanosandbox -p libkrun-sys -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Run unit tests
+        run: cargo test -p nanosandbox -p libkrun-sys
+
+      - name: Verify artifacts
+        run: |
+          echo "=== libkrunfw ==="
+          ls -la /usr/local/lib/libkrunfw* 2>/dev/null || echo "not found"
+          echo "=== libkrun ==="
+          find deps/libkrun/target/release -name 'libkrun*.dylib' 2>/dev/null | head -5 || echo "not found"
+          echo "=== gvproxy ==="
+          ls -la deps/gvproxy/gvproxy
+
+      - name: Upload macOS artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-macOS
+          path: |
+            deps/libkrun/target/release/libkrun*.dylib
+            deps/libkrunfw/libkrunfw*.dylib
+            deps/gvproxy/gvproxy
+          retention-days: 7
