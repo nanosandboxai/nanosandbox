@@ -1,0 +1,102 @@
+name: Package Dependencies
+
+# Receives repository_dispatch from runtime when a new release is tagged,
+# downloads deps bundles from the runtime release, and creates a release here
+# with install/uninstall scripts and platform bundles.
+#
+# Can also be triggered manually with a version input.
+
+on:
+  repository_dispatch:
+    types: [runtime-release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Runtime release version (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            VERSION="${{ github.event.client_payload.version }}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Download deps bundles from runtime release
+        env:
+          GH_TOKEN: ${{ secrets.RUNTIME_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p release
+
+          for bundle in deps-linux-amd64.tar.gz deps-linux-arm64.tar.gz deps-darwin-arm64.tar.gz; do
+            echo "Downloading $bundle..."
+            gh release download "$VERSION" \
+              --repo nanosandboxai/runtime \
+              --pattern "$bundle" \
+              --dir release/ 2>/dev/null || \
+              echo "WARNING: $bundle not found in runtime release $VERSION"
+          done
+
+          echo "=== Downloaded bundles ==="
+          ls -la release/
+
+      - name: Copy install scripts
+        run: |
+          cp install.sh release/
+          cp uninstall.sh release/
+          chmod +x release/install.sh release/uninstall.sh
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum *.tar.gz *.sh > checksums.sha256 2>/dev/null || true
+          echo "=== Checksums ==="
+          cat checksums.sha256
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          gh release create "$VERSION" release/* \
+            --title "Nanosandbox Dependencies $VERSION" \
+            --notes "$(cat <<EOF
+          Runtime dependencies for nanosandbox $VERSION.
+
+          ## Quick install
+
+          \`\`\`bash
+          curl -fsSL https://github.com/nanosandboxai/install-deps/releases/download/${VERSION}/install.sh | bash
+          \`\`\`
+
+          ## Contents
+
+          | File | Description |
+          |------|-------------|
+          | \`deps-linux-amd64.tar.gz\` | libkrunfw + gvproxy for Linux x86_64 |
+          | \`deps-linux-arm64.tar.gz\` | libkrunfw + gvproxy for Linux aarch64 |
+          | \`deps-darwin-arm64.tar.gz\` | libkrunfw + gvproxy for macOS Apple Silicon |
+          | \`install.sh\` | Automated installer |
+          | \`uninstall.sh\` | Automated uninstaller |
+          | \`checksums.sha256\` | SHA-256 checksums |
+
+          Built from [runtime $VERSION](https://github.com/nanosandboxai/runtime/releases/tag/${VERSION}).
+          EOF
+          )"
