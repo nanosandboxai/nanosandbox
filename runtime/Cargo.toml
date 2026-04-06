@@ -2,14 +2,33 @@
 members = [
     "crates/nanosandbox",
     "crates/libkrun-sys",
+    # libkrun internal crates (checked-in source from deps/libkrun/)
+    "deps/libkrun/src/libkrun",
+    "deps/libkrun/src/vmm",
+    "deps/libkrun/src/devices",
+    "deps/libkrun/src/arch",
+    "deps/libkrun/src/arch_gen",
+    "deps/libkrun/src/kernel",
+    "deps/libkrun/src/polly",
+    "deps/libkrun/src/utils",
+    "deps/libkrun/src/smbios",
+    "deps/libkrun/src/cpuid",
+    "deps/libkrun/src/hvf",
+    "deps/libkrun/src/rutabaga_gfx",
 ]
 resolver = "2"
 
-# Exclude submodule workspaces — they have their own Cargo.toml
+# Exclude remaining submodules and libkrun tests/examples (they have their own workspaces)
 exclude = [
-    "deps/libkrun",
     "deps/libkrunfw",
     "deps/gvproxy",
+    "deps/libkrun/tests",
+    "deps/libkrun/examples",
+    "deps/libkrun/krun-sys",
+    "deps/libkrun/src/krun_display",
+    "deps/libkrun/src/krun_input",
+    "deps/libkrun/src/aws_nitro",
+    "deps/libkrun/src/rutabaga_gfx/ffi",
 ]
 
 [profile.release]

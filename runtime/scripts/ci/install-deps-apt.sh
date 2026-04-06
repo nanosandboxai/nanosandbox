@@ -1,11 +1,21 @@
 #!/bin/bash
 # Install build dependencies on Ubuntu/Debian (apt-get)
+#
+# Works in both container mode (root by default) and GitHub-hosted runners
+# (non-root "runner" user that needs sudo).
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-apt-get update
-apt-get install -y --no-install-recommends \
+# Use sudo when not running as root
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+fi
+
+$SUDO apt-get update
+$SUDO apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     ca-certificates \
@@ -19,11 +29,13 @@ apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     cpio \
-    libclang-dev
+    libclang-dev \
+    gcc-aarch64-linux-gnu \
+    libc6-dev-arm64-cross
 
 # Install Go from upstream (distro golang-go is too old for deps)
 if ! command -v go >/dev/null 2>&1 || ! go version 2>/dev/null | grep -qE 'go1\.(2[4-9]|[3-9])'; then
-    curl -fsSL "https://go.dev/dl/go1.24.0.linux-amd64.tar.gz" | tar -C /usr/local -xzf -
+    curl -fsSL "https://go.dev/dl/go1.24.0.linux-amd64.tar.gz" | $SUDO tar -C /usr/local -xzf -
     export PATH="/usr/local/go/bin:$PATH"
     echo 'export PATH="/usr/local/go/bin:$PATH"' >> "$HOME/.bashrc"
 fi

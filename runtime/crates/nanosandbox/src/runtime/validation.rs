@@ -446,15 +446,18 @@ async fn validate_linux_detailed() -> ValidationResult {
     info!("Validating Linux runtime prerequisites...");
     let mut result = ValidationResult::default();
 
-    // Check 1: libkrun library
-    debug!("Checking for libkrun library...");
-    let libkrun_found = find_linux_libkrun();
-    if let Some(path) = libkrun_found {
-        debug!("Found libkrun at: {}", path);
+    // Check 1: libkrunfw kernel firmware (dlopened at runtime by the statically
+    // linked `krun` rlib). libkrun itself is compiled into nanosb as a Rust
+    // rlib, so no libkrun.so is required on disk — but libkrunfw.so.5 must be
+    // loadable via the dynamic linker.
+    debug!("Checking for libkrunfw kernel firmware...");
+    let libkrunfw_found = find_linux_libkrunfw();
+    if let Some(path) = libkrunfw_found {
+        debug!("Found libkrunfw at: {}", path);
     } else {
         result.add_error(
-            "libkrun Library",
-            "libkrun.so not found",
+            "libkrunfw Kernel Firmware",
+            "libkrunfw.so.5 not found in standard library paths",
             Some("Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string()),
         );
     }
@@ -523,20 +526,25 @@ async fn validate_linux_detailed() -> ValidationResult {
     result
 }
 
-/// Find the libkrun shared library on Linux
+/// Find the libkrunfw kernel firmware shared library on Linux.
+///
+/// This matches the soname that libkrun's Rust source dlopens at runtime
+/// (`libkrunfw.so.5`, see `deps/libkrun/src/libkrun/src/lib.rs`).
 #[cfg(target_os = "linux")]
-fn find_linux_libkrun() -> Option<String> {
-    let search_paths = [
-        "/usr/lib/libkrun.so",
-        "/usr/lib64/libkrun.so",
-        "/usr/local/lib/libkrun.so",
-        "/usr/lib/x86_64-linux-gnu/libkrun.so",
-        "/usr/lib/aarch64-linux-gnu/libkrun.so",
+fn find_linux_libkrunfw() -> Option<String> {
+    const SONAME: &str = "libkrunfw.so.5";
+    let search_dirs = [
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/aarch64-linux-gnu",
     ];
 
-    for path in &search_paths {
-        if Path::new(path).exists() {
-            return Some(path.to_string());
+    for dir in &search_dirs {
+        let candidate = format!("{}/{}", dir, SONAME);
+        if Path::new(&candidate).exists() {
+            return Some(candidate);
         }
     }
     None
@@ -569,16 +577,19 @@ async fn validate_macos_detailed() -> ValidationResult {
         );
     }
 
-    // Check 2: libkrun library
-    debug!("Checking for libkrun library...");
-    if !std::path::Path::new("/opt/homebrew/lib/libkrun.dylib").exists() {
+    // Check 2: libkrunfw kernel firmware (dlopened at runtime by the statically
+    // linked `krun` rlib). libkrun itself is compiled into nanosb as a Rust
+    // rlib, so no libkrun.dylib is required — but libkrunfw.5.dylib must be
+    // discoverable via the same paths `preload_libkrunfw()` searches.
+    debug!("Checking for libkrunfw kernel firmware...");
+    if let Some(path) = find_macos_libkrunfw() {
+        debug!("Found libkrunfw at {}", path);
+    } else {
         result.add_error(
-            "libkrun Library",
-            "libkrun.dylib not found at /opt/homebrew/lib/",
+            "libkrunfw Kernel Firmware",
+            "libkrunfw.5.dylib not found in /opt/homebrew/lib or /usr/local/lib",
             Some("Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string()),
         );
-    } else {
-        debug!("Found libkrun at /opt/homebrew/lib/libkrun.dylib");
     }
 
     // Check 3: Hypervisor.framework
@@ -612,6 +623,23 @@ async fn validate_macos_detailed() -> ValidationResult {
     }
 
     result
+}
+
+/// Find the libkrunfw kernel firmware dylib on macOS.
+///
+/// Searches the same directories as `runtime::libkrun::preload_libkrunfw()` so
+/// that the doctor reports success exactly when the runtime will actually be
+/// able to load the firmware at VM boot time.
+#[cfg(target_os = "macos")]
+fn find_macos_libkrunfw() -> Option<String> {
+    const SEARCH_DIRS: &[&str] = &["/opt/homebrew/lib", "/usr/local/lib"];
+    for dir in SEARCH_DIRS {
+        let path = format!("{}/libkrunfw.5.dylib", dir);
+        if std::path::Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "macos")]

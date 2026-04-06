@@ -14,6 +14,10 @@
 
 pub mod validation;
 
+pub use validation::{
+    validate_runtime_prerequisites, validate_runtime_prerequisites_detailed, ValidationResult,
+};
+
 // libkrun FFI bindings (all platforms)
 mod ffi;
 

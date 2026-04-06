@@ -1,0 +1,316 @@
+name: Upstream Sync
+
+# Detects new commits in all upstream dependencies and creates PRs to sync them.
+#
+# Dependencies tracked:
+#   - libkrun (checked-in source in deps/libkrun/) → upstream: containers/libkrun
+#   - libkrunfw (git submodule in deps/libkrunfw/)  → upstream: containers/libkrunfw
+#   - gvproxy (git submodule in deps/gvproxy/)      → upstream: containers/gvisor-tap-vsock
+#
+# Runs weekly (Monday 6am UTC) or can be triggered manually.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday 6am UTC
+  workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync even if no changes detected'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # ─── libkrun: checked-in source, synced via rsync + patch ───
+  sync-libkrun:
+    name: Sync libkrun
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check upstream libkrun
+        id: check
+        run: |
+          git clone --depth=100 https://github.com/containers/libkrun.git /tmp/upstream-libkrun
+          UPSTREAM_SHA=$(git -C /tmp/upstream-libkrun rev-parse HEAD)
+          OUR_SHA=$(cat deps/libkrun/.upstream-sha 2>/dev/null || echo "none")
+
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "our_sha=$OUR_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$UPSTREAM_SHA" != "$OUR_SHA" ] || [ "${{ inputs.force_sync }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+
+            # Generate commit summary
+            if [ "$OUR_SHA" != "none" ]; then
+              git -C /tmp/upstream-libkrun log --oneline "${OUR_SHA}..HEAD" 2>/dev/null > /tmp/upstream-commits.txt || \
+                echo "Could not generate diff (our SHA may not exist upstream)" > /tmp/upstream-commits.txt
+            else
+              git -C /tmp/upstream-libkrun log --oneline -20 > /tmp/upstream-commits.txt
+            fi
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No upstream changes detected"
+          fi
+
+      - name: Create sync branch and PR
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPSTREAM_SHA="${{ steps.check.outputs.upstream_sha }}"
+          SHORT_SHA="${UPSTREAM_SHA:0:8}"
+          BRANCH="upstream-sync/libkrun-${SHORT_SHA}"
+
+          # Check if branch already exists
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Branch $BRANCH already exists, skipping"
+            exit 0
+          fi
+
+          git checkout -b "$BRANCH"
+
+          # Copy upstream source (preserving our tracking file)
+          rsync -a --delete \
+            --exclude='.git' \
+            --exclude='.upstream-sha' \
+            --exclude='init/prebuilt' \
+            /tmp/upstream-libkrun/ deps/libkrun/
+
+          # Re-apply our structural patches
+          bash scripts/ci/patch-libkrun-workspace.sh
+
+          # Update tracking SHA
+          echo "$UPSTREAM_SHA" > deps/libkrun/.upstream-sha
+
+          # Check if init.c changed (prebuilt binaries may need rebuild)
+          if git diff --name-only | grep -q "init/init.c"; then
+            echo "init.c changed — prebuilt binaries may need rebuilding"
+            echo "::warning::init.c has upstream changes. Prebuilt init binaries may need to be rebuilt."
+          fi
+
+          git add deps/libkrun/
+          git commit -m "chore: sync libkrun upstream (${SHORT_SHA})"
+          git push origin "$BRANCH"
+
+          COMMITS=$(cat /tmp/upstream-commits.txt)
+          gh pr create \
+            --title "Upstream sync: libkrun $(date +%Y-%m-%d)" \
+            --body "$(cat <<EOF
+          ## Upstream libkrun sync
+
+          Syncing from [containers/libkrun](https://github.com/containers/libkrun) commit \`${UPSTREAM_SHA}\`.
+
+          ### Upstream commits since last sync
+          \`\`\`
+          ${COMMITS}
+          \`\`\`
+
+          ### Patches re-applied
+          - Removed \`[workspace]\` block from \`deps/libkrun/Cargo.toml\`
+          - Changed crate-type from \`cdylib\` to \`rlib\`
+          - Cleaned up build.rs soname/install_name directives
+          - Pinned vm-memory to =0.16.2
+
+          ### Review checklist
+          - [ ] \`cargo build -p nanosandbox\` compiles
+          - [ ] \`cargo test -p nanosandbox\` passes
+          - [ ] No new breaking API changes in libkrun
+          - [ ] Check if init.c changed (may need prebuilt binary rebuild)
+          EOF
+          )" \
+            --label "upstream-sync" 2>/dev/null || \
+          gh pr create \
+            --title "Upstream sync: libkrun $(date +%Y-%m-%d)" \
+            --body "Syncing libkrun upstream commit ${UPSTREAM_SHA}"
+
+  # ─── libkrunfw: git submodule, synced via submodule update ───
+  sync-libkrunfw:
+    name: Sync libkrunfw
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Check upstream libkrunfw
+        id: check
+        run: |
+          CURRENT_SHA=$(git -C deps/libkrunfw rev-parse HEAD 2>/dev/null || echo "none")
+          git clone --depth=50 https://github.com/containers/libkrunfw.git /tmp/upstream-libkrunfw
+          UPSTREAM_SHA=$(git -C /tmp/upstream-libkrunfw rev-parse HEAD)
+          LATEST_TAG=$(git -C /tmp/upstream-libkrunfw describe --tags --abbrev=0 2>/dev/null || echo "none")
+
+          echo "current_sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT_SHA" != "$UPSTREAM_SHA" ] || [ "${{ inputs.force_sync }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+
+            # Generate commit summary
+            if [ "$CURRENT_SHA" != "none" ]; then
+              git -C /tmp/upstream-libkrunfw log --oneline "${CURRENT_SHA}..HEAD" 2>/dev/null > /tmp/libkrunfw-commits.txt || \
+                echo "Could not generate diff" > /tmp/libkrunfw-commits.txt
+            else
+              git -C /tmp/upstream-libkrunfw log --oneline -20 > /tmp/libkrunfw-commits.txt
+            fi
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "libkrunfw is up to date"
+          fi
+
+      - name: Create sync branch and PR
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPSTREAM_SHA="${{ steps.check.outputs.upstream_sha }}"
+          LATEST_TAG="${{ steps.check.outputs.latest_tag }}"
+          SHORT_SHA="${UPSTREAM_SHA:0:8}"
+          BRANCH="upstream-sync/libkrunfw-${SHORT_SHA}"
+
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Branch $BRANCH already exists, skipping"
+            exit 0
+          fi
+
+          git checkout -b "$BRANCH"
+
+          # Update submodule to latest upstream
+          cd deps/libkrunfw
+          git fetch origin
+          git checkout "$UPSTREAM_SHA"
+          cd ../..
+
+          git add deps/libkrunfw
+          git commit -m "chore: update libkrunfw submodule to ${SHORT_SHA}"
+          git push origin "$BRANCH"
+
+          COMMITS=$(cat /tmp/libkrunfw-commits.txt)
+          gh pr create \
+            --title "Upstream sync: libkrunfw $(date +%Y-%m-%d)" \
+            --body "$(cat <<EOF
+          ## Upstream libkrunfw sync
+
+          Updating submodule to [containers/libkrunfw](https://github.com/containers/libkrunfw) commit \`${UPSTREAM_SHA}\`.
+          Latest upstream tag: \`${LATEST_TAG}\`
+
+          ### Upstream commits since last sync
+          \`\`\`
+          ${COMMITS}
+          \`\`\`
+
+          ### Impact
+          libkrunfw provides the guest kernel firmware loaded at runtime.
+          This update may affect kernel features, security patches, or VM boot behavior.
+
+          ### Review checklist
+          - [ ] Kernel builds successfully in deps-build CI
+          - [ ] VM boot still works (e2e tests)
+          - [ ] No breaking ABI changes (ABI_VERSION still compatible)
+          EOF
+          )" \
+            --label "upstream-sync" 2>/dev/null || \
+          gh pr create \
+            --title "Upstream sync: libkrunfw $(date +%Y-%m-%d)" \
+            --body "Updating libkrunfw submodule to ${UPSTREAM_SHA}"
+
+  # ─── gvproxy: git submodule, synced via submodule update ───
+  sync-gvproxy:
+    name: Sync gvproxy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Check upstream gvproxy
+        id: check
+        run: |
+          CURRENT_SHA=$(git -C deps/gvproxy rev-parse HEAD 2>/dev/null || echo "none")
+          git clone --depth=50 https://github.com/containers/gvisor-tap-vsock.git /tmp/upstream-gvproxy
+          UPSTREAM_SHA=$(git -C /tmp/upstream-gvproxy rev-parse HEAD)
+          LATEST_TAG=$(git -C /tmp/upstream-gvproxy describe --tags --abbrev=0 2>/dev/null || echo "none")
+
+          echo "current_sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT_SHA" != "$UPSTREAM_SHA" ] || [ "${{ inputs.force_sync }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+
+            if [ "$CURRENT_SHA" != "none" ]; then
+              git -C /tmp/upstream-gvproxy log --oneline "${CURRENT_SHA}..HEAD" 2>/dev/null > /tmp/gvproxy-commits.txt || \
+                echo "Could not generate diff" > /tmp/gvproxy-commits.txt
+            else
+              git -C /tmp/upstream-gvproxy log --oneline -20 > /tmp/gvproxy-commits.txt
+            fi
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "gvproxy is up to date"
+          fi
+
+      - name: Create sync branch and PR
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPSTREAM_SHA="${{ steps.check.outputs.upstream_sha }}"
+          LATEST_TAG="${{ steps.check.outputs.latest_tag }}"
+          SHORT_SHA="${UPSTREAM_SHA:0:8}"
+          BRANCH="upstream-sync/gvproxy-${SHORT_SHA}"
+
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Branch $BRANCH already exists, skipping"
+            exit 0
+          fi
+
+          git checkout -b "$BRANCH"
+
+          # Update submodule to latest upstream
+          cd deps/gvproxy
+          git fetch origin
+          git checkout "$UPSTREAM_SHA"
+          cd ../..
+
+          git add deps/gvproxy
+          git commit -m "chore: update gvproxy submodule to ${SHORT_SHA}"
+          git push origin "$BRANCH"
+
+          COMMITS=$(cat /tmp/gvproxy-commits.txt)
+          gh pr create \
+            --title "Upstream sync: gvproxy $(date +%Y-%m-%d)" \
+            --body "$(cat <<EOF
+          ## Upstream gvproxy sync
+
+          Updating submodule to [containers/gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock) commit \`${UPSTREAM_SHA}\`.
+          Latest upstream tag: \`${LATEST_TAG}\`
+
+          ### Upstream commits since last sync
+          \`\`\`
+          ${COMMITS}
+          \`\`\`
+
+          ### Impact
+          gvproxy provides user-mode networking (virtio-net via unix socket).
+          This update may affect network performance, stability, or protocol support.
+
+          ### Review checklist
+          - [ ] gvproxy builds successfully (Go build in deps-build CI)
+          - [ ] VM networking still works (e2e tests)
+          - [ ] No breaking CLI/socket protocol changes
+          EOF
+          )" \
+            --label "upstream-sync" 2>/dev/null || \
+          gh pr create \
+            --title "Upstream sync: gvproxy $(date +%Y-%m-%d)" \
+            --body "Updating gvproxy submodule to ${UPSTREAM_SHA}"

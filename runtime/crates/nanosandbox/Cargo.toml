@@ -49,8 +49,8 @@ async-trait = "0.1"
 dirs = "6"
 unicode-width = "0.2"
 
-# libkrun FFI support (all platforms)
-libloading = "0.8"
+# libkrun (compiled directly as rlib — no separate .so/.dylib)
+libkrun-sys = { path = "../libkrun-sys", features = ["net"] }
 
 # Unix-only: fork child process for krun_start_enter
 [target.'cfg(unix)'.dependencies]

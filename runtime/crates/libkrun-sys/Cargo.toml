@@ -2,12 +2,14 @@
 name = "libkrun-sys"
 version = "0.1.0"
 edition = "2021"
-description = "Rust FFI bindings for the libkrun C API"
+description = "Rust bindings for libkrun (compiled directly as rlib)"
 license = "Apache-2.0"
-build = "build.rs"
+
+[features]
+default = ["net"]
+net = ["krun/net"]
+blk = ["krun/blk"]
 
 [dependencies]
 libc = "0.2"
-
-[build-dependencies]
-pkg-config = "0.3"
+krun = { path = "../../deps/libkrun/src/libkrun", package = "libkrun", default-features = false }
