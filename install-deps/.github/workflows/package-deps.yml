@@ -44,7 +44,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p release
 
-          for bundle in deps-linux-amd64.tar.gz deps-linux-arm64.tar.gz deps-darwin-arm64.tar.gz; do
+          for bundle in deps-linux-amd64.tar.gz deps-linux-arm64.tar.gz deps-darwin-arm64.tar.gz deps-windows-amd64.zip; do
             echo "Downloading $bundle..."
             gh release download "$VERSION" \
               --repo nanosandboxai/runtime \
@@ -60,12 +60,14 @@ jobs:
         run: |
           cp install.sh release/
           cp uninstall.sh release/
+          cp install.ps1 release/
+          cp uninstall.ps1 release/
           chmod +x release/install.sh release/uninstall.sh
 
       - name: Generate checksums
         run: |
           cd release
-          sha256sum *.tar.gz *.sh > checksums.sha256 2>/dev/null || true
+          sha256sum *.tar.gz *.zip *.sh *.ps1 > checksums.sha256 2>/dev/null || true
           echo "=== Checksums ==="
           cat checksums.sha256
 
@@ -82,8 +84,14 @@ jobs:
 
           ## Quick install
 
+          **Linux / macOS:**
           \`\`\`bash
           curl -fsSL https://github.com/nanosandboxai/install-deps/releases/download/${VERSION}/install.sh | bash
+          \`\`\`
+
+          **Windows (PowerShell):**
+          \`\`\`powershell
+          irm https://github.com/nanosandboxai/install-deps/releases/download/${VERSION}/install.ps1 | iex
           \`\`\`
 
           ## Contents
@@ -93,8 +101,11 @@ jobs:
           | \`deps-linux-amd64.tar.gz\` | libkrunfw + gvproxy for Linux x86_64 |
           | \`deps-linux-arm64.tar.gz\` | libkrunfw + gvproxy for Linux aarch64 |
           | \`deps-darwin-arm64.tar.gz\` | libkrunfw + gvproxy for macOS Apple Silicon |
-          | \`install.sh\` | Automated installer |
-          | \`uninstall.sh\` | Automated uninstaller |
+          | \`deps-windows-amd64.zip\` | libkrun DLL + kernel + initrd for Windows x86_64 |
+          | \`install.sh\` | Automated installer (Linux/macOS) |
+          | \`uninstall.sh\` | Automated uninstaller (Linux/macOS) |
+          | \`install.ps1\` | Automated installer (Windows) |
+          | \`uninstall.ps1\` | Automated uninstaller (Windows) |
           | \`checksums.sha256\` | SHA-256 checksums |
 
           Built from [runtime $VERSION](https://github.com/nanosandboxai/runtime/releases/tag/${VERSION}).
