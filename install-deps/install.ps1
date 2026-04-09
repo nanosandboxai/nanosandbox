@@ -211,14 +211,14 @@ function Test-Installation {
         $size = (Get-Item $dll).Length / 1MB
         Write-OK ("libkrunfw.dll ({0:N1} MB)" -f $size)
     } else {
-        Write-Info "libkrunfw.dll not present (not required — libkrun is statically linked)"
+        Write-Info "libkrunfw.dll not present (not required -libkrun is statically linked)"
     }
 
     if (Test-Path $bb) {
         $size = (Get-Item $bb).Length / 1MB
         Write-OK ("busybox ({0:N1} MB)" -f $size)
     } else {
-        Write-Info "busybox not present (not required — embedded in binary)"
+        Write-Info "busybox not present (not required -embedded in binary)"
     }
 }
 
