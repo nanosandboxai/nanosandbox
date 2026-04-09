@@ -18,7 +18,7 @@
     irm https://github.com/nanosandboxai/install-deps/releases/latest/download/install.ps1 | iex
 
     # Install specific version:
-    .\install.ps1 -Version v0.3.0
+    .\install.ps1 -Version v0.2.0
 
     # Custom install path:
     .\install.ps1 -InstallDir C:\opt\nanosandbox
@@ -31,6 +31,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Speed up Invoke-WebRequest
+
+# Copy params to regular variables to avoid "Cannot overwrite variable" when piped via iex
+$requestedVersion = $Version
+$targetDir = $InstallDir
 
 $GitHubRepo = 'nanosandboxai/install-deps'
 $Platform = 'windows-amd64'
@@ -72,16 +76,8 @@ function Test-Prerequisites {
     if ($null -eq $hyperv -or $hyperv.State -ne 'Enabled') {
         Write-Warn "Hyper-V is not enabled."
         Write-Info "Nanosandbox uses the Host Compute Service (HCS) which requires Hyper-V."
+        Write-Info "Enable with: Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All -All"
         Write-Info ""
-        $answer = Read-Host "  Enable Hyper-V now? This requires a reboot. [y/N]"
-        if ($answer -match '^[Yy]') {
-            Write-Info "Enabling Hyper-V..."
-            Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All -All -NoRestart | Out-Null
-            Write-OK "Hyper-V enabled (reboot required to activate)"
-            $script:NeedsReboot = $true
-        } else {
-            Write-Warn "Skipping Hyper-V. Nanosandbox will not work until Hyper-V is enabled."
-        }
     } else {
         Write-OK "Hyper-V enabled"
     }
@@ -100,11 +96,13 @@ function Test-Prerequisites {
 # ─── Version resolution ──────────────────────────────────────────────────────
 
 function Resolve-LatestVersion {
+    param([string]$Requested)
+
     Write-Header "Resolving version"
 
-    if ($Version) {
-        Write-Info "Using specified version: $Version"
-        return $Version
+    if ($Requested) {
+        Write-Info "Using specified version: $Requested"
+        return $Requested
     }
 
     Write-Info "Fetching latest release..."
@@ -141,27 +139,26 @@ function Install-Dependencies {
         try {
             Invoke-WebRequest -Uri $url -OutFile $zipPath -ErrorAction Stop
         } catch {
-            Write-Err "Failed to download $bundle"
+            Write-Warn "Failed to download $bundle (may not exist yet for this version)"
             Write-Info "URL: $url"
-            Write-Info "Verify $Ver has a Windows build at:"
-            Write-Info "  https://github.com/$GitHubRepo/releases/tag/$Ver"
-            exit 1
+            Write-Info "Skipping deps bundle install. The CLI binary is self-contained on Windows."
+            return
         }
 
         Write-Info "Extracting..."
         Expand-Archive -Path $zipPath -DestinationPath $tmpDir -Force
 
         # Create install directory
-        if (-not (Test-Path $InstallDir)) {
-            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        if (-not (Test-Path $targetDir)) {
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
         }
 
         # Install libkrunfw.dll
         Write-Header "Installing libkrunfw.dll"
         $dllSrc = Get-ChildItem -Path $tmpDir -Filter "libkrunfw.dll" -Recurse | Select-Object -First 1
         if ($dllSrc) {
-            Copy-Item $dllSrc.FullName -Destination (Join-Path $InstallDir "libkrunfw.dll") -Force
-            Write-OK "libkrunfw.dll -> $InstallDir"
+            Copy-Item $dllSrc.FullName -Destination (Join-Path $targetDir "libkrunfw.dll") -Force
+            Write-OK "libkrunfw.dll -> $targetDir"
         } else {
             Write-Warn "libkrunfw.dll not found in bundle"
         }
@@ -170,8 +167,8 @@ function Install-Dependencies {
         Write-Header "Installing busybox"
         $bbSrc = Get-ChildItem -Path $tmpDir -Filter "busybox" -Recurse | Select-Object -First 1
         if ($bbSrc) {
-            Copy-Item $bbSrc.FullName -Destination (Join-Path $InstallDir "busybox") -Force
-            Write-OK "busybox -> $InstallDir"
+            Copy-Item $bbSrc.FullName -Destination (Join-Path $targetDir "busybox") -Force
+            Write-OK "busybox -> $targetDir"
         } else {
             Write-Warn "busybox not found in bundle"
         }
@@ -186,19 +183,19 @@ function Set-InstallPath {
     Write-Header "Configuring PATH"
 
     $machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-    if ($machinePath -split ';' -contains $InstallDir) {
-        Write-OK "$InstallDir already in system PATH"
+    if ($machinePath -split ';' -contains $targetDir) {
+        Write-OK "$targetDir already in system PATH"
         return
     }
 
-    Write-Info "Adding $InstallDir to system PATH..."
-    $newPath = "$machinePath;$InstallDir"
+    Write-Info "Adding $targetDir to system PATH..."
+    $newPath = "$machinePath;$targetDir"
     [Environment]::SetEnvironmentVariable('PATH', $newPath, 'Machine')
 
     # Update current session PATH too
-    $env:PATH = "$env:PATH;$InstallDir"
+    $env:PATH = "$env:PATH;$targetDir"
 
-    Write-OK "Added $InstallDir to system PATH"
+    Write-OK "Added $targetDir to system PATH"
     Write-Info "New terminal windows will pick up the change automatically."
 }
 
@@ -207,21 +204,21 @@ function Set-InstallPath {
 function Test-Installation {
     Write-Header "Verifying installation"
 
-    $dll = Join-Path $InstallDir "libkrunfw.dll"
-    $bb  = Join-Path $InstallDir "busybox"
+    $dll = Join-Path $targetDir "libkrunfw.dll"
+    $bb  = Join-Path $targetDir "busybox"
 
     if (Test-Path $dll) {
         $size = (Get-Item $dll).Length / 1MB
-        Write-OK "libkrunfw.dll ({0:N1} MB)" -f $size
+        Write-OK ("libkrunfw.dll ({0:N1} MB)" -f $size)
     } else {
-        Write-Warn "libkrunfw.dll not found at $dll"
+        Write-Info "libkrunfw.dll not present (not required — libkrun is statically linked)"
     }
 
     if (Test-Path $bb) {
         $size = (Get-Item $bb).Length / 1MB
-        Write-OK "busybox ({0:N1} MB)" -f $size
+        Write-OK ("busybox ({0:N1} MB)" -f $size)
     } else {
-        Write-Warn "busybox not found at $bb"
+        Write-Info "busybox not present (not required — embedded in binary)"
     }
 }
 
@@ -231,10 +228,9 @@ function Write-Summary {
     param([string]$Ver)
 
     Write-Header "Installation complete"
-    Write-Info "libkrunfw.dll -> $InstallDir\libkrunfw.dll"
-    Write-Info "busybox       -> $InstallDir\busybox"
-    Write-Info "version       -> $Ver"
-    Write-Info "platform      -> $Platform"
+    Write-Info "version   -> $Ver"
+    Write-Info "platform  -> $Platform"
+    Write-Info "directory -> $targetDir"
 
     if ($script:NeedsReboot) {
         Write-Host ""
@@ -254,7 +250,7 @@ function Main {
     Assert-Administrator
     Test-Prerequisites
 
-    $ver = Resolve-LatestVersion
+    $ver = Resolve-LatestVersion -Requested $requestedVersion
     Install-Dependencies -Ver $ver
     Set-InstallPath
     Test-Installation
