@@ -1,0 +1,36 @@
+#!/bin/sh
+# Mock Cursor agent for integration testing.
+# Simulates Cursor's JSON output format.
+
+CHAT_ID="chat_$(date +%s)"
+RESUME=""
+MESSAGE=""
+
+# Parse args
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --resume)
+            RESUME="$2"
+            CHAT_ID="$2"
+            shift 2
+            ;;
+        --message)
+            MESSAGE="$2"
+            shift 2
+            ;;
+        *) shift ;;
+    esac
+done
+
+echo "{\"chatId\":\"$CHAT_ID\"}"
+
+if [ -n "$RESUME" ]; then
+    echo "{\"output\":\"resumed session: $RESUME\"}"
+fi
+
+if echo "$MESSAGE" | grep -q "interrupted"; then
+    echo "{\"output\":\"continuing from interruption\"}"
+fi
+
+echo "{\"output\":\"working on: $MESSAGE\"}"
+echo "{\"status\":\"done\"}"
