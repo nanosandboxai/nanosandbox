@@ -9,7 +9,7 @@
     Does NOT remove the nanosb CLI binary or disable Hyper-V.
 
 .PARAMETER InstallDir
-    Installation directory to clean. Defaults to "$env:ProgramFiles\nanosandbox".
+    Installation directory to clean. Defaults to "$env:USERPROFILE\.nanosandbox".
 
 .EXAMPLE
     # Uninstall (from web):
@@ -20,7 +20,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$InstallDir = "$env:ProgramFiles\nanosandbox"
+    [string]$InstallDir = "$env:USERPROFILE\.nanosandbox"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,27 +92,23 @@ function Remove-FromPath {
 function Remove-Caches {
     Write-Header "Cleaning caches"
 
-    # VHDX cache
-    $vhdxCache = 'C:\tmp\nanosb-vhdx-cache'
-    if (Test-Path $vhdxCache) {
-        $answer = Read-Host "  Remove VHDX cache at $vhdxCache? [y/N]"
+    # All nanosandbox data (cache, logs, vhdx, etc.) lives under ~/.nanosandbox/
+    $nanosandboxData = Join-Path $env:USERPROFILE '.nanosandbox'
+    if (Test-Path $nanosandboxData) {
+        $answer = Read-Host "  Remove all nanosandbox data at $nanosandboxData? [y/N]"
         if ($answer -match '^[Yy]') {
-            Remove-Item $vhdxCache -Recurse -Force -ErrorAction SilentlyContinue
-            Write-OK "Removed $vhdxCache"
+            Remove-Item $nanosandboxData -Recurse -Force -ErrorAction SilentlyContinue
+            Write-OK "Removed $nanosandboxData"
         } else {
-            Write-Info "Kept $vhdxCache"
+            Write-Info "Kept $nanosandboxData"
         }
     }
 
-    # Image/rootfs cache
-    $nanosandboxCache = Join-Path $env:USERPROFILE '.nanosandbox'
-    if (Test-Path $nanosandboxCache) {
-        $answer = Read-Host "  Remove image cache at $nanosandboxCache? [y/N]"
-        if ($answer -match '^[Yy]') {
-            Remove-Item $nanosandboxCache -Recurse -Force -ErrorAction SilentlyContinue
-            Write-OK "Removed $nanosandboxCache"
-        } else {
-            Write-Info "Kept $nanosandboxCache"
+    # Clean up legacy locations if they exist
+    foreach ($legacy in @('C:\tmp\nanosb-vhdx-cache', "$env:LOCALAPPDATA\nanosandbox")) {
+        if (Test-Path $legacy) {
+            Remove-Item $legacy -Recurse -Force -ErrorAction SilentlyContinue
+            Write-OK "Removed legacy directory $legacy"
         }
     }
 }
