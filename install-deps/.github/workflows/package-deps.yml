@@ -60,6 +60,8 @@ jobs:
         run: |
           cp install.sh release/
           cp uninstall.sh release/
+          # Ensure LF line endings (git autocrlf can introduce CRLF)
+          sed -i 's/\r$//' release/install.sh release/uninstall.sh
           chmod +x release/install.sh release/uninstall.sh
 
       - name: Generate checksums
