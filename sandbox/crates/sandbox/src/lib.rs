@@ -16,6 +16,9 @@ pub mod agent_sandbox;
 pub mod agents_registry;
 pub mod config;
 pub mod error;
+#[cfg(feature = "ffi")]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub mod ffi;
 pub mod session;
 pub mod settings;
 

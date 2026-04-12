@@ -60,6 +60,9 @@ pub struct SessionPanel {
     /// Model identifier.
     #[serde(default)]
     pub model: Option<String>,
+    /// Task prompt for headless/auto mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     /// Environment variable **keys** that were set for this panel.
     /// Values are NOT stored (security). On resume, values are re-read from host env.
     pub env_keys: Vec<String>,
@@ -363,6 +366,7 @@ mod tests {
                 permissions: crate::config::Permissions::Default,
                 agent_type: None,
                 model: None,
+                prompt: None,
                 env_keys: vec!["ANTHROPIC_API_KEY".to_string()],
                 visible: true,
                 had_interaction: false,

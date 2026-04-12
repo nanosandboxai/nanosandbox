@@ -9,11 +9,16 @@ description = "Agent-aware sandbox SDK built on nanosandbox runtime"
 keywords = ["sandbox", "agent", "mcp", "skills"]
 categories = ["development-tools"]
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+ffi = []
+
 [dependencies]
 # Runtime (VM engine)
-# TODO: Switch to git dep after runtime changes are merged to main
-# nanosandbox = { git = "https://github.com/nanosandboxai/runtime.git", branch = "main" }
-nanosandbox = { path = "../../../runtime/crates/nanosandbox" }
+nanosandbox = { git = "https://github.com/nanosandboxai/runtime.git", branch = "feat/abstract-runtime" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
