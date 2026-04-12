@@ -18,6 +18,8 @@ set -euo pipefail
 GITHUB_REPO="nanosandboxai/install-deps"
 LIB_DIR="${LIB_DIR:-/usr/local/lib}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+TMPDIR_CLEANUP=""
+trap '[ -n "$TMPDIR_CLEANUP" ] && rm -rf "$TMPDIR_CLEANUP"' EXIT
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -117,7 +119,7 @@ download_and_install() {
     local url="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${bundle}"
     local tmpdir
     tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
+    TMPDIR_CLEANUP="$tmpdir"
 
     info "Downloading ${bundle}..."
     if ! curl -fsSL -o "${tmpdir}/${bundle}" "$url"; then
