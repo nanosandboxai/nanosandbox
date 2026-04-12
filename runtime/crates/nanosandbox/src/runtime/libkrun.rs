@@ -19,9 +19,7 @@
 use super::ffi;
 use super::gvproxy::{GvproxyInstance, GvproxyManager};
 use super::ExecOutput;
-use crate::config::{
-    McpServerConfig, MountType, NetworkScope, ResolvedAgentConfig, SandboxConfig, SkillDef,
-};
+use crate::config::{MountType, NetworkScope, SandboxConfig};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -270,10 +268,6 @@ struct SandboxState {
     vm_pid: Option<i32>,
     /// Whether the rootfs contains /usr/local/bin/agent-gateway (persistent mode)
     has_gateway: bool,
-    /// MCP server configurations to push to the agent-gateway on start
-    mcp_servers: HashMap<String, McpServerConfig>,
-    /// Resolved agent config to push to the agent-gateway on start
-    resolved_agent: Option<ResolvedAgentConfig>,
     /// Path to VM stderr log file (for diagnostics on startup failure)
     vm_log_path: Option<PathBuf>,
     /// Path to SSH private key for this sandbox
@@ -1084,8 +1078,6 @@ impl LibkrunRuntime {
             gateway_port: None,
             vm_pid: None,
             has_gateway,
-            mcp_servers: config.mcp_servers.clone(),
-            resolved_agent: config.resolved_agent.clone(),
             vm_log_path: None,
             ssh_key_path,
             ssh_port: None,
@@ -1503,47 +1495,6 @@ impl LibkrunRuntime {
                 delay_ms = (delay_ms * 2).min(2000);
             }
 
-            // Push MCP server config from SandboxConfig (if any)
-            let mcp_servers = {
-                let sandboxes = self.lock_sandboxes();
-                let state = sandboxes
-                    .get(id)
-                    .ok_or_else(|| Error::SandboxNotFound(id.to_string()))?;
-                state.mcp_servers.clone()
-            };
-
-            if !mcp_servers.is_empty() {
-                info!(
-                    "Pushing {} MCP server(s) to gateway for sandbox '{}'",
-                    mcp_servers.len(),
-                    id
-                );
-                if let Err(e) = self.push_mcp_config(id, &mcp_servers) {
-                    warn!("Failed to push MCP config for sandbox '{}': {}", id, e);
-                }
-            }
-
-            // Bootstrap agent definition + skills if resolved
-            let resolved_agent = {
-                let sandboxes = self.lock_sandboxes();
-                let state = sandboxes
-                    .get(id)
-                    .ok_or_else(|| Error::SandboxNotFound(id.to_string()))?;
-                state.resolved_agent.clone()
-            };
-
-            if let Some(ref resolved) = resolved_agent {
-                info!(
-                    "Bootstrapping agent '{}' with {} skills for sandbox '{}'",
-                    resolved.agent_name,
-                    resolved.skills.len(),
-                    id
-                );
-                if let Err(e) = self.bootstrap_agent(id, resolved) {
-                    warn!("Failed to bootstrap agent for sandbox '{}': {}", id, e);
-                }
-            }
-
             Ok(())
         }
         .await;
@@ -1720,7 +1671,7 @@ impl LibkrunRuntime {
     }
 
     /// Minimal HTTP GET using raw TcpStream. Returns (status_code, body).
-    fn http_get(addr: &str, path: &str) -> std::result::Result<(u16, String), String> {
+    pub fn http_get(addr: &str, path: &str) -> std::result::Result<(u16, String), String> {
         let mut stream = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -1768,7 +1719,7 @@ impl LibkrunRuntime {
     ///
     /// Uses HTTP/1.0 with Connection: close to avoid chunked transfer encoding
     /// and ensure the server closes the connection when the response is complete.
-    fn http_post_sse<F>(
+    pub fn http_post_sse<F>(
         addr: &str,
         path: &str,
         json_body: &str,
@@ -1919,7 +1870,7 @@ impl LibkrunRuntime {
     }
 
     /// Minimal HTTP POST (non-SSE). Returns (status_code, body).
-    fn http_post(
+    pub fn http_post(
         addr: &str,
         path: &str,
         json_body: &str,
@@ -1967,7 +1918,7 @@ impl LibkrunRuntime {
     }
 
     /// Minimal HTTP DELETE using raw TcpStream. Returns (status_code, body).
-    fn http_delete(addr: &str, path: &str) -> std::result::Result<(u16, String), String> {
+    pub fn http_delete(addr: &str, path: &str) -> std::result::Result<(u16, String), String> {
         let mut stream = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(10)))
@@ -2449,100 +2400,6 @@ impl LibkrunRuntime {
         Ok(())
     }
 
-    /// Send a structured agent message via the gateway's /api/v1/message endpoint.
-    ///
-    /// This is the primary API for multi-turn agent conversations in persistent mode.
-    /// The gateway handles agent CLI spawning, session continuity (--continue, etc.),
-    /// and streams output back as SSE events.
-    ///
-    /// Returns the exit code from the agent CLI.
-    pub async fn send_message<F>(
-        &self,
-        id: &str,
-        message: &str,
-        agent: &str,
-        model: &str,
-        env: &HashMap<String, String>,
-        on_output: F,
-    ) -> Result<i32>
-    where
-        F: Fn(&str, bool) + Send + Sync,
-    {
-        let gateway_port = {
-            let sandboxes = self.lock_sandboxes();
-            let state = sandboxes
-                .get(id)
-                .ok_or_else(|| Error::SandboxNotFound(id.to_string()))?;
-            state.gateway_port.ok_or_else(|| {
-                Error::ExecFailed(
-                    "send_message requires a persistent VM with agent-gateway (no gateway_port set)"
-                        .to_string(),
-                )
-            })?
-        };
-
-        let addr = format!("127.0.0.1:{}", gateway_port);
-        let json_body = serde_json::json!({
-            "message": message,
-            "agent": agent,
-            "model": model,
-            "env": env,
-        })
-        .to_string();
-
-        info!(
-            "Sending message to agent '{}' in sandbox '{}' via gateway port {}",
-            agent, id, gateway_port
-        );
-        // Log the message (truncated) and env keys for debugging
-        let msg_preview: String = message.chars().take(200).collect();
-        eprintln!(
-            "[send_message] Starting: agent={}, model={}, gateway={}, msg_len={}, msg_preview={:?}, env_keys={:?}",
-            agent, model, gateway_port, message.len(), msg_preview, env.keys().collect::<Vec<_>>()
-        );
-
-        // Use a channel to bridge the blocking HTTP read with the async callback
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
-
-        let handle = tokio::task::spawn_blocking(move || {
-            eprintln!("[send_message] spawn_blocking: starting http_post_sse");
-            let result =
-                Self::http_post_sse(&addr, "/api/v1/message", &json_body, |text, is_stderr| {
-                    let _ = tx.send((text.to_string(), is_stderr));
-                })
-                .map_err(|e| format!("Gateway send_message failed: {}", e));
-            eprintln!(
-                "[send_message] spawn_blocking: http_post_sse returned {:?}",
-                result
-            );
-            result
-        });
-
-        // Stream output to the callback as it arrives
-        let mut msg_count = 0u32;
-        while let Some((text, is_stderr)) = rx.recv().await {
-            msg_count += 1;
-            let preview: String = text.chars().take(200).collect();
-            eprintln!(
-                "[send_message] Event #{} (stderr={}): {}",
-                msg_count, is_stderr, preview
-            );
-            on_output(&text, is_stderr);
-        }
-        eprintln!(
-            "[send_message] Channel closed after {} messages, awaiting join handle",
-            msg_count
-        );
-
-        let result = handle
-            .await
-            .map_err(|e| Error::ExecFailed(format!("Task join error: {}", e)))?
-            .map_err(Error::ExecFailed)?;
-
-        eprintln!("[send_message] Complete: exit_code={}", result);
-        Ok(result)
-    }
-
     /// Check if the sandbox is in persistent (gateway) mode.
     pub fn is_persistent(&self, id: &str) -> bool {
         self.sandboxes
@@ -2561,353 +2418,48 @@ impl LibkrunRuntime {
         false
     }
 
-    /// Helper: get gateway port or return McpNotSupported error.
+    /// Helper: get gateway port or return an error.
     fn require_gateway_port(&self, id: &str) -> Result<u16> {
         let sandboxes = self.lock_sandboxes();
         let state = sandboxes
             .get(id)
             .ok_or_else(|| Error::SandboxNotFound(id.to_string()))?;
         state.gateway_port.ok_or_else(|| {
-            Error::McpNotSupported(
-                "MCP operations require a persistent VM with agent-gateway".to_string(),
+            Error::ExecFailed(
+                "HTTP operations require a persistent VM with a gateway process".to_string(),
             )
         })
     }
 
-    /// Push all MCP server configs to the agent-gateway.
-    pub fn push_mcp_config(
-        &self,
-        id: &str,
-        servers: &HashMap<String, McpServerConfig>,
-    ) -> Result<()> {
+    /// Send a generic HTTP GET to the gateway running inside a sandbox.
+    pub fn gateway_http_get(&self, id: &str, path: &str) -> Result<(u16, String)> {
         let gateway_port = self.require_gateway_port(id)?;
         let addr = format!("127.0.0.1:{}", gateway_port);
-
-        for (name, mcp_config) in servers {
-            if !mcp_config.enabled {
-                continue;
-            }
-
-            let body = serde_json::json!({
-                "name": name,
-                "command": mcp_config.command,
-                "args": mcp_config.args,
-                "env": mcp_config.env,
-                "enabled": true
-            });
-
-            match Self::http_post(&addr, "/api/v1/mcp/servers", &body.to_string()) {
-                Ok((code, _)) if (200..300).contains(&code) => {
-                    info!(
-                        "Pushed MCP server '{}' to gateway for sandbox '{}'",
-                        name, id
-                    );
-                }
-                Ok((code, body)) => {
-                    warn!(
-                        "Failed to push MCP server '{}' (HTTP {}): {}",
-                        name,
-                        code,
-                        body.chars().take(200).collect::<String>()
-                    );
-                }
-                Err(e) => {
-                    warn!("Failed to push MCP server '{}': {}", name, e);
-                }
-            }
-        }
-
-        // Regenerate all agent configs after pushing
-        match Self::http_post(&addr, "/api/v1/mcp/regenerate", "{}") {
-            Ok((code, _)) if (200..300).contains(&code) => {
-                info!("MCP configs regenerated for sandbox '{}'", id);
-            }
-            Ok((code, body)) => {
-                warn!(
-                    "Failed to regenerate MCP configs (HTTP {}): {}",
-                    code,
-                    body.chars().take(200).collect::<String>()
-                );
-            }
-            Err(e) => {
-                warn!("Failed to regenerate MCP configs: {}", e);
-            }
-        }
-
-        Ok(())
+        Self::http_get(&addr, path).map_err(Error::ExecFailed)
     }
 
-    /// Add or update an MCP server in the running sandbox.
-    pub fn add_mcp_server(&self, id: &str, name: &str, config: &McpServerConfig) -> Result<()> {
+    /// Send a generic HTTP POST to the gateway running inside a sandbox.
+    pub fn gateway_http_post(&self, id: &str, path: &str, json_body: &str) -> Result<(u16, String)> {
         let gateway_port = self.require_gateway_port(id)?;
         let addr = format!("127.0.0.1:{}", gateway_port);
-
-        let body = serde_json::json!({
-            "name": name,
-            "command": config.command,
-            "args": config.args,
-            "env": config.env,
-            "enabled": config.enabled
-        });
-
-        match Self::http_post(&addr, "/api/v1/mcp/servers", &body.to_string()) {
-            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
-            Ok((code, body)) => Err(Error::McpServerError(format!(
-                "Failed to add MCP server '{}' (HTTP {}): {}",
-                name, code, body
-            ))),
-            Err(e) => Err(Error::McpServerError(format!(
-                "Failed to add MCP server '{}': {}",
-                name, e
-            ))),
-        }
+        Self::http_post(&addr, path, json_body).map_err(Error::ExecFailed)
     }
 
-    /// Remove an MCP server from the running sandbox.
-    pub fn remove_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+    /// Send a generic HTTP DELETE to the gateway running inside a sandbox.
+    pub fn gateway_http_delete(&self, id: &str, path: &str) -> Result<(u16, String)> {
         let gateway_port = self.require_gateway_port(id)?;
         let addr = format!("127.0.0.1:{}", gateway_port);
-        let path = format!("/api/v1/mcp/servers/{}", name);
-
-        match Self::http_delete(&addr, &path) {
-            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
-            Ok((code, body)) => Err(Error::McpServerError(format!(
-                "Failed to remove MCP server '{}' (HTTP {}): {}",
-                name, code, body
-            ))),
-            Err(e) => Err(Error::McpServerError(format!(
-                "Failed to remove MCP server '{}': {}",
-                name, e
-            ))),
-        }
+        Self::http_delete(&addr, path).map_err(Error::ExecFailed)
     }
 
-    /// List all MCP servers in the running sandbox.
-    pub fn list_mcp_servers(&self, id: &str) -> Result<HashMap<String, McpServerConfig>> {
+    /// Send a generic HTTP POST with SSE streaming to the gateway running inside a sandbox.
+    pub fn gateway_http_post_sse<F>(&self, id: &str, path: &str, json_body: &str, on_output: F) -> Result<i32>
+    where
+        F: Fn(&str, bool) + Send + Sync,
+    {
         let gateway_port = self.require_gateway_port(id)?;
         let addr = format!("127.0.0.1:{}", gateway_port);
-
-        match Self::http_get(&addr, "/api/v1/mcp/servers") {
-            Ok((code, body)) if (200..300).contains(&code) => {
-                let response: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
-                    Error::McpServerError(format!("Failed to parse MCP server list: {}", e))
-                })?;
-
-                let servers_val = response.get("servers").unwrap_or(&response);
-                let mut result = HashMap::new();
-
-                if let Some(obj) = servers_val.as_object() {
-                    for (name, val) in obj {
-                        if let Ok(config) = serde_json::from_value::<McpServerConfig>(val.clone()) {
-                            result.insert(name.clone(), config);
-                        }
-                    }
-                }
-
-                Ok(result)
-            }
-            Ok((code, body)) => Err(Error::McpServerError(format!(
-                "Failed to list MCP servers (HTTP {}): {}",
-                code, body
-            ))),
-            Err(e) => Err(Error::McpServerError(format!(
-                "Failed to list MCP servers: {}",
-                e
-            ))),
-        }
-    }
-
-    /// Enable an MCP server in the running sandbox.
-    pub fn enable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        let gateway_port = self.require_gateway_port(id)?;
-        let addr = format!("127.0.0.1:{}", gateway_port);
-        let path = format!("/api/v1/mcp/servers/{}/enable", name);
-
-        match Self::http_post(&addr, &path, "{}") {
-            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
-            Ok((code, body)) => Err(Error::McpServerError(format!(
-                "Failed to enable MCP server '{}' (HTTP {}): {}",
-                name, code, body
-            ))),
-            Err(e) => Err(Error::McpServerError(format!(
-                "Failed to enable MCP server '{}': {}",
-                name, e
-            ))),
-        }
-    }
-
-    /// Disable an MCP server in the running sandbox.
-    pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        let gateway_port = self.require_gateway_port(id)?;
-        let addr = format!("127.0.0.1:{}", gateway_port);
-        let path = format!("/api/v1/mcp/servers/{}/disable", name);
-
-        match Self::http_post(&addr, &path, "{}") {
-            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
-            Ok((code, body)) => Err(Error::McpServerError(format!(
-                "Failed to disable MCP server '{}' (HTTP {}): {}",
-                name, code, body
-            ))),
-            Err(e) => Err(Error::McpServerError(format!(
-                "Failed to disable MCP server '{}': {}",
-                name, e
-            ))),
-        }
-    }
-
-    // ===== Skills & Agent Gateway Methods =====
-
-    /// Add a skill to the running sandbox.
-    pub fn add_skill(&self, id: &str, skill: &SkillDef) -> Result<()> {
-        let gateway_port = self.require_gateway_port(id)?;
-        let addr = format!("127.0.0.1:{}", gateway_port);
-
-        let body = serde_json::json!({
-            "name": skill.name,
-            "description": skill.description,
-            "content": skill.content,
-            "version": skill.version,
-        });
-
-        match Self::http_post(&addr, "/api/v1/skills", &body.to_string()) {
-            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
-            Ok((code, body)) => Err(Error::SkillsError(format!(
-                "Failed to add skill '{}' (HTTP {}): {}",
-                skill.name, code, body
-            ))),
-            Err(e) => Err(Error::SkillsError(format!(
-                "Failed to add skill '{}': {}",
-                skill.name, e
-            ))),
-        }
-    }
-
-    /// Remove a skill from the running sandbox.
-    pub fn remove_skill(&self, id: &str, name: &str) -> Result<()> {
-        let gateway_port = self.require_gateway_port(id)?;
-        let addr = format!("127.0.0.1:{}", gateway_port);
-        let path = format!("/api/v1/skills/{}", name);
-
-        match Self::http_delete(&addr, &path) {
-            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
-            Ok((code, body)) => Err(Error::SkillsError(format!(
-                "Failed to remove skill '{}' (HTTP {}): {}",
-                name, code, body
-            ))),
-            Err(e) => Err(Error::SkillsError(format!(
-                "Failed to remove skill '{}': {}",
-                name, e
-            ))),
-        }
-    }
-
-    /// List all skills in the running sandbox.
-    pub fn list_skills(&self, id: &str) -> Result<HashMap<String, SkillDef>> {
-        let gateway_port = self.require_gateway_port(id)?;
-        let addr = format!("127.0.0.1:{}", gateway_port);
-
-        match Self::http_get(&addr, "/api/v1/skills") {
-            Ok((code, body)) if (200..300).contains(&code) => {
-                let response: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
-                    Error::SkillsError(format!("Failed to parse skills list: {}", e))
-                })?;
-
-                let skills_val = response.get("skills").unwrap_or(&response);
-                let mut result = HashMap::new();
-
-                if let Some(obj) = skills_val.as_object() {
-                    for (name, val) in obj {
-                        if let Ok(skill) = serde_json::from_value::<SkillDef>(val.clone()) {
-                            result.insert(name.clone(), skill);
-                        }
-                    }
-                }
-
-                Ok(result)
-            }
-            Ok((code, body)) => Err(Error::SkillsError(format!(
-                "Failed to list skills (HTTP {}): {}",
-                code, body
-            ))),
-            Err(e) => Err(Error::SkillsError(format!("Failed to list skills: {}", e))),
-        }
-    }
-
-    /// Bootstrap agent definition + skills + MCPs in one call.
-    pub fn bootstrap_agent(&self, id: &str, config: &ResolvedAgentConfig) -> Result<()> {
-        let gateway_port = self.require_gateway_port(id)?;
-        let addr = format!("127.0.0.1:{}", gateway_port);
-
-        let body = serde_json::to_string(config).map_err(|e| {
-            Error::SkillsError(format!("Failed to serialize bootstrap config: {}", e))
-        })?;
-
-        match Self::http_post(&addr, "/api/v1/agent/bootstrap", &body) {
-            Ok((code, _)) if (200..300).contains(&code) => {
-                info!(
-                    "Bootstrapped agent '{}' with {} skills, {} MCPs for sandbox '{}'",
-                    config.agent_name,
-                    config.skills.len(),
-                    config.mcp_servers.len(),
-                    id
-                );
-                Ok(())
-            }
-            Ok((code, body)) => Err(Error::SkillsError(format!(
-                "Failed to bootstrap agent '{}' (HTTP {}): {}",
-                config.agent_name, code, body
-            ))),
-            Err(e) => Err(Error::SkillsError(format!(
-                "Failed to bootstrap agent '{}': {}",
-                config.agent_name, e
-            ))),
-        }
-    }
-
-    /// Set the agent definition (name + prompt).
-    pub fn set_agent(&self, id: &str, name: &str, prompt: &str) -> Result<()> {
-        let gateway_port = self.require_gateway_port(id)?;
-        let addr = format!("127.0.0.1:{}", gateway_port);
-
-        let body = serde_json::json!({
-            "name": name,
-            "prompt": prompt,
-        });
-
-        match Self::http_post(&addr, "/api/v1/agent", &body.to_string()) {
-            Ok((code, _)) if (200..300).contains(&code) => Ok(()),
-            Ok((code, body)) => Err(Error::SkillsError(format!(
-                "Failed to set agent '{}' (HTTP {}): {}",
-                name, code, body
-            ))),
-            Err(e) => Err(Error::SkillsError(format!(
-                "Failed to set agent '{}': {}",
-                name, e
-            ))),
-        }
-    }
-
-    /// Restart the agent process in the running sandbox.
-    pub fn restart_agent(&self, id: &str, reason: &str) -> Result<serde_json::Value> {
-        let gateway_port = self.require_gateway_port(id)?;
-        let addr = format!("127.0.0.1:{}", gateway_port);
-
-        let body = serde_json::json!({ "reason": reason });
-
-        match Self::http_post(&addr, "/api/v1/agent/restart", &body.to_string()) {
-            Ok((code, resp_body)) if (200..300).contains(&code) => serde_json::from_str(&resp_body)
-                .map_err(|e| {
-                    Error::AgentRestartError(format!("Failed to parse restart response: {}", e))
-                }),
-            Ok((code, body)) => Err(Error::AgentRestartError(format!(
-                "Failed to restart agent (HTTP {}): {}",
-                code, body
-            ))),
-            Err(e) => Err(Error::AgentRestartError(format!(
-                "Failed to restart agent: {}",
-                e
-            ))),
-        }
+        Self::http_post_sse(&addr, path, json_body, on_output).map_err(Error::ExecFailed)
     }
 }
 

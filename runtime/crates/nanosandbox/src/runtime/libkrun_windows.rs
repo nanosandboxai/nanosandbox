@@ -10,7 +10,7 @@
 use super::ffi;
 use super::gvproxy::{GvproxyInstance, GvproxyManager};
 use super::ExecOutput;
-use crate::config::{McpServerConfig, NetworkScope, ResolvedAgentConfig, SandboxConfig, SkillDef};
+use crate::config::{NetworkScope, SandboxConfig};
 use crate::error::{Error, Result};
 
 use serde::{Deserialize, Serialize};
@@ -462,20 +462,34 @@ impl LibkrunRuntime {
         Ok(result.exit_code)
     }
 
-    pub async fn send_message<F>(
-        &self,
-        _id: &str,
-        _message: &str,
-        _agent: &str,
-        _model: &str,
-        _env: &HashMap<String, String>,
-        _on_output: F,
-    ) -> Result<i32>
+    /// Send a generic HTTP GET to the gateway process inside a sandbox.
+    pub fn gateway_http_get(&self, _id: &str, _path: &str) -> Result<(u16, String)> {
+        Err(Error::ExecFailed(
+            "Gateway HTTP not yet implemented on Windows".to_string(),
+        ))
+    }
+
+    /// Send a generic HTTP POST to the gateway process inside a sandbox.
+    pub fn gateway_http_post(&self, _id: &str, _path: &str, _json_body: &str) -> Result<(u16, String)> {
+        Err(Error::ExecFailed(
+            "Gateway HTTP not yet implemented on Windows".to_string(),
+        ))
+    }
+
+    /// Send a generic HTTP DELETE to the gateway process inside a sandbox.
+    pub fn gateway_http_delete(&self, _id: &str, _path: &str) -> Result<(u16, String)> {
+        Err(Error::ExecFailed(
+            "Gateway HTTP not yet implemented on Windows".to_string(),
+        ))
+    }
+
+    /// Send a generic HTTP POST with SSE streaming to the gateway process inside a sandbox.
+    pub fn gateway_http_post_sse<F>(&self, _id: &str, _path: &str, _json_body: &str, _on_output: F) -> Result<i32>
     where
         F: Fn(&str, bool) + Send + Sync,
     {
         Err(Error::ExecFailed(
-            "Agent gateway messaging not yet implemented on Windows".to_string(),
+            "Gateway HTTP SSE not yet implemented on Windows".to_string(),
         ))
     }
 
@@ -499,81 +513,4 @@ impl LibkrunRuntime {
         Ok(())
     }
 
-    // --- Stub implementations for features not yet available on Windows ---
-
-    pub fn push_mcp_config(
-        &self,
-        _id: &str,
-        _servers: &HashMap<String, McpServerConfig>,
-    ) -> Result<()> {
-        Err(Error::McpNotSupported(
-            "MCP not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn add_mcp_server(&self, _id: &str, _name: &str, _config: &McpServerConfig) -> Result<()> {
-        Err(Error::McpNotSupported(
-            "MCP not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn remove_mcp_server(&self, _id: &str, _name: &str) -> Result<()> {
-        Err(Error::McpNotSupported(
-            "MCP not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn list_mcp_servers(&self, _id: &str) -> Result<HashMap<String, McpServerConfig>> {
-        Err(Error::McpNotSupported(
-            "MCP not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn enable_mcp_server(&self, _id: &str, _name: &str) -> Result<()> {
-        Err(Error::McpNotSupported(
-            "MCP not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn disable_mcp_server(&self, _id: &str, _name: &str) -> Result<()> {
-        Err(Error::McpNotSupported(
-            "MCP not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn add_skill(&self, _id: &str, _skill: &SkillDef) -> Result<()> {
-        Err(Error::SkillsError(
-            "Skills not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn remove_skill(&self, _id: &str, _name: &str) -> Result<()> {
-        Err(Error::SkillsError(
-            "Skills not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn list_skills(&self, _id: &str) -> Result<HashMap<String, SkillDef>> {
-        Err(Error::SkillsError(
-            "Skills not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn bootstrap_agent(&self, _id: &str, _config: &ResolvedAgentConfig) -> Result<()> {
-        Err(Error::SkillsError(
-            "Agent bootstrap not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn set_agent(&self, _id: &str, _name: &str, _prompt: &str) -> Result<()> {
-        Err(Error::SkillsError(
-            "Agent definition not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
-
-    pub fn restart_agent(&self, _id: &str, _reason: &str) -> Result<serde_json::Value> {
-        Err(Error::AgentRestartError(
-            "Agent restart not yet supported on Windows libkrun runtime".to_string(),
-        ))
-    }
 }

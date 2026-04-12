@@ -1,0 +1,162 @@
+# Nanosandbox Runtime
+
+VM-based sandbox engine using libkrun FFI.
+
+> **Platform Status**: Currently, only **macOS Apple Silicon** is fully tested and stable.
+> Linux support is in development. Windows support is experimental.
+
+## Overview
+
+Nanosandbox Runtime is a pure VM engine providing hardware-isolated execution environments. Each sandbox runs in its own microVM, delivering stronger security guarantees than traditional containers that share the host kernel.
+
+This crate handles VM lifecycle, OCI image management, and containerization. It does **not** contain agent logic -- agent-specific functionality lives in the [Sandbox SDK](https://github.com/nanosandboxai/sandbox).
+
+## Key Features
+
+- **VM-Level Isolation** -- Each sandbox runs in its own microVM via libkrun (KVM/HVF)
+- **OCI Image Support** -- Use any container image from Docker Hub, GHCR, or private registries
+- **Sub-Second Boot Times** -- Optimized VM startup using libkrun
+- **TSI Networking** -- Transparent Socket Impersonation for seamless network access
+- **Generic HTTP Gateway API** -- `gateway_http_get/post/delete/post_sse` for communicating with in-VM services
+- **Cross-Platform** -- macOS Apple Silicon (stable), Linux (in development), Windows (experimental)
+
+## Architecture
+
+```
+Application (CLI, SDKs)
+       |
+   Sandbox SDK (separate repo)
+       |
+   Nanosandbox Runtime (this repo)
+       |
+   +-------+-------+
+   |               |
+   Image           Runtime Backend
+   Manager         (libkrun FFI)
+   |               |
+   OCI             libkrun + libkrunfw
+   Registry        |
+                   Hardware Virtualization
+                   (KVM / HVF / WHPX)
+```
+
+## Public API
+
+Key exports from the `nanosandbox` crate:
+
+| Export | Description |
+|--------|-------------|
+| `Sandbox` | Lifecycle management: create, start, stop, destroy, exec |
+| `SandboxConfig` | Builder pattern for VM configuration (CPUs, memory, image, mounts, networking) |
+| `ImageManager` | OCI image operations: pull, list, remove, prune |
+| `Runtime` | Low-level platform abstraction over libkrun FFI |
+| `gateway_http_get` | HTTP GET to an in-VM service |
+| `gateway_http_post` | HTTP POST to an in-VM service |
+| `gateway_http_delete` | HTTP DELETE to an in-VM service |
+| `gateway_http_post_sse` | HTTP POST with SSE streaming to an in-VM service |
+
+Additional re-exports: `SandboxConfig`, `ExecResult`, `ExecOptions`, `SandboxStatus`, `SandboxRegistry`, `SandboxInfo`, `OciBundle`, `CredentialStore`, `NetworkConfig`, `NetworkMode`, `NetworkScope`, `Mount`, `MountType`, `PortMapping`, `ImageRef`, `PulledImage`, `PruneResult`.
+
+## Platform Support
+
+| Platform | Runtime | Hypervisor | Status |
+|----------|---------|------------|--------|
+| **macOS** | libkrun FFI | HVF (Hypervisor.framework) | **Stable** |
+| **Linux** | libkrun FFI | KVM | In Development |
+| **Windows** | Windows Containers | HCS / Hyper-V | Experimental |
+
+### Platform Notes
+
+- **macOS Apple Silicon (M1/M2/M3/M4)**: Fully tested and stable. Use the install script for easy setup.
+- **Linux**: Not fully supported/tested yet. Requires libkrun installation.
+- **Windows**: Not fully supported/tested yet. Limited to Windows container images only (nanoserver, servercore).
+
+### Windows Limitation
+
+> **Important**: Windows containers can only run **Windows container images** (e.g., `nanoserver`, `servercore`). Linux images like Alpine or Ubuntu are **not supported** on Windows.
+>
+> For Linux container workloads, use Linux or macOS.
+
+## Build Instructions
+
+### Prerequisites
+
+- Rust 1.70+
+- libkrunfw (guest firmware)
+- macOS: Run `./scripts/install/macos.sh` to install dependencies automatically, or install manually with `brew tap slp/krun && brew install libkrun`
+- Linux: [libkrun](https://github.com/containers/libkrun) shared library + KVM enabled (`/dev/kvm` accessible)
+
+### Build
+
+```bash
+cargo build -p nanosandbox
+```
+
+### Test
+
+```bash
+cargo test -p nanosandbox
+```
+
+## SDK Usage
+
+```rust
+use nanosandbox::{Sandbox, SandboxConfig};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Create sandbox configuration
+    let config = SandboxConfig::builder()
+        .name("my-sandbox")
+        .image("python:3.12-slim")
+        .cpus(2)
+        .memory_mb(4096)
+        .build();
+
+    // Create and start sandbox
+    let mut sandbox = Sandbox::create(config).await?;
+    sandbox.start().await?;
+
+    // Execute a command
+    let result = sandbox.exec("python", &["-c", "print('Hello!')"]).await?;
+    println!("Output: {}", result.stdout);
+
+    // Clean up
+    sandbox.destroy().await?;
+    Ok(())
+}
+```
+
+## This Repo Does NOT Contain
+
+| Concern | Where to find it |
+|---------|-----------------|
+| Agent gateway | [Sandbox SDK](https://github.com/nanosandboxai/sandbox) |
+| MCP server management | [Sandbox SDK](https://github.com/nanosandboxai/sandbox) |
+| Agent configuration / sandbox.yml parsing | [Sandbox SDK](https://github.com/nanosandboxai/sandbox) |
+| Docker images for agents | [Agents Registry](https://github.com/nanosandboxai/agents-registry) |
+| Session management | [Sandbox SDK](https://github.com/nanosandboxai/sandbox) |
+
+## Related Repos
+
+- [Sandbox SDK](https://github.com/nanosandboxai/sandbox) -- Agent-aware SDK with FFI bindings for multi-language SDKs
+- [Agents Registry](https://github.com/nanosandboxai/agents-registry) -- Agent definitions, skills, Docker images
+- [CLI](https://github.com/nanosandboxai/cli) -- Command-line interface
+
+## Comparison with Alternatives
+
+| Feature | Nanosandbox | Microsandbox | Docker | gVisor |
+|---------|-------------|--------------|--------|--------|
+| Isolation | VM (KVM/HVF/HCS) | VM (libkrun) | Namespace | User-space kernel |
+| OCI Registry Support | Any | Own registry | Any | Any |
+| Linux Support | Yes (KVM) | Yes | Yes | Yes |
+| macOS Support | Apple Silicon | Apple Silicon | Yes | No |
+| Windows Support | Windows containers* | No | Yes | No |
+| Boot Time | <1s | <1s | <0.5s | <0.5s |
+| Self-Hosted | Yes | Requires server | Yes | Yes |
+
+*Windows support is limited to Windows container images only (nanoserver, servercore). Linux images require Linux or macOS.
+
+## License
+
+Apache-2.0

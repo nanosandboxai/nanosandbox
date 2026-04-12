@@ -1,6 +1,6 @@
 name: Build Release
 
-# Builds nanosandbox, agent-gateway, and runtime dependencies for all platforms.
+# Builds nanosandbox and runtime dependencies for all platforms.
 #
 # Runtime dependencies packaged as deps-{os}-{arch}.tar.gz:
 #   - libkrunfw: Kernel firmware (.so/.dylib) — compiled from kernel.c
@@ -152,12 +152,6 @@ jobs:
       - name: Build nanosandbox
         run: cargo build --release -p nanosandbox
 
-      - name: Build agent-gateway
-        run: |
-          cd agent-gateway
-          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.go_arch }} \
-            go build -ldflags="-s -w" -o agent-gateway .
-
       - name: Package artifacts
         run: |
           VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
@@ -170,10 +164,6 @@ jobs:
           else
             echo "WARNING: nanosandbox binary not found"
           fi
-
-          # agent-gateway binary
-          tar czf "dist/agent-gateway-linux-${{ matrix.arch }}.tar.gz" \
-            -C agent-gateway agent-gateway
 
           # gvproxy binary (standalone)
           tar czf "dist/gvproxy-linux-${{ matrix.arch }}.tar.gz" \
@@ -245,12 +235,6 @@ jobs:
       - name: Build nanosandbox
         run: cargo build --release -p nanosandbox
 
-      - name: Build agent-gateway
-        run: |
-          cd agent-gateway
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-            go build -ldflags="-s -w" -o agent-gateway .
-
       - name: Build gvproxy
         run: |
           cd deps/gvproxy
@@ -265,10 +249,6 @@ jobs:
             tar czf dist/nanosandbox-darwin-arm64.tar.gz \
               -C target/release nanosandbox
           fi
-
-          # agent-gateway binary (cross-compiled for Linux)
-          tar czf dist/agent-gateway-linux-arm64.tar.gz \
-            -C agent-gateway agent-gateway
 
           # gvproxy binary (standalone)
           tar czf dist/gvproxy-darwin-arm64.tar.gz \

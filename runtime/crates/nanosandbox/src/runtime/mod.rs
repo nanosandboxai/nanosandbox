@@ -56,7 +56,6 @@ pub fn gvproxy_available() -> bool {
 }
 
 use crate::config::SandboxConfig;
-use crate::config::{McpServerConfig, ResolvedAgentConfig, SkillDef};
 use crate::error::Result;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -158,29 +157,6 @@ impl RuntimeBackend {
         }
     }
 
-    /// Send a structured agent message via the gateway's /api/v1/message endpoint.
-    ///
-    /// Only available when the sandbox is in persistent (gateway) mode.
-    pub async fn send_message<F>(
-        &self,
-        id: &str,
-        message: &str,
-        agent: &str,
-        model: &str,
-        env: &HashMap<String, String>,
-        on_output: F,
-    ) -> Result<i32>
-    where
-        F: Fn(&str, bool) + Send + Sync,
-    {
-        match self {
-            RuntimeBackend::Libkrun(r) => {
-                r.send_message(id, message, agent, model, env, on_output)
-                    .await
-            }
-        }
-    }
-
     /// Check if the sandbox is in persistent (gateway) mode.
     pub fn is_persistent(&self, id: &str) -> bool {
         match self {
@@ -216,91 +192,34 @@ impl RuntimeBackend {
         }
     }
 
-    /// Push MCP server configurations to the gateway (bulk, on start).
-    pub fn push_mcp_config(
-        &self,
-        id: &str,
-        servers: &HashMap<String, McpServerConfig>,
-    ) -> Result<()> {
+    /// Send a generic HTTP GET to the gateway process inside a sandbox.
+    pub fn gateway_http_get(&self, id: &str, path: &str) -> Result<(u16, String)> {
         match self {
-            RuntimeBackend::Libkrun(r) => r.push_mcp_config(id, servers),
+            RuntimeBackend::Libkrun(r) => r.gateway_http_get(id, path),
         }
     }
 
-    /// Add or update an MCP server.
-    pub fn add_mcp_server(&self, id: &str, name: &str, config: &McpServerConfig) -> Result<()> {
+    /// Send a generic HTTP POST to the gateway process inside a sandbox.
+    pub fn gateway_http_post(&self, id: &str, path: &str, json_body: &str) -> Result<(u16, String)> {
         match self {
-            RuntimeBackend::Libkrun(r) => r.add_mcp_server(id, name, config),
+            RuntimeBackend::Libkrun(r) => r.gateway_http_post(id, path, json_body),
         }
     }
 
-    /// Remove an MCP server.
-    pub fn remove_mcp_server(&self, id: &str, name: &str) -> Result<()> {
+    /// Send a generic HTTP DELETE to the gateway process inside a sandbox.
+    pub fn gateway_http_delete(&self, id: &str, path: &str) -> Result<(u16, String)> {
         match self {
-            RuntimeBackend::Libkrun(r) => r.remove_mcp_server(id, name),
+            RuntimeBackend::Libkrun(r) => r.gateway_http_delete(id, path),
         }
     }
 
-    /// List all MCP servers.
-    pub fn list_mcp_servers(&self, id: &str) -> Result<HashMap<String, McpServerConfig>> {
+    /// Send a generic HTTP POST with SSE streaming to the gateway process inside a sandbox.
+    pub fn gateway_http_post_sse<F>(&self, id: &str, path: &str, json_body: &str, on_output: F) -> Result<i32>
+    where
+        F: Fn(&str, bool) + Send + Sync,
+    {
         match self {
-            RuntimeBackend::Libkrun(r) => r.list_mcp_servers(id),
-        }
-    }
-
-    /// Enable an MCP server.
-    pub fn enable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.enable_mcp_server(id, name),
-        }
-    }
-
-    /// Disable an MCP server.
-    pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.disable_mcp_server(id, name),
-        }
-    }
-
-    /// Add a skill to the running sandbox.
-    pub fn add_skill(&self, id: &str, skill: &SkillDef) -> Result<()> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.add_skill(id, skill),
-        }
-    }
-
-    /// Remove a skill from the running sandbox.
-    pub fn remove_skill(&self, id: &str, name: &str) -> Result<()> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.remove_skill(id, name),
-        }
-    }
-
-    /// List all skills in the running sandbox.
-    pub fn list_skills(&self, id: &str) -> Result<HashMap<String, SkillDef>> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.list_skills(id),
-        }
-    }
-
-    /// Bootstrap agent definition + skills + MCPs in one call.
-    pub fn bootstrap_agent(&self, id: &str, config: &ResolvedAgentConfig) -> Result<()> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.bootstrap_agent(id, config),
-        }
-    }
-
-    /// Set the agent definition (name + prompt).
-    pub fn set_agent(&self, id: &str, name: &str, prompt: &str) -> Result<()> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.set_agent(id, name, prompt),
-        }
-    }
-
-    /// Restart the agent process in the running sandbox.
-    pub fn restart_agent(&self, id: &str, reason: &str) -> Result<serde_json::Value> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.restart_agent(id, reason),
+            RuntimeBackend::Libkrun(r) => r.gateway_http_post_sse(id, path, json_body, on_output),
         }
     }
 
@@ -422,28 +341,6 @@ impl Runtime {
             .await
     }
 
-    /// Send a structured agent message via the gateway.
-    ///
-    /// Only works in persistent (gateway) mode. The gateway handles agent CLI
-    /// spawning, session continuity, and streams output as SSE events.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_message<F>(
-        &self,
-        id: &str,
-        message: &str,
-        agent: &str,
-        model: &str,
-        env: &HashMap<String, String>,
-        on_output: F,
-    ) -> Result<i32>
-    where
-        F: Fn(&str, bool) + Send + Sync,
-    {
-        self.backend
-            .send_message(id, message, agent, model, env, on_output)
-            .await
-    }
-
     /// Check if the sandbox is in persistent (gateway) mode.
     pub fn is_persistent(&self, id: &str) -> bool {
         self.backend.is_persistent(id)
@@ -469,6 +366,29 @@ impl Runtime {
         self.backend.ssh_command(id)
     }
 
+    /// Send a generic HTTP GET to the gateway process inside a sandbox.
+    pub fn gateway_http_get(&self, id: &str, path: &str) -> Result<(u16, String)> {
+        self.backend.gateway_http_get(id, path)
+    }
+
+    /// Send a generic HTTP POST to the gateway process inside a sandbox.
+    pub fn gateway_http_post(&self, id: &str, path: &str, json_body: &str) -> Result<(u16, String)> {
+        self.backend.gateway_http_post(id, path, json_body)
+    }
+
+    /// Send a generic HTTP DELETE to the gateway process inside a sandbox.
+    pub fn gateway_http_delete(&self, id: &str, path: &str) -> Result<(u16, String)> {
+        self.backend.gateway_http_delete(id, path)
+    }
+
+    /// Send a generic HTTP POST with SSE streaming to the gateway process inside a sandbox.
+    pub fn gateway_http_post_sse<F>(&self, id: &str, path: &str, json_body: &str, on_output: F) -> Result<i32>
+    where
+        F: Fn(&str, bool) + Send + Sync,
+    {
+        self.backend.gateway_http_post_sse(id, path, json_body, on_output)
+    }
+
     /// Stop a container/VM
     pub async fn kill(&self, id: &str) -> Result<()> {
         self.backend.stop(id).await
@@ -477,70 +397,6 @@ impl Runtime {
     /// Delete a container/VM
     pub async fn delete(&self, id: &str) -> Result<()> {
         self.backend.destroy(id).await
-    }
-
-    /// Push MCP server configs to the gateway (bulk, on start).
-    pub fn push_mcp_config(
-        &self,
-        id: &str,
-        servers: &HashMap<String, McpServerConfig>,
-    ) -> Result<()> {
-        self.backend.push_mcp_config(id, servers)
-    }
-
-    /// Add or update an MCP server in the running sandbox.
-    pub fn add_mcp_server(&self, id: &str, name: &str, config: &McpServerConfig) -> Result<()> {
-        self.backend.add_mcp_server(id, name, config)
-    }
-
-    /// Remove an MCP server from the running sandbox.
-    pub fn remove_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        self.backend.remove_mcp_server(id, name)
-    }
-
-    /// List all MCP servers in the running sandbox.
-    pub fn list_mcp_servers(&self, id: &str) -> Result<HashMap<String, McpServerConfig>> {
-        self.backend.list_mcp_servers(id)
-    }
-
-    /// Enable an MCP server in the running sandbox.
-    pub fn enable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        self.backend.enable_mcp_server(id, name)
-    }
-
-    /// Disable an MCP server in the running sandbox.
-    pub fn disable_mcp_server(&self, id: &str, name: &str) -> Result<()> {
-        self.backend.disable_mcp_server(id, name)
-    }
-
-    /// Add a skill to the running sandbox.
-    pub fn add_skill(&self, id: &str, skill: &SkillDef) -> Result<()> {
-        self.backend.add_skill(id, skill)
-    }
-
-    /// Remove a skill from the running sandbox.
-    pub fn remove_skill(&self, id: &str, name: &str) -> Result<()> {
-        self.backend.remove_skill(id, name)
-    }
-
-    /// List all skills in the running sandbox.
-    pub fn list_skills(&self, id: &str) -> Result<HashMap<String, SkillDef>> {
-        self.backend.list_skills(id)
-    }
-
-    /// Bootstrap agent definition + skills + MCPs in one call.
-    pub fn bootstrap_agent(&self, id: &str, config: &ResolvedAgentConfig) -> Result<()> {
-        self.backend.bootstrap_agent(id, config)
-    }
-
-    /// Set the agent definition (name + prompt).
-    pub fn set_agent(&self, id: &str, name: &str, prompt: &str) -> Result<()> {
-        self.backend.set_agent(id, name, prompt)
-    }
-
-    /// Restart the agent process in the running sandbox.
-    pub fn restart_agent(&self, id: &str, reason: &str) -> Result<serde_json::Value> {
-        self.backend.restart_agent(id, reason)
     }
 }
 

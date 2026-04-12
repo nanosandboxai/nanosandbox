@@ -39,7 +39,6 @@
 #![allow(missing_docs)]
 #![warn(clippy::all)]
 
-pub mod agents_registry;
 pub mod auth;
 pub mod config;
 pub mod error;
@@ -49,17 +48,12 @@ pub mod project;
 pub mod registry;
 pub mod runtime;
 pub mod sandbox;
-pub mod session;
-pub mod settings;
 
 // Re-exports
-pub use agents_registry::AgentsRegistryClient;
 pub use auth::CredentialStore;
-pub use config::file::{find_sandbox_file, load_sandbox_file, load_sandbox_files, SandboxFile};
 pub use config::{
-    AgentDefinition, AgentMcpRef, AgentType, McpServerConfig, Mount, MountType, NetworkConfig,
-    NetworkMode, NetworkScope, Permissions, PortMapping, ProjectConfig, RegistryConfig,
-    ResolvedAgentConfig, SandboxConfig, SkillDef,
+    Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping, ProjectConfig,
+    RegistryConfig, SandboxConfig,
 };
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PruneResult, PulledImage};

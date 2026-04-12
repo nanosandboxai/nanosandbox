@@ -3,7 +3,6 @@
 //! High-level API for creating and managing sandboxed execution environments.
 
 use crate::config::SandboxConfig;
-use crate::config::{McpServerConfig, ResolvedAgentConfig, SkillDef};
 use crate::error::{Error, Result};
 use crate::image::{ImageManager, PulledImage};
 use crate::oci;
@@ -613,58 +612,6 @@ impl Sandbox {
         Ok(exit_code)
     }
 
-    /// Send a structured agent message to the gateway (persistent mode).
-    ///
-    /// This is the primary API for multi-turn agent conversations. The gateway
-    /// handles agent CLI spawning, session continuity (e.g., `--continue` for
-    /// Claude Code), and streams output back as SSE events.
-    ///
-    /// Returns the exit code from the agent CLI.
-    pub async fn send_message<F>(
-        &self,
-        message: &str,
-        agent: &str,
-        model: &str,
-        env: &HashMap<String, String>,
-        on_output: F,
-    ) -> Result<i32>
-    where
-        F: Fn(&str, bool) + Send + Sync,
-    {
-        if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot send message in sandbox with {:?} status",
-                self.status
-            )));
-        }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        // Merge sandbox config env with call-specific env
-        let mut merged_env = self.config.env.clone();
-        merged_env.extend(env.clone());
-
-        let timeout_secs = self.config.timeout_secs;
-
-        let send_future = runtime.send_message(
-            &self.id,
-            message,
-            agent,
-            model,
-            &merged_env,
-            |data, is_stderr| on_output(data, is_stderr),
-        );
-
-        let exit_code = timeout(Duration::from_secs(timeout_secs as u64), send_future)
-            .await
-            .map_err(|_| Error::Timeout(timeout_secs))??;
-
-        Ok(exit_code)
-    }
-
     /// Check if this sandbox is in persistent (gateway) mode.
     pub fn is_persistent(&self) -> bool {
         self.runtime
@@ -711,214 +658,67 @@ impl Sandbox {
         self.project_mount.take()
     }
 
-    /// Add or update an MCP server in the running sandbox.
+    /// Send a generic HTTP GET request to the gateway process inside the sandbox.
     ///
     /// Requires the sandbox to be in persistent (gateway) mode.
-    /// The gateway automatically regenerates all agent config files.
-    pub async fn add_mcp_server(&self, name: &str, config: McpServerConfig) -> Result<()> {
+    pub fn gateway_http_get(&self, path: &str) -> Result<(u16, String)> {
         if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot manage MCP servers in sandbox with {:?} status",
-                self.status
-            )));
+            return Err(Error::InvalidState(
+                "Sandbox must be running for HTTP operations".to_string(),
+            ));
         }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.add_mcp_server(&self.id, name, &config)
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            Error::ExecFailed("No runtime available for HTTP operations".to_string())
+        })?;
+        runtime.gateway_http_get(&self.id, path)
     }
 
-    /// Remove an MCP server from the running sandbox.
+    /// Send a generic HTTP POST request to the gateway process inside the sandbox.
     ///
     /// Requires the sandbox to be in persistent (gateway) mode.
-    pub async fn remove_mcp_server(&self, name: &str) -> Result<()> {
+    pub fn gateway_http_post(&self, path: &str, json_body: &str) -> Result<(u16, String)> {
         if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot manage MCP servers in sandbox with {:?} status",
-                self.status
-            )));
+            return Err(Error::InvalidState(
+                "Sandbox must be running for HTTP operations".to_string(),
+            ));
         }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.remove_mcp_server(&self.id, name)
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            Error::ExecFailed("No runtime available for HTTP operations".to_string())
+        })?;
+        runtime.gateway_http_post(&self.id, path, json_body)
     }
 
-    /// List all MCP servers in the running sandbox.
-    ///
-    /// Returns the current state of all MCP servers from the gateway,
-    /// including both embedded defaults and dynamically added servers.
-    pub async fn list_mcp_servers(&self) -> Result<HashMap<String, McpServerConfig>> {
-        if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot list MCP servers in sandbox with {:?} status",
-                self.status
-            )));
-        }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.list_mcp_servers(&self.id)
-    }
-
-    /// Enable an MCP server in the running sandbox.
+    /// Send a generic HTTP DELETE request to the gateway process inside the sandbox.
     ///
     /// Requires the sandbox to be in persistent (gateway) mode.
-    pub async fn enable_mcp_server(&self, name: &str) -> Result<()> {
+    pub fn gateway_http_delete(&self, path: &str) -> Result<(u16, String)> {
         if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot manage MCP servers in sandbox with {:?} status",
-                self.status
-            )));
+            return Err(Error::InvalidState(
+                "Sandbox must be running for HTTP operations".to_string(),
+            ));
         }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.enable_mcp_server(&self.id, name)
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            Error::ExecFailed("No runtime available for HTTP operations".to_string())
+        })?;
+        runtime.gateway_http_delete(&self.id, path)
     }
 
-    /// Disable an MCP server in the running sandbox.
+    /// Send a generic HTTP POST with SSE streaming to the gateway process inside the sandbox.
     ///
     /// Requires the sandbox to be in persistent (gateway) mode.
-    pub async fn disable_mcp_server(&self, name: &str) -> Result<()> {
+    pub fn gateway_http_post_sse<F>(&self, path: &str, json_body: &str, on_output: F) -> Result<i32>
+    where
+        F: Fn(&str, bool) + Send + Sync,
+    {
         if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot manage MCP servers in sandbox with {:?} status",
-                self.status
-            )));
+            return Err(Error::InvalidState(
+                "Sandbox must be running for HTTP operations".to_string(),
+            ));
         }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.disable_mcp_server(&self.id, name)
-    }
-
-    /// Add a skill to the running sandbox.
-    ///
-    /// Requires the sandbox to be in persistent (gateway) mode.
-    /// The gateway automatically regenerates all agent config files.
-    pub async fn add_skill(&self, skill: &SkillDef) -> Result<()> {
-        if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot manage skills in sandbox with {:?} status",
-                self.status
-            )));
-        }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.add_skill(&self.id, skill)
-    }
-
-    /// Remove a skill from the running sandbox.
-    ///
-    /// Requires the sandbox to be in persistent (gateway) mode.
-    pub async fn remove_skill(&self, name: &str) -> Result<()> {
-        if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot manage skills in sandbox with {:?} status",
-                self.status
-            )));
-        }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.remove_skill(&self.id, name)
-    }
-
-    /// List all skills in the running sandbox.
-    pub async fn list_skills(&self) -> Result<HashMap<String, SkillDef>> {
-        if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot list skills in sandbox with {:?} status",
-                self.status
-            )));
-        }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.list_skills(&self.id)
-    }
-
-    /// Bootstrap agent definition + skills + MCPs in one call.
-    ///
-    /// Requires the sandbox to be in persistent (gateway) mode.
-    pub async fn bootstrap_agent(&self, config: &ResolvedAgentConfig) -> Result<()> {
-        if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot bootstrap agent in sandbox with {:?} status",
-                self.status
-            )));
-        }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.bootstrap_agent(&self.id, config)
-    }
-
-    /// Set the agent definition (name + prompt).
-    ///
-    /// Requires the sandbox to be in persistent (gateway) mode.
-    pub async fn set_agent(&self, name: &str, prompt: &str) -> Result<()> {
-        if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot set agent in sandbox with {:?} status",
-                self.status
-            )));
-        }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.set_agent(&self.id, name, prompt)
-    }
-
-    /// Restart the agent process in the running sandbox.
-    ///
-    /// Returns a JSON value with `session_id`, `was_generating`, and `restarted` fields.
-    pub async fn restart_agent(&self, reason: &str) -> Result<serde_json::Value> {
-        if self.status != SandboxStatus::Running {
-            return Err(Error::InvalidState(format!(
-                "Cannot restart agent in sandbox with {:?} status",
-                self.status
-            )));
-        }
-
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| Error::ExecFailed("Runtime not initialized".to_string()))?;
-
-        runtime.restart_agent(&self.id, reason)
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            Error::ExecFailed("No runtime available for HTTP operations".to_string())
+        })?;
+        runtime.gateway_http_post_sse(&self.id, path, json_body, on_output)
     }
 
     /// Configure networking in the rootfs for VM networking.
@@ -1161,15 +961,6 @@ mod tests {
         assert!(!result_fail.success());
     }
 
-    #[tokio::test]
-    async fn test_mcp_requires_running_state() {
-        let config = SandboxConfig::builder()
-            .name("test-mcp")
-            .image("alpine:latest")
-            .build();
-        assert!(config.mcp_servers.is_empty());
-    }
-
     #[test]
     fn test_exec_options_builder() {
         let options = ExecOptions::new()
@@ -1184,49 +975,34 @@ mod tests {
         assert_eq!(options.timeout_secs, Some(30));
     }
 
-    #[tokio::test]
-    async fn test_mcp_add_requires_running_state() {
-        use std::collections::HashMap;
-        let sandbox = Sandbox::new_test("test-add", SandboxStatus::Ready);
-        let mcp_config = McpServerConfig {
-            command: "npx".to_string(),
-            args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
-            env: HashMap::new(),
-            enabled: true,
-        };
-        let result = sandbox.add_mcp_server("test", mcp_config).await;
+    #[test]
+    fn test_gateway_http_get_requires_running_state() {
+        let sandbox = Sandbox::new_test("test-get", SandboxStatus::Ready);
+        let result = sandbox.gateway_http_get("/health");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
     }
 
-    #[tokio::test]
-    async fn test_mcp_remove_requires_running_state() {
-        let sandbox = Sandbox::new_test("test-remove", SandboxStatus::Stopped);
-        let result = sandbox.remove_mcp_server("test").await;
+    #[test]
+    fn test_gateway_http_post_requires_running_state() {
+        let sandbox = Sandbox::new_test("test-post", SandboxStatus::Stopped);
+        let result = sandbox.gateway_http_post("/api/test", "{}");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
     }
 
-    #[tokio::test]
-    async fn test_mcp_list_requires_running_state() {
-        let sandbox = Sandbox::new_test("test-list", SandboxStatus::Creating);
-        let result = sandbox.list_mcp_servers().await;
+    #[test]
+    fn test_gateway_http_delete_requires_running_state() {
+        let sandbox = Sandbox::new_test("test-delete", SandboxStatus::Creating);
+        let result = sandbox.gateway_http_delete("/api/test");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
     }
 
-    #[tokio::test]
-    async fn test_mcp_enable_requires_running_state() {
-        let sandbox = Sandbox::new_test("test-enable", SandboxStatus::Ready);
-        let result = sandbox.enable_mcp_server("test").await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
-    }
-
-    #[tokio::test]
-    async fn test_mcp_disable_requires_running_state() {
-        let sandbox = Sandbox::new_test("test-disable", SandboxStatus::Stopped);
-        let result = sandbox.disable_mcp_server("test").await;
+    #[test]
+    fn test_gateway_http_post_sse_requires_running_state() {
+        let sandbox = Sandbox::new_test("test-sse", SandboxStatus::Ready);
+        let result = sandbox.gateway_http_post_sse("/api/stream", "{}", |_data, _is_stderr| {});
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::InvalidState(_)));
     }

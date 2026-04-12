@@ -7,7 +7,6 @@
 #   ./scripts/build-all.sh libkrun      # build only libkrun
 #   ./scripts/build-all.sh gvproxy      # build only gvproxy
 #   ./scripts/build-all.sh nanosandbox  # build only nanosandbox
-#   ./scripts/build-all.sh gateway      # build only agent-gateway
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -67,30 +66,20 @@ build_nanosandbox() {
     echo "==> nanosandbox built"
 }
 
-build_gateway() {
-    echo "==> Building agent-gateway..."
-    cd "$ROOT_DIR/agent-gateway"
-    # agent-gateway always targets Linux (runs inside the VM guest)
-    CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH:-$(go env GOARCH)}" go build -ldflags="-s -w" -o "$BUILD_DIR/bin/agent-gateway" .
-    echo "==> agent-gateway built → $BUILD_DIR/bin/agent-gateway"
-}
-
 case "$COMPONENT" in
     libkrunfw) build_libkrunfw ;;
     libkrun)   build_libkrun ;;
     gvproxy)   build_gvproxy ;;
     nanosandbox) build_nanosandbox ;;
-    gateway)   build_gateway ;;
     all)
         build_libkrunfw
         build_libkrun
         build_gvproxy
         build_nanosandbox
-        build_gateway
         ;;
     *)
         echo "Unknown component: $COMPONENT"
-        echo "Usage: $0 [all|libkrunfw|libkrun|gvproxy|nanosandbox|gateway]"
+        echo "Usage: $0 [all|libkrunfw|libkrun|gvproxy|nanosandbox]"
         exit 1
         ;;
 esac

@@ -29,8 +29,6 @@ anyhow = "1"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
-toml = "0.8"
 
 # OCI/Container support
 oci-distribution = "0.11"   # For registry operations
@@ -47,7 +45,6 @@ log = "0.4"         # Needed to detect existing logger for libkrun FFI safety
 env_logger = "0.11" # Needed to safely probe before krun_set_log_level calls env_logger::init()
 async-trait = "0.1"
 dirs = "6"
-unicode-width = "0.2"
 
 # libkrun (compiled directly as rlib — no separate .so/.dylib)
 libkrun-sys = { path = "../libkrun-sys", features = ["net"] }
