@@ -1,0 +1,157 @@
+name: Build and Push Agent Docker Images
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # pull_request:
+  #   branches:
+  #     - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (optional, defaults to SHA)'
+        required: false
+        type: string
+      agent:
+        description: 'Specific agent to build (blank = all)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - claude
+          - goose
+          - codex
+          - cursor
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: nanosandboxai/agents-registry
+
+jobs:
+  # ===========================================================================
+  # Build shared base image first
+  # ===========================================================================
+  build-base:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      base-tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.AGENTS_REGISTRY_PAT }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/base
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=sha,prefix=
+
+      - name: Build and push base image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.base
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=base
+          cache-to: type=gha,scope=base,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  # ===========================================================================
+  # Compute which agents to build (all, or a single one from dispatch input)
+  # ===========================================================================
+  setup-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      agents: ${{ steps.set-agents.outputs.agents }}
+    steps:
+      - name: Determine agent matrix
+        id: set-agents
+        run: |
+          if [ -n "${{ inputs.agent }}" ]; then
+            echo 'agents=["${{ inputs.agent }}"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'agents=["claude","goose","codex","cursor"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  # ===========================================================================
+  # Build per-agent images in parallel (depend on base)
+  # ===========================================================================
+  build-agent:
+    needs: [build-base, setup-matrix]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        agent: ${{ fromJSON(needs.setup-matrix.outputs.agents) }}
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.AGENTS_REGISTRY_PAT }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.agent }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=sha,prefix=
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+
+      - name: Build and push agent image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.${{ matrix.agent }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/base:${{ needs.build-base.outputs.base-tag }}
+          cache-from: type=gha,scope=${{ matrix.agent }}
+          cache-to: type=gha,scope=${{ matrix.agent }},mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Generate build summary
+        run: |
+          echo "## ${{ matrix.agent }} Agent Image" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.agent }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Tags" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

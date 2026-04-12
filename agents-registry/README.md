@@ -90,6 +90,46 @@ spec:
 
 See `schema/agent.schema.json` for the full validation schema.
 
+## Docker Images
+
+This repo also contains Docker images for running agents inside nanosandbox VMs.
+
+### Image Architecture
+
+```
+Dockerfile.base (node:22-slim + agent-gateway + MCP packages + SSH)
+    |
+    ├── Dockerfile.claude  → ghcr.io/nanosandboxai/agents-registry/claude
+    ├── Dockerfile.codex   → ghcr.io/nanosandboxai/agents-registry/codex
+    ├── Dockerfile.goose   → ghcr.io/nanosandboxai/agents-registry/goose
+    └── Dockerfile.cursor  → ghcr.io/nanosandboxai/agents-registry/cursor
+```
+
+### Base Image Contents
+
+- node:22-slim with system deps (git, SSH, curl)
+- agent-gateway binary (from sandbox repo)
+- Pre-installed MCP server npm packages (github, filesystem, memory, brave-search, context7)
+- Non-root `developer` user (UID 1000)
+- nanosb-init.sh (starts sshd + agent-gateway)
+
+### Available Images
+
+| Image | Agent | Registry |
+|-------|-------|----------|
+| claude | Claude Code | `ghcr.io/nanosandboxai/agents-registry/claude:latest` |
+| codex | OpenAI Codex | `ghcr.io/nanosandboxai/agents-registry/codex:latest` |
+| goose | Goose | `ghcr.io/nanosandboxai/agents-registry/goose:latest` |
+| cursor | Cursor Agent | `ghcr.io/nanosandboxai/agents-registry/cursor:latest` |
+
+### Building Locally
+
+```bash
+cd docker
+docker build -f Dockerfile.base -t base:local .
+docker build -f Dockerfile.claude -t claude:local .
+```
+
 ## Contributing
 
 1. Fork this repository

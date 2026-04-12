@@ -1,0 +1,21 @@
+ARG BASE_IMAGE=agents-registry/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="Cursor agent for nanosandbox sandboxes"
+
+# Install cursor CLI agent via official installer.
+# The installer puts files under /root/.local/share/cursor-agent/ and a
+# symlink at /root/.local/bin/agent. Move the installation to /opt so
+# the non-root 'developer' user can access it.
+RUN curl -fsSL https://cursor.com/install | bash \
+    && mv /root/.local/share/cursor-agent /opt/cursor-agent \
+    && ln -sf "$(ls -d /opt/cursor-agent/versions/*/cursor-agent)" /usr/local/bin/cursor-agent \
+    && chmod +x /usr/local/bin/cursor-agent
+
+# cursor-agent does not support --version; verify it can at least start
+RUN cursor-agent --help > /dev/null 2>&1 || true \
+    && test -x /usr/local/bin/cursor-agent \
+    && echo "Cursor CLI: OK"
+RUN rm -rf /workspace/*
+
+CMD ["/usr/local/bin/nanosb-init.sh"]

@@ -1,0 +1,76 @@
+# =============================================================================
+# Stage 1: Build agent-gateway as a static Go binary
+# =============================================================================
+FROM golang:1.22-alpine AS gateway-builder
+WORKDIR /build
+COPY agent-gateway/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o agent-gateway .
+
+# =============================================================================
+# Stage 2: Debian slim base with Node.js, MCP packages, and agent-gateway
+# =============================================================================
+FROM node:22-slim
+
+LABEL org.opencontainers.image.source="https://github.com/nanosandboxai/agents-registry"
+LABEL org.opencontainers.image.description="Shared base image for nanosandbox agent containers"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# System dependencies (agents + networking + SSH access)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    iproute2 \
+    bash \
+    openssh-server \
+    procps \
+    sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && ssh-keygen -A \
+    && mkdir -p /root/.ssh /run/sshd \
+    && chmod 700 /root/.ssh \
+    && sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
+    && sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
+    && echo "PasswordAuthentication no" >> /etc/ssh/sshd_config \
+    && echo "StrictModes no" >> /etc/ssh/sshd_config
+
+# Create non-root user for running code agents.
+# Agents like Claude Code refuse --dangerously-skip-permissions as root.
+# The VM is fully isolated so rootless is just to satisfy agent CLI checks.
+# node:22-slim already has a 'node' user at UID 1000 — rename it to 'developer'.
+RUN usermod -l developer -d /home/developer -m node \
+    && groupmod -n developer node \
+    && mkdir -p /home/developer/.ssh \
+    && chmod 700 /home/developer/.ssh \
+    && chown -R developer:developer /home/developer \
+    && echo "developer ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/developer
+
+# Copy agent-gateway binary from builder
+COPY --from=gateway-builder /build/agent-gateway /usr/local/bin/agent-gateway
+
+# Pre-install MCP server npm packages globally (avoids npx download at runtime)
+RUN npm install -g \
+    @modelcontextprotocol/server-github \
+    @modelcontextprotocol/server-filesystem \
+    @modelcontextprotocol/server-memory \
+    @modelcontextprotocol/server-brave-search \
+    @upstash/context7-mcp \
+    && npm cache clean --force
+
+# Create config directories for MCP config generation under developer's home
+RUN mkdir -p /home/developer/.config/goose \
+    && mkdir -p /home/developer/.codex \
+    && mkdir -p /home/developer/.cursor \
+    && mkdir -p /home/developer/.claude \
+    && mkdir -p /home/developer/.memory \
+    && chown -R developer:developer /home/developer
+
+WORKDIR /workspace
+
+# Copy init script (starts sshd + agent-gateway)
+COPY docker/nanosb-init.sh /usr/local/bin/nanosb-init.sh
+RUN chmod +x /usr/local/bin/nanosb-init.sh
+
+# Verify binaries
+RUN test -x /usr/local/bin/agent-gateway && echo "agent-gateway: OK" \
+    && test -x /usr/local/bin/nanosb-init.sh && echo "nanosb-init.sh: OK"
