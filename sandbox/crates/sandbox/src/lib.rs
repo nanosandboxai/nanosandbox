@@ -34,8 +34,8 @@ pub use nanosandbox::{
 pub use agent_sandbox::AgentSandbox;
 pub use agents_registry::AgentsRegistryClient;
 pub use config::{
-    AgentDefinition, AgentMcpRef, AgentSandboxConfig, AgentType, McpServerConfig, Permissions,
-    ResolvedAgentConfig, SkillDef,
+    normalize_image, AgentDefinition, AgentMcpRef, AgentSandboxConfig, AgentType,
+    McpServerConfig, Permissions, ResolvedAgentConfig, SkillDef,
 };
 pub use config::file::{
     apply_cli_overrides, find_sandbox_file, load_sandbox_file, load_sandbox_files,
