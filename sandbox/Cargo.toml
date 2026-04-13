@@ -7,3 +7,7 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/nanosandboxai/sandbox"
 authors = ["DevDone Labs"]
+
+# On Windows, redirect vm-memory to the patched fork that compiles on non-Unix.
+[patch.crates-io]
+vm-memory = { path = "../runtime/deps/libkrun/src/vm-memory-win" }

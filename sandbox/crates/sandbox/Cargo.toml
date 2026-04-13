@@ -18,7 +18,7 @@ ffi = []
 
 [dependencies]
 # Runtime (VM engine)
-nanosandbox = { git = "https://github.com/nanosandboxai/runtime.git", branch = "feat/abstract-runtime" }
+nanosandbox = { path = "../../../runtime/crates/nanosandbox" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
