@@ -38,7 +38,7 @@ function Assert-Administrator {
     if (-not $current.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Write-Host "  [ERROR] This uninstaller must be run as Administrator." -ForegroundColor Red
         Write-Info "Right-click PowerShell and select 'Run as administrator', then try again."
-        exit 1
+        return
     }
 }
 

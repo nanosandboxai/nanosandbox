@@ -46,7 +46,7 @@ function Install-NanosandboxDeps {
     $build = [System.Environment]::OSVersion.Version.Build
     if ($build -lt 17763) {
         Write-Err "Windows build $build is too old. Minimum: 17763 (Windows 10 1809 / Server 2019)."
-        exit 1
+        return
     }
     Write-OK "Windows build $build"
 
@@ -104,7 +104,7 @@ function Install-NanosandboxDeps {
             Write-Info "Latest: $ver"
         } catch {
             Write-Err "Could not determine latest version: $_"
-            exit 1
+            return
         }
     }
 
