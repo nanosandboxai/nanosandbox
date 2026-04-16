@@ -111,8 +111,9 @@ function Install-NanosandboxDeps {
     # --- Download & install dependencies ---
     Write-Header "Installing dependencies (libkrunfw.dll + busybox)"
 
-    if (-not (Test-Path $targetDir)) {
-        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    $libsDir = Join-Path $targetDir "libs"
+    if (-not (Test-Path $libsDir)) {
+        New-Item -ItemType Directory -Path $libsDir -Force | Out-Null
     }
 
     $bundle = "deps-$Platform.zip"
@@ -132,9 +133,15 @@ function Install-NanosandboxDeps {
         # libkrunfw.dll — kernel firmware
         $dllSrc = Get-ChildItem -Path $tmpDir -Filter "libkrunfw.dll" -Recurse | Select-Object -First 1
         if ($dllSrc) {
-            Copy-Item $dllSrc.FullName -Destination (Join-Path $targetDir "libkrunfw.dll") -Force
+            Copy-Item $dllSrc.FullName -Destination (Join-Path $libsDir "libkrunfw.dll") -Force
             $size = $dllSrc.Length / 1MB
-            Write-OK ("libkrunfw.dll ({0:N1} MB) -> $targetDir" -f $size)
+            Write-OK ("libkrunfw.dll ({0:N1} MB) -> $libsDir" -f $size)
+            # Clean up legacy root-level copy if present
+            $legacyDll = Join-Path $targetDir "libkrunfw.dll"
+            if (Test-Path $legacyDll) {
+                Remove-Item $legacyDll -Force -ErrorAction SilentlyContinue
+                Write-Info "Removed legacy $legacyDll (moved to libs/)"
+            }
         } else {
             Write-Warn "libkrunfw.dll not found in bundle"
         }
@@ -142,16 +149,22 @@ function Install-NanosandboxDeps {
         # busybox — static Linux ELF, required for VM init script
         $bbSrc = Get-ChildItem -Path $tmpDir -Filter "busybox" -Recurse | Select-Object -First 1
         if ($bbSrc) {
-            Copy-Item $bbSrc.FullName -Destination (Join-Path $targetDir "busybox") -Force
+            Copy-Item $bbSrc.FullName -Destination (Join-Path $libsDir "busybox") -Force
             $size = $bbSrc.Length / 1MB
-            Write-OK ("busybox ({0:N1} MB) -> $targetDir" -f $size)
+            Write-OK ("busybox ({0:N1} MB) -> $libsDir" -f $size)
+            # Clean up legacy root-level copy if present
+            $legacyBb = Join-Path $targetDir "busybox"
+            if (Test-Path $legacyBb) {
+                Remove-Item $legacyBb -Force -ErrorAction SilentlyContinue
+                Write-Info "Removed legacy $legacyBb (moved to libs/)"
+            }
         } else {
             Write-Warn "busybox not found in bundle (VM init may fail)"
-            Write-Info "You can manually place a static Linux busybox binary at: $targetDir\busybox"
+            Write-Info "You can manually place a static Linux busybox binary at: $libsDir\busybox"
         }
     } catch {
         Write-Warn "Failed to download deps bundle: $_"
-        Write-Info "You may need to place files manually in: $targetDir"
+        Write-Info "You may need to place files manually in: $libsDir"
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -159,7 +172,7 @@ function Install-NanosandboxDeps {
     # --- Summary ---
     Write-Header "Installation complete"
     Write-Info "version   -> $ver"
-    Write-Info "directory -> $targetDir"
+    Write-Info "directory -> $libsDir"
 }
 
 # Invoke the function - @args passes through any command-line parameters

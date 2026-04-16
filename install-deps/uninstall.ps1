@@ -47,17 +47,23 @@ function Assert-Administrator {
 function Remove-Dependencies {
     Write-Header "Removing dependencies"
 
-    $files = @('libkrunfw.dll', 'busybox')
     $removed = 0
 
-    foreach ($file in $files) {
+    # Current layout: libs/ subdirectory
+    $libsDir = Join-Path $InstallDir "libs"
+    if (Test-Path $libsDir) {
+        Remove-Item $libsDir -Recurse -Force
+        Write-OK "Removed $libsDir"
+        $removed++
+    }
+
+    # Legacy layout: root-level files
+    foreach ($file in @('libkrunfw.dll', 'busybox')) {
         $path = Join-Path $InstallDir $file
         if (Test-Path $path) {
             Remove-Item $path -Force
-            Write-OK "Removed $path"
+            Write-OK "Removed legacy $path"
             $removed++
-        } else {
-            Write-Info "$file not found at $InstallDir"
         }
     }
 
