@@ -1,4 +1,4 @@
-//! Session persistence for nanosandbox.
+//! Session persistence for runtime.
 //!
 //! Allows users to quit the TUI and later resume where they left off.
 //! A session captures the state of all agent panels (project clones,
@@ -43,7 +43,7 @@ pub struct SessionPanel {
     /// Short sandbox ID (first 8 chars of UUID) — used to locate clone dir.
     pub sandbox_short_id: String,
     /// Full sandbox config needed to recreate the sandbox.
-    pub config: nanosandbox::SandboxConfig,
+    pub config: runtime::SandboxConfig,
     /// Absolute host path to the project clone directory.
     /// `None` if no project was mounted.
     pub clone_path: Option<PathBuf>,
@@ -304,6 +304,36 @@ pub enum ResumeChoice {
     Destroy,
 }
 
+/// Ensure the Windows console is in cooked mode (line-buffered with echo).
+///
+/// A previously crashed TUI session can leave the console in raw mode, which
+/// makes `stdin().read_line()` hang because Enter is delivered as a raw key
+/// event instead of `\r\n`. This resets the console to normal interactive mode.
+#[cfg(windows)]
+fn ensure_cooked_mode() {
+    unsafe {
+        extern "system" {
+            fn GetStdHandle(nStdHandle: u32) -> isize;
+            fn GetConsoleMode(hConsoleHandle: isize, lpMode: *mut u32) -> i32;
+            fn SetConsoleMode(hConsoleHandle: isize, dwMode: u32) -> i32;
+        }
+        const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
+        const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
+        const ENABLE_LINE_INPUT: u32 = 0x0002;
+        const ENABLE_ECHO_INPUT: u32 = 0x0004;
+
+        let handle = GetStdHandle(STD_INPUT_HANDLE);
+        if handle != -1_isize {
+            let mut mode: u32 = 0;
+            if GetConsoleMode(handle, &mut mode) != 0 {
+                // Set the three flags needed for normal interactive line reading
+                let cooked = mode | ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT;
+                SetConsoleMode(handle, cooked);
+            }
+        }
+    }
+}
+
 /// Prompt the user for their resume choice (before entering TUI alternate screen).
 ///
 /// Reads from stdin/stdout. Returns `Resume` on empty input (default).
@@ -325,6 +355,13 @@ pub fn prompt_resume(session: &Session, issues: &[SessionIssue]) -> ResumeChoice
 
     print!("[R]esume / [F]resh start / [D]estroy? [R] ");
     let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    // On Windows, a previously crashed TUI session may leave the console in
+    // raw mode. read_line() needs cooked mode (ENABLE_LINE_INPUT + ENABLE_ECHO_INPUT)
+    // otherwise keystrokes are delivered as raw events and Enter never produces \r\n,
+    // making the prompt appear frozen.
+    #[cfg(windows)]
+    ensure_cooked_mode();
 
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_err() {
@@ -356,7 +393,7 @@ mod tests {
                 agent_name: "claude".to_string(),
                 display_name: None,
                 sandbox_short_id: "abcd1234".to_string(),
-                config: nanosandbox::SandboxConfig::builder()
+                config: runtime::SandboxConfig::builder()
                     .name("test")
                     .image("test:latest")
                     .build(),

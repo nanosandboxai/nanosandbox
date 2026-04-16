@@ -18,7 +18,7 @@ ffi = []
 
 [dependencies]
 # Runtime (VM engine)
-nanosandbox = { path = "../../../runtime/crates/nanosandbox" }
+runtime = { path = "../../../runtime/crates/runtime" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

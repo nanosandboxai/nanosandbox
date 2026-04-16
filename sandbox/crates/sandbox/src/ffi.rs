@@ -20,7 +20,7 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::sync::Mutex;
 
-use nanosandbox::{ImageManager, Sandbox, SandboxConfig};
+use runtime::{ImageManager, Sandbox, SandboxConfig};
 
 // ── Thread-local error storage ──────────────────────────────────────
 
@@ -59,7 +59,7 @@ fn tokio_rt() -> &'static tokio::runtime::Runtime {
 
 /// Opaque sandbox handle exposed to FFI consumers.
 ///
-/// Wraps a `nanosandbox::Sandbox` behind a mutex for thread-safe access.
+/// Wraps a `runtime::Sandbox` behind a mutex for thread-safe access.
 pub struct CSandbox {
     inner: Mutex<Sandbox>,
 }
@@ -324,8 +324,8 @@ pub extern "C" fn sandbox_exec_stream(
 
     // Safety: user_data is an opaque pointer managed by the caller.
     let ud = user_data as usize;
-    let on_output = move |chunk: nanosandbox::OutputChunk| {
-        let is_stderr = chunk.stream == nanosandbox::Stream::Stderr;
+    let on_output = move |chunk: runtime::OutputChunk| {
+        let is_stderr = chunk.stream == runtime::Stream::Stderr;
         if let Ok(cstr) = CString::new(chunk.data) {
             callback(cstr.as_ptr(), is_stderr, ud as *mut std::ffi::c_void);
         }
@@ -476,7 +476,7 @@ pub extern "C" fn version() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn validate_runtime() -> *mut c_char {
     let result =
-        tokio_rt().block_on(nanosandbox::runtime::validate_runtime_prerequisites_detailed());
+        tokio_rt().block_on(runtime::runtime::validate_runtime_prerequisites_detailed());
 
     let errors: Vec<serde_json::Value> = result
         .errors

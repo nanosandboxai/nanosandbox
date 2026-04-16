@@ -21,9 +21,9 @@ pub enum Error {
     #[error("Agent restart failed: {0}")]
     AgentRestartError(String),
 
-    /// Runtime error (from nanosandbox)
+    /// Runtime error (from runtime)
     #[error("Runtime error: {0}")]
-    Runtime(#[from] nanosandbox::Error),
+    Runtime(#[from] runtime::Error),
 
     /// IO error
     #[error("IO error: {0}")]

@@ -4,9 +4,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-use nanosandbox::{
+use runtime::{
     Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping, ProjectConfig,
-    SandboxConfig,
+    RootfsMode, SandboxConfig,
 };
 
 use super::{AgentSandboxConfig, McpServerConfig};
@@ -50,6 +50,8 @@ pub struct SandboxDefaults {
     pub prompt: Option<String>,
     /// Model identifier (e.g., "claude-sonnet-4-5-20250929"). Inherited by sandboxes.
     pub model: Option<String>,
+    /// Root filesystem mode for Windows VMs: "vhdx" or "plan9". Ignored on macOS/Linux.
+    pub rootfs_mode: Option<String>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -85,6 +87,8 @@ pub struct SandboxDefinition {
     pub agent_type: Option<String>,
     /// Model identifier (e.g., "claude-sonnet-4-5-20250929").
     pub model: Option<String>,
+    /// Root filesystem mode for Windows VMs: "vhdx" or "plan9". Ignored on macOS/Linux.
+    pub rootfs_mode: Option<String>,
 }
 
 /// Network configuration in YAML.
@@ -228,7 +232,7 @@ pub fn resolve_sandbox_configs(
         let mut agent_config = AgentSandboxConfig::default();
 
         // Image (required after merge). Bare names like "claude" are normalized
-        // to the agents registry (ghcr.io/nanosandboxai/agents-registry/claude:latest).
+        // to the agents registry (ghcr.io/runtimeai/agents-registry/claude:latest).
         config.image = def
             .image
             .clone()
@@ -424,6 +428,13 @@ pub fn resolve_sandbox_configs(
             );
         }
 
+        // Rootfs mode (Windows only): per-sandbox overrides defaults.
+        if let Some(ref mode_str) = def.rootfs_mode.as_ref().or(defaults.rootfs_mode.as_ref()) {
+            config.rootfs_mode = mode_str
+                .parse::<RootfsMode>()
+                .map_err(|e| format!("Sandbox '{}': {}", key, e))?;
+        }
+
         // Model: per-sandbox overrides defaults.
         agent_config.model = def.model.clone().or_else(|| defaults.model.clone());
 
@@ -558,6 +569,7 @@ pub fn apply_cli_overrides(
     timeout: Option<u32>,
     permissions: Option<super::Permissions>,
     cli_env: &[(String, String)],
+    rootfs_mode: Option<RootfsMode>,
 ) {
     for (_, config) in configs.iter_mut() {
         if let Some(cpus) = cpus {
@@ -571,6 +583,9 @@ pub fn apply_cli_overrides(
         }
         if let Some(perm) = permissions {
             config.permissions = perm;
+        }
+        if let Some(mode) = rootfs_mode {
+            config.runtime.rootfs_mode = mode;
         }
         // CLI --env / --env-file override all other env sources.
         for (k, v) in cli_env {
@@ -745,7 +760,7 @@ sandboxes:
         // Bare names get normalized to agents registry
         assert_eq!(
             configs[0].1.runtime.image,
-            "ghcr.io/nanosandboxai/agents-registry/alpine:latest"
+            "ghcr.io/runtimeai/agents-registry/alpine:latest"
         );
         assert_eq!(configs[0].1.runtime.name, "test");
     }
@@ -771,7 +786,7 @@ sandboxes:
         assert_eq!(a.1.runtime.memory_mb, 4096);
         assert_eq!(
             a.1.runtime.image,
-            "ghcr.io/nanosandboxai/agents-registry/default:latest"
+            "ghcr.io/runtimeai/agents-registry/default:latest"
         );
         assert_eq!(b.1.runtime.cpus, 2);
     }
@@ -945,7 +960,7 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let mut configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), None, &[]);
+        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), None, &[], None);
         assert_eq!(configs[0].1.runtime.cpus, 8);
         assert_eq!(configs[0].1.runtime.memory_mb, 4096);
         assert_eq!(configs[0].1.runtime.timeout_secs, 1200);
@@ -1295,7 +1310,7 @@ sandboxes:
             ("NEW_KEY".to_string(), "new_value".to_string()),
             ("EXISTING".to_string(), "overridden".to_string()),
         ];
-        apply_cli_overrides(&mut configs, None, None, None, None, &cli_env);
+        apply_cli_overrides(&mut configs, None, None, None, None, &cli_env, None);
         assert_eq!(configs[0].1.runtime.env["NEW_KEY"], "new_value");
         assert_eq!(configs[0].1.runtime.env["EXISTING"], "overridden");
     }

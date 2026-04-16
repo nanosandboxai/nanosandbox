@@ -183,7 +183,7 @@ pub struct ResolvedAgentConfig {
 #[derive(Debug, Clone)]
 pub struct AgentSandboxConfig {
     /// Runtime (VM) configuration.
-    pub runtime: nanosandbox::SandboxConfig,
+    pub runtime: runtime::SandboxConfig,
     /// MCP server definitions.
     pub mcp_servers: HashMap<String, McpServerConfig>,
     /// Agent definition name from registry.
@@ -207,7 +207,7 @@ pub struct AgentSandboxConfig {
 impl Default for AgentSandboxConfig {
     fn default() -> Self {
         Self {
-            runtime: nanosandbox::SandboxConfig::default(),
+            runtime: runtime::SandboxConfig::default(),
             mcp_servers: HashMap::new(),
             agent: None,
             skills: Vec::new(),
@@ -222,7 +222,7 @@ impl Default for AgentSandboxConfig {
 }
 
 /// Default OCI registry for agent images.
-pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/agents-registry";
+pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/runtimeai/agents-registry";
 
 /// Normalize an image reference: bare names are treated as agent names
 /// and prefixed with the agents registry.

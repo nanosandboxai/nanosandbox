@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use nanosandbox::Sandbox;
+use runtime::Sandbox;
 use tracing::{debug, info};
 
 use crate::config::{McpServerConfig, ResolvedAgentConfig, SkillDef};
@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 
 /// Agent-aware sandbox wrapper.
 ///
-/// Wraps a `nanosandbox::Sandbox` and adds agent-specific operations
+/// Wraps a `runtime::Sandbox` and adds agent-specific operations
 /// using the generic gateway HTTP API.
 pub struct AgentSandbox {
     /// The underlying runtime sandbox

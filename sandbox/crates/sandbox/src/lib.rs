@@ -1,12 +1,12 @@
 //! Sandbox SDK - Agent-aware sandbox management
 //!
-//! This crate wraps the `nanosandbox` runtime with agent-specific
+//! This crate wraps the `runtime` runtime with agent-specific
 //! functionality including MCP server management, skill injection,
 //! agent lifecycle control, and session management.
 //!
 //! # Architecture
 //!
-//! - `nanosandbox` (runtime repo): Pure VM engine - microVM, OCI images, containerization
+//! - `runtime` (runtime repo): Pure VM engine - microVM, OCI images, containerization
 //! - `sandbox` (this crate): Agent SDK - sandbox.yml, agent config, MCP, skills, sessions
 
 #![allow(missing_docs)]
@@ -23,11 +23,11 @@ pub mod session;
 pub mod settings;
 
 // Re-exports from runtime
-pub use nanosandbox::{
+pub use runtime::{
     self, ExecOptions, ExecResult, ImageManager, ImageRef, Mount, MountType, NetworkConfig,
     NetworkMode, NetworkScope, OciBundle, PortMapping, ProjectConfig, ProgressFn, PulledImage,
-    RegistryConfig, Runtime, Sandbox, SandboxConfig, SandboxInfo, SandboxRegistry, SandboxStatus,
-    Stream,
+    RegistryConfig, RootfsMode, Runtime, Sandbox, SandboxConfig, SandboxInfo, SandboxRegistry,
+    SandboxStatus, Stream,
 };
 
 // Re-exports from this crate
