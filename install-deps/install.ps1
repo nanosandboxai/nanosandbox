@@ -109,7 +109,7 @@ function Install-NanosandboxDeps {
     }
 
     # --- Download & install dependencies ---
-    Write-Header "Installing dependencies (libkrunfw.dll + busybox)"
+    Write-Header "Installing dependencies (libkrunfw.dll + busybox + vsock_proxy)"
 
     $libsDir = Join-Path $targetDir "libs"
     if (-not (Test-Path $libsDir)) {
@@ -161,6 +161,22 @@ function Install-NanosandboxDeps {
         } else {
             Write-Warn "busybox not found in bundle (VM init may fail)"
             Write-Info "You can manually place a static Linux busybox binary at: $libsDir\busybox"
+        }
+
+        # vsock_proxy — static Linux ELF, AF_VSOCK to TCP proxy for HvSocket guest communication
+        $vpSrc = Get-ChildItem -Path $tmpDir -Filter "vsock_proxy" -Recurse | Select-Object -First 1
+        if ($vpSrc) {
+            Copy-Item $vpSrc.FullName -Destination (Join-Path $libsDir "vsock_proxy") -Force
+            $size = $vpSrc.Length / 1KB
+            Write-OK ("vsock_proxy ({0:N0} KB) -> $libsDir" -f $size)
+            # Clean up legacy root-level copy if present
+            $legacyVp = Join-Path $targetDir "vsock_proxy"
+            if (Test-Path $legacyVp) {
+                Remove-Item $legacyVp -Force -ErrorAction SilentlyContinue
+                Write-Info "Removed legacy $legacyVp (moved to libs/)"
+            }
+        } else {
+            Write-Warn "vsock_proxy not found in bundle (HvSocket communication will not work)"
         }
     } catch {
         Write-Warn "Failed to download deps bundle: $_"
