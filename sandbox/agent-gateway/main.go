@@ -333,9 +333,13 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 	for k, v := range env {
 		cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", k, v))
 	}
-	// Ensure basic vars are set.
-	cmdEnv = ensureEnv(cmdEnv, "HOME", "/home/developer")
-	cmdEnv = ensureEnv(cmdEnv, "USER", "developer")
+	// Ensure basic vars are set. HOME/USER must be force-overwritten: the
+	// gateway runs as root (inherits HOME=/root from PID 1) but subprocesses
+	// run as developer (UID 1000). glibc's getenv returns the FIRST matching
+	// entry in environ, so appending alone is not enough — we must strip
+	// any pre-existing HOME=/USER= entries before setting the developer values.
+	cmdEnv = setEnv(cmdEnv, "HOME", "/home/developer")
+	cmdEnv = setEnv(cmdEnv, "USER", "developer")
 	cmdEnv = ensureEnv(cmdEnv, "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	cmdEnv = ensureEnv(cmdEnv, "TERM", "dumb")
 	// Goose permissions are set via environment variable.
@@ -374,12 +378,21 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Stdout: log every line (truncated) so we can see whether the subprocess
+	// is producing output at all during long-running agent runs.
+	stdoutLines := 0
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 256*1024), 1024*1024) // 1MB line buffer
 		for scanner.Scan() {
 			line := scanner.Text()
+			stdoutLines++
+			preview := line
+			if len(preview) > 200 {
+				preview = preview[:200] + "...(truncated)"
+			}
+			log.Printf("[agent-gateway] stdout#%d: %s", stdoutLines, preview)
 			sseWrite(w, SSEEvent{Type: "stdout", Data: line})
 
 			if sess != nil {
@@ -394,14 +407,32 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 				}
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("[agent-gateway] stdout scanner error after %d lines: %v", stdoutLines, err)
+		} else {
+			log.Printf("[agent-gateway] stdout EOF after %d lines", stdoutLines)
+		}
 	}()
 
+	stderrLines := 0
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
 		scanner.Buffer(make([]byte, 256*1024), 1024*1024)
 		for scanner.Scan() {
-			sseWrite(w, SSEEvent{Type: "stderr", Data: scanner.Text()})
+			line := scanner.Text()
+			stderrLines++
+			preview := line
+			if len(preview) > 200 {
+				preview = preview[:200] + "...(truncated)"
+			}
+			log.Printf("[agent-gateway] stderr#%d: %s", stderrLines, preview)
+			sseWrite(w, SSEEvent{Type: "stderr", Data: line})
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("[agent-gateway] stderr scanner error after %d lines: %v", stderrLines, err)
+		} else {
+			log.Printf("[agent-gateway] stderr EOF after %d lines", stderrLines)
 		}
 	}()
 
@@ -431,6 +462,21 @@ func ensureEnv(env []string, key, fallback string) []string {
 		}
 	}
 	return append(env, prefix+fallback)
+}
+
+// setEnv strips any pre-existing entries for `key` from env and appends
+// `key=value`. Use this instead of ensureEnv when the new value must take
+// precedence over inherited values (e.g., HOME/USER when switching UID).
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	filtered := env[:0]
+	for _, e := range env {
+		if len(e) > len(prefix) && e[:len(prefix)] == prefix {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return append(filtered, prefix+value)
 }
 
 // ---------------------------------------------------------------------------
