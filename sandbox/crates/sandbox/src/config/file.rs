@@ -232,7 +232,7 @@ pub fn resolve_sandbox_configs(
         let mut agent_config = AgentSandboxConfig::default();
 
         // Image (required after merge). Bare names like "claude" are normalized
-        // to the agents registry (ghcr.io/runtimeai/agents-registry/claude:latest).
+        // to the agents registry (ghcr.io/nanosandboxai/agents-registry/claude:latest).
         config.image = def
             .image
             .clone()
@@ -760,7 +760,7 @@ sandboxes:
         // Bare names get normalized to agents registry
         assert_eq!(
             configs[0].1.runtime.image,
-            "ghcr.io/runtimeai/agents-registry/alpine:latest"
+            "ghcr.io/nanosandboxai/agents-registry/alpine:latest"
         );
         assert_eq!(configs[0].1.runtime.name, "test");
     }
@@ -786,7 +786,7 @@ sandboxes:
         assert_eq!(a.1.runtime.memory_mb, 4096);
         assert_eq!(
             a.1.runtime.image,
-            "ghcr.io/runtimeai/agents-registry/default:latest"
+            "ghcr.io/nanosandboxai/agents-registry/default:latest"
         );
         assert_eq!(b.1.runtime.cpus, 2);
     }

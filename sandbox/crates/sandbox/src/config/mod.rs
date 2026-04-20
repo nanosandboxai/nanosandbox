@@ -222,7 +222,7 @@ impl Default for AgentSandboxConfig {
 }
 
 /// Default OCI registry for agent images.
-pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/runtimeai/agents-registry";
+pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/agents-registry";
 
 /// Normalize an image reference: bare names are treated as agent names
 /// and prefixed with the agents registry.
