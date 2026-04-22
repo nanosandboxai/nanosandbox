@@ -121,7 +121,7 @@ download_and_install() {
     local url="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${bundle}"
     local tmpdir
     tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
+    trap 'rm -rf "${tmpdir:-}"' EXIT
 
     info "Downloading ${bundle}..."
     if ! curl -fsSL -o "${tmpdir}/${bundle}" "$url"; then
