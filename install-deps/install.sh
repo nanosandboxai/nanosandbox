@@ -155,14 +155,33 @@ download_and_install() {
 
 check_path() {
     case ":$PATH:" in
-        *":$BIN_DIR:"*) ;;
-        *)
-            header "PATH not configured"
-            warn "${BIN_DIR} is not in your PATH"
-            info "Add to your shell profile:"
-            info "  export PATH=\"${BIN_DIR}:\$PATH\""
-            ;;
+        *":$BIN_DIR:"*) return ;;
     esac
+
+    header "Configuring PATH"
+
+    local line="export PATH=\"${BIN_DIR}:\$PATH\""
+    local added=false
+
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+        [ -f "$rc" ] || continue
+        if ! grep -qF "$BIN_DIR" "$rc" 2>/dev/null; then
+            printf '\n# Added by Nanosandbox installer\n%s\n' "$line" >> "$rc"
+            success "Added to $(basename "$rc")"
+            added=true
+        fi
+    done
+
+    if [ "$added" = false ]; then
+        # No shell profile found — create .zshrc on macOS, .bashrc on Linux
+        local default_rc="$HOME/.bashrc"
+        [ "$OS" = "darwin" ] && default_rc="$HOME/.zshrc"
+        printf '\n# Added by Nanosandbox installer\n%s\n' "$line" >> "$default_rc"
+        success "Added to $(basename "$default_rc")"
+    fi
+
+    export PATH="${BIN_DIR}:$PATH"
+    info "PATH updated for this session"
 }
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
