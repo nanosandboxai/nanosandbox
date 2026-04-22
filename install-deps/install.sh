@@ -194,6 +194,18 @@ print_summary() {
   version    → ${VERSION}
   platform   → ${PLATFORM}
 EOF
+
+    # If PATH was just configured, remind user to reload
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *)
+            echo ""
+            info "To start using tools in this terminal, run:"
+            echo ""
+            echo "    source ~/.zshrc"
+            echo ""
+            ;;
+    esac
 }
 
 # ─── Main ────────────────────────────────────────────────────────────────────
