@@ -3,21 +3,25 @@
 #
 # Installs: libkrunfw (kernel firmware) + gvproxy (networking daemon)
 #
+# All files are installed under ~/.nanosandbox/ (no sudo required):
+#   ~/.nanosandbox/libs/  — shared libraries (libkrunfw)
+#   ~/.nanosandbox/bin/   — binaries (gvproxy)
+#
 # Usage:
 #   curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh | bash
 #
 # Environment variables:
 #   DEPS_VERSION  - Version to install (default: latest)
-#   LIB_DIR       - Library install path (default: /usr/local/lib)
-#   BIN_DIR       - Binary install path (default: ~/.local/bin)
+#   NANOSANDBOX_HOME - Base directory (default: ~/.nanosandbox)
 
 set -euo pipefail
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 GITHUB_REPO="nanosandboxai/install-deps"
-LIB_DIR="${LIB_DIR:-/usr/local/lib}"
-BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+NANOSANDBOX_HOME="${NANOSANDBOX_HOME:-$HOME/.nanosandbox}"
+LIB_DIR="${NANOSANDBOX_HOME}/libs"
+BIN_DIR="${NANOSANDBOX_HOME}/bin"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -132,12 +136,11 @@ download_and_install() {
     tar xzf "${tmpdir}/${bundle}" -C "$tmpdir"
 
     header "Installing libkrunfw"
-    sudo mkdir -p "$LIB_DIR"
+    mkdir -p "$LIB_DIR"
     if [ "$OS" = "darwin" ]; then
-        sudo cp "$tmpdir"/lib/libkrunfw*.dylib "$LIB_DIR/"
+        cp "$tmpdir"/lib/libkrunfw*.dylib "$LIB_DIR/"
     else
-        sudo cp "$tmpdir"/lib/libkrunfw*.so* "$LIB_DIR/"
-        sudo ldconfig 2>/dev/null || true
+        cp "$tmpdir"/lib/libkrunfw*.so* "$LIB_DIR/"
     fi
     success "Installed to ${LIB_DIR}/"
 
