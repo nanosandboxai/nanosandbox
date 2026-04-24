@@ -112,14 +112,18 @@ $path_cleaned || info "No PATH entry found in shell rc files"
 
 header "Cleaning caches"
 if [ -d "$NANOSANDBOX_HOME" ]; then
-    # Non-interactive (curl | bash) has no TTY on stdin — require PURGE_DATA=1 to wipe.
+    # Prompt from the controlling terminal so we still ask even when invoked
+    # via `curl ... | bash` (which consumes stdin). PURGE_DATA=1 skips the
+    # prompt; KEEP_DATA=1 keeps data without prompting.
     if [ "${PURGE_DATA:-0}" = "1" ]; then
         answer="y"
-    elif [ -t 0 ]; then
-        printf '  Remove all nanosandbox data at %s? [y/N] ' "$NANOSANDBOX_HOME"
-        read -r answer || answer=""
+    elif [ "${KEEP_DATA:-0}" = "1" ]; then
+        answer="n"
+    elif [ -r /dev/tty ]; then
+        printf '  Remove all nanosandbox data at %s? [y/N] ' "$NANOSANDBOX_HOME" > /dev/tty
+        read -r answer < /dev/tty || answer=""
     else
-        info "Kept $NANOSANDBOX_HOME (set PURGE_DATA=1 to wipe; stdin is not a TTY)"
+        info "No controlling terminal — kept $NANOSANDBOX_HOME (set PURGE_DATA=1 to wipe)"
         answer=""
     fi
 
@@ -131,7 +135,7 @@ if [ -d "$NANOSANDBOX_HOME" ]; then
         *)
             [ -n "$answer" ] && info "Kept $NANOSANDBOX_HOME"
             # If the dir is now empty (no user data, just empty bin/), remove it.
-            if [ -z "$(ls -A "$NANOSANDBOX_HOME" 2>/dev/null)" ]; then
+            if [ -d "$NANOSANDBOX_HOME" ] && [ -z "$(ls -A "$NANOSANDBOX_HOME" 2>/dev/null)" ]; then
                 rmdir "$NANOSANDBOX_HOME" 2>/dev/null && success "Removed empty $NANOSANDBOX_HOME"
             fi
             ;;
