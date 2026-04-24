@@ -2,6 +2,7 @@
 # Nanosandbox Runtime Dependencies Uninstaller
 #
 # Removes: libkrunfw + gvproxy from ~/.nanosandbox/
+# Optionally removes all nanosandbox data (cache, bundles, sessions).
 # Does NOT remove the nanosb CLI binary.
 #
 # Usage:
@@ -9,6 +10,7 @@
 #
 # Environment variables:
 #   NANOSANDBOX_HOME - Base directory (default: ~/.nanosandbox)
+#   PURGE_DATA       - Set to 1 to skip prompt and wipe ~/.nanosandbox/ entirely
 
 set -euo pipefail
 
@@ -40,21 +42,20 @@ echo "============================================"
 
 header "Removing libkrunfw"
 removed=false
-shopt -s nullglob
 
-for f in "${LIB_DIR}"/libkrunfw*; do
-    rm -f "$f"
-    info "Removed $f"
+if [ -d "$LIB_DIR" ]; then
+    rm -rf "$LIB_DIR"
+    success "Removed $LIB_DIR"
     removed=true
-done
+fi
 
 # Clean up legacy location
+shopt -s nullglob
 for f in "${LEGACY_LIB_DIR}"/libkrunfw*; do
     sudo rm -f "$f" 2>/dev/null || true
     info "Removed legacy $f"
     removed=true
 done
-
 shopt -u nullglob
 
 if $removed; then
@@ -84,6 +85,57 @@ fi
 
 if ! $gvproxy_removed; then
     info "gvproxy not found"
+fi
+
+# ─── Clean PATH from shell rc files ──────────────────────────────────────────
+
+header "Cleaning PATH"
+path_cleaned=false
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+    [ -f "$rc" ] || continue
+    if grep -qF "$BIN_DIR" "$rc" 2>/dev/null; then
+        # Remove the "# Added by Nanosandbox installer" comment and the next line
+        # (the export PATH line referencing BIN_DIR).
+        tmp="$(mktemp)"
+        awk -v bin="$BIN_DIR" '
+            /^# Added by Nanosandbox installer$/ { skip=2; next }
+            skip>0 { skip--; next }
+            index($0, bin)==0 { print }
+        ' "$rc" > "$tmp" && mv "$tmp" "$rc"
+        success "Removed PATH entry from $(basename "$rc")"
+        path_cleaned=true
+    fi
+done
+$path_cleaned || info "No PATH entry found in shell rc files"
+
+# ─── Optionally remove all nanosandbox data ──────────────────────────────────
+
+header "Cleaning caches"
+if [ -d "$NANOSANDBOX_HOME" ]; then
+    # Non-interactive (curl | bash) has no TTY on stdin — require PURGE_DATA=1 to wipe.
+    if [ "${PURGE_DATA:-0}" = "1" ]; then
+        answer="y"
+    elif [ -t 0 ]; then
+        printf '  Remove all nanosandbox data at %s? [y/N] ' "$NANOSANDBOX_HOME"
+        read -r answer || answer=""
+    else
+        info "Kept $NANOSANDBOX_HOME (set PURGE_DATA=1 to wipe; stdin is not a TTY)"
+        answer=""
+    fi
+
+    case "$answer" in
+        [yY]|[yY][eE][sS])
+            rm -rf "$NANOSANDBOX_HOME"
+            success "Removed $NANOSANDBOX_HOME"
+            ;;
+        *)
+            [ -n "$answer" ] && info "Kept $NANOSANDBOX_HOME"
+            # If the dir is now empty (no user data, just empty bin/), remove it.
+            if [ -z "$(ls -A "$NANOSANDBOX_HOME" 2>/dev/null)" ]; then
+                rmdir "$NANOSANDBOX_HOME" 2>/dev/null && success "Removed empty $NANOSANDBOX_HOME"
+            fi
+            ;;
+    esac
 fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
