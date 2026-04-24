@@ -91,8 +91,9 @@ check_prerequisites() {
 
 # ─── Version resolution ──────────────────────────────────────────────────────
 
-# Resolve "latest" to the most recent release tag (including prereleases).
-# GitHub's /releases/latest/ redirect only matches stable releases.
+# Resolve "latest" to the most recent release tag.
+# Uses /releases/latest first (GitHub-sorted, honors "Set as latest release");
+# falls back to /releases[0] for repos that only publish prereleases.
 resolve_version() {
     if [ -n "${DEPS_VERSION:-}" ]; then
         VERSION="$DEPS_VERSION"
@@ -101,14 +102,28 @@ resolve_version() {
     fi
 
     info "Resolving latest release tag..."
-    VERSION="$(curl -fsSL \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${GITHUB_REPO}/releases" \
-        2>/dev/null \
-        | grep -m1 '"tag_name":' \
-        | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
 
-    [ -n "$VERSION" ] || { error "Could not determine latest version"; exit 1; }
+    local api="https://api.github.com/repos/${GITHUB_REPO}"
+    local hdr="Accept: application/vnd.github+json"
+    local resp tag
+
+    # Try /releases/latest (stable + flagged-as-latest)
+    resp="$(curl -fsSL -H "$hdr" "${api}/releases/latest" 2>&1)" || resp=""
+    tag="$(printf '%s\n' "$resp" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+
+    # Fall back to first entry in /releases (prerelease-only repos)
+    if [ -z "$tag" ]; then
+        resp="$(curl -fsSL -H "$hdr" "${api}/releases?per_page=1" 2>&1)" || resp=""
+        tag="$(printf '%s\n' "$resp" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+    fi
+
+    if [ -z "$tag" ]; then
+        error "Could not determine latest version from ${api}/releases"
+        info "Set DEPS_VERSION=vX.Y.Z to pin a specific version"
+        exit 1
+    fi
+
+    VERSION="$tag"
     info "Latest: $VERSION"
 }
 
