@@ -210,14 +210,31 @@ print_summary() {
   platform   → ${PLATFORM}
 EOF
 
-    # If PATH was just configured, remind user to reload
+    # Detect how the script was invoked. When sourced (e.g.,
+    # `source <(curl ... | bash)`), our `export PATH=...` actually persists in
+    # the caller's shell, so the tools are usable immediately.
+    local sourced=0
+    if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+        sourced=1
+    fi
+
     case ":$PATH:" in
-        *":$BIN_DIR:"*) ;;
+        *":$BIN_DIR:"*)
+            if [ "$sourced" = "1" ]; then
+                echo ""
+                success "${BIN_DIR} is now on PATH in this shell"
+            fi
+            ;;
         *)
             echo ""
-            info "To start using tools in this terminal, run:"
+            info "Activate in this terminal with one of:"
             echo ""
-            echo "    source ~/.zshrc"
+            echo "    source ~/.zshrc                                   # picks up rc entry"
+            echo "    export PATH=\"${BIN_DIR}:\$PATH\"   # one-liner"
+            echo ""
+            info "Or install with 'source' next time so PATH activates automatically:"
+            echo ""
+            echo "    source <(curl -fsSL https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/install.sh)"
             echo ""
             ;;
     esac
