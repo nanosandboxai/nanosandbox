@@ -7,7 +7,11 @@
 #   ~/.nanosandbox/libs/  — shared libraries (libkrunfw)
 #   ~/.nanosandbox/bin/   — binaries (gvproxy)
 #
-# Usage:
+# Usage (recommended — PATH activates immediately in the current shell):
+#   source <(curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh)
+#
+# Usage (classic pipe — PATH activates in NEW shells; current shell needs
+# `source ~/.zshrc` afterwards because a subshell can't modify its parent):
 #   curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh | bash
 #
 # Environment variables:

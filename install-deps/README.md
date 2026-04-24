@@ -22,18 +22,29 @@ Runtime dependency packaging and installation for [nanosandbox](https://github.c
 
 ### Linux / macOS
 
+**Recommended** — installs and activates PATH in the *current* terminal:
+
+```bash
+source <(curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh)
+```
+
+**Classic pipe** — works too, but PATH only takes effect in *new* shells
+(a child process can't modify its parent's environment; you'll need to run
+`source ~/.zshrc` afterwards to use it in the current terminal):
+
 ```bash
 curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh | bash
+source ~/.zshrc    # only needed for the current terminal
 ```
 
 #### Options
 
 ```bash
 # Install a specific version
-DEPS_VERSION=v0.2.0 bash install.sh
+DEPS_VERSION=v0.2.0 source <(curl -fsSL .../install.sh)
 
-# Custom install paths
-LIB_DIR=/opt/nanosandbox/lib BIN_DIR=/opt/nanosandbox/bin bash install.sh
+# Custom install prefix
+NANOSANDBOX_HOME=/opt/nanosandbox source <(curl -fsSL .../install.sh)
 ```
 
 ### Windows (PowerShell as Administrator)
