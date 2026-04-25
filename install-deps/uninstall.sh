@@ -83,6 +83,20 @@ if [ -f "${LEGACY_BIN_DIR}/gvproxy" ]; then
     gvproxy_removed=true
 fi
 
+# Remove /usr/local/bin symlink if it points to our gvproxy.
+# We only remove symlinks (not real binaries) and only ones we own.
+sym="/usr/local/bin/gvproxy"
+if [ -L "$sym" ]; then
+    target="$(readlink "$sym" 2>/dev/null || true)"
+    case "$target" in
+        "${BIN_DIR}/gvproxy"|"${LEGACY_BIN_DIR}/gvproxy")
+            sudo rm -f "$sym" 2>/dev/null || rm -f "$sym" 2>/dev/null || true
+            success "Removed symlink $sym"
+            gvproxy_removed=true
+            ;;
+    esac
+fi
+
 if ! $gvproxy_removed; then
     info "gvproxy not found"
 fi

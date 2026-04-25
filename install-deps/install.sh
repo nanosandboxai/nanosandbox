@@ -168,6 +168,40 @@ download_and_install() {
     success "Installed to ${BIN_DIR}/gvproxy"
 }
 
+# ─── /usr/local/bin symlink ──────────────────────────────────────────────────
+
+# Symlinks ~/.nanosandbox/bin/gvproxy into /usr/local/bin so it's on PATH in
+# every new terminal without rc-file edits. /usr/local/bin is on the default
+# PATH on both macOS and Linux. Requires sudo; falls back silently if not
+# available (PATH edits in check_path() still cover the user's shell).
+install_symlink() {
+    local target="${BIN_DIR}/gvproxy"
+    local link="/usr/local/bin/gvproxy"
+
+    header "Linking gvproxy into /usr/local/bin"
+
+    if [ ! -d /usr/local/bin ]; then
+        sudo mkdir -p /usr/local/bin 2>/dev/null || {
+            warn "Could not create /usr/local/bin — skipping symlink"
+            info "gvproxy still available at ${target}"
+            return 0
+        }
+    fi
+
+    if sudo -n true 2>/dev/null; then
+        sudo ln -sf "$target" "$link"
+        success "Linked ${link} → ${target}"
+    else
+        info "sudo password required to link gvproxy into /usr/local/bin"
+        if sudo ln -sf "$target" "$link"; then
+            success "Linked ${link} → ${target}"
+        else
+            warn "Skipped /usr/local/bin symlink — gvproxy available at ${target}"
+            info "Add ${BIN_DIR} to PATH manually or re-run installer with sudo"
+        fi
+    fi
+}
+
 # ─── PATH check ──────────────────────────────────────────────────────────────
 
 check_path() {
@@ -208,17 +242,20 @@ print_summary() {
     cat <<EOF
   libkrunfw  → ${LIB_DIR}/
   gvproxy    → ${BIN_DIR}/gvproxy
+  symlink    → /usr/local/bin/gvproxy
   version    → ${VERSION}
   platform   → ${PLATFORM}
 EOF
 
-    case ":$PATH:" in
-        *":$BIN_DIR:"*) ;;
-        *)
-            echo ""
-            info "Open a new terminal, or run 'source ~/.zshrc' to use ${BIN_DIR} in this one."
-            ;;
-    esac
+    if [ ! -L /usr/local/bin/gvproxy ]; then
+        case ":$PATH:" in
+            *":$BIN_DIR:"*) ;;
+            *)
+                echo ""
+                info "Open a new terminal, or run 'source ~/.zshrc' to use ${BIN_DIR} in this one."
+                ;;
+        esac
+    fi
 }
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -233,6 +270,7 @@ main() {
     check_prerequisites
     resolve_version
     download_and_install
+    install_symlink
     check_path
     print_summary
 }
