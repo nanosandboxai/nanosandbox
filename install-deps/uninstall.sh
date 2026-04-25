@@ -127,10 +127,12 @@ if [ -d "$NANOSANDBOX_HOME" ]; then
         answer=""
     fi
 
+    purged=false
     case "$answer" in
         [yY]|[yY][eE][sS])
             rm -rf "$NANOSANDBOX_HOME"
             success "Removed $NANOSANDBOX_HOME"
+            purged=true
             ;;
         *)
             [ -n "$answer" ] && info "Kept $NANOSANDBOX_HOME"
@@ -145,7 +147,15 @@ fi
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 header "Uninstall complete"
-cat <<EOF
-  Runtime dependencies have been removed.
-  The nanosb CLI binary was NOT removed.
+if [ "${purged:-false}" = "true" ]; then
+    cat <<EOF
+  All nanosandbox data was removed (including any nanosb CLI binary
+  installed under ${NANOSANDBOX_HOME}/bin/).
 EOF
+else
+    cat <<EOF
+  Runtime dependencies have been removed.
+  The nanosb CLI binary was NOT removed (kept under ${NANOSANDBOX_HOME}/bin/
+  along with the rest of your nanosandbox data).
+EOF
+fi
