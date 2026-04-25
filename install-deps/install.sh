@@ -7,12 +7,10 @@
 #   ~/.nanosandbox/libs/  — shared libraries (libkrunfw)
 #   ~/.nanosandbox/bin/   — binaries (gvproxy)
 #
-# Usage (recommended — PATH activates immediately in the current shell):
-#   source <(curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh)
-#
-# Usage (classic pipe — PATH activates in NEW shells; current shell needs
-# `source ~/.zshrc` afterwards because a subshell can't modify its parent):
+# Usage:
 #   curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh | bash
+#
+# After install, open a new terminal (or run `source ~/.zshrc`) to pick up PATH.
 #
 # Environment variables:
 #   DEPS_VERSION  - Version to install (default: latest)
@@ -214,32 +212,11 @@ print_summary() {
   platform   → ${PLATFORM}
 EOF
 
-    # Detect how the script was invoked. When sourced (e.g.,
-    # `source <(curl ... | bash)`), our `export PATH=...` actually persists in
-    # the caller's shell, so the tools are usable immediately.
-    local sourced=0
-    if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-        sourced=1
-    fi
-
     case ":$PATH:" in
-        *":$BIN_DIR:"*)
-            if [ "$sourced" = "1" ]; then
-                echo ""
-                success "${BIN_DIR} is now on PATH in this shell"
-            fi
-            ;;
+        *":$BIN_DIR:"*) ;;
         *)
             echo ""
-            info "Activate in this terminal with one of:"
-            echo ""
-            echo "    source ~/.zshrc                                   # picks up rc entry"
-            echo "    export PATH=\"${BIN_DIR}:\$PATH\"   # one-liner"
-            echo ""
-            info "Or install with 'source' next time so PATH activates automatically:"
-            echo ""
-            echo "    source <(curl -fsSL https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/install.sh)"
-            echo ""
+            info "Open a new terminal, or run 'source ~/.zshrc' to use ${BIN_DIR} in this one."
             ;;
     esac
 }
