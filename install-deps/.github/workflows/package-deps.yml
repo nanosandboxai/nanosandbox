@@ -77,8 +77,15 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
+          # Mark rc/alpha/beta/dev tags as pre-releases so they don't become "latest"
+          PRERELEASE_FLAG=""
+          if echo "$VERSION" | grep -qE '[-](rc|alpha|beta|dev)'; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
           gh release create "$VERSION" release/* \
             --title "Nanosandbox Dependencies $VERSION" \
+            $PRERELEASE_FLAG \
             --notes "$(cat <<EOF
           Runtime dependencies for nanosandbox $VERSION.
 

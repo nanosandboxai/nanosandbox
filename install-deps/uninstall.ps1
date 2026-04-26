@@ -58,7 +58,7 @@ function Remove-Dependencies {
     }
 
     # Legacy layout: root-level files
-    foreach ($file in @('libkrunfw.dll', 'busybox')) {
+    foreach ($file in @('libkrunfw.dll', 'busybox', 'vsock_proxy')) {
         $path = Join-Path $InstallDir $file
         if (Test-Path $path) {
             Remove-Item $path -Force
