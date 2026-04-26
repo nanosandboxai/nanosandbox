@@ -99,7 +99,10 @@ function Install-NanosandboxDeps {
             $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubRepo/releases" `
                 -Headers @{ Accept = 'application/vnd.github+json' } `
                 -ErrorAction Stop
-            $ver = ($releases | Select-Object -First 1).tag_name
+            # Sort by published_at desc — the default /releases ordering is by
+            # tag commit date, which can rank a re-tagged release below older
+            # ones if its tag points to an older commit.
+            $ver = ($releases | Sort-Object -Property published_at -Descending | Select-Object -First 1).tag_name
             if (-not $ver) { throw "No releases found" }
             Write-Info "Latest: $ver"
         } catch {
