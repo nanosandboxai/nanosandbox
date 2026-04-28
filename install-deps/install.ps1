@@ -112,7 +112,7 @@ function Install-NanosandboxDeps {
     }
 
     # --- Download & install dependencies ---
-    Write-Header "Installing dependencies (libkrunfw.dll + busybox + vsock_proxy)"
+    Write-Header "Installing dependencies (libkrunfw.dll + busybox + vsock_proxy + plan9_mount)"
 
     $libsDir = Join-Path $targetDir "libs"
     if (-not (Test-Path $libsDir)) {
@@ -180,6 +180,19 @@ function Install-NanosandboxDeps {
             }
         } else {
             Write-Warn "vsock_proxy not found in bundle (HvSocket communication will not work)"
+        }
+
+        # plan9_mount — static Linux ELF, mounts the HCS Plan 9 rootfs share via AF_VSOCK
+        # Without this binary, the VM's init script falls back to in-kernel 9p transports
+        # (trans=hyperv / trans=virtio) which don't work on the WSL2 kernel, and the rootfs
+        # never mounts.
+        $p9Src = Get-ChildItem -Path $tmpDir -Filter "plan9_mount" -Recurse | Select-Object -First 1
+        if ($p9Src) {
+            Copy-Item $p9Src.FullName -Destination (Join-Path $libsDir "plan9_mount") -Force
+            $size = $p9Src.Length / 1KB
+            Write-OK ("plan9_mount ({0:N0} KB) -> $libsDir" -f $size)
+        } else {
+            Write-Warn "plan9_mount not found in bundle (rootfs mount will fail on WSL2 kernel)"
         }
     } catch {
         Write-Warn "Failed to download deps bundle: $_"
