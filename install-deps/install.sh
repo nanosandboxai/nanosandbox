@@ -3,23 +3,27 @@
 #
 # Installs: libkrunfw (kernel firmware) + gvproxy (networking daemon)
 #
+# All files are installed under ~/.nanosandbox/ (no sudo required):
+#   ~/.nanosandbox/libs/  — shared libraries (libkrunfw)
+#   ~/.nanosandbox/bin/   — binaries (gvproxy)
+#
 # Usage:
 #   curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh | bash
 #
+# After install, open a new terminal (or run `source ~/.zshrc`) to pick up PATH.
+#
 # Environment variables:
 #   DEPS_VERSION  - Version to install (default: latest)
-#   LIB_DIR       - Library install path (default: /usr/local/lib)
-#   BIN_DIR       - Binary install path (default: ~/.local/bin)
+#   NANOSANDBOX_HOME - Base directory (default: ~/.nanosandbox)
 
 set -euo pipefail
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 GITHUB_REPO="nanosandboxai/install-deps"
-LIB_DIR="${LIB_DIR:-/usr/local/lib}"
-BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
-TMPDIR_CLEANUP=""
-trap '[ -n "$TMPDIR_CLEANUP" ] && rm -rf "$TMPDIR_CLEANUP"' EXIT
+NANOSANDBOX_HOME="${NANOSANDBOX_HOME:-$HOME/.nanosandbox}"
+LIB_DIR="${NANOSANDBOX_HOME}/libs"
+BIN_DIR="${NANOSANDBOX_HOME}/bin"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -89,8 +93,9 @@ check_prerequisites() {
 
 # ─── Version resolution ──────────────────────────────────────────────────────
 
-# Resolve "latest" to the most recent release tag (including prereleases).
-# GitHub's /releases/latest/ redirect only matches stable releases.
+# Resolve "latest" to the most recent release tag.
+# Uses /releases/latest first (GitHub-sorted, honors "Set as latest release");
+# falls back to /releases[0] for repos that only publish prereleases.
 resolve_version() {
     if [ -n "${DEPS_VERSION:-}" ]; then
         VERSION="$DEPS_VERSION"
@@ -99,14 +104,28 @@ resolve_version() {
     fi
 
     info "Resolving latest release tag..."
-    VERSION="$(curl -fsSL \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${GITHUB_REPO}/releases" \
-        2>/dev/null \
-        | grep -m1 '"tag_name":' \
-        | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
 
-    [ -n "$VERSION" ] || { error "Could not determine latest version"; exit 1; }
+    local api="https://api.github.com/repos/${GITHUB_REPO}"
+    local hdr="Accept: application/vnd.github+json"
+    local resp tag
+
+    # Try /releases/latest (stable + flagged-as-latest)
+    resp="$(curl -fsSL -H "$hdr" "${api}/releases/latest" 2>&1)" || resp=""
+    tag="$(printf '%s\n' "$resp" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+
+    # Fall back to first entry in /releases (prerelease-only repos)
+    if [ -z "$tag" ]; then
+        resp="$(curl -fsSL -H "$hdr" "${api}/releases?per_page=1" 2>&1)" || resp=""
+        tag="$(printf '%s\n' "$resp" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+    fi
+
+    if [ -z "$tag" ]; then
+        error "Could not determine latest version from ${api}/releases"
+        info "Set DEPS_VERSION=vX.Y.Z to pin a specific version"
+        exit 1
+    fi
+
+    VERSION="$tag"
     info "Latest: $VERSION"
 }
 
@@ -119,7 +138,7 @@ download_and_install() {
     local url="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${bundle}"
     local tmpdir
     tmpdir="$(mktemp -d)"
-    TMPDIR_CLEANUP="$tmpdir"
+    trap 'rm -rf "${tmpdir:-}"' EXIT
 
     info "Downloading ${bundle}..."
     if ! curl -fsSL -o "${tmpdir}/${bundle}" "$url"; then
@@ -134,12 +153,11 @@ download_and_install() {
     tar xzf "${tmpdir}/${bundle}" -C "$tmpdir"
 
     header "Installing libkrunfw"
-    sudo mkdir -p "$LIB_DIR"
+    mkdir -p "$LIB_DIR"
     if [ "$OS" = "darwin" ]; then
-        sudo cp "$tmpdir"/lib/libkrunfw*.dylib "$LIB_DIR/"
+        cp "$tmpdir"/lib/libkrunfw*.dylib "$LIB_DIR/"
     else
-        sudo cp "$tmpdir"/lib/libkrunfw*.so* "$LIB_DIR/"
-        sudo ldconfig 2>/dev/null || true
+        cp "$tmpdir"/lib/libkrunfw*.so* "$LIB_DIR/"
     fi
     success "Installed to ${LIB_DIR}/"
 
@@ -150,18 +168,71 @@ download_and_install() {
     success "Installed to ${BIN_DIR}/gvproxy"
 }
 
+# ─── /usr/local/bin symlink ──────────────────────────────────────────────────
+
+# Symlinks ~/.nanosandbox/bin/gvproxy into /usr/local/bin so it's on PATH in
+# every new terminal without rc-file edits. /usr/local/bin is on the default
+# PATH on both macOS and Linux. Requires sudo; falls back silently if not
+# available (PATH edits in check_path() still cover the user's shell).
+install_symlink() {
+    local target="${BIN_DIR}/gvproxy"
+    local link="/usr/local/bin/gvproxy"
+
+    header "Linking gvproxy into /usr/local/bin"
+
+    if [ ! -d /usr/local/bin ]; then
+        sudo mkdir -p /usr/local/bin 2>/dev/null || {
+            warn "Could not create /usr/local/bin — skipping symlink"
+            info "gvproxy still available at ${target}"
+            return 0
+        }
+    fi
+
+    if sudo -n true 2>/dev/null; then
+        sudo ln -sf "$target" "$link"
+        success "Linked ${link} → ${target}"
+    else
+        info "sudo password required to link gvproxy into /usr/local/bin"
+        if sudo ln -sf "$target" "$link"; then
+            success "Linked ${link} → ${target}"
+        else
+            warn "Skipped /usr/local/bin symlink — gvproxy available at ${target}"
+            info "Add ${BIN_DIR} to PATH manually or re-run installer with sudo"
+        fi
+    fi
+}
+
 # ─── PATH check ──────────────────────────────────────────────────────────────
 
 check_path() {
     case ":$PATH:" in
-        *":$BIN_DIR:"*) ;;
-        *)
-            header "PATH not configured"
-            warn "${BIN_DIR} is not in your PATH"
-            info "Add to your shell profile:"
-            info "  export PATH=\"${BIN_DIR}:\$PATH\""
-            ;;
+        *":$BIN_DIR:"*) return ;;
     esac
+
+    header "Configuring PATH"
+
+    local line="export PATH=\"${BIN_DIR}:\$PATH\""
+    local added=false
+
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+        [ -f "$rc" ] || continue
+        if ! grep -qF "$BIN_DIR" "$rc" 2>/dev/null; then
+            printf '\n# Added by Nanosandbox installer\n%s\n' "$line" >> "$rc"
+            success "Added to $(basename "$rc")"
+            added=true
+        fi
+    done
+
+    if [ "$added" = false ]; then
+        # No shell profile found — create .zshrc on macOS, .bashrc on Linux
+        local default_rc="$HOME/.bashrc"
+        [ "$OS" = "darwin" ] && default_rc="$HOME/.zshrc"
+        printf '\n# Added by Nanosandbox installer\n%s\n' "$line" >> "$default_rc"
+        success "Added to $(basename "$default_rc")"
+    fi
+
+    export PATH="${BIN_DIR}:$PATH"
+    info "PATH updated for this session"
 }
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
@@ -171,9 +242,20 @@ print_summary() {
     cat <<EOF
   libkrunfw  → ${LIB_DIR}/
   gvproxy    → ${BIN_DIR}/gvproxy
+  symlink    → /usr/local/bin/gvproxy
   version    → ${VERSION}
   platform   → ${PLATFORM}
 EOF
+
+    if [ ! -L /usr/local/bin/gvproxy ]; then
+        case ":$PATH:" in
+            *":$BIN_DIR:"*) ;;
+            *)
+                echo ""
+                info "Open a new terminal, or run 'source ~/.zshrc' to use ${BIN_DIR} in this one."
+                ;;
+        esac
+    fi
 }
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -188,6 +270,7 @@ main() {
     check_prerequisites
     resolve_version
     download_and_install
+    install_symlink
     check_path
     print_summary
 }
