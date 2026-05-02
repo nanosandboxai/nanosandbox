@@ -3,8 +3,37 @@ FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.description="Codex agent for nanosandbox sandboxes"
 
+# Install codex CLI plus its platform-specific native binary. The wrapper
+# package @openai/codex depends on @openai/codex-linux-x64 (or -arm64) via
+# optionalDependencies — these are aliases pointing at tagged versions of
+# @openai/codex itself (e.g. npm:@openai/codex@0.121.0-linux-x64). buildx
+# multi-arch builds under QEMU skip optional deps whose cpu/os constraints
+# don't match detection, leaving runtime broken with "Missing optional
+# dependency @openai/codex-linux-x64". Install it explicitly using the
+# same alias form the wrapper resolves at runtime.
 RUN npm install -g @openai/codex \
+    && CODEX_VERSION="$(npm view @openai/codex version)" \
+    && ARCH="$(uname -m)" \
+    && case "$ARCH" in \
+         x86_64)  PLATFORM="linux-x64" ;; \
+         aarch64) PLATFORM="linux-arm64" ;; \
+         *) echo "Unsupported arch for codex: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && npm install -g "@openai/codex-${PLATFORM}@npm:@openai/codex@${CODEX_VERSION}-${PLATFORM}" \
     && npm cache clean --force
+
+# Replace /usr/local/bin/codex (which buildx-under-QEMU materializes as a
+# regular file copy instead of a symlink to the module's bin/codex.js). When
+# Node runs the file directly from /usr/local/bin/, createRequire resolves
+# from that directory and cannot find the sibling global package
+# @openai/codex-linux-x64 under /usr/local/lib/node_modules/, producing
+# "Missing optional dependency @openai/codex-linux-x64" at startup. An exec
+# wrapper that invokes node against the real module path fixes resolution.
+RUN CODEX_JS="/usr/local/lib/node_modules/@openai/codex/bin/codex.js" \
+    && test -f "$CODEX_JS" \
+    && rm -f /usr/local/bin/codex \
+    && printf '#!/bin/sh\nexec node %s "$@"\n' "$CODEX_JS" > /usr/local/bin/codex \
+    && chmod +x /usr/local/bin/codex
 
 RUN codex --version && echo "Codex: OK"
 RUN rm -rf /workspace/*

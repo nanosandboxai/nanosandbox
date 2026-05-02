@@ -4,17 +4,27 @@ FROM ${BASE_IMAGE}
 LABEL org.opencontainers.image.description="Cursor agent for nanosandbox sandboxes"
 
 # Install cursor CLI agent via official installer.
-# The installer puts files under /root/.local/share/cursor-agent/ and a
-# symlink at /root/.local/bin/agent. Move the installation to /opt so
-# the non-root 'developer' user can access it.
+# The installer puts files under /root/.local/share/cursor-agent/. We move
+# it to /opt so the non-root 'developer' user can access it.
+#
+# Why a wrapper script instead of a symlink: the cursor-agent wrapper uses
+# `realpath "$0"` to locate its own node binary and index.js. A symlink at
+# /usr/local/bin/cursor-agent resolves correctly, but buildx multi-arch
+# builds were producing a regular file copy instead of a symlink, which
+# made realpath return /usr/local/bin/cursor-agent itself and broke the
+# module lookup ("Cannot find module /usr/local/bin/index.js"). An exec
+# wrapper that points at the absolute install path is robust to that.
 RUN curl -fsSL https://cursor.com/install | bash \
     && mv /root/.local/share/cursor-agent /opt/cursor-agent \
-    && ln -sf "$(ls -d /opt/cursor-agent/versions/*/cursor-agent)" /usr/local/bin/cursor-agent \
+    && CURSOR_REAL="$(ls -d /opt/cursor-agent/versions/*/cursor-agent | head -1)" \
+    && test -x "$CURSOR_REAL" \
+    && rm -f /usr/local/bin/cursor-agent \
+    && printf '#!/bin/sh\nexec %s "$@"\n' "$CURSOR_REAL" > /usr/local/bin/cursor-agent \
     && chmod +x /usr/local/bin/cursor-agent
 
-# cursor-agent does not support --version; verify it can at least start
-RUN cursor-agent --help > /dev/null 2>&1 || true \
-    && test -x /usr/local/bin/cursor-agent \
+# Verify the wrapper resolves and the real binary is executable.
+RUN test -x /usr/local/bin/cursor-agent \
+    && cursor-agent --help > /dev/null 2>&1 \
     && echo "Cursor CLI: OK"
 RUN rm -rf /workspace/*
 

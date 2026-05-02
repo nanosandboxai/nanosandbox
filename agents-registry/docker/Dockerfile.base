@@ -21,18 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     git \
     iproute2 \
+    iptables \
+    nftables \
     bash \
-    openssh-server \
+    dropbear-bin \
     procps \
     sudo \
     && rm -rf /var/lib/apt/lists/* \
-    && ssh-keygen -A \
-    && mkdir -p /root/.ssh /run/sshd \
-    && chmod 700 /root/.ssh \
-    && sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
-    && sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
-    && echo "PasswordAuthentication no" >> /etc/ssh/sshd_config \
-    && echo "StrictModes no" >> /etc/ssh/sshd_config
+    && mkdir -p /root/.ssh /etc/dropbear \
+    && chmod 700 /root/.ssh
 
 # Create non-root user for running code agents.
 # Agents like Claude Code refuse --dangerously-skip-permissions as root.

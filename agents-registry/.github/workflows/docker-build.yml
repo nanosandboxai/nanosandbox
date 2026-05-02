@@ -4,13 +4,10 @@ on:
   push:
     tags:
       - 'v*'
-  # pull_request:
-  #   branches:
-  #     - main
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag (optional, defaults to SHA)'
+        description: 'Image tag (e.g., rc1, rc2). Required for RC builds.'
         required: false
         type: string
       agent:
@@ -43,6 +40,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Fetch agent-gateway source from sandbox repo
+        uses: actions/checkout@v4
+        with:
+          repository: nanosandboxai/sandbox
+          token: ${{ secrets.SANDBOX_PAT }}
+          path: _sandbox
+          sparse-checkout: agent-gateway
+          sparse-checkout-cone-mode: true
+
+      - name: Copy agent-gateway into build context
+        run: cp -r _sandbox/agent-gateway ./agent-gateway
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -60,9 +69,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/base
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
             type=semver,pattern={{version}}
             type=sha,prefix=
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
 
       - name: Build and push base image
         uses: docker/build-push-action@v5
@@ -72,8 +82,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=base
-          cache-to: type=gha,scope=base,mode=max
+          cache-from: type=gha,scope=base-v2
+          cache-to: type=gha,scope=base-v2,mode=max
           platforms: linux/amd64,linux/arm64
 
   # ===========================================================================
@@ -128,7 +138,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.agent }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
             type=semver,pattern={{version}}
             type=sha,prefix=
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
