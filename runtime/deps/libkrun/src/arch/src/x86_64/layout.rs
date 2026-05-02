@@ -60,6 +60,9 @@ pub const FIRMWARE_START: u64 = 0xffff_0000;
 /// The size of the firmware.
 pub const FIRMWARE_SIZE: u64 = 65536;
 
+/// The address to put the SMBIOS contents.
+pub const SMBIOS_START: u64 = 0x000F_0000;
+
 /// The start of the memory area reserved for MMIO devices.
 pub const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
 pub const MEM_32BIT_GAP_SIZE: u64 = 768 << 20;

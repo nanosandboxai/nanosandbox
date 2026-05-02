@@ -9,6 +9,7 @@ license = "Apache-2.0"
 default = ["net"]
 net = ["krun/net"]
 blk = ["krun/blk"]
+hcs = ["krun/hcs"]
 
 [dependencies]
 libc = "0.2"

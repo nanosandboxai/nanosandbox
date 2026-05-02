@@ -1,7 +1,9 @@
 use crate::virtio::net::backend::ConnectError;
 #[cfg(target_os = "linux")]
 use crate::virtio::net::tap::Tap;
+#[cfg(unix)]
 use crate::virtio::net::unixgram::Unixgram;
+#[cfg(unix)]
 use crate::virtio::net::unixstream::Unixstream;
 use crate::virtio::net::{MAX_BUFFER_SIZE, QUEUE_SIZE};
 use crate::virtio::{DeviceQueue, InterruptTransport};
@@ -12,10 +14,16 @@ use super::VNET_HDR_LEN;
 
 #[cfg(target_os = "macos")]
 use std::os::fd::RawFd;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::thread;
 use std::{cmp, result};
 use utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+// On Linux `as_pollable()` is provided by an extension trait; on macOS
+// and Windows it's an inherent method on utils' EventFd wrapper, so the
+// import is only needed here for Linux.
+#[cfg(target_os = "linux")]
+use utils::linux::eventfd::EventFdExt;
 use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
 
 pub struct NetWorker {
@@ -46,21 +54,25 @@ impl NetWorker {
         cfg_backend: VirtioNetBackend,
     ) -> Result<Self, ConnectError> {
         let backend = match cfg_backend {
+            #[cfg(unix)]
             VirtioNetBackend::UnixstreamFd(fd) => {
                 // SAFETY: we need to trust that the library user has configured
                 // the backend with a healthy file descriptor.
                 let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
                 Box::new(Unixstream::new(owned_fd)) as Box<dyn NetBackend + Send>
             }
+            #[cfg(unix)]
             VirtioNetBackend::UnixstreamPath(path) => {
                 Box::new(Unixstream::open(path)?) as Box<dyn NetBackend + Send>
             }
+            #[cfg(unix)]
             VirtioNetBackend::UnixgramFd(fd) => {
                 // SAFETY: we need to trust that the library user has configured
                 // the backend with a healthy file descriptor.
                 let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
                 Box::new(Unixgram::new(owned_fd)) as Box<dyn NetBackend + Send>
             }
+            #[cfg(unix)]
             VirtioNetBackend::UnixgramPath(path, vfkit_magic) => {
                 Box::new(Unixgram::open(path, vfkit_magic)?) as Box<dyn NetBackend + Send>
             }
@@ -100,11 +112,12 @@ impl NetWorker {
         #[cfg(target_os = "macos")]
         const TX_TIMER_FD: RawFd = -2;
 
-        let virtq_rx_ev_fd = self.rx_q.event.as_raw_fd();
-        let virtq_tx_ev_fd = self.tx_q.event.as_raw_fd();
-        let backend_socket = self.backend.raw_socket_fd();
+        let virtq_rx_ev_fd = self.rx_q.event.as_pollable();
+        let virtq_tx_ev_fd = self.tx_q.event.as_pollable();
+        let backend_socket = self.backend.pollable_fd();
 
-        let epoll = Epoll::new().unwrap();
+        #[allow(unused_mut)]
+        let mut epoll = Epoll::new().unwrap();
 
         let _ = epoll.ctl(
             ControlOperation::Add,

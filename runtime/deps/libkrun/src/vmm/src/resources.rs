@@ -3,12 +3,20 @@
 
 //#![deny(warnings)]
 
+use std::collections::HashMap;
 #[cfg(feature = "tee")]
 use std::fs::File;
 #[cfg(feature = "tee")]
 use std::io::BufReader;
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::path::PathBuf;
+
+/// Platform-specific file descriptor / handle type.
+#[cfg(unix)]
+pub type IoHandle = RawFd;
+#[cfg(target_os = "windows")]
+pub type IoHandle = isize;
 
 #[cfg(feature = "tee")]
 use serde::{Deserialize, Serialize};
@@ -28,14 +36,28 @@ use crate::vmm_config::machine_config::{VmConfig, VmConfigError};
 use crate::vmm_config::net::{NetBuilder, NetworkInterfaceConfig, NetworkInterfaceError};
 use crate::vmm_config::vsock::*;
 use crate::vstate::VcpuConfig;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 use devices::virtio::display::DisplayInfo;
 #[cfg(feature = "tee")]
 use kbs_types::Tee;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 use krun_display::DisplayBackend;
 
 type Result<E> = std::result::Result<(), E>;
+
+/// Returns the system page size in bytes.
+#[cfg(unix)]
+fn get_page_size() -> usize {
+    // Safe because this call just returns the page size and doesn't have any side effects.
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+}
+
+/// Returns the system page size in bytes.
+/// On x86_64 Windows this is always 4096.
+#[cfg(target_os = "windows")]
+fn get_page_size() -> usize {
+    4096
+}
 
 // Re-export TsiFlags from devices crate
 pub use devices::virtio::TsiFlags;
@@ -85,14 +107,14 @@ impl Default for TeeConfig {
 }
 
 pub struct SerialConsoleConfig {
-    pub input_fd: RawFd,
-    pub output_fd: RawFd,
+    pub input_fd: IoHandle,
+    pub output_fd: IoHandle,
 }
 
 pub struct DefaultVirtioConsoleConfig {
-    pub input_fd: RawFd,
-    pub output_fd: RawFd,
-    pub err_fd: RawFd,
+    pub input_fd: IoHandle,
+    pub output_fd: IoHandle,
+    pub err_fd: IoHandle,
 }
 
 pub enum VirtioConsoleConfigMode {
@@ -103,12 +125,12 @@ pub enum VirtioConsoleConfigMode {
 pub enum PortConfig {
     Tty {
         name: String,
-        tty_fd: RawFd,
+        tty_fd: IoHandle,
     },
     InOut {
         name: String,
-        input_fd: RawFd,
-        output_fd: RawFd,
+        input_fd: IoHandle,
+        output_fd: IoHandle,
     },
 }
 
@@ -161,22 +183,26 @@ pub struct VmResources {
     /// Flags for the virtio-gpu device.
     pub gpu_virgl_flags: Option<u32>,
     pub gpu_shm_size: Option<usize>,
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", unix))]
     pub display_backend: Option<DisplayBackend<'static>>,
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", unix))]
     pub displays: Vec<DisplayInfo>,
-    #[cfg(feature = "input")]
+    #[cfg(all(feature = "input", unix))]
     pub input_backends: Vec<(
         krun_input::InputConfigBackend<'static>,
         krun_input::InputEventProviderBackend<'static>,
     )>,
-    #[cfg(feature = "snd")]
+    #[cfg(all(feature = "snd", unix))]
     /// Enable the virtio-snd device.
     pub snd_device: bool,
     /// File to send console output.
     pub console_output: Option<PathBuf>,
     /// SMBIOS OEM Strings
     pub smbios_oem_strings: Option<Vec<String>>,
+    /// Port mappings for HCS networking (guest_port -> host_port).
+    /// Used on Windows to configure HCN NAT port forwarding.
+    #[cfg(target_os = "windows")]
+    pub hcs_port_map: Option<HashMap<u16, u16>>,
     /// Whether to enable nested virtualization.
     pub nested_enabled: bool,
     /// Whether to enable split irqchip
@@ -261,8 +287,7 @@ impl VmResources {
     }
 
     pub fn set_kernel_bundle(&mut self, kernel_bundle: KernelBundle) -> Result<KernelBundleError> {
-        // Safe because this call just returns the page size and doesn't have any side effects.
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+        let page_size = get_page_size();
 
         if kernel_bundle.host_addr == 0 || (kernel_bundle.host_addr as usize) & (page_size - 1) != 0
         {
@@ -338,7 +363,7 @@ impl VmResources {
         self.gpu_shm_size = Some(shm_size);
     }
 
-    #[cfg(feature = "snd")]
+    #[cfg(all(feature = "snd", unix))]
     pub fn set_snd_device(&mut self, enabled: bool) {
         self.snd_device = enabled;
     }
@@ -385,7 +410,7 @@ impl VmResources {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", unix))]
     use crate::resources::DisplayBackendConfig;
     use crate::resources::VmResources;
     use crate::vmm_config::kernel_cmdline::KernelCmdlineConfig;
@@ -415,13 +440,13 @@ mod tests {
             net_builder: Default::default(),
             gpu_virgl_flags: None,
             gpu_shm_size: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(all(feature = "gpu", unix))]
             display_backend: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(all(feature = "gpu", unix))]
             displays: Vec::new(),
-            #[cfg(feature = "input")]
+            #[cfg(all(feature = "input", unix))]
             input_backends: Vec::new(),
-            #[cfg(feature = "snd")]
+            #[cfg(all(feature = "snd", unix))]
             snd_device: false,
             console_output: None,
             smbios_oem_strings: None,

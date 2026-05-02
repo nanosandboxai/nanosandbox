@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 
 use polly::event_manager::{EventManager, Subscriber};
@@ -5,6 +6,20 @@ use utils::epoll::{EpollEvent, EventSet};
 
 use super::device::{Rng, REQ_INDEX};
 use crate::virtio::device::VirtioDevice;
+
+#[cfg(unix)]
+macro_rules! pollable {
+    ($efd:expr) => {
+        $efd.as_raw_fd()
+    };
+}
+
+#[cfg(target_os = "windows")]
+macro_rules! pollable {
+    ($efd:expr) => {
+        $efd.as_pollable()
+    };
+}
 
 impl Rng {
     pub(crate) fn handle_req_event(&mut self, event: &EpollEvent) {
@@ -32,13 +47,13 @@ impl Rng {
         // The subscriber must exist as we previously registered activate_evt via
         // `interest_list()`.
         let self_subscriber = event_manager
-            .subscriber(self.activate_evt.as_raw_fd())
+            .subscriber(pollable!(self.activate_evt))
             .unwrap();
 
         event_manager
             .register(
-                self.queue_event(REQ_INDEX).as_raw_fd(),
-                EpollEvent::new(EventSet::IN, self.queue_event(REQ_INDEX).as_raw_fd() as u64),
+                pollable!(self.queue_event(REQ_INDEX)),
+                EpollEvent::new(EventSet::IN, pollable!(self.queue_event(REQ_INDEX)) as u64),
                 self_subscriber.clone(),
             )
             .unwrap_or_else(|e| {
@@ -46,7 +61,7 @@ impl Rng {
             });
 
         event_manager
-            .unregister(self.activate_evt.as_raw_fd())
+            .unregister(pollable!(self.activate_evt))
             .unwrap_or_else(|e| {
                 error!("Failed to unregister rng activate evt: {e:?}");
             })
@@ -56,8 +71,8 @@ impl Rng {
 impl Subscriber for Rng {
     fn process(&mut self, event: &EpollEvent, event_manager: &mut EventManager) {
         let source = event.fd();
-        let req = self.queue_event(REQ_INDEX).as_raw_fd();
-        let activate_evt = self.activate_evt.as_raw_fd();
+        let req = pollable!(self.queue_event(REQ_INDEX));
+        let activate_evt = pollable!(self.activate_evt);
 
         if self.is_activated() {
             match source {
@@ -75,7 +90,7 @@ impl Subscriber for Rng {
     fn interest_list(&self) -> Vec<EpollEvent> {
         vec![EpollEvent::new(
             EventSet::IN,
-            self.activate_evt.as_raw_fd() as u64,
+            pollable!(self.activate_evt) as u64,
         )]
     }
 }

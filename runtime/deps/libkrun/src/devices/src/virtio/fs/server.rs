@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use vm_memory::ByteValued;
 
-use super::super::linux_errno::linux_error;
 use super::bindings;
 use super::descriptor_utils::{Reader, Writer};
 use super::filesystem::{
@@ -28,6 +27,26 @@ use super::fs_utils::einval;
 use super::fuse::*;
 use super::{FsError as Error, Result};
 use crate::virtio::VirtioShmRegion;
+
+// Linux errno constants used directly in FUSE protocol messages.
+// These are the values the guest Linux kernel expects, regardless of the host OS.
+const LINUX_ENOMEM: i32 = 12;
+const LINUX_EIO: i32 = 5;
+const LINUX_ENOSYS: i32 = 38;
+const LINUX_EPROTO: i32 = 71;
+const LINUX_EOVERFLOW: i32 = 75;
+
+/// Returns the system page size in a cross-platform manner.
+#[cfg(unix)]
+fn get_page_size() -> u32 {
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() }
+}
+
+#[cfg(target_os = "windows")]
+fn get_page_size() -> u32 {
+    // Windows standard page size is 4096 bytes.
+    4096
+}
 
 const MAX_BUFFER_SIZE: u32 = 1 << 20;
 const BUFFER_HEADER_SIZE: u32 = 0x1000;
@@ -91,7 +110,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
         if in_header.len > (MAX_BUFFER_SIZE + BUFFER_HEADER_SIZE) {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                io::Error::from_raw_os_error(LINUX_ENOMEM),
                 in_header.unique,
                 w,
             );
@@ -147,7 +166,7 @@ impl<F: FileSystem + Sync> Server<F> {
                 let shm = shm_region.as_ref().unwrap();
                 #[cfg(target_os = "linux")]
                 let shm_base_addr = shm.host_addr;
-                #[cfg(target_os = "macos")]
+                #[cfg(not(target_os = "linux"))]
                 let shm_base_addr = shm.guest_addr;
                 self.setupmapping(
                     in_header,
@@ -163,7 +182,7 @@ impl<F: FileSystem + Sync> Server<F> {
                 let shm = shm_region.as_ref().unwrap();
                 #[cfg(target_os = "linux")]
                 let shm_base_addr = shm.host_addr;
-                #[cfg(target_os = "macos")]
+                #[cfg(not(target_os = "linux"))]
                 let shm_base_addr = shm.guest_addr;
                 self.removemapping(
                     in_header,
@@ -176,7 +195,7 @@ impl<F: FileSystem + Sync> Server<F> {
                 )
             }
             _ => reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::ENOSYS)),
+                io::Error::from_raw_os_error(LINUX_ENOSYS),
                 in_header.unique,
                 w,
             ),
@@ -479,8 +498,8 @@ impl<F: FileSystem + Sync> Server<F> {
     fn rename2(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
         let Rename2In { newdir, flags, .. } = r.read_obj().map_err(Error::DecodeMessage)?;
 
-        #[cfg(target_os = "linux")]
-        let flags = flags & (libc::RENAME_EXCHANGE | libc::RENAME_NOREPLACE);
+        let flags = flags
+            & (bindings::LINUX_RENAME_EXCHANGE as u32 | bindings::LINUX_RENAME_NOREPLACE as u32);
 
         self.do_rename(in_header, size_of::<Rename2In>(), newdir, flags, r, w)
     }
@@ -550,7 +569,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
         if size > MAX_BUFFER_SIZE {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                io::Error::from_raw_os_error(LINUX_ENOMEM),
                 in_header.unique,
                 w,
             );
@@ -604,7 +623,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
         if size > MAX_BUFFER_SIZE {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                io::Error::from_raw_os_error(LINUX_ENOMEM),
                 in_header.unique,
                 w,
             );
@@ -752,7 +771,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
         if size > MAX_BUFFER_SIZE {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                io::Error::from_raw_os_error(LINUX_ENOMEM),
                 in_header.unique,
                 w,
             );
@@ -782,7 +801,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
         if size > MAX_BUFFER_SIZE {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                io::Error::from_raw_os_error(LINUX_ENOMEM),
                 in_header.unique,
                 w,
             );
@@ -858,7 +877,7 @@ impl<F: FileSystem + Sync> Server<F> {
         if major < KERNEL_VERSION {
             error!("Unsupported fuse protocol version: {major}.{minor}");
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::EPROTO)),
+                io::Error::from_raw_os_error(LINUX_EPROTO),
                 in_header.unique,
                 w,
             );
@@ -878,7 +897,7 @@ impl<F: FileSystem + Sync> Server<F> {
         if minor < KERNEL_MINOR_VERSION {
             error!("Unsupported fuse protocol minor version: {major}.{minor}");
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::EPROTO)),
+                io::Error::from_raw_os_error(LINUX_EPROTO),
                 in_header.unique,
                 w,
             );
@@ -905,7 +924,7 @@ impl<F: FileSystem + Sync> Server<F> {
         let flags_64 = ((flags2 as u64) << 32) | (flags as u64);
         let capable = FsOptions::from_bits_truncate(flags_64);
 
-        let page_size: u32 = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
+        let page_size: u32 = get_page_size();
         let max_pages = ((MAX_BUFFER_SIZE - 1) / page_size) + 1;
 
         match self.fs.init(capable) {
@@ -967,7 +986,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
         if size > MAX_BUFFER_SIZE {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                io::Error::from_raw_os_error(LINUX_ENOMEM),
                 in_header.unique,
                 w,
             );
@@ -976,7 +995,7 @@ impl<F: FileSystem + Sync> Server<F> {
         let available_bytes = w.available_bytes();
         if available_bytes < size as usize {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                io::Error::from_raw_os_error(LINUX_ENOMEM),
                 in_header.unique,
                 w,
             );
@@ -1239,14 +1258,14 @@ impl<F: FileSystem + Sync> Server<F> {
         if let Some(size) = (count as usize).checked_mul(size_of::<ForgetOne>()) {
             if size > MAX_BUFFER_SIZE as usize {
                 return reply_error(
-                    linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                    io::Error::from_raw_os_error(LINUX_ENOMEM),
                     in_header.unique,
                     w,
                 );
             }
         } else {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)),
+                io::Error::from_raw_os_error(LINUX_EOVERFLOW),
                 in_header.unique,
                 w,
             );
@@ -1394,14 +1413,14 @@ impl<F: FileSystem + Sync> Server<F> {
         if let Some(size) = (count as usize).checked_mul(size_of::<RemovemappingOne>()) {
             if size > MAX_BUFFER_SIZE as usize {
                 return reply_error(
-                    linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                    io::Error::from_raw_os_error(LINUX_ENOMEM),
                     in_header.unique,
                     w,
                 );
             }
         } else {
             return reply_error(
-                linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)),
+                io::Error::from_raw_os_error(LINUX_EOVERFLOW),
                 in_header.unique,
                 w,
             );
@@ -1469,7 +1488,7 @@ fn reply_ok<T: ByteValued>(
 fn reply_error(e: io::Error, unique: u64, mut w: Writer) -> Result<usize> {
     let header = OutHeader {
         len: size_of::<OutHeader>() as u32,
-        error: -e.raw_os_error().unwrap_or(libc::EIO),
+        error: -e.raw_os_error().unwrap_or(LINUX_EIO),
         unique,
     };
 
@@ -1493,24 +1512,24 @@ fn add_dirent(
     entry: Option<Entry>,
 ) -> io::Result<usize> {
     if d.name.len() > u32::MAX as usize {
-        return Err(linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)));
+        return Err(io::Error::from_raw_os_error(LINUX_EOVERFLOW));
     }
 
     let dirent_len = size_of::<Dirent>()
         .checked_add(d.name.len())
-        .ok_or_else(|| linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)))?;
+        .ok_or_else(|| io::Error::from_raw_os_error(LINUX_EOVERFLOW))?;
 
     // Directory entries must be padded to 8-byte alignment.  If adding 7 causes
     // an overflow then this dirent cannot be properly padded.
     let padded_dirent_len = dirent_len
         .checked_add(7)
         .map(|l| l & !7)
-        .ok_or_else(|| linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)))?;
+        .ok_or_else(|| io::Error::from_raw_os_error(LINUX_EOVERFLOW))?;
 
     let total_len = if entry.is_some() {
         padded_dirent_len
             .checked_add(size_of::<EntryOut>())
-            .ok_or_else(|| linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)))?
+            .ok_or_else(|| io::Error::from_raw_os_error(LINUX_EOVERFLOW))?
     } else {
         padded_dirent_len
     };

@@ -79,10 +79,29 @@ fn main() {
                      deps/libkrun/init/prebuilt/init-aarch64 (or init-x86_64)."
                 );
             }
-            let init_path = build_default_init();
-            // SAFETY: The build script is single threaded.
-            unsafe { std::env::set_var("KRUN_INIT_BINARY_PATH", &init_path) };
-            init_path
+            // The init binary is a Linux ELF that runs inside the guest VM.
+            // On non-Linux hosts, it must be cross-compiled. If no cross-compiler
+            // is available, create a placeholder so the build succeeds (the actual
+            // init binary must be supplied at runtime via KRUN_INIT_BINARY_PATH).
+            let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+            if target_os == "linux" {
+                let init_path = build_default_init();
+                // SAFETY: The build script is single threaded.
+                unsafe { std::env::set_var("KRUN_INIT_BINARY_PATH", &init_path) };
+                init_path
+            } else {
+                // Try to cross-compile with CC_LINUX; if not set, use a placeholder.
+                if std::env::var("CC_LINUX").is_ok() {
+                    let init_path = build_default_init();
+                    unsafe { std::env::set_var("KRUN_INIT_BINARY_PATH", &init_path) };
+                    init_path
+                } else {
+                    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+                    let placeholder = out_dir.join("init");
+                    std::fs::write(&placeholder, b"PLACEHOLDER_INIT").ok();
+                    placeholder
+                }
+            }
         });
     println!(
         "cargo:rustc-env=KRUN_INIT_BINARY_PATH={}",

@@ -25,9 +25,185 @@ use std::result;
 
 #[cfg(target_os = "linux")]
 use nix::sys::socket::{sockaddr, AddressFamily};
+#[cfg(unix)]
 use nix::sys::socket::{SockaddrLike, SockaddrStorage};
 use utils::byte_order;
 use vm_memory::{self, Address, GuestAddress, GuestMemory, GuestMemoryError};
+
+// On Windows, provide a stub SockaddrStorage that has the same role but doesn't
+// depend on nix. The actual wire format from the guest is parsed manually by
+// parse_address() on each platform, so we just need a type that can hold a
+// socket address and be embedded in the TSI request/response structs.
+#[cfg(target_os = "windows")]
+mod sockaddr_compat {
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    /// Opaque socket address storage for Windows.
+    ///
+    /// This mirrors the role of nix::sys::socket::SockaddrStorage but stores
+    /// the raw Linux sockaddr bytes so they can be round-tripped through the
+    /// VSock packet protocol without any platform-specific sockaddr conversion.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    pub struct SockaddrStorage {
+        /// Raw Linux sockaddr bytes (up to 128 bytes, matching sockaddr_storage).
+        buf: [u8; 128],
+        /// Number of valid bytes in `buf`.
+        len: u32,
+    }
+
+    impl std::fmt::Debug for SockaddrStorage {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "SockaddrStorage(len={})", self.len)
+        }
+    }
+
+    impl std::fmt::Display for SockaddrStorage {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "SockaddrStorage(len={})", self.len)
+        }
+    }
+
+    impl Default for SockaddrStorage {
+        fn default() -> Self {
+            // Default to an IPv4 0.0.0.0:0 address
+            let sa: SockaddrStorage = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0).into();
+            sa
+        }
+    }
+
+    impl SockaddrStorage {
+        /// Create from raw bytes (as received from the guest).
+        pub fn from_raw_bytes(bytes: &[u8], len: u32) -> Option<Self> {
+            if len as usize > 128 || (len as usize) > bytes.len() {
+                return None;
+            }
+            let mut buf = [0u8; 128];
+            buf[..len as usize].copy_from_slice(&bytes[..len as usize]);
+            Some(SockaddrStorage { buf, len })
+        }
+
+        /// Returns a pointer to the raw data (for writing into guest memory).
+        pub fn as_ptr(&self) -> *const u8 {
+            self.buf.as_ptr()
+        }
+
+        /// Returns the length of the stored address.
+        pub fn len(&self) -> u32 {
+            self.len
+        }
+
+        /// Returns the sa_family (first two bytes, little-endian) or None.
+        pub fn family_u16(&self) -> Option<u16> {
+            if self.len >= 2 {
+                Some(u16::from_le_bytes([self.buf[0], self.buf[1]]))
+            } else {
+                None
+            }
+        }
+
+        /// Stub: returns None (no sockaddr_in interpretation on Windows yet).
+        pub fn as_sockaddr_in(&self) -> Option<SockaddrInCompat> {
+            if self.len >= 8 {
+                let port = u16::from_be_bytes([self.buf[2], self.buf[3]]);
+                Some(SockaddrInCompat {
+                    len: self.len,
+                    port,
+                })
+            } else {
+                None
+            }
+        }
+
+        /// Stub: returns None (no sockaddr_in6 interpretation on Windows yet).
+        pub fn as_sockaddr_in6(&self) -> Option<SockaddrIn6Compat> {
+            None
+        }
+
+        /// Stub: returns None (no Unix addr interpretation on Windows).
+        pub fn as_unix_addr(&self) -> Option<UnixAddrCompat> {
+            None
+        }
+    }
+
+    // Minimal compat types so calling code compiles
+    pub struct SockaddrInCompat {
+        len: u32,
+        port: u16,
+    }
+
+    impl SockaddrInCompat {
+        pub fn len(&self) -> u32 {
+            self.len
+        }
+        pub fn port(&self) -> u16 {
+            self.port
+        }
+        pub fn ip(&self) -> Ipv4Addr {
+            Ipv4Addr::new(0, 0, 0, 0)
+        }
+    }
+
+    pub struct SockaddrIn6Compat;
+
+    impl SockaddrIn6Compat {
+        pub fn port(&self) -> u16 {
+            0
+        }
+        pub fn ip(&self) -> std::net::Ipv6Addr {
+            std::net::Ipv6Addr::UNSPECIFIED
+        }
+        pub fn flowinfo(&self) -> u32 {
+            0
+        }
+    }
+
+    pub struct UnixAddrCompat;
+
+    impl UnixAddrCompat {
+        pub fn len(&self) -> u32 {
+            0
+        }
+        pub fn path(&self) -> Option<&std::path::Path> {
+            None
+        }
+    }
+
+    impl From<SocketAddrV4> for SockaddrStorage {
+        fn from(addr: SocketAddrV4) -> Self {
+            // Encode as Linux sockaddr_in: family(2) + port(2) + addr(4) + zero(8) = 16 bytes
+            let mut buf = [0u8; 128];
+            // sa_family = AF_INET = 2 (Linux)
+            buf[0..2].copy_from_slice(&2u16.to_le_bytes());
+            // sin_port (network byte order)
+            buf[2..4].copy_from_slice(&addr.port().to_be_bytes());
+            // sin_addr
+            buf[4..8].copy_from_slice(&addr.ip().octets());
+            SockaddrStorage { buf, len: 16 }
+        }
+    }
+
+    impl From<std::net::SocketAddrV6> for SockaddrStorage {
+        fn from(addr: std::net::SocketAddrV6) -> Self {
+            // Encode as Linux sockaddr_in6
+            let mut buf = [0u8; 128];
+            // sa_family = AF_INET6 = 10 (Linux)
+            buf[0..2].copy_from_slice(&10u16.to_le_bytes());
+            // sin6_port (network byte order)
+            buf[2..4].copy_from_slice(&addr.port().to_be_bytes());
+            // sin6_flowinfo
+            buf[4..8].copy_from_slice(&addr.flowinfo().to_be_bytes());
+            // sin6_addr (16 bytes)
+            buf[8..24].copy_from_slice(&addr.ip().octets());
+            // sin6_scope_id
+            buf[24..28].copy_from_slice(&addr.scope_id().to_be_bytes());
+            SockaddrStorage { buf, len: 28 }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub use sockaddr_compat::SockaddrStorage;
 
 use super::super::DescriptorChain;
 use super::defs;
@@ -540,6 +716,27 @@ impl VsockPacket {
                 // Unix sockets, nor a way to cast an UnixPath to it.
                 error!("AF_UNIX sockets aren't yet supported on macOS");
                 None
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn parse_address(buf: &[u8], addr_len: u32) -> Option<SockaddrStorage> {
+        let family: u16 = byte_order::read_le_u16(&buf[0..2]);
+
+        match family {
+            defs::LINUX_AF_INET => {
+                debug!("parse_address: AF_INET");
+                SockaddrStorage::from_raw_bytes(buf, addr_len)
+            }
+            defs::LINUX_AF_INET6 => {
+                debug!("parse_address: AF_INET6");
+                SockaddrStorage::from_raw_bytes(buf, addr_len)
+            }
+            defs::LINUX_AF_UNIX => {
+                debug!("parse_address: AF_UNIX");
+                SockaddrStorage::from_raw_bytes(buf, addr_len)
             }
             _ => None,
         }

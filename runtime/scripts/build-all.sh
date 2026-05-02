@@ -6,7 +6,7 @@
 #   ./scripts/build-all.sh libkrunfw    # build only libkrunfw
 #   ./scripts/build-all.sh libkrun      # build only libkrun
 #   ./scripts/build-all.sh gvproxy      # build only gvproxy
-#   ./scripts/build-all.sh nanosandbox  # build only nanosandbox
+#   ./scripts/build-all.sh runtime      # build only runtime crate
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -59,27 +59,27 @@ build_gvproxy() {
     echo "==> gvproxy built → $BUILD_DIR/bin/gvproxy"
 }
 
-build_nanosandbox() {
-    echo "==> Building nanosandbox..."
+build_runtime() {
+    echo "==> Building runtime..."
     cd "$ROOT_DIR"
-    cargo build --release -p nanosandbox
-    echo "==> nanosandbox built"
+    cargo build --release -p runtime
+    echo "==> runtime built"
 }
 
 case "$COMPONENT" in
     libkrunfw) build_libkrunfw ;;
     libkrun)   build_libkrun ;;
     gvproxy)   build_gvproxy ;;
-    nanosandbox) build_nanosandbox ;;
+    runtime) build_runtime ;;
     all)
         build_libkrunfw
         build_libkrun
         build_gvproxy
-        build_nanosandbox
+        build_runtime
         ;;
     *)
         echo "Unknown component: $COMPONENT"
-        echo "Usage: $0 [all|libkrunfw|libkrun|gvproxy|nanosandbox]"
+        echo "Usage: $0 [all|libkrunfw|libkrun|gvproxy|runtime]"
         exit 1
         ;;
 esac

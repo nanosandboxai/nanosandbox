@@ -23,9 +23,9 @@ pub mod device;
 pub mod file_traits;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 pub mod fs;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 pub mod gpu;
-#[cfg(feature = "input")]
+#[cfg(all(feature = "input", unix))]
 pub mod input;
 pub mod linux_errno;
 mod mmio;
@@ -34,7 +34,7 @@ pub mod net;
 mod queue;
 #[cfg(not(feature = "tee"))]
 pub mod rng;
-#[cfg(feature = "snd")]
+#[cfg(all(feature = "snd", unix))]
 pub mod snd;
 pub mod vsock;
 
@@ -46,7 +46,7 @@ pub use self::console::*;
 pub use self::device::*;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 pub use self::fs::*;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 pub use self::gpu::*;
 pub use self::mmio::*;
 #[cfg(feature = "net")]
@@ -54,7 +54,7 @@ pub use self::net::Net;
 pub use self::queue::{Descriptor, DescriptorChain, Queue};
 #[cfg(not(feature = "tee"))]
 pub use self::rng::*;
-#[cfg(feature = "snd")]
+#[cfg(all(feature = "snd", unix))]
 pub use self::snd::Snd;
 pub use self::vsock::*;
 

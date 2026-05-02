@@ -2,8 +2,12 @@ use std::cmp;
 use std::io::Write;
 use std::iter::zip;
 use std::mem::{size_of, size_of_val};
+#[cfg(unix)]
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
+
+#[cfg(target_os = "windows")]
+type RawFd = isize;
 
 use utils::eventfd::EventFd;
 use vm_memory::{ByteValued, Bytes, GuestMemoryMmap};
@@ -113,7 +117,14 @@ impl Console {
     }
 
     pub fn get_sigwinch_fd(&self) -> RawFd {
-        self.sigwinch_evt.as_raw_fd()
+        #[cfg(unix)]
+        {
+            self.sigwinch_evt.as_raw_fd()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.sigwinch_evt.as_pollable()
+        }
     }
 
     pub fn update_console_size(&mut self, port_id: u32, cols: u16, rows: u16) {

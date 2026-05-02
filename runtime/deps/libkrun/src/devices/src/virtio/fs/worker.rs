@@ -3,6 +3,7 @@ use crossbeam_channel::Sender;
 #[cfg(target_os = "macos")]
 use utils::worker_message::WorkerMessage;
 
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::sync::atomic::AtomicI32;
 use std::sync::Arc;
@@ -18,6 +19,22 @@ use super::descriptor_utils::{Reader, Writer};
 use super::passthrough::{self, PassthroughFs};
 use super::server::Server;
 use crate::virtio::{InterruptTransport, VirtioShmRegion};
+
+/// Cross-platform helper to get a pollable handle from an EventFd.
+/// On Unix this returns a RawFd via AsRawFd; on Windows it returns an isize (HANDLE).
+#[cfg(unix)]
+macro_rules! pollable_fd {
+    ($efd:expr) => {
+        $efd.as_raw_fd()
+    };
+}
+
+#[cfg(target_os = "windows")]
+macro_rules! pollable_fd {
+    ($efd:expr) => {
+        $efd.as_pollable()
+    };
+}
 
 pub struct FsWorker {
     queues: Vec<Queue>,
@@ -67,11 +84,12 @@ impl FsWorker {
     }
 
     fn work(mut self) {
-        let virtq_hpq_ev_fd = self.queue_evts[HPQ_INDEX].as_raw_fd();
-        let virtq_req_ev_fd = self.queue_evts[REQ_INDEX].as_raw_fd();
-        let stop_ev_fd = self.stop_fd.as_raw_fd();
+        let virtq_hpq_ev_fd = pollable_fd!(self.queue_evts[HPQ_INDEX]);
+        let virtq_req_ev_fd = pollable_fd!(self.queue_evts[REQ_INDEX]);
+        let stop_ev_fd = pollable_fd!(self.stop_fd);
 
-        let epoll = Epoll::new().unwrap();
+        #[allow(unused_mut)]
+        let mut epoll = Epoll::new().unwrap();
 
         let _ = epoll.ctl(
             ControlOperation::Add,

@@ -67,3 +67,22 @@ pub struct InitrdConfig {
 
 /// Default (smallest) memory page size for the supported architectures.
 pub const PAGE_SIZE: usize = 4096;
+
+/// Get the host page size at runtime.
+#[cfg(unix)]
+pub fn get_page_size() -> usize {
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() }
+}
+
+#[cfg(target_os = "windows")]
+pub fn get_page_size() -> usize {
+    PAGE_SIZE
+}
+
+/// Align `value` upwards to the nearest multiple of `alignment`.
+#[macro_export]
+macro_rules! align_up {
+    ($value:expr, $alignment:expr) => {
+        ($value + $alignment - 1) & !($alignment - 1)
+    };
+}

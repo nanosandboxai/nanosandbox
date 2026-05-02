@@ -23,7 +23,7 @@ on:
     #   - 'deps/libkrunfw/**'
     #   - 'deps/gvproxy/**'
     #   - 'crates/libkrun-sys/**'
-    #   - 'crates/nanosandbox/**'
+    #   - 'crates/runtime/**'
     #   - 'scripts/ci/**'
     #   - 'scripts/build-all.sh'
     #   - '.github/workflows/deps-build.yml'
@@ -34,7 +34,7 @@ on:
   #     - 'deps/libkrunfw/**'
   #     - 'deps/gvproxy/**'
   #     - 'crates/libkrun-sys/**'
-  #     - 'crates/nanosandbox/**'
+  #     - 'crates/runtime/**'
   workflow_dispatch:
 
 env:
@@ -199,7 +199,7 @@ jobs:
           fi
 
       # Build nanosandbox (libkrun compiles in as rlib — no separate .so needed)
-      - name: Build nanosandbox
+      - name: Build runtime
         shell: bash
         run: |
           [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
@@ -208,7 +208,7 @@ jobs:
             export RUSTFLAGS="-C link-args=-Wl,--allow-multiple-definition"
             export OPENSSL_STATIC=1
           fi
-          cargo build --release -p nanosandbox
+          cargo build --release -p runtime
 
       # Unit tests only — integration tests are gated behind feature flag
       - name: Run unit tests
@@ -219,15 +219,15 @@ jobs:
             export RUSTFLAGS="-C link-args=-Wl,--allow-multiple-definition"
             export OPENSSL_STATIC=1
           fi
-          cargo test -p nanosandbox
+          cargo test -p runtime
 
       - name: Verify artifacts
         run: |
           echo "=== libkrunfw ==="
           ls -lh deps/libkrunfw/libkrunfw.so* 2>/dev/null || ls -lh deps/libkrunfw/libkrunfw.a 2>/dev/null || echo "not found"
           echo "=== nanosandbox (libkrun compiled in) ==="
-          ls -lh target/release/libnanosandbox.rlib 2>/dev/null || \
-            find target/release -name 'libnanosandbox*' -not -path '*/build/*' | head -5 || echo "not found"
+          ls -lh target/release/libruntime.rlib 2>/dev/null || \
+            find target/release -name 'libruntime*' -not -path '*/build/*' | head -5 || echo "not found"
           echo "=== gvproxy ==="
           ls -la deps/gvproxy/gvproxy 2>/dev/null || echo "not built"
 
@@ -237,12 +237,55 @@ jobs:
         with:
           name: deps-${{ matrix.distro.name }}
           path: |
-            target/release/libnanosandbox*
+            target/release/libruntime*
             deps/libkrunfw/libkrunfw*.so*
             deps/gvproxy/gvproxy
           retention-days: 7
 
-  # ─── Job 3: macOS build ───
+  # ─── Job 3: Windows build (HCS microVM) ───
+  # Windows uses libkrun's HCS backend. No kernel.c or gvproxy needed —
+  # libkrunfw-win embeds a prebuilt vmlinux.bin (built separately).
+  # For now, cargo check validates compilation; full build requires kernel artifact.
+  build-windows:
+    name: Build on Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Create kernel stubs for compilation
+        shell: bash
+        run: |
+          # libkrunfw-win needs vmlinux.bin to compile; create empty stubs
+          # so cargo check passes (actual kernel comes from CI artifact at runtime)
+          touch deps/libkrun/src/libkrunfw-win/vmlinux.bin
+          echo "0" > deps/libkrun/src/libkrunfw-win/guest_addr.txt
+          echo "0" > deps/libkrun/src/libkrunfw-win/entry_addr.txt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: cargo check runtime
+        run: cargo check -p runtime
+
+      - name: cargo check libkrun-sys (net + hcs)
+        run: cargo check -p libkrun-sys --features net,hcs
+
+      - name: Run unit tests
+        run: cargo test -p runtime
+        continue-on-error: true  # Some tests may need WHPX/HCS which CI runners lack
+
+  # ─── Job 4: macOS build ───
   build-macos:
     name: Build on macOS (Apple Silicon)
     runs-on: macos-latest
@@ -305,25 +348,25 @@ jobs:
           echo "gvproxy built: $(ls -la gvproxy)"
 
       # Build nanosandbox (libkrun compiles in as rlib — no separate .dylib needed)
-      - name: Build nanosandbox
-        run: cargo build --release -p nanosandbox
+      - name: Build runtime
+        run: cargo build --release -p runtime
 
       - name: Clippy
-        run: cargo clippy -p nanosandbox -p libkrun-sys -- -D warnings
+        run: cargo clippy -p runtime -p libkrun-sys -- -D warnings
 
       - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Run unit tests
-        run: cargo test -p nanosandbox -p libkrun-sys
+        run: cargo test -p runtime -p libkrun-sys
 
       - name: Verify artifacts
         run: |
           echo "=== libkrunfw ==="
           ls -la /usr/local/lib/libkrunfw* 2>/dev/null || echo "not found"
           echo "=== nanosandbox (libkrun compiled in) ==="
-          ls -lh target/release/libnanosandbox.rlib 2>/dev/null || \
-            find target/release -name 'libnanosandbox*' -not -path '*/build/*' | head -5 || echo "not found"
+          ls -lh target/release/libruntime.rlib 2>/dev/null || \
+            find target/release -name 'libruntime*' -not -path '*/build/*' | head -5 || echo "not found"
           echo "=== gvproxy ==="
           ls -la deps/gvproxy/gvproxy
 
@@ -333,7 +376,7 @@ jobs:
         with:
           name: deps-macOS
           path: |
-            target/release/libnanosandbox*
+            target/release/libruntime*
             deps/libkrunfw/libkrunfw*.dylib
             deps/gvproxy/gvproxy
           retention-days: 7

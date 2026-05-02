@@ -20,3 +20,7 @@ pub use self::kvm::mmio;
 pub mod hvf;
 #[cfg(target_os = "macos")]
 pub use self::hvf::mmio;
+#[cfg(target_os = "windows")]
+pub mod whpx;
+#[cfg(target_os = "windows")]
+pub use self::whpx::mmio;

@@ -9,6 +9,10 @@ mod device;
 mod event_handler;
 mod muxer;
 mod muxer_rxq;
+#[cfg(unix)]
+mod muxer_thread;
+#[cfg(target_os = "windows")]
+#[path = "muxer_thread_win.rs"]
 mod muxer_thread;
 #[allow(dead_code)]
 mod packet;
@@ -16,8 +20,17 @@ mod proxy;
 mod reaper;
 #[cfg(target_os = "macos")]
 mod timesync;
+#[cfg(unix)]
 mod tsi_dgram;
+#[cfg(target_os = "windows")]
+#[path = "tsi_dgram_win.rs"]
+mod tsi_dgram;
+#[cfg(unix)]
 mod tsi_stream;
+#[cfg(target_os = "windows")]
+#[path = "tsi_stream_win.rs"]
+mod tsi_stream;
+#[cfg(unix)]
 mod unix;
 
 pub use self::defs::uapi::VIRTIO_ID_VSOCK as TYPE_VSOCK;

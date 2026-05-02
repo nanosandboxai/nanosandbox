@@ -1,33 +1,38 @@
 #![allow(clippy::missing_safety_doc)]
+#[cfg(unix)]
 use libc;
 
-pub const LINUX_EACCES: libc::c_int = 13;
-pub const LINUX_ENODATA: libc::c_int = 61;
-pub const LINUX_ENOSYS: libc::c_int = 38;
-pub const LINUX_ENOTEMPTY: libc::c_int = 39;
+// Linux error codes (used by FUSE protocol, always the same values regardless of host).
+pub const LINUX_EACCES: i32 = 13;
+pub const LINUX_ENODATA: i32 = 61;
+pub const LINUX_ENOSYS: i32 = 38;
+pub const LINUX_ENOTEMPTY: i32 = 39;
 
-pub const LINUX_O_APPEND: libc::c_int = 1024;
-pub const LINUX_O_CLOEXEC: libc::c_int = 0x80000;
-pub const LINUX_O_DIRECT: libc::c_int = 0x4000;
-pub const LINUX_O_DIRECTORY: libc::c_int = 0x10000;
-pub const LINUX_O_LARGEFILE: libc::c_int = 0;
-pub const LINUX_O_NOFOLLOW: libc::c_int = 0x20000;
-pub const LINUX_O_CREAT: libc::c_int = 64;
-pub const LINUX_O_EXCL: libc::c_int = 128;
-pub const LINUX_O_NOCTTY: libc::c_int = 256;
-pub const LINUX_O_NONBLOCK: libc::c_int = 2048;
-pub const LINUX_O_SYNC: libc::c_int = 1052672;
-pub const LINUX_O_TRUNC: libc::c_int = 512;
-pub const LINUX_O_RSYNC: libc::c_int = 1052672;
-pub const LINUX_O_DSYNC: libc::c_int = 4096;
-pub const LINUX_O_ASYNC: libc::c_int = 0x2000;
+// Linux open flags (used by FUSE protocol, always the same values regardless of host).
+pub const LINUX_O_APPEND: i32 = 1024;
+pub const LINUX_O_CLOEXEC: i32 = 0x80000;
+pub const LINUX_O_DIRECT: i32 = 0x4000;
+pub const LINUX_O_DIRECTORY: i32 = 0x10000;
+pub const LINUX_O_LARGEFILE: i32 = 0;
+pub const LINUX_O_NOFOLLOW: i32 = 0x20000;
+pub const LINUX_O_CREAT: i32 = 64;
+pub const LINUX_O_EXCL: i32 = 128;
+pub const LINUX_O_NOCTTY: i32 = 256;
+pub const LINUX_O_NONBLOCK: i32 = 2048;
+pub const LINUX_O_SYNC: i32 = 1052672;
+pub const LINUX_O_TRUNC: i32 = 512;
+pub const LINUX_O_RSYNC: i32 = 1052672;
+pub const LINUX_O_DSYNC: i32 = 4096;
+pub const LINUX_O_ASYNC: i32 = 0x2000;
 
-pub const LINUX_RENAME_NOREPLACE: libc::c_int = 1 << 0;
-pub const LINUX_RENAME_EXCHANGE: libc::c_int = 1 << 1;
-pub const LINUX_RENAME_WHITEOUT: libc::c_int = 1 << 2;
+pub const LINUX_RENAME_NOREPLACE: i32 = 1 << 0;
+pub const LINUX_RENAME_EXCHANGE: i32 = 1 << 1;
+pub const LINUX_RENAME_WHITEOUT: i32 = 1 << 2;
 
-pub const LINUX_XATTR_CREATE: libc::c_int = 1;
-pub const LINUX_XATTR_REPLACE: libc::c_int = 2;
+pub const LINUX_XATTR_CREATE: i32 = 1;
+pub const LINUX_XATTR_REPLACE: i32 = 2;
+
+// ---------- Platform-specific type aliases ----------
 
 #[cfg(target_os = "macos")]
 pub type stat64 = libc::stat;
@@ -48,6 +53,63 @@ pub use libc::statvfs64;
 pub type ino64_t = libc::ino_t;
 #[cfg(target_os = "linux")]
 pub use libc::ino64_t;
+
+// ---------- Windows type definitions ----------
+// On Windows, we define these types from scratch since there's no libc.
+// These must be layout-compatible with what the FUSE protocol expects
+// (i.e., Linux x86_64 stat64 layout).
+
+#[cfg(target_os = "windows")]
+pub type off64_t = i64;
+
+#[cfg(target_os = "windows")]
+pub type ino64_t = u64;
+
+/// Synthetic stat64 for Windows. Fields match Linux x86_64 stat64 layout
+/// as expected by the FUSE protocol. The Windows passthrough fills these
+/// from `GetFileInformationByHandle` / `GetFileInformationByHandleEx`.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct stat64 {
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_nlink: u64,
+    pub st_mode: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub __pad0: u32,
+    pub st_rdev: u64,
+    pub st_size: i64,
+    pub st_blksize: i64,
+    pub st_blocks: i64,
+    pub st_atime: i64,
+    pub st_atime_nsec: i64,
+    pub st_mtime: i64,
+    pub st_mtime_nsec: i64,
+    pub st_ctime: i64,
+    pub st_ctime_nsec: i64,
+}
+
+/// Synthetic statvfs64 for Windows. Filled from `GetDiskFreeSpaceExW`.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct statvfs64 {
+    pub f_bsize: u64,
+    pub f_frsize: u64,
+    pub f_blocks: u64,
+    pub f_bfree: u64,
+    pub f_bavail: u64,
+    pub f_files: u64,
+    pub f_ffree: u64,
+    pub f_favail: u64,
+    pub f_fsid: u64,
+    pub f_flag: u64,
+    pub f_namemax: u64,
+}
+
+// ---------- Unix I/O functions ----------
 
 #[cfg(target_os = "linux")]
 pub unsafe fn pread64(

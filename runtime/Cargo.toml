@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/nanosandbox",
+    "crates/runtime",
     "crates/libkrun-sys",
     # libkrun internal crates (checked-in source from deps/libkrun/)
     "deps/libkrun/src/libkrun",
@@ -13,12 +13,15 @@ members = [
     "deps/libkrun/src/utils",
     "deps/libkrun/src/smbios",
     "deps/libkrun/src/cpuid",
-    "deps/libkrun/src/hvf",
-    "deps/libkrun/src/rutabaga_gfx",
+    "deps/libkrun/src/vm-memory-win",
+    "deps/libkrun/src/hcs",
+    "deps/libkrun/src/libkrunfw-win",
 ]
 resolver = "2"
 
-# Exclude remaining submodules and libkrun tests/examples (they have their own workspaces)
+# Exclude platform-specific crates and submodules that are only needed as
+# dependencies on their target OS. Cargo resolves them automatically via
+# [target.'cfg(...)'.dependencies] when building on the correct platform.
 exclude = [
     "deps/libkrunfw",
     "deps/gvproxy",
@@ -28,8 +31,17 @@ exclude = [
     "deps/libkrun/src/krun_display",
     "deps/libkrun/src/krun_input",
     "deps/libkrun/src/aws_nitro",
+    "deps/libkrun/src/hvf",              # macOS only (Hypervisor.framework)
+    "deps/libkrun/src/rutabaga_gfx",     # Linux/macOS only (GPU virtio)
     "deps/libkrun/src/rutabaga_gfx/ffi",
+    "tools/extract_kernel",
 ]
+
+# On Windows, replace the crates.io vm-memory with our patched fork that
+# compiles on non-Unix platforms (vm-memory-win). The patched crate has the
+# same API surface and version (0.16.2) so all dependents resolve identically.
+[patch.crates-io]
+vm-memory = { path = "deps/libkrun/src/vm-memory-win" }
 
 [profile.release]
 lto = true

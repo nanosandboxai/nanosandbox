@@ -13,6 +13,10 @@ use std::io::{self, Write};
 use std::os::linux::fs::MetadataExt;
 #[cfg(target_os = "macos")]
 use std::os::macos::fs::MetadataExt;
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::MetadataExt;
+#[cfg(target_os = "windows")]
+use std::os::windows::io::FromRawHandle;
 use std::path::PathBuf;
 use std::result;
 use std::sync::{Arc, Mutex};
@@ -65,6 +69,66 @@ impl CacheType {
     }
 }
 
+/// Open a disk image file on Windows using `CreateFileW`.
+///
+/// This provides finer-grained control than `std::fs::OpenOptions`, allowing
+/// us to set `FILE_SHARE_READ` for read-only disks and appropriate access
+/// flags.
+///
+/// - Read-only: `GENERIC_READ` with `FILE_SHARE_READ`
+/// - Read-write: `GENERIC_READ | GENERIC_WRITE` with no sharing
+/// - `direct_io`: adds `FILE_FLAG_NO_BUFFERING` (Windows equivalent of O_DIRECT)
+#[cfg(target_os = "windows")]
+fn open_disk_file_win(
+    path: &str,
+    is_read_only: bool,
+    direct_io: bool,
+) -> io::Result<File> {
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_NO_BUFFERING, FILE_SHARE_READ,
+        GENERIC_READ, GENERIC_WRITE, OPEN_EXISTING,
+    };
+
+    let wide_path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let desired_access = if is_read_only {
+        GENERIC_READ
+    } else {
+        GENERIC_READ | GENERIC_WRITE
+    };
+
+    let share_mode = if is_read_only { FILE_SHARE_READ } else { 0 };
+
+    let flags = if direct_io {
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING
+    } else {
+        FILE_ATTRIBUTE_NORMAL
+    };
+
+    // SAFETY: `wide_path` is a valid null-terminated wide string, and we
+    // check the return value for INVALID_HANDLE_VALUE.
+    let handle: HANDLE = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            desired_access,
+            share_mode,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            flags,
+            0,
+        )
+    };
+
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: `handle` is a valid, newly-opened file handle that we own
+    // exclusively. Converting it to `File` transfers ownership.
+    Ok(unsafe { File::from_raw_handle(handle as *mut std::ffi::c_void) })
+}
+
 /// Helper object for setting up all `Block` fields derived from its backing file.
 pub(crate) struct DiskProperties {
     cache_type: CacheType,
@@ -109,12 +173,21 @@ impl DiskProperties {
     fn build_device_id(disk_file: &File) -> result::Result<String, Error> {
         let blk_metadata = disk_file.metadata().map_err(Error::GetFileMetadata)?;
         // This is how kvmtool does it.
+        #[cfg(unix)]
         let device_id = format!(
             "{}{}{}",
             blk_metadata.st_dev(),
             blk_metadata.st_rdev(),
             blk_metadata.st_ino()
         );
+        #[cfg(target_os = "windows")]
+        let device_id = {
+            // Windows does not have st_dev/st_rdev/st_ino. Use volume serial
+            // number and file index as a comparable unique identifier.
+            let vol = blk_metadata.volume_serial_number().unwrap_or(0);
+            let idx = blk_metadata.file_index().unwrap_or(0);
+            format!("{}{}", vol, idx)
+        };
         Ok(device_id)
     }
 
@@ -238,10 +311,17 @@ impl Block {
         direct_io: bool,
         sync_mode: SyncMode,
     ) -> io::Result<Block> {
+        // Open the disk image file for metadata / device-id generation.
+        // On Windows we use CreateFileW for finer control over access and
+        // sharing flags; on Unix we use the standard OpenOptions.
+        #[cfg(not(target_os = "windows"))]
         let disk_image = OpenOptions::new()
             .read(true)
             .write(!is_disk_read_only)
             .open(PathBuf::from(&disk_image_path))?;
+
+        #[cfg(target_os = "windows")]
+        let disk_image = open_disk_file_win(&disk_image_path, is_disk_read_only, direct_io)?;
 
         let disk_image_id = DiskProperties::build_disk_image_id(&disk_image);
 

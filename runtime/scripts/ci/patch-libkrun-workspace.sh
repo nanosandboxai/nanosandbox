@@ -77,4 +77,4 @@ if ! grep -q 'net = \["vmm/net"' "$LIBKRUN_CARGO" 2>/dev/null; then
     echo "  WARNING: Feature propagation may need manual review after upstream sync"
 fi
 
-echo "Done. Run 'cargo check -p nanosandbox' to verify."
+echo "Done. Run 'cargo check -p runtime' to verify."

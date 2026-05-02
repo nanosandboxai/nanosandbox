@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use arch::ArchMemoryInfo;
 use vm_memory::GuestAddress;
-use vmm_sys_util::align_upwards;
 
 #[derive(Debug)]
 pub enum Error {
@@ -52,13 +51,13 @@ impl ShmManager {
         self.fs_regions.get(&index)
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", unix))]
     pub fn gpu_region(&self) -> Option<&ShmRegion> {
         self.gpu_region.as_ref()
     }
 
     fn create_region(&mut self, size: usize) -> Result<ShmRegion, Error> {
-        let size = align_upwards!(size, self.page_size);
+        let size = arch::align_up!(size, self.page_size);
 
         let region = ShmRegion {
             guest_addr: GuestAddress(self.next_guest_addr),

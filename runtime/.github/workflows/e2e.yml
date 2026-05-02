@@ -41,7 +41,7 @@ jobs:
           echo "Platform Status:"
           echo "  - macOS Apple Silicon: STABLE (tested locally)"
           echo "  - Linux (KVM):         DISABLED (runtime setup in progress)"
-          echo "  - Windows:             DISABLED (containerd issues)"
+          echo "  - Windows (HCS):       DISABLED (microVM setup in progress)"
           echo ""
           echo "To run E2E tests locally on macOS:"
           echo "  1. Run: ./scripts/install/macos.sh"
@@ -59,7 +59,6 @@ jobs:
   # ==========================================================================
   # Windows E2E Tests - DISABLED
   # ==========================================================================
-  # Requires: containerd + containerd-shim-runhcs-v1 + Windows container images
-  # Known issue: "no Files folder in layer 1" during image extraction
-  # See commented code below for implementation reference
+  # Requires: WHPX + HCS + libkrunfw kernel artifact
+  # Uses microVM approach (libkrun HCS backend), not Windows containers
   # ==========================================================================

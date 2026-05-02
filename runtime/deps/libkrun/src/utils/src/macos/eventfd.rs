@@ -70,6 +70,11 @@ impl EventFd {
     pub fn get_write_fd(&self) -> RawFd {
         self.write_fd.as_raw_fd()
     }
+
+    /// Returns a platform-specific pollable handle (RawFd on Unix, HANDLE on Windows).
+    pub fn as_pollable(&self) -> RawFd {
+        self.as_raw_fd()
+    }
 }
 
 impl AsRawFd for EventFd {

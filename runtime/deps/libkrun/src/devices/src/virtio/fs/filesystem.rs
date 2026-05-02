@@ -308,13 +308,22 @@ impl<W: ZeroCopyWriter> ZeroCopyWriter for &mut W {
 #[derive(Clone, Copy, Debug)]
 pub struct Context {
     /// The user ID of the calling process.
+    #[cfg(unix)]
     pub uid: libc::uid_t,
+    #[cfg(not(unix))]
+    pub uid: u32,
 
     /// The group ID of the calling process.
+    #[cfg(unix)]
     pub gid: libc::gid_t,
+    #[cfg(not(unix))]
+    pub gid: u32,
 
     /// The thread group ID of the calling process.
+    #[cfg(unix)]
     pub pid: libc::pid_t,
+    #[cfg(not(unix))]
+    pub pid: i32,
 }
 
 impl From<fuse::InHeader> for Context {
@@ -1144,7 +1153,7 @@ pub trait FileSystem {
         shm_size: u64,
         #[cfg(target_os = "macos")] map_sender: &Option<Sender<WorkerMessage>>,
     ) -> io::Result<()> {
-        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+        Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
     fn removemapping(
@@ -1155,7 +1164,7 @@ pub trait FileSystem {
         shm_size: u64,
         #[cfg(target_os = "macos")] map_sender: &Option<Sender<WorkerMessage>>,
     ) -> io::Result<()> {
-        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+        Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
     #[allow(clippy::too_many_arguments)]

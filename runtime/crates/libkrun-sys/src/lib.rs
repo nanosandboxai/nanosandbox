@@ -139,13 +139,15 @@ extern "C" {
     pub fn krun_set_vm_config(ctx_id: c_uint, num_vcpus: u8, ram_mib: c_uint) -> c_int;
     pub fn krun_set_root(ctx_id: c_uint, root_path: *const c_char) -> c_int;
 
-    // --- Disk management ---
+    // --- Disk management (requires blk feature in libkrun) ---
+    #[cfg(feature = "blk")]
     pub fn krun_add_disk(
         ctx_id: c_uint,
         block_id: *const c_char,
         disk_path: *const c_char,
         read_only: bool,
     ) -> c_int;
+    #[cfg(feature = "blk")]
     pub fn krun_add_disk2(
         ctx_id: c_uint,
         block_id: *const c_char,
@@ -153,6 +155,7 @@ extern "C" {
         disk_format: c_uint,
         read_only: bool,
     ) -> c_int;
+    #[cfg(feature = "blk")]
     pub fn krun_add_disk3(
         ctx_id: c_uint,
         block_id: *const c_char,
@@ -317,8 +320,10 @@ extern "C" {
     // --- Security / TEE ---
     pub fn krun_set_tee_config_file(ctx_id: c_uint, filepath: *const c_char) -> c_int;
 
-    // --- UID/GID ---
+    // --- UID/GID (Unix only) ---
+    #[cfg(unix)]
     pub fn krun_setuid(ctx_id: c_uint, uid: libc::uid_t) -> c_int;
+    #[cfg(unix)]
     pub fn krun_setgid(ctx_id: c_uint, gid: libc::gid_t) -> c_int;
 
     // --- Nested virtualization ---
@@ -327,6 +332,7 @@ extern "C" {
 
     // --- Feature detection ---
     pub fn krun_has_feature(feature: u64) -> c_int;
+    #[cfg(unix)]
     pub fn krun_get_max_vcpus() -> c_int;
 
     // --- SMBIOS ---
@@ -409,6 +415,7 @@ pub fn safe_set_root(ctx_id: u32, root_path: &str) -> Result<(), String> {
 // Safe Rust wrappers — Disk management
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "blk")]
 pub fn safe_add_disk(
     ctx_id: u32,
     block_id: &str,
@@ -432,6 +439,7 @@ pub fn safe_add_disk(
     }
 }
 
+#[cfg(feature = "blk")]
 pub fn safe_add_disk2(
     ctx_id: u32,
     block_id: &str,
@@ -457,6 +465,7 @@ pub fn safe_add_disk2(
     }
 }
 
+#[cfg(feature = "blk")]
 pub fn safe_add_disk3(
     ctx_id: u32,
     block_id: &str,
@@ -965,6 +974,7 @@ pub fn safe_set_kernel(
 // Safe Rust wrappers — UID/GID
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 pub fn safe_setuid(ctx_id: u32, uid: u32) -> Result<(), String> {
     let ret = unsafe { krun_setuid(ctx_id as c_uint, uid) };
     if ret < 0 {
@@ -974,6 +984,7 @@ pub fn safe_setuid(ctx_id: u32, uid: u32) -> Result<(), String> {
     }
 }
 
+#[cfg(unix)]
 pub fn safe_setgid(ctx_id: u32, gid: u32) -> Result<(), String> {
     let ret = unsafe { krun_setgid(ctx_id as c_uint, gid) };
     if ret < 0 {
@@ -1021,6 +1032,7 @@ pub fn safe_has_feature(feature: u64) -> Result<bool, String> {
 }
 
 /// Get the maximum number of vCPUs supported by the hypervisor.
+#[cfg(unix)]
 pub fn safe_get_max_vcpus() -> Result<u32, String> {
     let ret = unsafe { krun_get_max_vcpus() };
     if ret < 0 {
@@ -1098,3 +1110,4 @@ pub fn safe_get_shutdown_eventfd(ctx_id: u32) -> Result<i32, String> {
         Ok(ret)
     }
 }
+

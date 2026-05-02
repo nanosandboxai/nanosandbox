@@ -9,7 +9,7 @@ use std::mem;
 use std::result;
 use std::slice;
 
-use libc::c_char;
+use std::ffi::c_char;
 
 use arch_gen::x86::mpspec;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};

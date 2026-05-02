@@ -5,6 +5,7 @@ use super::device::{CacheType, DiskProperties};
 
 use crate::virtio::InterruptTransport;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::result;
 use std::thread;
@@ -12,6 +13,23 @@ use utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 use utils::eventfd::EventFd;
 use virtio_bindings::virtio_blk::*;
 use vm_memory::{ByteValued, GuestMemoryMmap};
+
+/// Helper to get a pollable handle from an EventFd (cross-platform).
+/// On Unix, this returns RawFd (i32) via AsRawFd.
+/// On Windows, this returns isize via as_pollable().
+#[cfg(unix)]
+macro_rules! pollable {
+    ($efd:expr) => {
+        $efd.as_raw_fd()
+    };
+}
+
+#[cfg(target_os = "windows")]
+macro_rules! pollable {
+    ($efd:expr) => {
+        $efd.as_pollable()
+    };
+}
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -88,10 +106,12 @@ impl BlockWorker {
     }
 
     fn work(mut self) {
-        let virtq_ev_fd = self.device_queue.event.as_raw_fd();
-        let stop_ev_fd = self.stop_fd.as_raw_fd();
+        let virtq_ev_fd = pollable!(self.device_queue.event);
+        let stop_ev_fd = pollable!(self.stop_fd);
 
-        let epoll = Epoll::new().unwrap();
+        // On Windows, Epoll::ctl takes &mut self, so the binding must be mutable.
+        #[allow(unused_mut)]
+        let mut epoll = Epoll::new().unwrap();
 
         let _ = epoll.ctl(
             ControlOperation::Add,

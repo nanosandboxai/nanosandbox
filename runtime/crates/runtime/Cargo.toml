@@ -1,0 +1,71 @@
+[package]
+name = "runtime"
+version = "0.1.0"
+edition = "2021"
+description = "VM-based sandbox SDK using libkrun FFI"
+license = "Apache-2.0"
+repository = "https://github.com/nanosandboxai/runtime"
+keywords = ["sandbox", "virtualization", "containers", "isolation", "security"]
+categories = ["development-tools", "virtualization"]
+authors = ["DevDone Labs"]
+
+[lib]
+name = "runtime"
+path = "src/lib.rs"
+
+[features]
+default = []
+server = ["axum", "tower"]
+integration-tests = []  # Enable integration/e2e test compilation (requires runtime + KVM/HVF)
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# OCI/Container support
+oci-distribution = "0.11"   # For registry operations
+tar = "0.4"                 # For layer extraction
+flate2 = "1"                # For gzip decompression
+sha2 = "0.10"               # For blob integrity verification
+docker_credential = "1.3"   # For Docker config.json parsing
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+log = "0.4"         # Needed to detect existing logger for libkrun FFI safety
+env_logger = "0.11" # Needed to safely probe before krun_set_log_level calls env_logger::init()
+async-trait = "0.1"
+dirs = "6"
+
+# libkrun compiled directly as rlib on all platforms
+[target.'cfg(unix)'.dependencies]
+libkrun-sys = { path = "../libkrun-sys", features = ["net"] }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+libkrun-sys = { path = "../libkrun-sys", features = ["net", "hcs"] }
+
+# Vendored OpenSSL for Linux: compiles OpenSSL from bundled source so the build
+# doesn't depend on system headers or a specific libssl.so version. This is
+# required when using cargo-zigbuild (zig's CC wrapper can't find system headers)
+# and also ensures the binary is self-contained w.r.t. TLS on all Linux distros.
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
+# Server (optional)
+axum = { version = "0.7", optional = true }
+tower = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -23,6 +23,8 @@ mod kvmgicv2;
 mod kvmgicv3;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvmioapic;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+mod whpx_ioapic;
 #[cfg(target_arch = "aarch64")]
 mod rtc_pl031;
 #[cfg(target_os = "macos")]
@@ -67,6 +69,8 @@ pub use self::kvmgicv2::KvmGicV2;
 pub use self::kvmgicv3::KvmGicV3;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use self::kvmioapic::KvmIoapic;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub use self::whpx_ioapic::WhpxIoapic;
 #[cfg(target_arch = "aarch64")]
 pub use self::rtc_pl031::RTC;
 pub use self::serial::Serial;
@@ -74,11 +78,19 @@ pub use self::serial::Serial;
 pub use self::vcpu::VcpuList;
 
 // Cannot use multiple types as bounds for a trait object, so we define our own trait
-// which is a composition of the desired bounds. In this case, io::Read and AsRawFd.
+// which is a composition of the desired bounds. In this case, io::Read and a
+// platform-specific fd/handle trait.
 // Run `rustc --explain E0225` for more details.
-/// Trait that composes the `std::io::Read` and `std::os::unix::io::AsRawFd` traits.
+/// Trait that composes the `std::io::Read` and platform-specific fd/handle traits.
+#[cfg(unix)]
 pub trait ReadableFd: std::io::Read + std::os::fd::AsRawFd {}
+#[cfg(unix)]
+impl ReadableFd for std::fs::File {}
 
+/// On Windows, ReadableFd only requires Read (no Unix file descriptors).
+#[cfg(target_os = "windows")]
+pub trait ReadableFd: std::io::Read {}
+#[cfg(target_os = "windows")]
 impl ReadableFd for std::fs::File {}
 
 #[cfg(target_os = "linux")]

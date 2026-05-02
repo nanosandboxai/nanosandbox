@@ -24,8 +24,6 @@ use crate::{
     ArchMemoryInfo,
 };
 use vm_memory::{GuestAddress, GuestMemoryMmap};
-use vmm_sys_util::align_upwards;
-
 use smbios;
 
 /// Errors thrown while configuring aarch64 system.
@@ -53,8 +51,8 @@ pub fn arch_memory_regions(
     } else {
         DRAM_MEM_START_KERNEL
     };
-    let page_size: usize = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
-    let mut dram_size = align_upwards!(size, page_size);
+    let page_size: usize = crate::get_page_size();
+    let mut dram_size = crate::align_up!(size, page_size);
     if dram_size > DRAM_MEM_MAX_SIZE as usize {
         dram_size = DRAM_MEM_MAX_SIZE as usize;
     }
@@ -78,7 +76,7 @@ pub fn arch_memory_regions(
     let regions = if let Some(firmware_size) = firmware_size {
         vec![
             // Space for loading the firmware
-            (GuestAddress(0u64), align_upwards!(firmware_size, page_size)),
+            (GuestAddress(0u64), crate::align_up!(firmware_size, page_size)),
             (GuestAddress(ram_start_addr), dram_size),
         ]
     } else {

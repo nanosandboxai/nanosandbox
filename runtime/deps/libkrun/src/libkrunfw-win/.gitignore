@@ -1,0 +1,4 @@
+vmlinux.bin
+entry_addr.txt
+guest_addr.txt
+vmlinux_meta.json

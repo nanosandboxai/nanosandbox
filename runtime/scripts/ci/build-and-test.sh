@@ -30,10 +30,10 @@ fi
 
 echo "==> [4/6] Building Rust crates..."
 cd "$ROOT_DIR"
-cargo build --release -p libkrun-sys -p nanosandbox
+cargo build --release -p libkrun-sys -p runtime
 
 echo "==> [5/6] Running unit tests..."
-cargo test -p libkrun-sys -p nanosandbox 2>&1
+cargo test -p libkrun-sys -p runtime 2>&1
 
 echo "==> [6/6] Verifying artifacts..."
 echo "--- libkrunfw ---"

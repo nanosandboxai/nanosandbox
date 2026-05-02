@@ -87,10 +87,12 @@ const LINUX_ENOTRECOVERABLE: i32 = 131;
 // Errors to be directly used.
 pub const LINUX_ERANGE: i32 = 34;
 
+#[cfg(unix)]
 pub fn linux_error(error: std::io::Error) -> std::io::Error {
     std::io::Error::from_raw_os_error(linux_errno_raw(error.raw_os_error().unwrap_or(libc::EIO)))
 }
 
+#[cfg(unix)]
 pub fn linux_errno_raw(errno: i32) -> i32 {
     match errno {
         libc::EPERM => LINUX_EPERM,
@@ -180,6 +182,71 @@ pub fn linux_errno_raw(errno: i32) -> i32 {
         libc::EOPNOTSUPP => LINUX_EOPNOTSUPP,
         libc::ENOTRECOVERABLE => LINUX_ENOTRECOVERABLE,
         libc::EOWNERDEAD => LINUX_EOWNERDEAD,
+        _ => LINUX_EIO,
+    }
+}
+
+// Windows error codes (from GetLastError / raw_os_error on Windows).
+#[cfg(target_os = "windows")]
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+#[cfg(target_os = "windows")]
+const ERROR_PATH_NOT_FOUND: i32 = 3;
+#[cfg(target_os = "windows")]
+const ERROR_ACCESS_DENIED: i32 = 5;
+#[cfg(target_os = "windows")]
+const ERROR_INVALID_HANDLE: i32 = 6;
+#[cfg(target_os = "windows")]
+const ERROR_NOT_ENOUGH_MEMORY: i32 = 8;
+#[cfg(target_os = "windows")]
+const ERROR_INVALID_DATA: i32 = 13;
+#[cfg(target_os = "windows")]
+const ERROR_WRITE_PROTECT: i32 = 19;
+#[cfg(target_os = "windows")]
+const ERROR_NOT_READY: i32 = 21;
+#[cfg(target_os = "windows")]
+const ERROR_SHARING_VIOLATION: i32 = 32;
+#[cfg(target_os = "windows")]
+const ERROR_LOCK_VIOLATION: i32 = 33;
+#[cfg(target_os = "windows")]
+const ERROR_FILE_EXISTS: i32 = 80;
+#[cfg(target_os = "windows")]
+const ERROR_INVALID_PARAMETER: i32 = 87;
+#[cfg(target_os = "windows")]
+const ERROR_DISK_FULL: i32 = 112;
+#[cfg(target_os = "windows")]
+const ERROR_CALL_NOT_IMPLEMENTED: i32 = 120;
+#[cfg(target_os = "windows")]
+const ERROR_DIR_NOT_EMPTY: i32 = 145;
+#[cfg(target_os = "windows")]
+const ERROR_ALREADY_EXISTS: i32 = 183;
+#[cfg(target_os = "windows")]
+const ERROR_DIRECTORY: i32 = 267;
+
+#[cfg(target_os = "windows")]
+pub fn linux_error(error: std::io::Error) -> std::io::Error {
+    std::io::Error::from_raw_os_error(linux_errno_raw(error.raw_os_error().unwrap_or(LINUX_EIO)))
+}
+
+#[cfg(target_os = "windows")]
+pub fn linux_errno_raw(errno: i32) -> i32 {
+    match errno {
+        ERROR_FILE_NOT_FOUND => LINUX_ENOENT,
+        ERROR_PATH_NOT_FOUND => LINUX_ENOENT,
+        ERROR_ACCESS_DENIED => LINUX_EACCES,
+        ERROR_INVALID_HANDLE => LINUX_EBADF,
+        ERROR_NOT_ENOUGH_MEMORY => LINUX_ENOMEM,
+        ERROR_INVALID_DATA => LINUX_EINVAL,
+        ERROR_WRITE_PROTECT => LINUX_EROFS,
+        ERROR_NOT_READY => LINUX_EIO,
+        ERROR_SHARING_VIOLATION => LINUX_EBUSY,
+        ERROR_LOCK_VIOLATION => LINUX_EAGAIN,
+        ERROR_FILE_EXISTS => LINUX_EEXIST,
+        ERROR_INVALID_PARAMETER => LINUX_EINVAL,
+        ERROR_DISK_FULL => LINUX_ENOSPC,
+        ERROR_CALL_NOT_IMPLEMENTED => LINUX_ENOSYS,
+        ERROR_DIR_NOT_EMPTY => LINUX_ENOTEMPTY,
+        ERROR_ALREADY_EXISTS => LINUX_EEXIST,
+        ERROR_DIRECTORY => LINUX_ENOTDIR,
         _ => LINUX_EIO,
     }
 }

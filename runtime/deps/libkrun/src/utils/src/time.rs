@@ -6,18 +6,19 @@ use std::fmt;
 /// Constant to convert seconds to nanoseconds.
 pub const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
-/// Wrapper over `libc::clockid_t` to specify Linux Kernel clock source.
+/// Wrapper over clock source identifiers.
 pub enum ClockType {
-    /// Equivalent to `libc::CLOCK_MONOTONIC`.
+    /// Monotonic clock.
     Monotonic,
-    /// Equivalent to `libc::CLOCK_REALTIME`.
+    /// Real (wall-clock) time.
     Real,
-    /// Equivalent to `libc::CLOCK_PROCESS_CPUTIME_ID`.
+    /// Process CPU time.
     ProcessCpu,
-    /// Equivalent to `libc::CLOCK_THREAD_CPUTIME_ID`.
+    /// Thread CPU time.
     ThreadCpu,
 }
 
+#[cfg(unix)]
 impl From<ClockType> for libc::clockid_t {
     fn from(ctype: ClockType) -> libc::clockid_t {
         match ctype {
@@ -49,6 +50,7 @@ pub struct LocalTime {
 
 impl LocalTime {
     /// Returns the [LocalTime](struct.LocalTime.html) structure for the calling moment.
+    #[cfg(unix)]
     pub fn now() -> LocalTime {
         let mut timespec = libc::timespec {
             tv_sec: 0,
@@ -85,6 +87,36 @@ impl LocalTime {
             mon: tm.tm_mon,
             year: tm.tm_year,
             nsec: timespec.tv_nsec,
+        }
+    }
+
+    /// Returns the local time on Windows using GetLocalTime.
+    #[cfg(target_os = "windows")]
+    pub fn now() -> LocalTime {
+        use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+
+        let mut st = windows_sys::Win32::Foundation::SYSTEMTIME {
+            wYear: 0,
+            wMonth: 0,
+            wDayOfWeek: 0,
+            wDay: 0,
+            wHour: 0,
+            wMinute: 0,
+            wSecond: 0,
+            wMilliseconds: 0,
+        };
+        unsafe {
+            GetLocalTime(&mut st);
+        }
+
+        LocalTime {
+            sec: st.wSecond as i32,
+            min: st.wMinute as i32,
+            hour: st.wHour as i32,
+            mday: st.wDay as i32,
+            mon: (st.wMonth as i32) - 1, // Match Unix convention (0-11)
+            year: (st.wYear as i32) - 1900, // Match Unix convention (years since 1900)
+            nsec: (st.wMilliseconds as i64) * 1_000_000,
         }
     }
 }
@@ -139,10 +171,7 @@ pub fn timestamp_cycles() -> u64 {
 }
 
 /// Returns a timestamp in nanoseconds based on the provided clock type.
-///
-/// # Arguments
-///
-/// * `clock_type` - Identifier of the Linux Kernel clock on which to act.
+#[cfg(unix)]
 pub fn get_time(clock_type: ClockType) -> u64 {
     let mut time_struct = libc::timespec {
         tv_sec: 0,
@@ -153,12 +182,55 @@ pub fn get_time(clock_type: ClockType) -> u64 {
     seconds_to_nanoseconds(time_struct.tv_sec).unwrap() as u64 + (time_struct.tv_nsec as u64)
 }
 
+/// Returns a timestamp in nanoseconds based on the provided clock type (Windows).
+#[cfg(target_os = "windows")]
+pub fn get_time(clock_type: ClockType) -> u64 {
+    use windows_sys::Win32::System::Performance::{
+        QueryPerformanceCounter, QueryPerformanceFrequency,
+    };
+
+    match clock_type {
+        ClockType::Monotonic | ClockType::ProcessCpu | ClockType::ThreadCpu => {
+            let mut counter: i64 = 0;
+            let mut frequency: i64 = 0;
+            unsafe {
+                QueryPerformanceCounter(&mut counter);
+                QueryPerformanceFrequency(&mut frequency);
+            }
+            if frequency == 0 {
+                return 0;
+            }
+            // Convert to nanoseconds: counter * 1_000_000_000 / frequency
+            // Use u128 to avoid overflow.
+            ((counter as u128 * NANOS_PER_SECOND as u128) / frequency as u128) as u64
+        }
+        ClockType::Real => {
+            use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+
+            let mut ft = windows_sys::Win32::Foundation::FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            unsafe {
+                GetSystemTimeAsFileTime(&mut ft);
+            }
+            // FILETIME is 100-nanosecond intervals since 1601-01-01.
+            // Subtract the epoch difference (1601-01-01 to 1970-01-01) to get
+            // nanoseconds since the Unix epoch, matching the Unix clock_gettime
+            // CLOCK_REALTIME behavior.
+            // Epoch difference: 11,644,473,600 seconds = 116,444,736,000,000,000
+            // 100-ns intervals.
+            const EPOCH_DIFFERENCE_100NS: u64 = 116_444_736_000_000_000;
+            let intervals =
+                (ft.dwHighDateTime as u64) << 32 | (ft.dwLowDateTime as u64);
+            let unix_intervals = intervals.saturating_sub(EPOCH_DIFFERENCE_100NS);
+            unix_intervals * 100
+        }
+    }
+}
+
 /// Converts a timestamp in seconds to an equivalent one in nanoseconds.
 /// Returns `None` if the conversion overflows.
-///
-/// # Arguments
-///
-/// * `value` - Timestamp in seconds.
 pub fn seconds_to_nanoseconds(value: i64) -> Option<i64> {
     value.checked_mul(NANOS_PER_SECOND as i64)
 }

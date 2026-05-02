@@ -13,7 +13,6 @@ use std::fmt::Debug;
 
 use crate::{riscv64::layout::FIRMWARE_START, ArchMemoryInfo};
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap};
-use vmm_sys_util::align_upwards;
 
 /// Errors thrown while configuring riscv64 system.
 #[derive(Debug)]
@@ -32,8 +31,8 @@ pub fn arch_memory_regions(
     initrd_size: u64,
     _firmware_size: Option<usize>,
 ) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
-    let page_size: usize = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
-    let dram_size = align_upwards!(size, page_size);
+    let page_size: usize = crate::get_page_size();
+    let dram_size = crate::align_up!(size, page_size);
     let ram_last_addr = layout::DRAM_MEM_START + (dram_size as u64);
     let shm_start_addr = ((ram_last_addr / 0x4000_0000) + 1) * 0x4000_0000;
 

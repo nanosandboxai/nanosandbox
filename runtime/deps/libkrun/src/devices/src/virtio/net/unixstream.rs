@@ -216,7 +216,7 @@ impl NetBackend for Unixstream {
         Ok(())
     }
 
-    fn raw_socket_fd(&self) -> RawFd {
+    fn pollable_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }
 }

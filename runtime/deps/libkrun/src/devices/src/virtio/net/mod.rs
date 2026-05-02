@@ -15,7 +15,9 @@ mod backend;
 pub mod device;
 #[cfg(target_os = "linux")]
 mod tap;
+#[cfg(unix)]
 mod unixgram;
+#[cfg(unix)]
 mod unixstream;
 mod worker;
 

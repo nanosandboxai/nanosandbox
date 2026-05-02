@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{self, IsTerminal, Read};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::fd::{BorrowedFd, FromRawFd};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;
@@ -33,15 +35,17 @@ use crate::vmm_config::net::NetBuilder;
 use devices::legacy::Cmos;
 #[cfg(all(target_os = "linux", target_arch = "riscv64"))]
 use devices::legacy::KvmAia;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use devices::legacy::KvmIoapic;
 use devices::legacy::Serial;
 #[cfg(target_os = "macos")]
 use devices::legacy::VcpuList;
 #[cfg(target_os = "macos")]
 use devices::legacy::{GicV3, HvfGicV3};
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use devices::legacy::{IoApic, IrqChipT};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use devices::legacy::IrqChipT;
 use devices::legacy::{IrqChip, IrqChipDevice};
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 use devices::legacy::{KvmGicV2, KvmGicV3};
@@ -68,22 +72,24 @@ use crate::vstate::MeasuredRegion;
 use crate::vstate::{Error as VstateError, Vcpu, VcpuConfig, Vm};
 use arch::{ArchMemoryInfo, InitrdConfig};
 use device_manager::shm::ShmManager;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 use devices::virtio::display::DisplayInfo;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 use devices::virtio::display::NoopDisplayBackend;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use devices::virtio::{fs::ExportTable, VirtioShmRegion};
 use flate2::read::GzDecoder;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 use krun_display::DisplayBackend;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 use krun_display::IntoDisplayBackend;
 #[cfg(feature = "amd-sev")]
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
+#[cfg(unix)]
 use libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 #[cfg(target_arch = "x86_64")]
 use linux_loader::loader::{self, KernelLoader};
+#[cfg(unix)]
 use nix::unistd::isatty;
 use polly::event_manager::{Error as EventManagerError, EventManager};
 use utils::eventfd::EventFd;
@@ -539,7 +545,11 @@ fn choose_payload(vm_resources: &VmResources) -> Result<Payload, StartMicrovmErr
         #[cfg(feature = "tee")]
         return Ok(Payload::Tee);
 
-        #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "windows"),
+            target_arch = "x86_64",
+            not(feature = "tee")
+        ))]
         return Ok(Payload::KernelMmap);
 
         #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -550,6 +560,150 @@ fn choose_payload(vm_resources: &VmResources) -> Result<Payload, StartMicrovmErr
         Ok(Payload::Firmware)
     } else {
         Err(StartMicrovmError::MissingKernelConfig)
+    }
+}
+
+/// Simple base64 encoder (no external dependency).
+#[cfg(target_os = "windows")]
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(triple >> 18 & 0x3F) as usize] as char);
+        out.push(ALPHABET[(triple >> 12 & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(triple >> 6 & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Resolve an NTFS junction / symlink to a real path, stripping the `\\?\` prefix.
+#[cfg(target_os = "windows")]
+fn resolve_rootfs_path(rootfs: &std::path::Path) -> std::path::PathBuf {
+    match std::fs::canonicalize(rootfs) {
+        Ok(p) => {
+            let s = p.to_string_lossy();
+            if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                std::path::PathBuf::from(stripped)
+            } else {
+                p
+            }
+        }
+        Err(_) => rootfs.to_path_buf(),
+    }
+}
+
+/// Build the kernel cmdline boot-speed flag suffix used by all 3 Windows boot paths.
+///
+/// All flags are safe for a single-tenant microVM. The most impactful ones are
+/// `quiet loglevel=4` which suppress most kernel printk; without them the kernel
+/// blasts hundreds of lines through the HCS console pipe at 115200 baud, adding
+/// ~17s of wall time during boot.
+///
+/// `loglevel=4` is intentionally chosen over `loglevel=3`: it still suppresses
+/// the chatty INFO/NOTICE/DEBUG levels (boot-speed win preserved) but allows
+/// KERN_ERR (3) and KERN_WARN (4) through — including OOM-killer dumps, vsock
+/// driver errors, and kernel oops, which are essential for diagnosing in-VM
+/// process kills.
+///
+/// Set `NANOSB_KERNEL_VERBOSE=1` to drop `quiet loglevel=4` entirely (keeps the
+/// other speed flags) for full kernel chatter during deep debugging.
+#[cfg(target_os = "windows")]
+fn boot_speed_flags() -> &'static str {
+    let verbose = std::env::var("NANOSB_KERNEL_VERBOSE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if verbose {
+        // Keep boot-speed flags that don't suppress diagnostics.
+        "mitigations=off cryptomgr.notests init_on_alloc=0 init_on_free=0"
+    } else {
+        // Default: full speed, but keep KERN_ERR/KERN_WARN visible for OOM diag.
+        //   quiet loglevel=4       — suppress INFO/NOTICE/DEBUG (biggest win)
+        //   mitigations=off        — skip Spectre/Meltdown/MDS init
+        //   cryptomgr.notests      — skip crypto self-tests
+        //   init_on_{alloc,free}=0 — skip per-page zeroing
+        "quiet loglevel=4 mitigations=off cryptomgr.notests init_on_alloc=0 init_on_free=0"
+    }
+}
+
+/// Pre-create the base VHDX for a rootfs directory, if not already cached.
+///
+/// Grant the Hyper-V Virtual Machines security principal full access to a directory.
+///
+/// HCS runs VM worker processes (`vmwp.exe`) under `NT VIRTUAL MACHINE\Virtual Machines`,
+/// which by default cannot access user-profile directories like `%USERPROFILE%`. Without
+/// this ACL grant, `HcsStartComputeSystem` fails with `Access is denied` (0x80070005) when
+/// attaching SCSI VHDX disks from the cache directory.
+#[cfg(target_os = "windows")]
+fn grant_hyper_v_access(dir: &std::path::Path) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::process::Command;
+
+    // ACLs are persistent on NTFS, so once granted they stay granted across
+    // runs. Drop a marker file the first time we succeed and skip the
+    // 5+s icacls.exe spawn on subsequent runs. If a user clears the ACL
+    // externally they can delete the marker to force a re-grant.
+    //
+    // The marker lives under `~/.nanosandbox/cache/hyperv-access/` (alongside
+    // other nanosandbox caches) rather than inside `dir` itself, so we don't
+    // pollute target dirs (rootfs trees, vhdx-cache) with sentinel files.
+    let marker_dir = std::env::var("USERPROFILE")
+        .ok()
+        .map(|h| PathBuf::from(h).join(".nanosandbox").join("cache").join("hyperv-access"));
+    let marker = marker_dir.as_ref().map(|md| {
+        let mut hasher = DefaultHasher::new();
+        dir.hash(&mut hasher);
+        md.join(format!("{:016x}", hasher.finish()))
+    });
+    if let Some(m) = marker.as_ref() {
+        if m.exists() {
+            return;
+        }
+    }
+
+    // The SID S-1-15-3-1024-... is long and version-dependent.
+    // Using the well-known account name works across Windows versions.
+    // Do NOT use /T — it recurses the entire tree which fails on long paths
+    // (e.g. node_modules in bundles/). (OI)(CI) inherits to new subdirectories.
+    let result = Command::new("icacls")
+        .arg(dir.as_os_str())
+        .arg("/grant")
+        .arg("NT VIRTUAL MACHINE\\Virtual Machines:(OI)(CI)F")
+        .arg("/Q")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output();
+    match result {
+        Ok(output) if output.status.success() => {
+            eprintln!("hcs: granted Hyper-V VM access to {}", dir.display());
+            if let (Some(md), Some(m)) = (marker_dir.as_ref(), marker.as_ref()) {
+                let _ = std::fs::create_dir_all(md);
+                let _ = std::fs::write(m, dir.to_string_lossy().as_bytes());
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("hcs: WARNING: icacls failed ({}): {}", output.status, stderr.trim());
+            eprintln!("hcs: HINT: run nanosb as Administrator, or manually grant Hyper-V access:");
+            eprintln!("hcs:   icacls \"{}\" /grant \"NT VIRTUAL MACHINE\\Virtual Machines:(OI)(CI)F\" /T", dir.display());
+        }
+        Err(e) => {
+            eprintln!("hcs: WARNING: could not run icacls: {e}");
+        }
     }
 }
 
@@ -609,9 +763,16 @@ pub fn build_microvm(
         kernel_cmdline.insert_str(cmdline).unwrap();
     }
 
-    #[cfg(not(feature = "tee"))]
+    #[cfg(all(not(feature = "tee"), not(target_os = "windows")))]
     #[allow(unused_mut)]
     let mut vm = setup_vm(&guest_memory, vm_resources.nested_enabled)?;
+    #[cfg(all(not(feature = "tee"), target_os = "windows"))]
+    #[allow(unused_mut)]
+    let mut vm = setup_vm(
+        &guest_memory,
+        vm_resources.nested_enabled,
+        vcpu_config.vcpu_count as u32,
+    )?;
 
     #[cfg(feature = "tee")]
     let (_kvm, vm) = {
@@ -744,8 +905,10 @@ pub fn build_microvm(
     // We can't call to `setup_terminal_raw_mode` until `Vmm` is created,
     // so let's keep track of FDs connected to legacy serial devices here
     // and set raw mode on them later.
+    #[cfg(unix)]
     let mut serial_ttys = Vec::new();
 
+    #[cfg(unix)]
     for s in &vm_resources.serial_consoles {
         let input: Option<Box<dyn devices::legacy::ReadableFd + Send>> = if s.input_fd >= 0 {
             let file = unsafe { File::from_raw_fd(s.input_fd) };
@@ -766,9 +929,38 @@ pub fn build_microvm(
         serial_devices.push(setup_serial_device(event_manager, input, output)?);
     }
 
+    // On Windows, create a serial device (COM1) that outputs to stderr
+    // so earlycon/console=ttyS0 kernel messages are visible.
+    #[cfg(target_os = "windows")]
+    if serial_devices.is_empty() {
+        serial_devices.push(setup_serial_device(
+            event_manager,
+            None,
+            Some(Box::new(io::stderr())),
+        )?);
+    }
+
     let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
         .map_err(StartMicrovmError::Internal)?;
+
+    // On Windows, initialize Winsock and register Ctrl handler.
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Networking::WinSock::{WSAStartup, WSADATA};
+        let mut wsa_data: WSADATA = unsafe { std::mem::zeroed() };
+        let wsa_result = unsafe { WSAStartup(0x0202, &mut wsa_data) };
+        if wsa_result != 0 {
+            return Err(StartMicrovmError::Internal(Error::EventFd(
+                std::io::Error::from_raw_os_error(wsa_result),
+            )));
+        }
+
+        use crate::windows::signal_handler::register_ctrl_handler;
+        if let Err(e) = register_ctrl_handler(&exit_evt) {
+            warn!("Failed to register Windows Ctrl handler: {e}");
+        }
+    }
 
     #[cfg(target_arch = "x86_64")]
     // Safe to unwrap 'serial_device' as it's always 'Some' on x86_64.
@@ -806,7 +998,7 @@ pub fn build_microvm(
     let intc: IrqChip;
     // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS`
     // while on aarch64 we need to do it the other way around.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
     {
         let ioapic: Box<dyn IrqChipT> = if vm_resources.split_irqchip {
             Box::new(
@@ -840,6 +1032,364 @@ pub fn build_microvm(
             _sender,
         )
         .map_err(StartMicrovmError::Internal)?;
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+    {
+        // HCS handles interrupt routing, PIT, LAPIC, and IOAPIC internally.
+        // We create a no-op IrqChip so the rest of builder.rs compiles unchanged.
+        struct HcsNoopIoapic;
+        impl devices::BusDevice for HcsNoopIoapic {}
+        impl IrqChipT for HcsNoopIoapic {
+            fn get_mmio_addr(&self) -> u64 { 0 }
+            fn get_mmio_size(&self) -> u64 { 0 }
+            fn set_irq(
+                &self,
+                _irq_line: Option<u32>,
+                _interrupt_evt: Option<&utils::eventfd::EventFd>,
+            ) -> Result<(), devices::Error> {
+                Ok(())
+            }
+        }
+        intc = Arc::new(Mutex::new(IrqChipDevice::new(Box::new(HcsNoopIoapic))));
+
+        // HCS LinuxKernelDirect requires a bzImage on the host filesystem.
+        // Selection priority:
+        //   1. NANOSB_KERNEL env var — user-supplied minimal kernel for fast boot
+        //   2. WSL2 kernel at C:\Program Files\WSL\tools\kernel (heavy, ~12s boot)
+        //   3. Embedded libkrunfw kernel (last-resort fallback)
+        let kernel_path = {
+            let env_kernel = std::env::var("NANOSB_KERNEL")
+                .ok()
+                .map(std::path::PathBuf::from)
+                .filter(|p| p.exists());
+            let wsl_kernel = std::path::PathBuf::from(
+                r"C:\Program Files\WSL\tools\kernel",
+            );
+            if let Some(k) = env_kernel {
+                eprintln!("hcs: using kernel from NANOSB_KERNEL: {}", k.display());
+                k
+            } else if wsl_kernel.exists() {
+                eprintln!("hcs: using WSL kernel: {}", wsl_kernel.display());
+                wsl_kernel
+            } else {
+                eprintln!("hcs: WSL kernel not found, using embedded libkrunfw kernel");
+                // Fall back: write the libkrunfw kernel to a temp file.
+                let kernel_bundle = vm_resources
+                    .kernel_bundle
+                    .as_ref()
+                    .ok_or(StartMicrovmError::MissingKernelConfig)?;
+                let kernel_data = unsafe {
+                    std::slice::from_raw_parts(
+                        kernel_bundle.host_addr as *const u8,
+                        kernel_bundle.size,
+                    )
+                };
+                let home = std::env::var("USERPROFILE").expect("USERPROFILE env var not set");
+                let libs_dir = PathBuf::from(home).join(".nanosandbox").join("libs");
+                let _ = std::fs::create_dir_all(&libs_dir);
+                let kp = libs_dir.join("libkrun-kernel.bin");
+                {
+                    let mut f = std::fs::File::create(&kp)
+                        .map_err(|e| StartMicrovmError::Internal(Error::KernelFile(e)))?;
+                    use std::io::Write as _;
+                    f.write_all(kernel_data)
+                        .map_err(|e| StartMicrovmError::Internal(Error::KernelFile(e)))?;
+                }
+                kp
+            }
+        };
+
+        let cmdline_str = kernel_cmdline.as_str().to_owned();
+
+        // Parse exec config from the kernel cmdline built by krun_start_enter.
+        // cmdline_str contains prolog + krun_env (KRUN_INIT, KRUN_WORKDIR, env vars).
+        // The epilog (args after " -- ") is stored separately in vm_resources.kernel_cmdline.epilog.
+        // We extract these into an ExecConfig and write them as files in the initrd,
+        // which avoids quoting/splitting issues with the kernel cmdline.
+        let exec_config = {
+            let mut exec_path = String::new();
+            let mut workdir = String::from("/");
+            let mut env_vars: Vec<String> = Vec::new();
+            let mut args: Vec<String> = Vec::new();
+
+            // Parse krun_env tokens from cmdline_str
+            for token in cmdline_str.split_whitespace() {
+                let t = token.trim_matches('"');
+                if t.starts_with("KRUN_INIT=") {
+                    exec_path = t["KRUN_INIT=".len()..].to_string();
+                } else if t.starts_with("KRUN_WORKDIR=") {
+                    workdir = t["KRUN_WORKDIR=".len()..].to_string();
+                } else if t.contains('=')
+                    && !t.starts_with("KRUN_")
+                    && !t.starts_with("init=")
+                    && !t.starts_with("reboot=")
+                    && !t.starts_with("panic")
+                    && !t.starts_with("console=")
+                    && t != "nomodule"
+                    && t != "rw"
+                    && t != "quiet"
+                    && !t.starts_with("root=")
+                    && !t.starts_with("panic_print=")
+                {
+                    // Environment variable (KEY=VALUE)
+                    env_vars.push(t.to_string());
+                }
+            }
+
+            // Parse args from the epilog (stored separately, not in cmdline_str).
+            // Format: " -- \"arg0\" \"arg1\" \"arg with spaces\""
+            if let Some(epilog) = vm_resources.kernel_cmdline.epilog.as_ref() {
+                let args_str = if let Some(idx) = epilog.find(" -- ") {
+                    &epilog[idx + 4..]
+                } else {
+                    epilog.trim()
+                };
+                // Quote-aware split
+                let mut current = String::new();
+                let mut in_quote = false;
+                for ch in args_str.chars() {
+                    match ch {
+                        '"' => in_quote = !in_quote,
+                        ' ' if !in_quote => {
+                            if !current.is_empty() {
+                                args.push(current.clone());
+                                current.clear();
+                            }
+                        }
+                        _ => current.push(ch),
+                    }
+                }
+                if !current.is_empty() {
+                    args.push(current);
+                }
+            }
+
+            if !exec_path.is_empty() {
+                // Skip argv[0] if it matches exec_path (conventionally the program name,
+                // already represented by exec_path in the ExecConfig).
+                if !args.is_empty() && args[0] == exec_path {
+                    args.remove(0);
+                }
+                Some(hcs::initrd::ExecConfig {
+                    exec_path,
+                    workdir,
+                    env: env_vars,
+                    args,
+                })
+            } else {
+                None
+            }
+        };
+
+        // On Windows/HCS, the rootfs is shared via Plan9 (9p) and a minimal
+        // boot initrd (busybox + init.krun) mounts it. This avoids packing the
+        // entire rootfs into the initrd, which doesn't scale for large images
+        // (the WSL2 kernel's initramfs unpacker can't handle >500MB).
+        let rootfs_path = vm_resources
+            .fs
+            .iter()
+            .find(|cfg| cfg.fs_id == "/dev/root")
+            .map(|cfg| std::path::PathBuf::from(&cfg.shared_dir));
+
+        // HCN NAT is removed — all networking goes through HvSocket proxies.
+        // Guest DNS → vsock 50053 → host DNS relay → 8.8.8.8
+        // Guest TCP → iptables REDIRECT → vsock 50080 → host TCP relay → internet
+        // No net_config needed — init scripts configure resolv.conf and iptables directly.
+        let hcn_networking: Option<hcs::hcn::HcnNetworking> = None;
+        let net_config: Option<hcs::initrd::NetConfig> = None;
+
+        // Rootfs is always served via HCS Plan 9 share (vsock 9P).
+        // VHDX mode was removed — Plan 9 is the only supported path on Windows.
+        let (initrd_path, scsi_disks, plan9_shares, memory_mb, hcs_cmdline) = if let Some(ref rootfs) = rootfs_path {
+            let real_rootfs = resolve_rootfs_path(rootfs);
+            let mem = vm_resources
+                .vm_config()
+                .mem_size_mib
+                .ok_or(StartMicrovmError::MissingMemSizeConfig)? as u32;
+
+            eprintln!("hcs: rootfs mode = plan9 (HCS 9P share)");
+
+            // Build a minimal initrd (busybox + init script that mounts 9p)
+            let initrd = hcs::initrd::generate_boot_initrd(
+                exec_config.as_ref(),
+                net_config.as_ref(),
+            ).map_err(|e| StartMicrovmError::KernelCmdline(
+                format!("Plan9 initrd generation failed: {e}")
+            ))?;
+            eprintln!("hcs: plan9 initrd: {}", initrd.display());
+
+            // Convert rootfs path to Windows path for HCS Plan9 share
+            let rootfs_host_path = {
+                let p = std::fs::canonicalize(&real_rootfs)
+                    .unwrap_or_else(|_| real_rootfs.clone());
+                let s = p.to_string_lossy();
+                if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                    PathBuf::from(stripped)
+                } else {
+                    p
+                }
+            };
+
+            // Grant Hyper-V VM access to the rootfs directory
+            grant_hyper_v_access(&rootfs_host_path);
+
+            // In-guest extraction mode: if the host wrote a `.nanosb-layers`
+            // manifest into the rootfs share, the rootfs holds only metadata
+            // (manifest + thin overlay files) and the OCI layer tars must be
+            // shared from the blobs cache so plan9_mount can extract them
+            // into a tmpfs rootfs inside the guest.
+            let manifest_path = real_rootfs.join(".nanosb-layers");
+            let extract_layers = manifest_path.exists();
+
+            let mut shares = vec![hcs::Plan9Share {
+                name: "rootfs".to_string(),
+                host_path: rootfs_host_path,
+                access_name: "rootfs".to_string(),
+                port: 50000,
+            }];
+
+            if extract_layers {
+                if let Ok(home) = std::env::var("USERPROFILE") {
+                    let blobs_dir = std::path::PathBuf::from(home)
+                        .join(".nanosandbox")
+                        .join("blobs")
+                        .join("sha256");
+                    if blobs_dir.exists() {
+                        let blobs_host_path = std::fs::canonicalize(&blobs_dir)
+                            .unwrap_or(blobs_dir.clone());
+                        let blobs_host_path = {
+                            let s = blobs_host_path.to_string_lossy();
+                            if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                                std::path::PathBuf::from(stripped)
+                            } else {
+                                blobs_host_path
+                            }
+                        };
+                        grant_hyper_v_access(&blobs_host_path);
+                        shares.push(hcs::Plan9Share {
+                            name: "blobs".to_string(),
+                            host_path: blobs_host_path,
+                            access_name: "blobs".to_string(),
+                            port: 50002,
+                        });
+                        eprintln!("hcs: in-guest extraction enabled, blobs share at port 50002");
+                    } else {
+                        eprintln!("hcs: WARNING: .nanosb-layers manifest present but blobs dir not found at {}", blobs_dir.display());
+                    }
+                }
+            }
+
+            // rdinit=/init.krun: exec /init.krun from initramfs (the 9p mount script).
+            // Without this, the kernel tries to find a root block device and panics.
+            let extract_flag = if extract_layers { " nanosb.extract_layers=1" } else { "" };
+            let cmdline = format!(
+                "rdinit=/init.krun \
+                 panic=-1 nomodule console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 \
+                 random.trust_cpu=on no_timer_check tsc=reliable 8250.nr_uarts=1 {}{}",
+                boot_speed_flags(),
+                extract_flag
+            );
+
+            let mem = mem.max(512);
+            (Some(initrd), Vec::new(), shares, mem, cmdline)
+        } else {
+            let mem = vm_resources
+                .vm_config()
+                .mem_size_mib
+                .ok_or(StartMicrovmError::MissingMemSizeConfig)? as u32;
+            let cmdline = format!(
+                "panic=-1 nomodule console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 \
+                 random.trust_cpu=on no_timer_check tsc=reliable 8250.nr_uarts=1 {}",
+                boot_speed_flags()
+            );
+            (None, Vec::new(), Vec::new(), mem.max(2048), cmdline)
+        };
+        let cpu_count = vcpu_config.vcpu_count as u32;
+
+        let mut hcs_cmdline = hcs_cmdline;
+
+        // Signal Windows HCS mode to nanosb-init.sh in the guest image.
+        // The image's nanosb-init.sh uses this flag to:
+        //   - skip eth0 / gvproxy network setup (we use vsock_proxy + iptables REDIRECT)
+        //   - run agent-gateway with --skip-network-init
+        //   - apply tmpfs overlays for ssh dirs in 9P (NTFS) mode
+        // The flag name "9p_rootfs" is retained for guest-side compatibility:
+        // nanosb-init.sh keys off it to take the HCS/Plan 9 boot path.
+        hcs_cmdline.push_str(" nanosb.9p_rootfs=1");
+
+        // Append network config as nanosb.* params
+        if let Some(ref net) = net_config {
+            hcs_cmdline.push_str(&format!(
+                " nanosb.ip={} nanosb.gw={} nanosb.prefix={}",
+                net.ip, net.gateway, net.prefix_len,
+            ));
+            if let Some(dns) = net.dns.first() {
+                hcs_cmdline.push_str(&format!(" nanosb.dns={}", dns));
+            }
+        }
+
+        // Append SSH pubkey (spaces → commas for cmdline safety)
+        {
+            let ssh_pubkey = rootfs_path.as_ref().and_then(|rootfs| {
+                let real = std::fs::canonicalize(rootfs).unwrap_or_else(|_| rootfs.clone());
+                let real = {
+                    let s = real.to_string_lossy();
+                    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                        std::path::PathBuf::from(stripped)
+                    } else {
+                        real
+                    }
+                };
+                std::env::var("NANOSB_SSH_PUBKEY").ok()
+                    .or_else(|| std::fs::read_to_string(real.join("etc/krun/ssh_pubkey")).ok())
+            });
+            if let Some(key) = ssh_pubkey {
+                let key_cmdline = key.trim().replace(' ', ",");
+                hcs_cmdline.push_str(&format!(" nanosb.ssh_key={}", key_cmdline));
+            }
+        }
+
+        // Append exec config as base64-encoded nanosb.exec param
+        if let Some(ref cfg) = exec_config {
+            use std::io::Write as _;
+            let mut cmd_script = Vec::new();
+            write!(cmd_script, "#!/bin/sh\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n").unwrap();
+            for env_var in &cfg.env {
+                let trimmed = env_var.trim();
+                if !trimmed.is_empty() {
+                    let escaped = trimmed.replace('\'', "'\\''");
+                    write!(cmd_script, "export '{}'\n", escaped).unwrap();
+                }
+            }
+            write!(cmd_script, "cd '{}'\n", cfg.workdir).unwrap();
+            write!(cmd_script, "exec '{}'", cfg.exec_path).unwrap();
+            for arg in &cfg.args {
+                let escaped = arg.replace('\'', "'\\''");
+                write!(cmd_script, " '{}'", escaped).unwrap();
+            }
+            write!(cmd_script, "\n").unwrap();
+            // base64 encode: A-Za-z0-9+/= (no spaces, cmdline-safe)
+            let b64 = base64_encode(&cmd_script);
+            hcs_cmdline.push_str(&format!(" nanosb.exec={}", b64));
+        }
+
+        let vcpu = Vcpu::new(
+            0,
+            kernel_path,
+            initrd_path,
+            hcs_cmdline,
+            memory_mb,
+            cpu_count,
+            plan9_shares,
+            hcn_networking,
+            scsi_disks,
+            &exit_evt,
+        )
+        .map_err(Error::Vcpu)
+        .map_err(StartMicrovmError::Internal)?;
+
+        vcpus = vec![vcpu];
     }
 
     #[cfg(feature = "tdx")]
@@ -943,8 +1493,7 @@ pub fn build_microvm(
             &vm,
             &mut mmio_device_manager,
             &mut kernel_cmdline,
-            intc.clone(),
-            serial_devices,
+            serial_device,
         )?;
     }
 
@@ -966,6 +1515,7 @@ pub fn build_microvm(
     };
 
     // Set raw mode for FDs that are connected to legacy serial devices.
+    #[cfg(unix)]
     for serial_tty in serial_ttys {
         setup_terminal_raw_mode(&mut vmm, Some(serial_tty), false);
     }
@@ -1006,7 +1556,7 @@ pub fn build_microvm(
         None
     };
 
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", unix))]
     if let Some(virgl_flags) = vm_resources.gpu_virgl_flags {
         let display_backend = vm_resources
             .display_backend
@@ -1026,7 +1576,7 @@ pub fn build_microvm(
         )?;
     }
 
-    #[cfg(feature = "input")]
+    #[cfg(all(feature = "input", unix))]
     if !vm_resources.input_backends.is_empty() {
         attach_input_devices(&mut vmm, &vm_resources.input_backends, intc.clone())?;
     }
@@ -1059,7 +1609,7 @@ pub fn build_microvm(
 
     #[cfg(feature = "net")]
     attach_net_devices(&mut vmm, &vm_resources.net, intc.clone())?;
-    #[cfg(feature = "snd")]
+    #[cfg(all(feature = "snd", unix))]
     if vm_resources.snd_device {
         attach_snd_device(&mut vmm, intc.clone())?;
     }
@@ -1587,6 +2137,24 @@ pub(crate) fn setup_vm(
     Ok(vm)
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn setup_vm(
+    guest_memory: &GuestMemoryMmap,
+    _nested_enabled: bool,
+    vcpu_count: u32,
+) -> std::result::Result<Vm, StartMicrovmError> {
+    let mut vm = Vm::new(_nested_enabled)
+        .map_err(Error::Vm)
+        .map_err(StartMicrovmError::Internal)?;
+    vm.configure(vcpu_count)
+        .map_err(Error::Vm)
+        .map_err(StartMicrovmError::Internal)?;
+    vm.memory_init(guest_memory)
+        .map_err(Error::Vm)
+        .map_err(StartMicrovmError::Internal)?;
+    Ok(vm)
+}
+
 /// Sets up the serial device.
 pub fn setup_serial_device(
     event_manager: &mut EventManager,
@@ -1611,7 +2179,7 @@ pub fn setup_serial_device(
     Ok(serial)
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
 fn attach_legacy_devices(
     vm: &Vm,
     split_irqchip: bool,
@@ -1716,7 +2284,7 @@ fn attach_legacy_devices(
     Ok(())
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
 #[allow(clippy::too_many_arguments)]
 fn create_vcpus_x86_64(
     vm: &Vm,
@@ -1865,8 +2433,12 @@ fn attach_mmio_device(
     let (_mmio_base, _irq) =
         vmm.mmio_device_manager
             .register_mmio_device(mmio_device, type_id, id)?;
+    #[cfg(target_os = "windows")]
+    let (_mmio_base, _irq) =
+        vmm.mmio_device_manager
+            .register_mmio_device(mmio_device, type_id, id)?;
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "windows")))]
     vmm.mmio_device_manager
         .add_device_to_cmdline(_cmdline, _mmio_base, _irq)?;
 
@@ -1924,6 +2496,7 @@ fn attach_fs_devices(
     Ok(())
 }
 
+#[cfg(unix)]
 fn autoconfigure_console_ports(
     vmm: &mut Vmm,
     vm_resources: &VmResources,
@@ -2039,6 +2612,59 @@ fn autoconfigure_console_ports(
     }
 }
 
+/// Windows: autoconfigure console ports using native Windows console handles.
+#[cfg(target_os = "windows")]
+fn autoconfigure_console_ports(
+    _vmm: &mut Vmm,
+    vm_resources: &VmResources,
+    _cfg: Option<&DefaultVirtioConsoleConfig>,
+    creating_implicit_console: bool,
+) -> std::result::Result<Vec<PortDescription>, StartMicrovmError> {
+    let mut console_output_path: Option<PathBuf> = None;
+    if let Some(path) = vm_resources.console_output.clone() {
+        if !vm_resources.disable_implicit_console && creating_implicit_console {
+            console_output_path = Some(path)
+        }
+    }
+
+    if let Some(console_output_path) = console_output_path {
+        let file = File::create(console_output_path).map_err(StartMicrovmError::OpenConsoleFile)?;
+        Ok(vec![PortDescription::console(
+            Some(port_io::input_empty().unwrap()),
+            Some(port_io::output_file(file).unwrap()),
+            port_io::term_fixed_size(0, 0),
+        )])
+    } else {
+        // Use real Windows console handles for stdin/stdout when available,
+        // falling back to empty/log stubs if the handles cannot be obtained.
+        let console_input = match port_io::stdin_handle() {
+            Ok(input) => Some(input),
+            Err(e) => {
+                log::warn!("Could not get stdin handle, using empty input: {e}");
+                Some(port_io::input_empty().unwrap())
+            }
+        };
+
+        let console_output = match port_io::stdout_handle() {
+            Ok(output) => Some(output),
+            Err(e) => {
+                log::warn!("Could not get stdout handle, using log output: {e}");
+                Some(port_io::output_to_log_as_err())
+            }
+        };
+
+        let terminal_properties = port_io::term_console()
+            .unwrap_or_else(|_| port_io::term_fixed_size(80, 24));
+
+        Ok(vec![PortDescription::console(
+            console_input,
+            console_output,
+            terminal_properties,
+        )])
+    }
+}
+
+#[cfg(unix)]
 fn setup_terminal_raw_mode(
     vmm: &mut Vmm,
     term_fd: Option<BorrowedFd<'_>>,
@@ -2063,6 +2689,7 @@ fn setup_terminal_raw_mode(
     }
 }
 
+#[cfg(unix)]
 fn create_explicit_ports(
     vmm: &mut Vmm,
     port_configs: &[PortConfig],
@@ -2101,6 +2728,59 @@ fn create_explicit_ports(
                 },
                 terminal: None,
             },
+        };
+
+        ports.push(port_desc);
+    }
+
+    Ok(ports)
+}
+
+#[cfg(target_os = "windows")]
+fn create_explicit_ports(
+    _vmm: &mut Vmm,
+    port_configs: &[PortConfig],
+) -> std::result::Result<Vec<PortDescription>, StartMicrovmError> {
+    use windows_sys::Win32::Foundation::HANDLE;
+
+    let mut ports = Vec::with_capacity(port_configs.len());
+
+    for port_cfg in port_configs {
+        let port_desc = match port_cfg {
+            PortConfig::Tty { name, tty_fd } => {
+                let handle = *tty_fd as HANDLE;
+                PortDescription {
+                    name: name.clone().into(),
+                    input: port_io::input_from_handle(handle).ok(),
+                    output: port_io::output_from_handle(handle).ok(),
+                    terminal: Some(
+                        port_io::term_console()
+                            .unwrap_or_else(|_| port_io::term_fixed_size(80, 24)),
+                    ),
+                }
+            }
+            PortConfig::InOut {
+                name,
+                input_fd,
+                output_fd,
+            } => {
+                let input_handle = *input_fd as HANDLE;
+                let output_handle = *output_fd as HANDLE;
+                PortDescription {
+                    name: name.clone().into(),
+                    input: if input_handle.is_null() {
+                        None
+                    } else {
+                        port_io::input_from_handle(input_handle).ok()
+                    },
+                    output: if output_handle.is_null() {
+                        None
+                    } else {
+                        port_io::output_from_handle(output_handle).ok()
+                    },
+                    terminal: None,
+                }
+            }
         };
 
         ports.push(port_desc);
@@ -2248,7 +2928,7 @@ fn attach_rng_device(
     Ok(())
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", unix))]
 #[allow(clippy::too_many_arguments)]
 fn attach_gpu_device(
     vmm: &mut Vmm,
@@ -2297,7 +2977,7 @@ fn attach_gpu_device(
     Ok(())
 }
 
-#[cfg(feature = "input")]
+#[cfg(all(feature = "input", unix))]
 fn attach_input_devices(
     vmm: &mut Vmm,
     input_backends: &[(
@@ -2320,7 +3000,7 @@ fn attach_input_devices(
     Ok(())
 }
 
-#[cfg(feature = "snd")]
+#[cfg(all(feature = "snd", unix))]
 fn attach_snd_device(vmm: &mut Vmm, intc: IrqChip) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 

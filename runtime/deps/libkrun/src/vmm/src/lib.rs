@@ -30,15 +30,18 @@ mod linux;
 use crate::linux::vstate;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
 mod terminal;
 pub mod worker;
 
 #[cfg(target_os = "macos")]
 use macos::vstate;
+#[cfg(target_os = "windows")]
+use windows::vstate;
 
 use std::fmt::{Display, Formatter};
 use std::io;
-use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
@@ -63,6 +66,8 @@ use kernel::cmdline::Cmdline as KernelCmdline;
 use polly::event_manager::{self, EventManager, Subscriber};
 use utils::epoll::{EpollEvent, EventSet};
 use utils::eventfd::EventFd;
+#[cfg(target_os = "linux")]
+use utils::linux::eventfd::EventFdExt;
 use vm_memory::GuestMemoryMmap;
 
 /// Success exit code.
@@ -265,6 +270,23 @@ impl Vmm {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn resume_vcpus(&mut self) -> Result<()> {
+        if let Some(handle) = self.vcpus_handles.first() {
+            handle
+                .send_event(vstate::VcpuEvent::Resume)
+                .map_err(Error::VcpuEvent)?;
+            match handle
+                .response_receiver()
+                .recv_timeout(std::time::Duration::from_millis(1000))
+            {
+                Ok(vstate::VcpuResponse::Resumed) => (),
+                _ => return Err(Error::VcpuResume),
+            }
+        }
+        Ok(())
+    }
+
     /// Configures the system for boot.
     pub fn configure_system(
         &self,
@@ -288,6 +310,7 @@ impl Vmm {
                 cmdline_len,
                 initrd,
                 vcpus.len() as u8,
+                _smbios_oem_strings,
             )
             .map_err(Error::ConfigureSystem)?;
         }
@@ -366,8 +389,13 @@ impl Vmm {
 
         // Exit from Firecracker using the provided exit code. Safe because we're terminating
         // the process anyway.
+        #[cfg(unix)]
         unsafe {
             libc::_exit(exit_code);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::process::exit(exit_code);
         }
     }
 
@@ -400,7 +428,7 @@ impl Subscriber for Vmm {
         let source = event.fd();
         let event_set = event.event_set();
 
-        if source == self.exit_evt.as_raw_fd() && event_set == EventSet::IN {
+        if source == self.exit_evt.as_pollable() && event_set == EventSet::IN {
             let _ = self.exit_evt.read();
             // Query each vcpu for the exit_code.
             // If the exit_code can't be found on any vcpu, it means that the exit signal
@@ -434,7 +462,7 @@ impl Subscriber for Vmm {
     fn interest_list(&self) -> Vec<EpollEvent> {
         vec![EpollEvent::new(
             EventSet::IN,
-            self.exit_evt.as_raw_fd() as u64,
+            self.exit_evt.as_pollable() as u64,
         )]
     }
 }

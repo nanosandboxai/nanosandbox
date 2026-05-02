@@ -5,16 +5,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+#[cfg(target_os = "linux")]
 mod gdt;
 /// Contains logic for setting up Advanced Programmable Interrupt Controller (local version).
+#[cfg(target_os = "linux")]
 pub mod interrupts;
 /// Layout for the x86_64 system.
 pub mod layout;
-#[cfg(not(feature = "tee"))]
+#[cfg(all(target_os = "linux", not(feature = "tee")))]
 mod mptable;
 /// Logic for configuring x86_64 model specific registers (MSRs).
+#[cfg(target_os = "linux")]
 pub mod msr;
 /// Logic for configuring x86_64 registers.
+#[cfg(target_os = "linux")]
 pub mod regs;
 
 use crate::x86_64::layout::{EBDA_START, FIRST_ADDR_PAST_32BITS, MMIO_MEM_START};
@@ -24,7 +28,7 @@ use crate::{ArchMemoryInfo, InitrdConfig};
 use arch_gen::x86::bootparam::{boot_params, E820_RAM};
 use vm_memory::Bytes;
 use vm_memory::{Address, ByteValued, GuestAddress, GuestMemoryMmap};
-use vmm_sys_util::align_upwards;
+use smbios;
 
 // This is a workaround to the Rust enforcement specifying that any implementation of a foreign
 // trait (in this case `ByteValued`) where:
@@ -38,17 +42,19 @@ struct BootParamsWrapper(boot_params);
 unsafe impl ByteValued for BootParamsWrapper {}
 
 /// Errors thrown while configuring x86_64 system.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum Error {
     /// Invalid e820 setup params.
     E820Configuration,
     /// Error writing MP table to memory.
-    #[cfg(not(feature = "tee"))]
+    #[cfg(all(target_os = "linux", not(feature = "tee")))]
     MpTableSetup(mptable::Error),
     /// Error writing the zero page of guest memory.
     ZeroPageSetup,
     /// Failed to compute initrd address.
     InitrdAddress,
+    /// SMBIOS Error
+    Smbios(smbios::Error),
 }
 
 /// Returns a Vec of the valid memory addresses.
@@ -63,9 +69,9 @@ pub fn arch_memory_regions(
     initrd_size: u64,
     firmware_size: Option<usize>,
 ) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
-    let page_size: usize = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
+    let page_size: usize = crate::get_page_size();
 
-    let size = align_upwards!(size, page_size);
+    let size = crate::align_up!(size, page_size);
 
     // It's safe to cast MMIO_MEM_START to usize because it fits in a u32 variable
     // (It points to an address in the 32 bit space).
@@ -81,12 +87,14 @@ pub fn arch_memory_regions(
                         panic!("Kernel doesn't fit in RAM");
                     }
 
-                    let ram_last_addr = kernel_load_addr + kernel_size as u64 + size as u64;
+                    let kernel_end =
+                        crate::align_up!(kernel_load_addr + kernel_size as u64, page_size as u64);
+                    let ram_last_addr = kernel_end + size as u64;
                     (
                         ram_last_addr,
                         vec![
                             (GuestAddress(0), kernel_load_addr as usize),
-                            (GuestAddress(kernel_load_addr + kernel_size as u64), size),
+                            (GuestAddress(kernel_end), size),
                         ],
                     )
                 } else {
@@ -118,11 +126,13 @@ pub fn arch_memory_regions(
                 let shm_start_addr = ((ram_last_addr / 0x4000_0000) + 1) * 0x4000_0000;
 
                 let mut regions = if let Some(kernel_load_addr) = kernel_load_addr {
+                    let kernel_end =
+                        crate::align_up!(kernel_load_addr + kernel_size as u64, page_size as u64);
                     vec![
                         (GuestAddress(0), kernel_load_addr as usize),
                         (
-                            GuestAddress(kernel_load_addr + kernel_size as u64),
-                            (MMIO_MEM_START - (kernel_load_addr + kernel_size as u64)) as usize,
+                            GuestAddress(kernel_end),
+                            (MMIO_MEM_START - kernel_end) as usize,
                         ),
                         (GuestAddress(FIRST_ADDR_PAST_32BITS), remaining),
                     ]
@@ -179,9 +189,9 @@ pub fn arch_memory_regions(
     _initrd_size: u64,
     _firmware_size: Option<usize>,
 ) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
-    let page_size: usize = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
+    let page_size: usize = crate::get_page_size();
 
-    let size = align_upwards!(size, page_size);
+    let size = crate::align_up!(size, page_size);
     if let Some(kernel_load_addr) = kernel_load_addr {
         if size < (kernel_load_addr + kernel_size as u64) as usize {
             panic!("Kernel doesn't fit in RAM");
@@ -253,6 +263,7 @@ pub fn configure_system(
     cmdline_size: usize,
     initrd: &Option<InitrdConfig>,
     num_cpus: u8,
+    smbios_oem_strings: &Option<Vec<String>>,
 ) -> super::Result<()> {
     const KERNEL_BOOT_FLAG_MAGIC: u16 = 0xaa55;
     const KERNEL_HDR_MAGIC: u32 = 0x5372_6448;
@@ -264,8 +275,11 @@ pub fn configure_system(
     let himem_start = GuestAddress(layout::HIMEM_START);
 
     // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
-    #[cfg(not(feature = "tee"))]
+    #[cfg(all(target_os = "linux", not(feature = "tee")))]
     mptable::setup_mptable(guest_mem, num_cpus).map_err(Error::MpTableSetup)?;
+
+    smbios::setup_smbios(guest_mem, layout::SMBIOS_START, smbios_oem_strings)
+        .map_err(Error::Smbios)?;
 
     let mut params: BootParamsWrapper = BootParamsWrapper(boot_params::default());
 
@@ -401,34 +415,29 @@ mod tests {
         let no_vcpus = 4;
         let gm = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
         let info = ArchMemoryInfo::default();
-        let config_err = configure_system(&gm, &info, GuestAddress(0), 0, &None, 1);
+        let config_err = configure_system(&gm, &info, GuestAddress(0), 0, &None, 1, &None);
         assert!(config_err.is_err());
-        #[cfg(not(feature = "tee"))]
-        assert_eq!(
-            config_err.unwrap_err(),
-            super::Error::MpTableSetup(mptable::Error::NotEnoughMemory)
-        );
 
         // Now assigning some memory that falls before the 32bit memory hole.
         let mem_size = 128 << 20;
         let (arch_mem_info, arch_mem_regions) =
             arch_memory_regions(mem_size, Some(KERNEL_LOAD_ADDR), KERNEL_SIZE, 0, None);
         let gm = GuestMemoryMmap::from_ranges(&arch_mem_regions).unwrap();
-        configure_system(&gm, &arch_mem_info, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        configure_system(&gm, &arch_mem_info, GuestAddress(0), 0, &None, no_vcpus, &None).unwrap();
 
         // Now assigning some memory that is equal to the start of the 32bit memory hole.
         let mem_size = 3328 << 20;
         let (arch_mem_info, arch_mem_regions) =
             arch_memory_regions(mem_size, Some(KERNEL_LOAD_ADDR), KERNEL_SIZE, 0, None);
         let gm = GuestMemoryMmap::from_ranges(&arch_mem_regions).unwrap();
-        configure_system(&gm, &arch_mem_info, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        configure_system(&gm, &arch_mem_info, GuestAddress(0), 0, &None, no_vcpus, &None).unwrap();
 
         // Now assigning some memory that falls after the 32bit memory hole.
         let mem_size = 3330 << 20;
         let (arch_mem_info, arch_mem_regions) =
             arch_memory_regions(mem_size, Some(KERNEL_LOAD_ADDR), KERNEL_SIZE, 0, None);
         let gm = GuestMemoryMmap::from_ranges(&arch_mem_regions).unwrap();
-        configure_system(&gm, &arch_mem_info, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        configure_system(&gm, &arch_mem_info, GuestAddress(0), 0, &None, no_vcpus, &None).unwrap();
     }
 
     #[test]

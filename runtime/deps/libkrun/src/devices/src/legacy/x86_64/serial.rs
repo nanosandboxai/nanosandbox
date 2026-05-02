@@ -272,8 +272,27 @@ impl Subscriber for Serial {
             return;
         }
 
-        if let Some(input) = self.input.as_mut() {
-            if input.as_raw_fd() == source {
+        #[cfg(unix)]
+        {
+            if let Some(input) = self.input.as_mut() {
+                use std::os::fd::AsRawFd;
+                if input.as_raw_fd() == source as i32 {
+                    let mut out = [0u8; 32];
+                    match input.read(&mut out[..]) {
+                        Ok(count) => {
+                            self.raw_input(&out[..count])
+                                .unwrap_or_else(|e| warn!("Serial error on input: {e}"));
+                        }
+                        Err(e) => {
+                            warn!("error while reading stdin: {e:?}");
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(input) = self.input.as_mut() {
                 let mut out = [0u8; 32];
                 match input.read(&mut out[..]) {
                     Ok(count) => {
@@ -291,9 +310,19 @@ impl Subscriber for Serial {
     /// Initial registration of pollable objects.
     /// If serial input is present, register the serial input FD as readable.
     fn interest_list(&self) -> Vec<EpollEvent> {
-        match &self.input {
-            Some(input) => vec![EpollEvent::new(EventSet::IN, input.as_raw_fd() as u64)],
-            None => vec![],
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            match &self.input {
+                Some(input) => vec![EpollEvent::new(EventSet::IN, input.as_raw_fd() as u64)],
+                None => vec![],
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, serial input polling is handled differently.
+            // Input events will be delivered through the Windows console API.
+            vec![]
         }
     }
 }

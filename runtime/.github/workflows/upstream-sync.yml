@@ -119,8 +119,8 @@ jobs:
           - Pinned vm-memory to =0.16.2
 
           ### Review checklist
-          - [ ] \`cargo build -p nanosandbox\` compiles
-          - [ ] \`cargo test -p nanosandbox\` passes
+          - [ ] \`cargo build -p runtime\` compiles
+          - [ ] \`cargo test -p runtime\` passes
           - [ ] No new breaking API changes in libkrun
           - [ ] Check if init.c changed (may need prebuilt binary rebuild)
           EOF
