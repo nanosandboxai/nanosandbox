@@ -4,7 +4,6 @@ defaults:
   memory: 4096
   timeout: 600
   workdir: /workspace
-  rootfs_mode: vhdx
 
 sandboxes:
   claude-python-hello:

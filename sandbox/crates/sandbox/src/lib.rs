@@ -19,16 +19,22 @@ pub mod error;
 #[cfg(feature = "ffi")]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod ffi;
+pub mod project;
+pub mod sandbox;
 pub mod session;
 pub mod settings;
 
-// Re-exports from runtime
+// Re-exports from runtime (pure microVM types — no project/ssh/http/hvsocket here).
 pub use runtime::{
     self, ExecOptions, ExecResult, ImageManager, ImageRef, Mount, MountType, NetworkConfig,
     NetworkMode, NetworkScope, OciBundle, PortMapping, ProjectConfig, ProgressFn, PulledImage,
-    RegistryConfig, RootfsMode, Runtime, Sandbox, SandboxConfig, SandboxInfo, SandboxRegistry,
+    RegistryConfig, Runtime, SandboxConfig, SandboxInfo, SandboxRegistry,
     SandboxStatus, Stream,
 };
+
+// The agent-layer Sandbox wraps runtime::Sandbox with ProjectMount management.
+pub use crate::sandbox::Sandbox;
+pub use crate::project::{BranchStrategy, GitRepo, ProjectLayout, ProjectMount};
 
 // Re-exports from this crate
 pub use agent_sandbox::AgentSandbox;
