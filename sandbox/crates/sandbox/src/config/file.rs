@@ -742,10 +742,10 @@ sandboxes:
         let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].0, "test");
-        // Bare names get normalized to agents registry
+        // Non-agent bare names get normalized to docker.io/library/
         assert_eq!(
             configs[0].1.runtime.image,
-            "ghcr.io/nanosandboxai/agents-registry/alpine:latest"
+            "docker.io/library/alpine:latest"
         );
         assert_eq!(configs[0].1.runtime.name, "test");
     }
@@ -771,7 +771,7 @@ sandboxes:
         assert_eq!(a.1.runtime.memory_mb, 4096);
         assert_eq!(
             a.1.runtime.image,
-            "ghcr.io/nanosandboxai/agents-registry/default:latest"
+            "docker.io/library/default:latest"
         );
         assert_eq!(b.1.runtime.cpus, 2);
     }
@@ -945,7 +945,7 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let mut configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), None, &[], None);
+        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), None, &[]);
         assert_eq!(configs[0].1.runtime.cpus, 8);
         assert_eq!(configs[0].1.runtime.memory_mb, 4096);
         assert_eq!(configs[0].1.runtime.timeout_secs, 1200);
@@ -1295,7 +1295,7 @@ sandboxes:
             ("NEW_KEY".to_string(), "new_value".to_string()),
             ("EXISTING".to_string(), "overridden".to_string()),
         ];
-        apply_cli_overrides(&mut configs, None, None, None, None, &cli_env, None);
+        apply_cli_overrides(&mut configs, None, None, None, None, &cli_env);
         assert_eq!(configs[0].1.runtime.env["NEW_KEY"], "new_value");
         assert_eq!(configs[0].1.runtime.env["EXISTING"], "overridden");
     }
