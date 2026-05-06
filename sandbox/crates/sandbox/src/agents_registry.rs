@@ -226,6 +226,34 @@ impl AgentsRegistryClient {
             auto_mode: false,
             permissions: crate::config::Permissions::Default,
             agent_type: None,
+            claude_settings: None,
+        })
+    }
+
+    /// Resolve a list of skills with no agent definition.
+    ///
+    /// Returns a `ResolvedAgentConfig` with only the given skills populated
+    /// and all other fields at their defaults.
+    pub fn resolve_skills_only(
+        &self,
+        skills: &[String],
+    ) -> Result<ResolvedAgentConfig, String> {
+        let mut resolved_skills = Vec::new();
+        for name in skills {
+            match self.resolve_skill(name) {
+                Ok(skill) => resolved_skills.push(skill),
+                Err(e) => warn!("Failed to resolve skill '{}': {}", name, e),
+            }
+        }
+        Ok(ResolvedAgentConfig {
+            agent_name: String::new(),
+            prompt: String::new(),
+            skills: resolved_skills,
+            mcp_servers: std::collections::HashMap::new(),
+            auto_mode: false,
+            permissions: crate::config::Permissions::Default,
+            agent_type: None,
+            claude_settings: None,
         })
     }
 }
@@ -253,6 +281,10 @@ fn parse_skill_markdown(fallback_name: &str, content: &str) -> Result<SkillDef, 
             content: content.to_string(),
             version: String::new(),
             tags: Vec::new(),
+            when_to_use: String::new(),
+            allowed_tools: Vec::new(),
+            user_invocable: None,
+            paths: Vec::new(),
         });
     }
 
@@ -275,6 +307,14 @@ fn parse_skill_markdown(fallback_name: &str, content: &str) -> Result<SkillDef, 
         version: Option<String>,
         #[serde(default)]
         tags: Vec<String>,
+        #[serde(default)]
+        when_to_use: Option<String>,
+        #[serde(default)]
+        allowed_tools: Vec<String>,
+        #[serde(default)]
+        user_invocable: Option<bool>,
+        #[serde(default)]
+        paths: Vec<String>,
     }
 
     let fm: SkillFrontmatter = serde_yaml::from_str(frontmatter)
@@ -286,6 +326,10 @@ fn parse_skill_markdown(fallback_name: &str, content: &str) -> Result<SkillDef, 
         content: body.to_string(),
         version: fm.version.unwrap_or_default(),
         tags: fm.tags,
+        when_to_use: fm.when_to_use.unwrap_or_default(),
+        allowed_tools: fm.allowed_tools,
+        user_invocable: fm.user_invocable,
+        paths: fm.paths,
     })
 }
 
@@ -594,6 +638,10 @@ Body here.
             content: "# TDD\n\nRed-green-refactor.".to_string(),
             version: "1.0".to_string(),
             tags: vec!["testing".to_string()],
+            when_to_use: String::new(),
+            allowed_tools: Vec::new(),
+            user_invocable: None,
+            paths: Vec::new(),
         };
         let json = serde_json::to_string(&skill).unwrap();
         let parsed: SkillDef = serde_json::from_str(&json).unwrap();
@@ -612,11 +660,16 @@ Body here.
                 content: "# TDD".to_string(),
                 version: "1.0".to_string(),
                 tags: vec![],
+                when_to_use: String::new(),
+                allowed_tools: Vec::new(),
+                user_invocable: None,
+                paths: Vec::new(),
             }],
             mcp_servers: HashMap::new(),
             auto_mode: false,
             permissions: crate::config::Permissions::Default,
             agent_type: None,
+            claude_settings: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: ResolvedAgentConfig = serde_json::from_str(&json).unwrap();

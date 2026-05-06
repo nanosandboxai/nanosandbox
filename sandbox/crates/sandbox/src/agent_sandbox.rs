@@ -4,39 +4,69 @@
 //! of the generic HTTP API exposed by the runtime's Sandbox.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use runtime::Sandbox;
+use runtime::ImageManager;
 use tracing::{debug, info};
 
-use crate::config::{McpServerConfig, ResolvedAgentConfig, SkillDef};
+use crate::config::{AgentSandboxConfig, McpServerConfig, ResolvedAgentConfig, SkillDef};
 use crate::error::{Error, Result};
+use crate::sandbox::Sandbox as SandboxInner;
 
 /// Agent-aware sandbox wrapper.
 ///
-/// Wraps a `runtime::Sandbox` and adds agent-specific operations
-/// using the generic gateway HTTP API.
+/// Wraps `crate::sandbox::Sandbox` (which itself wraps `runtime::Sandbox` and
+/// manages the project mount) and adds agent-specific operations via the
+/// gateway HTTP API.
 pub struct AgentSandbox {
-    /// The underlying runtime sandbox
-    pub sandbox: Sandbox,
+    /// The intermediate sandbox (project-mount aware).
+    pub sandbox: SandboxInner,
+    /// The agent-level config used to create this sandbox.
+    agent_config: AgentSandboxConfig,
 }
 
 impl std::ops::Deref for AgentSandbox {
-    type Target = Sandbox;
-    fn deref(&self) -> &Sandbox {
+    type Target = SandboxInner;
+    fn deref(&self) -> &SandboxInner {
         &self.sandbox
     }
 }
 
 impl std::ops::DerefMut for AgentSandbox {
-    fn deref_mut(&mut self) -> &mut Sandbox {
+    fn deref_mut(&mut self) -> &mut SandboxInner {
         &mut self.sandbox
     }
 }
 
 impl AgentSandbox {
-    /// Wrap an existing sandbox with agent capabilities.
-    pub fn new(sandbox: Sandbox) -> Self {
-        Self { sandbox }
+    /// Wrap an existing intermediate sandbox with agent capabilities.
+    pub fn new(sandbox: SandboxInner) -> Self {
+        Self { sandbox, agent_config: AgentSandboxConfig::default() }
+    }
+
+    /// Create a new sandbox from an `AgentSandboxConfig`.
+    pub async fn create(config: AgentSandboxConfig) -> runtime::Result<Self> {
+        let sandbox = SandboxInner::create(config.sandbox.clone()).await?;
+        Ok(Self { sandbox, agent_config: config })
+    }
+
+    /// Create a new sandbox using an existing `ImageManager`.
+    pub async fn create_with_manager(
+        config: AgentSandboxConfig,
+        im: Arc<ImageManager>,
+    ) -> runtime::Result<Self> {
+        let sandbox = SandboxInner::create_with_manager(config.sandbox.clone(), im).await?;
+        Ok(Self { sandbox, agent_config: config })
+    }
+
+    /// Return the agent-level config for this sandbox.
+    pub fn config(&self) -> &AgentSandboxConfig {
+        &self.agent_config
+    }
+
+    /// Destroy the sandbox, consuming it.
+    pub async fn destroy(self) -> runtime::Result<()> {
+        self.sandbox.destroy().await
     }
 
     /// Send a message to the agent running inside the sandbox (SSE streaming).
@@ -63,13 +93,14 @@ impl AgentSandbox {
     }
 
     /// Bootstrap the agent with a full configuration (prompt, skills, MCP servers).
-    pub fn bootstrap_agent(&self, config: &ResolvedAgentConfig) -> Result<()> {
+    pub async fn bootstrap_agent(&self, config: &ResolvedAgentConfig) -> Result<()> {
         let body = serde_json::to_string(config)
             .map_err(|e| Error::Config(format!("Failed to serialize agent config: {}", e)))?;
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_post("/api/v1/agent/bootstrap", &body)
-            .map_err(Error::Runtime)?;
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_post("/api/v1/agent/bootstrap", &body)
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::Config(format!(
                 "Bootstrap failed ({}): {}",
@@ -81,15 +112,16 @@ impl AgentSandbox {
     }
 
     /// Set the agent definition (name + prompt).
-    pub fn set_agent(&self, name: &str, prompt: &str) -> Result<()> {
+    pub async fn set_agent(&self, name: &str, prompt: &str) -> Result<()> {
         let body = serde_json::json!({
             "name": name,
             "prompt": prompt,
         });
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_post("/api/v1/agent", &body.to_string())
-            .map_err(Error::Runtime)?;
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_post("/api/v1/agent", &body.to_string())
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::Config(format!(
                 "Set agent failed ({}): {}",
@@ -100,13 +132,23 @@ impl AgentSandbox {
         Ok(())
     }
 
+    /// Get the agent type name (e.g. "claude", "goose", "codex").
+    pub fn agent_type_name(&self) -> &str {
+        self.agent_config
+            .agent_type
+            .as_ref()
+            .map(|t| t.as_str())
+            .unwrap_or("claude")
+    }
+
     /// Restart the agent process.
-    pub fn restart_agent(&self, reason: &str) -> Result<serde_json::Value> {
-        let body = serde_json::json!({ "reason": reason });
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_post("/api/v1/agent/restart", &body.to_string())
-            .map_err(Error::Runtime)?;
+    pub async fn restart_agent(&self, reason: &str) -> Result<serde_json::Value> {
+        let body = serde_json::json!({ "agent": self.agent_type_name(), "reason": reason });
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_post("/api/v1/agent/restart", &body.to_string())
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::AgentRestartError(format!(
                 "Restart failed ({}): {}",
@@ -119,15 +161,19 @@ impl AgentSandbox {
     }
 
     /// Add or update an MCP server in the running sandbox.
-    pub fn add_mcp_server(&self, name: &str, config: McpServerConfig) -> Result<()> {
+    pub async fn add_mcp_server(&self, name: &str, config: McpServerConfig) -> Result<()> {
         let body = serde_json::json!({
             "name": name,
-            "config": config,
+            "command": config.command,
+            "args": config.args,
+            "env": config.env,
+            "enabled": config.enabled,
         });
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_post("/api/v1/mcp/servers", &body.to_string())
-            .map_err(Error::Runtime)?;
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_post("/api/v1/mcp/servers", &body.to_string())
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
                 "Add MCP server failed ({}): {}",
@@ -139,12 +185,13 @@ impl AgentSandbox {
     }
 
     /// Remove an MCP server from the running sandbox.
-    pub fn remove_mcp_server(&self, name: &str) -> Result<()> {
+    pub async fn remove_mcp_server(&self, name: &str) -> Result<()> {
         let path = format!("/api/v1/mcp/servers/{}", name);
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_delete(&path)
-            .map_err(Error::Runtime)?;
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_delete(&path)
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
                 "Remove MCP server failed ({}): {}",
@@ -156,11 +203,12 @@ impl AgentSandbox {
     }
 
     /// List all MCP servers in the running sandbox.
-    pub fn list_mcp_servers(&self) -> Result<HashMap<String, McpServerConfig>> {
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_get("/api/v1/mcp/servers")
-            .map_err(Error::Runtime)?;
+    pub async fn list_mcp_servers(&self) -> Result<HashMap<String, McpServerConfig>> {
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_get("/api/v1/mcp/servers")
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
                 "List MCP servers failed ({}): {}",
@@ -173,12 +221,13 @@ impl AgentSandbox {
     }
 
     /// Enable an MCP server.
-    pub fn enable_mcp_server(&self, name: &str) -> Result<()> {
+    pub async fn enable_mcp_server(&self, name: &str) -> Result<()> {
         let path = format!("/api/v1/mcp/servers/{}/enable", name);
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_post(&path, "{}")
-            .map_err(Error::Runtime)?;
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_post(&path, "{}")
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
                 "Enable MCP server failed ({}): {}",
@@ -189,12 +238,13 @@ impl AgentSandbox {
     }
 
     /// Disable an MCP server.
-    pub fn disable_mcp_server(&self, name: &str) -> Result<()> {
+    pub async fn disable_mcp_server(&self, name: &str) -> Result<()> {
         let path = format!("/api/v1/mcp/servers/{}/disable", name);
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_post(&path, "{}")
-            .map_err(Error::Runtime)?;
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_post(&path, "{}")
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
                 "Disable MCP server failed ({}): {}",
@@ -205,13 +255,14 @@ impl AgentSandbox {
     }
 
     /// Add a skill to the running sandbox.
-    pub fn add_skill(&self, skill: &SkillDef) -> Result<()> {
+    pub async fn add_skill(&self, skill: &SkillDef) -> Result<()> {
         let body = serde_json::to_string(skill)
             .map_err(|e| Error::SkillsError(format!("Failed to serialize skill: {}", e)))?;
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_post("/api/v1/skills", &body)
-            .map_err(Error::Runtime)?;
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_post("/api/v1/skills", &body)
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::SkillsError(format!(
                 "Add skill failed ({}): {}",
@@ -223,12 +274,13 @@ impl AgentSandbox {
     }
 
     /// Remove a skill from the running sandbox.
-    pub fn remove_skill(&self, name: &str) -> Result<()> {
+    pub async fn remove_skill(&self, name: &str) -> Result<()> {
         let path = format!("/api/v1/skills/{}", name);
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_delete(&path)
-            .map_err(Error::Runtime)?;
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_delete(&path)
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::SkillsError(format!(
                 "Remove skill failed ({}): {}",
@@ -240,11 +292,12 @@ impl AgentSandbox {
     }
 
     /// List all skills in the running sandbox.
-    pub fn list_skills(&self) -> Result<HashMap<String, SkillDef>> {
-        let (status, resp) = self
-            .sandbox
-            .gateway_http_get("/api/v1/skills")
-            .map_err(Error::Runtime)?;
+    pub async fn list_skills(&self) -> Result<HashMap<String, SkillDef>> {
+        let (status, resp) = tokio::task::block_in_place(|| {
+            self.sandbox
+                .gateway_http_get("/api/v1/skills")
+                .map_err(Error::Runtime)
+        })?;
         if status >= 400 {
             return Err(Error::SkillsError(format!(
                 "List skills failed ({}): {}",

@@ -43,7 +43,7 @@ pub struct SessionPanel {
     /// Short sandbox ID (first 8 chars of UUID) — used to locate clone dir.
     pub sandbox_short_id: String,
     /// Full sandbox config needed to recreate the sandbox.
-    pub config: runtime::SandboxConfig,
+    pub config: crate::config::AgentSandboxConfig,
     /// Absolute host path to the project clone directory.
     /// `None` if no project was mounted.
     pub clone_path: Option<PathBuf>,
@@ -298,8 +298,8 @@ impl Session {
 pub enum ResumeChoice {
     /// Resume the previous session.
     Resume,
-    /// Start fresh (teardown old session, create new sandboxes).
-    Fresh,
+    /// Clear session state and restart with new sandboxes.
+    ClearAndRestart,
     /// Destroy old session data and start fresh.
     Destroy,
 }
@@ -350,7 +350,7 @@ pub fn prompt_resume(session: &Session, issues: &[SessionIssue]) -> ResumeChoice
     let has_fatal = issues.iter().any(|i| !i.recoverable);
     if has_fatal {
         println!("Session has unrecoverable issues. Starting fresh.");
-        return ResumeChoice::Fresh;
+        return ResumeChoice::ClearAndRestart;
     }
 
     print!("[R]esume / [F]resh start / [D]estroy? [R] ");
@@ -370,7 +370,7 @@ pub fn prompt_resume(session: &Session, issues: &[SessionIssue]) -> ResumeChoice
 
     match input.trim().to_lowercase().as_str() {
         "" | "r" | "resume" => ResumeChoice::Resume,
-        "f" | "fresh" => ResumeChoice::Fresh,
+        "f" | "fresh" => ResumeChoice::ClearAndRestart,
         "d" | "destroy" => ResumeChoice::Destroy,
         _ => ResumeChoice::Resume,
     }
@@ -393,10 +393,13 @@ mod tests {
                 agent_name: "claude".to_string(),
                 display_name: None,
                 sandbox_short_id: "abcd1234".to_string(),
-                config: runtime::SandboxConfig::builder()
-                    .name("test")
-                    .image("test:latest")
-                    .build(),
+                config: crate::config::AgentSandboxConfig {
+                    sandbox: runtime::SandboxConfig::builder()
+                        .name("test")
+                        .image("test:latest")
+                        .build(),
+                    ..Default::default()
+                },
                 clone_path: Some(PathBuf::from("/tmp/nanosb-test-clone")),
                 branches: vec![(PathBuf::from("/tmp/repo"), "nanosb/abcd1234".to_string())],
                 auto_mode: false,

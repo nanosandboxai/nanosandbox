@@ -17,8 +17,8 @@ default = []
 ffi = []
 
 [dependencies]
-# Runtime (VM engine)
-runtime = { path = "../../../runtime/crates/runtime" }
+# Runtime (VM engine) — consumed via git; local dev overrides via workspace [patch]
+runtime = { git = "https://github.com/nanosandboxai/runtime.git", branch = "main" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

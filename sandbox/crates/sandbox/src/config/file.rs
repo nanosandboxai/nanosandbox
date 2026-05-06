@@ -9,7 +9,7 @@ use runtime::{
     SandboxConfig,
 };
 
-use super::{AgentSandboxConfig, McpServerConfig};
+use super::{AgentSandboxConfig, ClaudeSettings, McpServerConfig};
 
 /// Represents a parsed `sandbox.yml` file.
 #[derive(Debug, Clone, Deserialize)]
@@ -29,7 +29,6 @@ pub struct SandboxDefaults {
     pub cpus: Option<u32>,
     pub memory: Option<u32>,
     pub timeout: Option<u32>,
-    pub workdir: Option<String>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
     /// Path to a .env file to load environment variables from.
@@ -50,6 +49,8 @@ pub struct SandboxDefaults {
     pub prompt: Option<String>,
     /// Model identifier (e.g., "claude-sonnet-4-5-20250929"). Inherited by sandboxes.
     pub model: Option<String>,
+    /// Claude-specific settings (theme, etc.).
+    pub claude: Option<ClaudeSettingsDef>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -61,7 +62,6 @@ pub struct SandboxDefinition {
     pub cpus: Option<u32>,
     pub memory: Option<u32>,
     pub timeout: Option<u32>,
-    pub workdir: Option<String>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
     /// Path to a .env file to load environment variables from.
@@ -85,6 +85,8 @@ pub struct SandboxDefinition {
     pub agent_type: Option<String>,
     /// Model identifier (e.g., "claude-sonnet-4-5-20250929").
     pub model: Option<String>,
+    /// Claude-specific settings (theme, etc.).
+    pub claude: Option<ClaudeSettingsDef>,
 }
 
 /// Network configuration in YAML.
@@ -106,6 +108,14 @@ pub struct MountDef {
     pub readonly: bool,
     #[serde(default, rename = "type")]
     pub mount_type: Option<MountType>,
+}
+
+/// Claude-specific settings in YAML.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ClaudeSettingsDef {
+    /// UI theme: "dark", "light", "dark-ansi", "light-ansi",
+    /// "dark-colorblind", or "light-colorblind".
+    pub theme: Option<String>,
 }
 
 /// Project mount definition in YAML.
@@ -251,14 +261,18 @@ pub fn resolve_sandbox_configs(
         if let Some(timeout) = def.timeout.or(defaults.timeout) {
             config.timeout_secs = timeout;
         }
-        if let Some(ref workdir) = def.workdir.as_ref().or(defaults.workdir.as_ref()) {
-            config.workdir = workdir.to_string();
-        }
 
         // Env vars merge order: defaults env_file → defaults env → per-sandbox env_file → per-sandbox env
+        // env_file vars are injected into the process environment so that ${VAR} references
+        // in env: sections resolve correctly without requiring the user to export them first.
         let mut env = HashMap::new();
         if let Some(ref path) = defaults.env_file {
             let file_vars = load_env_file(path, config_dir)?;
+            for (k, v) in &file_vars {
+                if std::env::var(k).is_err() {
+                    std::env::set_var(k, v);
+                }
+            }
             env.extend(file_vars);
         }
         if let Some(ref defaults_env) = defaults.env {
@@ -268,6 +282,11 @@ pub fn resolve_sandbox_configs(
         }
         if let Some(ref path) = def.env_file {
             let file_vars = load_env_file(path, config_dir)?;
+            for (k, v) in &file_vars {
+                if std::env::var(k).is_err() {
+                    std::env::set_var(k, v);
+                }
+            }
             env.extend(file_vars);
         }
         if let Some(ref def_env) = def.env {
@@ -427,6 +446,16 @@ pub fn resolve_sandbox_configs(
         // Model: per-sandbox overrides defaults.
         agent_config.model = def.model.clone().or_else(|| defaults.model.clone());
 
+        // Claude settings: per-sandbox overrides defaults field by field.
+        let claude_theme = def
+            .claude
+            .as_ref()
+            .and_then(|c| c.theme.clone())
+            .or_else(|| defaults.claude.as_ref().and_then(|c| c.theme.clone()));
+        if let Some(theme) = claude_theme {
+            agent_config.claude_settings = Some(ClaudeSettings { theme: Some(theme) });
+        }
+
         // Validate model against known models if both type and model are set.
         if let (Some(agent_type), Some(ref model)) = (agent_config.agent_type, &agent_config.model)
         {
@@ -437,7 +466,7 @@ pub fn resolve_sandbox_configs(
             }
         }
 
-        agent_config.runtime = config;
+        agent_config.sandbox = config;
         results.push((key.clone(), agent_config));
     }
 
@@ -503,7 +532,7 @@ pub fn load_sandbox_files(
         let source = file_path.display().to_string();
 
         for (key, config) in configs {
-            let name = &config.runtime.name;
+            let name = &config.sandbox.name;
             if let Some(prev_source) = seen_names.get(name) {
                 return Err(format!(
                     "Sandbox name '{}' defined in both {} and {}",
@@ -561,20 +590,20 @@ pub fn apply_cli_overrides(
 ) {
     for (_, config) in configs.iter_mut() {
         if let Some(cpus) = cpus {
-            config.runtime.cpus = cpus;
+            config.sandbox.cpus = cpus;
         }
         if let Some(memory) = memory {
-            config.runtime.memory_mb = memory;
+            config.sandbox.memory_mb = memory;
         }
         if let Some(timeout) = timeout {
-            config.runtime.timeout_secs = timeout;
+            config.sandbox.timeout_secs = timeout;
         }
         if let Some(perm) = permissions {
             config.permissions = perm;
         }
         // CLI --env / --env-file override all other env sources.
         for (k, v) in cli_env {
-            config.runtime.env.insert(k.clone(), v.clone());
+            config.sandbox.env.insert(k.clone(), v.clone());
         }
     }
 }
@@ -744,10 +773,10 @@ sandboxes:
         assert_eq!(configs[0].0, "test");
         // Non-agent bare names get normalized to docker.io/library/
         assert_eq!(
-            configs[0].1.runtime.image,
+            configs[0].1.sandbox.image,
             "docker.io/library/alpine:latest"
         );
-        assert_eq!(configs[0].1.runtime.name, "test");
+        assert_eq!(configs[0].1.sandbox.name, "test");
     }
 
     #[test]
@@ -767,13 +796,13 @@ sandboxes:
         let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
         let a = configs.iter().find(|(k, _)| k == "a").unwrap();
         let b = configs.iter().find(|(k, _)| k == "b").unwrap();
-        assert_eq!(a.1.runtime.cpus, 8);
-        assert_eq!(a.1.runtime.memory_mb, 4096);
+        assert_eq!(a.1.sandbox.cpus, 8);
+        assert_eq!(a.1.sandbox.memory_mb, 4096);
         assert_eq!(
-            a.1.runtime.image,
+            a.1.sandbox.image,
             "docker.io/library/default:latest"
         );
-        assert_eq!(b.1.runtime.cpus, 2);
+        assert_eq!(b.1.sandbox.cpus, 2);
     }
 
     #[test]
@@ -806,7 +835,7 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        let env = &configs[0].1.runtime.env;
+        let env = &configs[0].1.sandbox.env;
         assert_eq!(env["SHARED"], "shared_value");
         assert_eq!(env["OVERRIDE"], "sandbox_val");
         assert_eq!(env["EXTRA"], "resolved");
@@ -823,7 +852,7 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        assert_eq!(configs[0].1.runtime.name, "my-claude");
+        assert_eq!(configs[0].1.sandbox.name, "my-claude");
     }
 
     #[test]
@@ -914,7 +943,7 @@ sandboxes:
         std::fs::write(&path, yaml).unwrap();
         let configs = load_sandbox_file(&path).unwrap();
         assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].1.runtime.cpus, 2);
+        assert_eq!(configs[0].1.sandbox.cpus, 2);
     }
 
     #[test]
@@ -946,9 +975,9 @@ sandboxes:
         let file = parse_sandbox_file(yaml).unwrap();
         let mut configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
         apply_cli_overrides(&mut configs, Some(8), None, Some(1200), None, &[]);
-        assert_eq!(configs[0].1.runtime.cpus, 8);
-        assert_eq!(configs[0].1.runtime.memory_mb, 4096);
-        assert_eq!(configs[0].1.runtime.timeout_secs, 1200);
+        assert_eq!(configs[0].1.sandbox.cpus, 8);
+        assert_eq!(configs[0].1.sandbox.memory_mb, 4096);
+        assert_eq!(configs[0].1.sandbox.timeout_secs, 1200);
     }
 
     #[test]
@@ -1109,7 +1138,7 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, dir.path()).unwrap();
-        assert_eq!(configs[0].1.runtime.env["DEFAULT_KEY"], "default_value");
+        assert_eq!(configs[0].1.sandbox.env["DEFAULT_KEY"], "default_value");
     }
 
     #[test]
@@ -1125,7 +1154,7 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, dir.path()).unwrap();
-        assert_eq!(configs[0].1.runtime.env["SB_KEY"], "sb_value");
+        assert_eq!(configs[0].1.sandbox.env["SB_KEY"], "sb_value");
     }
 
     #[test]
@@ -1157,9 +1186,9 @@ sandboxes:
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, dir.path()).unwrap();
         // Per-sandbox inline env has highest priority
-        assert_eq!(configs[0].1.runtime.env["SHARED"], "from_sandbox_env");
-        assert_eq!(configs[0].1.runtime.env["DEFAULT_ONLY"], "yes");
-        assert_eq!(configs[0].1.runtime.env["SB_ONLY"], "yes");
+        assert_eq!(configs[0].1.sandbox.env["SHARED"], "from_sandbox_env");
+        assert_eq!(configs[0].1.sandbox.env["DEFAULT_ONLY"], "yes");
+        assert_eq!(configs[0].1.sandbox.env["SB_ONLY"], "yes");
     }
 
     #[test]
@@ -1281,6 +1310,35 @@ sandboxes:
     }
 
     #[test]
+    fn test_workdir_is_silently_ignored() {
+        // workdir was removed from the schema; existing configs must still parse
+        let yaml = r#"
+defaults:
+  workdir: /some/custom/path
+sandboxes:
+  test:
+    image: test:latest
+    workdir: /another/path
+"#;
+        let result = parse_sandbox_file(yaml);
+        assert!(result.is_ok(), "workdir in yaml should be silently ignored, got: {:?}", result.err());
+        let file = result.unwrap();
+        assert_eq!(file.sandboxes.len(), 1);
+    }
+
+    #[test]
+    fn test_default_workdir_remains_workspace() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(configs[0].1.sandbox.workdir, "/workspace");
+    }
+
+    #[test]
     fn test_apply_cli_overrides_with_env() {
         let yaml = r#"
 sandboxes:
@@ -1296,7 +1354,7 @@ sandboxes:
             ("EXISTING".to_string(), "overridden".to_string()),
         ];
         apply_cli_overrides(&mut configs, None, None, None, None, &cli_env);
-        assert_eq!(configs[0].1.runtime.env["NEW_KEY"], "new_value");
-        assert_eq!(configs[0].1.runtime.env["EXISTING"], "overridden");
+        assert_eq!(configs[0].1.sandbox.env["NEW_KEY"], "new_value");
+        assert_eq!(configs[0].1.sandbox.env["EXISTING"], "overridden");
     }
 }

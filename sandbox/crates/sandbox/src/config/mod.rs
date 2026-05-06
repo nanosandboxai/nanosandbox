@@ -130,6 +130,18 @@ pub struct SkillDef {
     pub version: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Claude auto-invoke hint: shown in the skill description sent to the model.
+    #[serde(default)]
+    pub when_to_use: String,
+    /// Tools pre-approved for this skill (Claude-specific).
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    /// Whether the skill appears in the /skills user menu (None = treat as true).
+    #[serde(default)]
+    pub user_invocable: Option<bool>,
+    /// Glob patterns — skill auto-attaches when matching files are in context.
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 /// MCP reference within an agent definition.
@@ -159,6 +171,21 @@ pub struct AgentDefinition {
     pub tags: Vec<String>,
 }
 
+/// Claude-specific settings written to ~/.claude/settings.json at bootstrap.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClaudeSettings {
+    /// UI theme: "dark", "light", "dark-ansi", "light-ansi",
+    /// "dark-colorblind", or "light-colorblind".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+}
+
+impl ClaudeSettings {
+    pub fn is_empty(&self) -> bool {
+        self.theme.is_none()
+    }
+}
+
 /// Fully resolved config bundle sent to gateway at boot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedAgentConfig {
@@ -173,6 +200,8 @@ pub struct ResolvedAgentConfig {
     pub permissions: Permissions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<AgentType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_settings: Option<ClaudeSettings>,
 }
 
 /// Agent-enriched sandbox configuration.
@@ -180,10 +209,10 @@ pub struct ResolvedAgentConfig {
 /// Wraps the runtime's `SandboxConfig` with agent-specific fields.
 /// The runtime config handles VM resources (cpus, memory, mounts, network),
 /// while this struct adds agent orchestration fields (MCP, skills, permissions).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSandboxConfig {
-    /// Runtime (VM) configuration.
-    pub runtime: runtime::SandboxConfig,
+    /// VM-level sandbox configuration.
+    pub sandbox: runtime::SandboxConfig,
     /// MCP server definitions.
     pub mcp_servers: HashMap<String, McpServerConfig>,
     /// Agent definition name from registry.
@@ -202,12 +231,14 @@ pub struct AgentSandboxConfig {
     pub agent_type: Option<AgentType>,
     /// Model identifier (e.g., "claude-sonnet-4-5-20250929").
     pub model: Option<String>,
+    /// Claude-specific settings (theme, etc.) written to ~/.claude/settings.json.
+    pub claude_settings: Option<ClaudeSettings>,
 }
 
 impl Default for AgentSandboxConfig {
     fn default() -> Self {
         Self {
-            runtime: runtime::SandboxConfig::default(),
+            sandbox: runtime::SandboxConfig::default(),
             mcp_servers: HashMap::new(),
             agent: None,
             skills: Vec::new(),
@@ -217,7 +248,67 @@ impl Default for AgentSandboxConfig {
             prompt: None,
             agent_type: None,
             model: None,
+            claude_settings: None,
         }
+    }
+}
+
+impl AgentSandboxConfig {
+    pub fn builder() -> AgentSandboxConfigBuilder {
+        AgentSandboxConfigBuilder::default()
+    }
+}
+
+/// Builder for `AgentSandboxConfig`.
+#[derive(Default)]
+pub struct AgentSandboxConfigBuilder {
+    config: AgentSandboxConfig,
+}
+
+impl AgentSandboxConfigBuilder {
+    pub fn image(mut self, image: impl Into<String>) -> Self {
+        self.config.sandbox.image = image.into();
+        self
+    }
+    pub fn cpus(mut self, cpus: u32) -> Self {
+        self.config.sandbox.cpus = cpus;
+        self
+    }
+    pub fn memory_mb(mut self, mb: u32) -> Self {
+        self.config.sandbox.memory_mb = mb;
+        self
+    }
+    pub fn timeout_secs(mut self, secs: u32) -> Self {
+        self.config.sandbox.timeout_secs = secs;
+        self
+    }
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.config.sandbox.env.insert(key.into(), value.into());
+        self
+    }
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.config.sandbox.name = name.into();
+        self
+    }
+    pub fn project(mut self, path: impl Into<std::path::PathBuf>, branch: Option<&str>) -> Self {
+        self.config.sandbox.project = Some(runtime::ProjectConfig {
+            path: path.into(),
+            branch: branch.map(String::from),
+            mount_point: "/workspace".to_string(),
+            auto_sync: false,
+        });
+        self
+    }
+    pub fn agent_type(mut self, at: AgentType) -> Self {
+        self.config.agent_type = Some(at);
+        self
+    }
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.config.model = Some(model.into());
+        self
+    }
+    pub fn build(self) -> AgentSandboxConfig {
+        self.config
     }
 }
 
