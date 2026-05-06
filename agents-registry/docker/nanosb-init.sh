@@ -116,6 +116,19 @@ if [ -f /etc/nanosb-mounts ]; then
 fi
 
 # ---------------------------------------------------------------
+# 1c. Exclude .nanosb-state from git tracking in the workspace
+# ---------------------------------------------------------------
+# Gateway-managed state lives in .nanosb-state/ (via HOME symlinks).
+# Exclude it from git so it never appears in git status or gets committed.
+if [ -d /workspace/.git ]; then
+    EXCLUDE_FILE="/workspace/.git/info/exclude"
+    if ! grep -qF ".nanosb-state/" "$EXCLUDE_FILE" 2>/dev/null; then
+        echo ".nanosb-state/" >> "$EXCLUDE_FILE" 2>/dev/null || true
+        echo "nanosb-init: added .nanosb-state/ to .git/info/exclude"
+    fi
+fi
+
+# ---------------------------------------------------------------
 # 1b. Link agent state dirs into /workspace/.nanosb-state/
 # ---------------------------------------------------------------
 # Agent session state (conversation history, config) is stored inside
@@ -143,6 +156,31 @@ if [ -d /workspace ]; then
         rm -rf /home/developer/.config/goose 2>/dev/null || true
     fi
     ln -sfn "$STATE_DIR/.config/goose" /home/developer/.config/goose 2>/dev/null || true
+
+    # ~/.claude.json (Claude auth + preferences — lives outside ~/.claude/, needs own symlink)
+    ln -sfn "$STATE_DIR/.claude.json" "/home/developer/.claude.json" 2>/dev/null || true
+    # Ensure ~/.claude.json has theme + all migration fields so Claude Code
+    # skips the onboarding wizard. If any migration field is absent, Claude
+    # rewrites the file on startup and strips theme in the process.
+    # Check for "theme" (not just file existence) because a previous boot
+    # may have created the file without theme via Claude Code's migration write.
+    if ! grep -q '"theme"' "$STATE_DIR/.claude.json" 2>/dev/null; then
+        CLAUDE_USER_ID=$(cat /dev/urandom 2>/dev/null | head -c 32 | od -An -tx1 | tr -d ' \n' | head -c 64 || echo "nanosandbox000000000000000000000000000000000000000000000000000000")
+        printf '{"numStartups":1,"theme":"dark","hasCompletedOnboarding":true,"firstStartTime":"%s","opusProMigrationComplete":true,"sonnet1m45MigrationComplete":true,"seenNotifications":{},"migrationVersion":13,"userID":"%s","projects":{"/workspace":{"hasTrustDialogAccepted":true,"allowedTools":[],"mcpContextUris":[],"mcpServers":{},"enabledMcpjsonServers":[],"disabledMcpjsonServers":[]}}}' \
+            "$(date -u +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || echo '2026-01-01T00:00:00.000Z')" \
+            "$CLAUDE_USER_ID" > "$STATE_DIR/.claude.json" 2>/dev/null || true
+    fi
+
+    # ~/.agents/ (Codex native skill discovery dir — ~/.agents/skills/<name>/SKILL.md)
+    mkdir -p "$STATE_DIR/.agents/skills" 2>/dev/null || true
+    if [ -e /home/developer/.agents ] && [ ! -L /home/developer/.agents ]; then
+        rm -rf /home/developer/.agents 2>/dev/null || true
+    fi
+    ln -sfn "$STATE_DIR/.agents" "/home/developer/.agents" 2>/dev/null || true
+
+    # ~/.nanosandbox/ (agent-gateway registry state persistence)
+    mkdir -p "$STATE_DIR/.nanosandbox" 2>/dev/null || true
+    ln -sfn "$STATE_DIR/.nanosandbox" "/home/developer/.nanosandbox" 2>/dev/null || true
 
     chown -R developer:developer "$STATE_DIR" 2>/dev/null || true
     echo "nanosb-init: agent state symlinks created (workspace-backed)"

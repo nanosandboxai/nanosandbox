@@ -40,18 +40,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch agent-gateway source from sandbox repo
-        uses: actions/checkout@v4
-        with:
-          repository: nanosandboxai/sandbox
-          token: ${{ secrets.SANDBOX_PAT }}
-          path: _sandbox
-          sparse-checkout: agent-gateway
-          sparse-checkout-cone-mode: true
-
-      - name: Copy agent-gateway into build context
-        run: cp -r _sandbox/agent-gateway ./agent-gateway
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

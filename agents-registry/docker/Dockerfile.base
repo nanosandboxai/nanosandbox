@@ -45,14 +45,12 @@ RUN usermod -l developer -d /home/developer -m node \
 # Copy agent-gateway binary from builder
 COPY --from=gateway-builder /build/agent-gateway /usr/local/bin/agent-gateway
 
-# Pre-install MCP server npm packages globally (avoids npx download at runtime)
-RUN npm install -g \
-    @modelcontextprotocol/server-github \
-    @modelcontextprotocol/server-filesystem \
-    @modelcontextprotocol/server-memory \
-    @modelcontextprotocol/server-brave-search \
-    @upstash/context7-mcp \
-    && npm cache clean --force
+# Python 3 + uv/uvx (runtime for Python-based MCP servers like mcp-server-fetch)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Create config directories for MCP config generation under developer's home
 RUN mkdir -p /home/developer/.config/goose \

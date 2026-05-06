@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "updated_at": "2026-03-18T15:18:49Z",
+  "updated_at": "2026-05-04T07:59:56Z",
   "registry_url": "https://github.com/devdone-labs/agents-registry",
   "agents": [
     {
@@ -99,7 +99,14 @@
         "quality",
         "collaboration"
       ],
-      "path": "skills/code-review.md"
+      "path": "skills/code-review.md",
+      "when_to_use": "Use when reviewing code changes, auditing a PR, or checking code quality",
+      "allowed_tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ],
+      "user_invocable": true
     },
     {
       "name": "documentation",
@@ -109,7 +116,14 @@
         "writing",
         "standards"
       ],
-      "path": "skills/documentation.md"
+      "path": "skills/documentation.md",
+      "when_to_use": "Use when writing or updating technical documentation, READMEs, or API reference",
+      "allowed_tools": [
+        "Read",
+        "Write",
+        "Edit"
+      ],
+      "user_invocable": true
     },
     {
       "name": "git-workflow",
@@ -119,7 +133,12 @@
         "workflow",
         "collaboration"
       ],
-      "path": "skills/git-workflow.md"
+      "path": "skills/git-workflow.md",
+      "when_to_use": "Use when working with git, creating commits, managing branches, or opening PRs",
+      "allowed_tools": [
+        "Bash"
+      ],
+      "user_invocable": true
     },
     {
       "name": "security-best-practices",
@@ -129,7 +148,14 @@
         "owasp",
         "best-practices"
       ],
-      "path": "skills/security-best-practices.md"
+      "path": "skills/security-best-practices.md",
+      "when_to_use": "Use when writing code that handles user input, authentication, secrets, or external APIs",
+      "allowed_tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ],
+      "user_invocable": true
     },
     {
       "name": "tdd",
@@ -139,7 +165,16 @@
         "tdd",
         "quality"
       ],
-      "path": "skills/tdd.md"
+      "path": "skills/tdd.md",
+      "when_to_use": "Use when writing new features or fixing bugs \u2014 write the failing test first",
+      "allowed_tools": [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Grep"
+      ],
+      "user_invocable": true
     }
   ],
   "mcps": {

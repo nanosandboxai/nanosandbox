@@ -3,6 +3,9 @@ name: git-workflow
 description: Git workflow best practices with conventional commits and clean history
 version: "1.0"
 tags: [git, workflow, collaboration]
+when_to_use: Use when working with git, creating commits, managing branches, or opening PRs
+allowed_tools: [Bash]
+user_invocable: true
 ---
 
 # Git Workflow

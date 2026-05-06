@@ -3,6 +3,9 @@ name: documentation
 description: Technical documentation standards for code, APIs, and project docs
 version: "1.0"
 tags: [documentation, writing, standards]
+when_to_use: Use when writing or updating technical documentation, READMEs, or API reference
+allowed_tools: [Read, Write, Edit]
+user_invocable: true
 ---
 
 # Documentation

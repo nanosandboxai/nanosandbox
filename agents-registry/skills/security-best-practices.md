@@ -3,6 +3,9 @@ name: security-best-practices
 description: Secure development practices covering OWASP top risks and common vulnerabilities
 version: "1.0"
 tags: [security, owasp, best-practices]
+when_to_use: Use when writing code that handles user input, authentication, secrets, or external APIs
+allowed_tools: [Read, Grep, Glob]
+user_invocable: true
 ---
 
 # Security Best Practices

@@ -3,6 +3,9 @@ name: tdd
 description: Test-driven development workflow - red, green, refactor
 version: "1.0"
 tags: [testing, tdd, quality]
+when_to_use: Use when writing new features or fixing bugs — write the failing test first
+allowed_tools: [Bash, Read, Write, Edit, Grep]
+user_invocable: true
 ---
 
 # Test-Driven Development

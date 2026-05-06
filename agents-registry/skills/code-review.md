@@ -3,6 +3,9 @@ name: code-review
 description: Code review practices focused on correctness, clarity, and maintainability
 version: "1.0"
 tags: [review, quality, collaboration]
+when_to_use: Use when reviewing code changes, auditing a PR, or checking code quality
+allowed_tools: [Read, Grep, Glob]
+user_invocable: true
 ---
 
 # Code Review
