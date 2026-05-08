@@ -441,11 +441,6 @@ impl LibkrunRuntime {
         None
     }
 
-    pub fn is_gateway_ready(&self, _id: &str) -> bool {
-        // Console-based detection not implemented on Linux; use TCP health check.
-        false
-    }
-
     pub fn hcs_vm_id(&self, _id: &str) -> Option<String> {
         // HCS VM identity only available on Windows.
         None
@@ -484,7 +479,7 @@ impl LibkrunRuntime {
     ///
     /// The Sandbox orchestrator has already pulled the image and created the rootfs
     /// at `bundle_path/rootfs` using `ImageManager`. This method just stores the
-    /// configuration for later use by `exec()` / `exec_stream()`.
+    /// configuration for later use by `start()`.
     pub async fn create(
         &self,
         id: &str,

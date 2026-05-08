@@ -70,7 +70,9 @@ fn generate_mounts(user_mounts: &[Mount]) -> Vec<serde_json::Value> {
             "destination": "/proc",
             "type": "proc",
             "source": "proc",
-            "options": ["nosuid", "noexec", "nodev"]
+            // hidepid=2: only the process owner can read /proc/<pid>/environ,
+            // preventing other users from seeing process env vars (e.g. API keys).
+            "options": ["nosuid", "noexec", "nodev", "hidepid=2"]
         }),
         json!({
             "destination": "/dev",

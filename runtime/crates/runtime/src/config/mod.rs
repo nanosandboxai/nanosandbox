@@ -59,12 +59,6 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing)]
     pub command_args: Vec<String>,
 
-    /// Whether agent-gateway mode is active.
-    /// When true, the runtime sets up port mappings, SSH keys, HvSocket
-    /// proxies, and gateway health checks during start().
-    /// Set by the sandbox layer based on image contents.
-    #[serde(default, skip_serializing)]
-    pub gateway: bool,
 }
 
 fn default_cpus() -> u32 {
@@ -99,7 +93,6 @@ impl Default for SandboxConfig {
             ssh_pubkey: None,
             command: None,
             command_args: Vec::new(),
-            gateway: false,
         }
     }
 }

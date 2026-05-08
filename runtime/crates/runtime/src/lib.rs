@@ -27,8 +27,8 @@
 //!     let mut sandbox = Sandbox::create(config).await?;
 //!     sandbox.start().await?;
 //!
-//!     let result = sandbox.exec("python", &["-c", "print('Hello!')"]).await?;
-//!     println!("Output: {}", result.stdout);
+//!     // Command execution is handled by the gateway crate
+//!     // (agent-gateway inside the VM).
 //!
 //!     sandbox.destroy().await?;
 //!     Ok(())
@@ -42,7 +42,6 @@
 pub mod auth;
 pub mod config;
 pub mod error;
-pub mod http;
 #[cfg(target_os = "windows")]
 pub mod hvsocket;
 pub mod image;
@@ -50,7 +49,6 @@ pub mod oci;
 pub mod registry;
 pub mod runtime;
 pub mod sandbox;
-pub mod ssh;
 
 // Re-exports
 pub use auth::CredentialStore;
@@ -63,9 +61,7 @@ pub use image::{ImageManager, ImageRef, PruneResult, PulledImage};
 pub use oci::OciBundle;
 pub use registry::{SandboxInfo, SandboxRegistry};
 pub use runtime::{detect_runtime, Runtime};
-pub use sandbox::{
-    ExecOptions, ExecResult, OutputChunk, ProgressFn, Sandbox, SandboxStatus, Stream,
-};
+pub use sandbox::{ProgressFn, Sandbox, SandboxStatus};
 
 /// Prelude module for convenient imports
 pub mod prelude {

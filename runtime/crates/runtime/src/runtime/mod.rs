@@ -105,12 +105,6 @@ impl RuntimeBackend {
         }
     }
 
-    pub fn is_gateway_ready(&self, id: &str) -> bool {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.is_gateway_ready(id),
-        }
-    }
-
     pub fn is_vm_running(&self, id: &str) -> bool {
         match self {
             RuntimeBackend::Libkrun(r) => r.is_vm_running(id),
@@ -188,13 +182,6 @@ impl Runtime {
     /// Get the guest IP address for a sandbox.
     pub fn guest_ip(&self, id: &str) -> Option<String> {
         self.backend.guest_ip(id)
-    }
-
-    /// Check if the gateway readiness was detected from VM console output.
-    /// On Windows, this detects the "listening on :8080" message from the guest
-    /// console, providing instant readiness detection without TCP polling.
-    pub fn is_gateway_ready(&self, id: &str) -> bool {
-        self.backend.is_gateway_ready(id)
     }
 
     /// Check if the VM process is still running.

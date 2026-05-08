@@ -18,7 +18,7 @@ async fn async_main() {
         .init();
 
     let config = SandboxConfig::builder()
-        .name("hvsocket-test")
+        .name("boot-time-test")
         .image("ghcr.io/nanosandboxai/agents-registry/claude:0.2.0-rc3")
         .cpus(1)
         .memory_mb(256)
@@ -41,21 +41,10 @@ async fn async_main() {
         let _ = sandbox.destroy().await;
         return;
     }
-    println!("[{:.1}s] Sandbox started (gateway ready)", start.elapsed().as_secs_f64());
+    println!("[{:.1}s] Sandbox started (VM running)", start.elapsed().as_secs_f64());
 
-    match sandbox.exec("echo", &["Hello", "HvSocket"]).await {
-        Ok(result) => {
-            println!(
-                "[{:.1}s] exec: exit_code={}, stdout={}",
-                start.elapsed().as_secs_f64(),
-                result.exit_code,
-                result.stdout.trim()
-            );
-        }
-        Err(e) => {
-            eprintln!("[{:.1}s] exec failed: {}", start.elapsed().as_secs_f64(), e);
-        }
-    }
+    // Note: exec is now handled by the gateway crate in the sandbox layer.
+    // This example only measures VM boot time.
 
     let _ = sandbox.stop().await;
     let _ = sandbox.destroy().await;

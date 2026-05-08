@@ -174,9 +174,6 @@ struct SandboxState {
     command: Option<String>,
     /// PID 1 command arguments.
     command_args: Vec<String>,
-    /// Set to true by the console reader thread when it detects the gateway
-    /// listening message from the guest. Used for fast health-check bypass.
-    gateway_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Direct libkrun FFI runtime for Windows (WHPX)
@@ -214,15 +211,6 @@ impl LibkrunRuntime {
     pub fn guest_ip(&self, id: &str) -> Option<String> {
         let sandboxes = self.lock_sandboxes();
         sandboxes.get(id).and_then(|s| s.guest_ip.clone())
-    }
-
-    /// Check if the gateway readiness has been detected from the VM console output.
-    pub fn is_gateway_ready(&self, id: &str) -> bool {
-        let sandboxes = self.lock_sandboxes();
-        sandboxes
-            .get(id)
-            .map(|s| s.gateway_ready.load(std::sync::atomic::Ordering::Acquire))
-            .unwrap_or(false)
     }
 
     /// Get the HCS VM identity for HvSocket connections.
@@ -484,7 +472,6 @@ impl LibkrunRuntime {
             ssh_pubkey: config.ssh_pubkey.clone(),
             command: config.command.clone(),
             command_args: config.command_args.clone(),
-            gateway_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         self.lock_sandboxes().insert(id.to_string(), state);
@@ -553,25 +540,11 @@ impl LibkrunRuntime {
         // emits via tracing only and the application's subscriber decides
         // where it lands.
         let sandbox_id_for_stderr = id.to_string();
-        // Get the gateway_ready flag so the console reader can signal when
-        // the gateway starts listening inside the guest.
-        let gateway_ready_flag = {
-            let sandboxes = self.lock_sandboxes();
-            sandboxes.get(id).map(|s| s.gateway_ready.clone())
-        };
         if let Some(stderr) = child.stderr.take() {
-            let gw_ready = gateway_ready_flag;
             std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
                 for line in reader.lines().flatten() {
                     info!("[vm-{}] {}", &sandbox_id_for_stderr[..8.min(sandbox_id_for_stderr.len())], line);
-                    // Detect gateway listening message from guest console
-                    if line.contains("listening on :8080") {
-                        if let Some(ref flag) = gw_ready {
-                            flag.store(true, std::sync::atomic::Ordering::Release);
-                            info!("[vm-{}] gateway ready (detected from console)", &sandbox_id_for_stderr[..8.min(sandbox_id_for_stderr.len())]);
-                        }
-                    }
                 }
             });
         }
