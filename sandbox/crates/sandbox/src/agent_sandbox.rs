@@ -1,7 +1,7 @@
 //! AgentSandbox - Agent-aware wrapper around the runtime Sandbox
 //!
 //! Provides agent-specific operations (MCP, skills, messaging) on top
-//! of the generic HTTP API exposed by the runtime's Sandbox.
+//! of the gateway client managed by the sandbox layer.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,8 +16,8 @@ use crate::sandbox::Sandbox as SandboxInner;
 /// Agent-aware sandbox wrapper.
 ///
 /// Wraps `crate::sandbox::Sandbox` (which itself wraps `runtime::Sandbox` and
-/// manages the project mount) and adds agent-specific operations via the
-/// gateway HTTP API.
+/// manages the project mount and gateway client) and adds agent-specific
+/// operations via the gateway HTTP API.
 pub struct AgentSandbox {
     /// The intermediate sandbox (project-mount aware).
     pub sandbox: SandboxInner,
@@ -36,6 +36,11 @@ impl std::ops::DerefMut for AgentSandbox {
     fn deref_mut(&mut self) -> &mut SandboxInner {
         &mut self.sandbox
     }
+}
+
+/// Map a gateway error into our crate-level Error type.
+fn gw_err(e: gateway::Error) -> Error {
+    Error::Runtime(runtime::Error::ExecFailed(e.to_string()))
 }
 
 impl AgentSandbox {
@@ -88,8 +93,10 @@ impl AgentSandbox {
             "env": env,
         });
         self.sandbox
-            .gateway_http_post_sse("/api/v1/message", &body.to_string(), on_output)
-            .map_err(Error::Runtime)
+            .gateway()
+            .map_err(gw_err)?
+            .http_post_sse("/api/v1/message", &body.to_string(), on_output)
+            .map_err(gw_err)
     }
 
     /// Bootstrap the agent with a full configuration (prompt, skills, MCP servers).
@@ -98,8 +105,10 @@ impl AgentSandbox {
             .map_err(|e| Error::Config(format!("Failed to serialize agent config: {}", e)))?;
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_post("/api/v1/agent/bootstrap", &body)
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_post("/api/v1/agent/bootstrap", &body)
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::Config(format!(
@@ -119,8 +128,10 @@ impl AgentSandbox {
         });
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_post("/api/v1/agent", &body.to_string())
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_post("/api/v1/agent", &body.to_string())
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::Config(format!(
@@ -146,8 +157,10 @@ impl AgentSandbox {
         let body = serde_json::json!({ "agent": self.agent_type_name(), "reason": reason });
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_post("/api/v1/agent/restart", &body.to_string())
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_post("/api/v1/agent/restart", &body.to_string())
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::AgentRestartError(format!(
@@ -171,8 +184,10 @@ impl AgentSandbox {
         });
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_post("/api/v1/mcp/servers", &body.to_string())
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_post("/api/v1/mcp/servers", &body.to_string())
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
@@ -189,8 +204,10 @@ impl AgentSandbox {
         let path = format!("/api/v1/mcp/servers/{}", name);
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_delete(&path)
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_delete(&path)
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
@@ -206,8 +223,10 @@ impl AgentSandbox {
     pub async fn list_mcp_servers(&self) -> Result<HashMap<String, McpServerConfig>> {
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_get("/api/v1/mcp/servers")
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_get("/api/v1/mcp/servers")
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
@@ -225,8 +244,10 @@ impl AgentSandbox {
         let path = format!("/api/v1/mcp/servers/{}/enable", name);
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_post(&path, "{}")
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_post(&path, "{}")
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
@@ -242,8 +263,10 @@ impl AgentSandbox {
         let path = format!("/api/v1/mcp/servers/{}/disable", name);
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_post(&path, "{}")
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_post(&path, "{}")
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::McpServerError(format!(
@@ -260,8 +283,10 @@ impl AgentSandbox {
             .map_err(|e| Error::SkillsError(format!("Failed to serialize skill: {}", e)))?;
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_post("/api/v1/skills", &body)
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_post("/api/v1/skills", &body)
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::SkillsError(format!(
@@ -278,8 +303,10 @@ impl AgentSandbox {
         let path = format!("/api/v1/skills/{}", name);
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_delete(&path)
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_delete(&path)
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::SkillsError(format!(
@@ -295,8 +322,10 @@ impl AgentSandbox {
     pub async fn list_skills(&self) -> Result<HashMap<String, SkillDef>> {
         let (status, resp) = tokio::task::block_in_place(|| {
             self.sandbox
-                .gateway_http_get("/api/v1/skills")
-                .map_err(Error::Runtime)
+                .gateway()
+                .map_err(gw_err)?
+                .http_get("/api/v1/skills")
+                .map_err(gw_err)
         })?;
         if status >= 400 {
             return Err(Error::SkillsError(format!(

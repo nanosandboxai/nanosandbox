@@ -20,6 +20,9 @@ ffi = []
 # Runtime (VM engine) — consumed via git; local dev overrides via workspace [patch]
 runtime = { git = "https://github.com/nanosandboxai/runtime.git", branch = "main" }
 
+# Gateway client for agent-gateway communication
+gateway = { path = "../gateway" }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
@@ -35,11 +38,13 @@ toml = "0.8"
 
 # Utilities
 tracing = "0.1"
+glob = "0.3"
 dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
+git2 = { version = "0.20", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

@@ -20,7 +20,8 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::sync::Mutex;
 
-use runtime::{ImageManager, Sandbox, SandboxConfig};
+use runtime::{ImageManager, SandboxConfig};
+use crate::sandbox::Sandbox;
 
 // ── Thread-local error storage ──────────────────────────────────────
 
@@ -255,14 +256,23 @@ pub extern "C" fn sandbox_exec(
     let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let guard = sb.inner.lock().unwrap();
 
-    match tokio_rt().block_on(guard.exec(&command, &args_refs)) {
-        Ok(result) => match serde_json::to_string(&result) {
-            Ok(json) => to_cstring(&json),
-            Err(e) => {
-                set_error(format!("failed to serialize ExecResult: {e}"));
-                ptr::null_mut()
-            }
-        },
+    let gw = match guard.gateway() {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(format!("sandbox_exec failed: gateway not available: {e}"));
+            return ptr::null_mut();
+        }
+    };
+    match tokio_rt().block_on(gw.exec(&command, &args_refs)) {
+        Ok(result) => {
+            let json = serde_json::json!({
+                "exit_code": result.exit_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "duration_ms": result.duration_ms,
+            });
+            to_cstring(&json.to_string())
+        }
         Err(e) => {
             set_error(format!("sandbox_exec failed: {e}"));
             ptr::null_mut()
@@ -324,14 +334,21 @@ pub extern "C" fn sandbox_exec_stream(
 
     // Safety: user_data is an opaque pointer managed by the caller.
     let ud = user_data as usize;
-    let on_output = move |chunk: runtime::OutputChunk| {
-        let is_stderr = chunk.stream == runtime::Stream::Stderr;
+    let on_output = move |chunk: gateway::OutputChunk| {
+        let is_stderr = chunk.stream == gateway::Stream::Stderr;
         if let Ok(cstr) = CString::new(chunk.data) {
             callback(cstr.as_ptr(), is_stderr, ud as *mut std::ffi::c_void);
         }
     };
 
-    match tokio_rt().block_on(guard.exec_stream(&command, &args_refs, on_output)) {
+    let gw = match guard.gateway() {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(format!("sandbox_exec_stream failed: gateway not available: {e}"));
+            return -1;
+        }
+    };
+    match tokio_rt().block_on(gw.exec_stream(&command, &args_refs, on_output)) {
         Ok(exit_code) => exit_code,
         Err(e) => {
             set_error(format!("sandbox_exec_stream failed: {e}"));

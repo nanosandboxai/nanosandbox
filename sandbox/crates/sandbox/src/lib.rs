@@ -23,15 +23,20 @@ pub mod project;
 pub mod sandbox;
 pub mod session;
 pub mod settings;
+pub mod secrets;
 
 // Re-exports from runtime (pure microVM types — no project/ssh/http/hvsocket here).
 // Note: runtime::SandboxConfig is intentionally NOT re-exported at the top level;
 // nanosandbox::SandboxConfig is the agent-layer AgentSandboxConfig (see below).
 pub use runtime::{
-    ExecOptions, ExecResult, ImageManager, ImageRef, Mount, MountType, NetworkConfig,
+    ImageManager, ImageRef, Mount, MountType, NetworkConfig,
     NetworkMode, NetworkScope, OciBundle, PortMapping, ProjectConfig, ProgressFn, PulledImage,
-    RegistryConfig, Runtime, SandboxInfo, SandboxRegistry, SandboxStatus, Stream,
+    RegistryConfig, Runtime, SandboxInfo, SandboxRegistry, SandboxStatus,
 };
+
+// Re-exports from gateway (exec types, secrets, client).
+pub use gateway::{ExecOptions, ExecResult, GatewayClient, OutputChunk, Stream};
+pub use gateway::{encrypt_payload, EncryptedPayload, SecretManifest};
 
 // VM boot subprocess entry point (macOS HVF workaround — re-invokes nanosb as a
 // clean single-threaded process before Tokio starts, so hv_vm_create() succeeds).
@@ -60,5 +65,6 @@ pub use config::file::{
     resolve_sandbox_configs, SandboxFile,
 };
 pub use error::{Error, Result};
+pub use secrets::payload::SecretSource;
 pub use session::Session;
 pub use settings::UserSettings;

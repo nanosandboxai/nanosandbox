@@ -8,10 +8,11 @@
 use crate::project::{BranchStrategy, ProjectMount};
 use runtime::{ProgressFn, Result, SandboxConfig};
 use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-/// Agent-layer sandbox: a `runtime::Sandbox` plus a project mount.
+/// Agent-layer sandbox: a `runtime::Sandbox` plus a project mount and gateway client.
 ///
 /// Derefs to `runtime::Sandbox` so all VM lifecycle methods (`start`, `stop`,
 /// `exec`, etc.) are available directly. `create` / `create_with_manager` set
@@ -19,6 +20,9 @@ use tracing::{error, info};
 pub struct Sandbox {
     inner: runtime::Sandbox,
     project_mount: Option<ProjectMount>,
+    gateway: Option<gateway::GatewayClient>,
+    ssh_port: Option<u16>,
+    ssh_key_path: Option<PathBuf>,
 }
 
 impl Sandbox {
@@ -41,6 +45,9 @@ impl Sandbox {
         Ok(Self {
             inner,
             project_mount,
+            gateway: None,
+            ssh_port: None,
+            ssh_key_path: None,
         })
     }
 
@@ -68,6 +75,9 @@ impl Sandbox {
         Ok(Self {
             inner,
             project_mount,
+            gateway: None,
+            ssh_port: None,
+            ssh_key_path: None,
         })
     }
 
@@ -79,6 +89,9 @@ impl Sandbox {
         Self {
             inner,
             project_mount: None,
+            gateway: None,
+            ssh_port: None,
+            ssh_key_path: None,
         }
     }
 
@@ -102,14 +115,51 @@ impl Sandbox {
         self.project_mount.take()
     }
 
+    // -- Gateway accessors --
+
+    /// Get a reference to the gateway client, or error if not available.
+    pub fn gateway(&self) -> gateway::Result<&gateway::GatewayClient> {
+        self.gateway
+            .as_ref()
+            .ok_or(gateway::Error::NotAvailable)
+    }
+
+    /// Get a mutable reference to the gateway client, or error if not available.
+    pub fn gateway_mut(&mut self) -> gateway::Result<&mut gateway::GatewayClient> {
+        self.gateway
+            .as_mut()
+            .ok_or(gateway::Error::NotAvailable)
+    }
+
+    /// SSH port for connecting to the sandbox, if available.
+    pub fn ssh_port(&self) -> Option<u16> {
+        self.ssh_port
+    }
+
+    /// Path to the SSH private key for this sandbox, if available.
+    pub fn ssh_key_path(&self) -> Option<PathBuf> {
+        self.ssh_key_path.clone()
+    }
+
+    /// Build an SSH command string for connecting to the sandbox.
+    pub fn ssh_command(&self) -> Option<String> {
+        let port = self.ssh_port?;
+        let key_path = self.ssh_key_path.as_ref()?;
+        Some(format!(
+            "ssh -i {} -p {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@127.0.0.1",
+            key_path.display(),
+            port
+        ))
+    }
+
     /// Start the sandbox.
     ///
-    /// Before booting the VM, detects gateway mode from the rootfs and sets
-    /// `config.command` and `config.gateway` so the runtime knows what PID 1
-    /// to run and whether to set up gateway infrastructure.
+    /// Before booting the VM, detects gateway mode from the rootfs, sets up
+    /// port mappings and SSH keys, boots the VM, creates a `GatewayClient`,
+    /// performs health checks, and generates the secrets keypair.
     pub async fn start(&mut self) -> Result<()> {
         // Detect gateway mode from the bundle rootfs.
-        if let Some(bundle_path) = self.inner.bundle_path() {
+        let has_gateway = if let Some(bundle_path) = self.inner.bundle_path() {
             let rootfs = bundle_path.join("rootfs");
             let has_init = rootfs.join("usr/local/bin/nanosb-init.sh").exists()
                 || rootfs.join("usr/local/bin/agent-gateway").exists()
@@ -119,21 +169,280 @@ impl Sandbox {
                 self.inner.config_mut().command =
                     Some("/usr/local/bin/nanosb-init.sh".to_string());
                 self.inner.config_mut().command_args = vec![];
-                self.inner.config_mut().gateway = true;
+            }
+
+            has_init
+        } else {
+            false
+        };
+
+        if has_gateway {
+            info!(
+                "Gateway mode enabled for sandbox '{}' — persistent VM mode",
+                self.inner.id()
+            );
+
+            // Ensure port mappings for gateway (8080) and SSH (22).
+            // Host ports are allocated dynamically to avoid conflicts.
+            use runtime::PortMapping;
+            let needs_8080 = !self
+                .inner
+                .config_mut()
+                .network
+                .port_mappings
+                .iter()
+                .any(|p| p.container_port == 8080);
+            let needs_22 = !self
+                .inner
+                .config_mut()
+                .network
+                .port_mappings
+                .iter()
+                .any(|p| p.container_port == 22);
+
+            if needs_8080 {
+                let host_port = allocate_ephemeral_port().unwrap_or(8080);
+                info!("Gateway port mapping: host:{} -> guest:8080", host_port);
+                self.inner
+                    .config_mut()
+                    .network
+                    .port_mappings
+                    .push(PortMapping {
+                        host_port,
+                        container_port: 8080,
+                        protocol: "tcp".to_string(),
+                    });
+            }
+            if needs_22 {
+                let host_port = allocate_ephemeral_port().unwrap_or(2222);
+                info!("SSH port mapping: host:{} -> guest:22", host_port);
+                self.inner
+                    .config_mut()
+                    .network
+                    .port_mappings
+                    .push(PortMapping {
+                        host_port,
+                        container_port: 22,
+                        protocol: "tcp".to_string(),
+                    });
+            }
+
+            // Generate SSH keys and inject pubkey into rootfs.
+            if let Some(bundle_path) = self.inner.bundle_path() {
+                let rootfs_path = bundle_path.join("rootfs");
+                match gateway::generate_ssh_keys(self.inner.id()) {
+                    Ok((key_path, pubkey)) => {
+                        info!(
+                            "SSH keys generated for sandbox '{}': {}",
+                            self.inner.id(),
+                            key_path.display()
+                        );
+                        if let Err(e) =
+                            gateway::inject_pubkey_into_rootfs(&rootfs_path, &pubkey)
+                        {
+                            warn!(
+                                "Failed to inject SSH pubkey into rootfs: {} (SSH may not work)",
+                                e
+                            );
+                        }
+                        self.inner.config_mut().ssh_pubkey =
+                            Some(pubkey.trim().to_string());
+                        self.ssh_key_path = Some(key_path);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to generate SSH keys for sandbox '{}': {} (SSH access unavailable)",
+                            self.inner.id(),
+                            e
+                        );
+                    }
+                }
             }
         }
 
-        self.inner.start().await
+        // Boot the VM via the runtime.
+        self.inner.start().await?;
+
+        // Post-boot: set up gateway client and health checks.
+        if has_gateway {
+            let sandbox_id = self.inner.id().to_string();
+            let config_env = self.inner.config_mut().env.clone();
+
+            // Determine gateway address and SSH port from port mappings.
+            let mut gateway_addr: Option<String> = None;
+
+            #[cfg(target_os = "windows")]
+            {
+                // On Windows, all host↔guest communication uses HvSocket (AF_HYPERV),
+                // bypassing HCN NAT TCP convergence delay (~60s).
+                if let Some(ref rt) = self.inner.runtime_ref() {
+                    if let Some(vm_id) = rt.hcs_vm_id(self.inner.id()) {
+                        gateway_addr = Some("127.0.0.1:8080".to_string());
+
+                        // SSH: TCP→HvSocket proxy (host binds random port, forwards via HvSocket to guest:22)
+                        let port = gateway::hvsocket::start_ssh_proxy(&vm_id)
+                            .map_err(|e| runtime::Error::SandboxCreationFailed(
+                                format!("Failed to start SSH HvSocket proxy: {}", e)
+                            ))?;
+                        self.ssh_port = Some(port);
+                        info!("Gateway: HvSocket, SSH: HvSocket via 127.0.0.1:{}", port);
+
+                        // DNS relay: guest vsock 50053 → 8.8.8.8:53
+                        gateway::hvsocket::start_dns_proxy(&vm_id)
+                            .map_err(|e| runtime::Error::SandboxCreationFailed(
+                                format!("Failed to start DNS HvSocket proxy: {}", e)
+                            ))?;
+
+                        // TCP connect relay: guest vsock 50080 → internet
+                        gateway::hvsocket::start_tcp_proxy(&vm_id)
+                            .map_err(|e| runtime::Error::SandboxCreationFailed(
+                                format!("Failed to start TCP HvSocket proxy: {}", e)
+                            ))?;
+
+                        // Dynamic inbound port forwarders for user-requested port mappings
+                        // (excluding 8080/22 which have dedicated paths).
+                        for mapping in &self.inner.config().network.port_mappings {
+                            if mapping.container_port == 8080 || mapping.container_port == 22 {
+                                continue;
+                            }
+                            match gateway::hvsocket::start_inbound_port_forwarder(
+                                &vm_id, mapping.host_port, mapping.container_port,
+                            ) {
+                                Ok(p) => info!(
+                                    "Port forward: 127.0.0.1:{} -> guest:{}",
+                                    p, mapping.container_port
+                                ),
+                                Err(e) => warn!(
+                                    "Port forward host:{} -> guest:{} failed: {}",
+                                    mapping.host_port, mapping.container_port, e
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                let port_mappings = &self.inner.config().network.port_mappings;
+                let find_host_port = |container: u16| {
+                    port_mappings
+                        .iter()
+                        .find(|p| p.container_port == container)
+                        .map(|p| p.host_port)
+                };
+
+                if let Some(host_port) = find_host_port(8080) {
+                    gateway_addr = Some(format!("127.0.0.1:{}", host_port));
+                }
+                if let Some(host_port) = find_host_port(22) {
+                    self.ssh_port = Some(host_port);
+                }
+
+                // Fallback to guest_ip for non-gvproxy backends (e.g. TSI).
+                if gateway_addr.is_none() {
+                    if let Some(ref rt) = self.inner.runtime_ref() {
+                        if let Some(ip) = rt.guest_ip(self.inner.id()) {
+                            gateway_addr = Some(format!("{}:8080", ip));
+                            if self.ssh_port.is_none() {
+                                self.ssh_port = Some(22);
+                            }
+                            info!("Gateway: {}:8080 (guest_ip path)", ip);
+                        }
+                    }
+                }
+            }
+
+            if let Some(ref addr) = gateway_addr {
+                info!("Gateway address: {}", addr);
+            }
+            if let Some(ssh) = self.ssh_port {
+                info!("SSH port: {}", ssh);
+            }
+
+            // Create the GatewayClient.
+            #[cfg(not(target_os = "windows"))]
+            let mut client = gateway::GatewayClient::new(
+                gateway_addr,
+                sandbox_id.clone(),
+                300, // default timeout
+                config_env,
+            );
+
+            #[cfg(target_os = "windows")]
+            let mut client = {
+                let hcs_vm_id = self
+                    .inner
+                    .runtime_ref()
+                    .and_then(|rt| rt.hcs_vm_id(self.inner.id()));
+                gateway::GatewayClient::new(
+                    gateway_addr,
+                    hcs_vm_id,
+                    sandbox_id.clone(),
+                    300,
+                    config_env,
+                )
+            };
+
+            // Wait for the gateway to become healthy.
+            // The closure checks if the VM process is still alive via the runtime.
+            let sandbox_id = sandbox_id.clone();
+            let runtime_ref = self.inner.runtime_ref();
+            client
+                .wait_for_health(|| {
+                    runtime_ref
+                        .map(|rt| rt.is_vm_running(&sandbox_id))
+                        .unwrap_or(false)
+                })
+                .await
+                .map_err(|e| {
+                    runtime::Error::SandboxCreationFailed(format!(
+                        "Gateway health check failed: {}",
+                        e
+                    ))
+                })?;
+
+            // Generate the secrets keypair.
+            client.generate_secrets_keypair();
+
+            self.gateway = Some(client);
+        }
+
+        Ok(())
     }
 
-    /// Destroy the sandbox: tear down project mount, then destroy the VM.
+    /// Stop the sandbox gracefully.
+    pub async fn stop(&mut self) -> Result<()> {
+        // Gracefully stop the gateway before killing the VM.
+        if let Some(ref gw) = self.gateway {
+            if let Err(e) = gw.stop().await {
+                warn!("Failed to gracefully stop gateway: {}", e);
+            }
+        }
+        self.inner.stop().await
+    }
+
+    /// Destroy the sandbox: tear down project mount, stop gateway, then destroy the VM.
     pub async fn destroy(mut self) -> Result<()> {
+        // Stop the gateway gracefully.
+        if let Some(ref gw) = self.gateway {
+            if let Err(e) = gw.stop().await {
+                warn!("Failed to gracefully stop gateway: {}", e);
+            }
+        }
+
         // Teardown project mount (auto-commit and remove clone) before VM destroy.
         if let Some(mut pm) = self.project_mount.take() {
             if let Err(e) = pm.teardown() {
                 tracing::warn!("Failed to teardown project mount: {}", e);
             }
         }
+
+        // Clean up SSH keys.
+        if let Some(ref key_path) = self.ssh_key_path {
+            gateway::cleanup_ssh_keys(key_path);
+        }
+
         self.inner.destroy().await
     }
 }
@@ -150,6 +459,14 @@ impl DerefMut for Sandbox {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
+}
+
+/// Allocate an ephemeral port by binding to `127.0.0.1:0` and returning the assigned port.
+fn allocate_ephemeral_port() -> Option<u16> {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port())
 }
 
 /// Detect and set up the project mount declared by `config.project`.
@@ -209,4 +526,3 @@ pub fn setup_project_mount(
 
     Ok(Some(pm))
 }
-

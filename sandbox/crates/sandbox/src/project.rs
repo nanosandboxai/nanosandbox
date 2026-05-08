@@ -12,6 +12,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 use tracing::warn;
 
@@ -218,28 +219,21 @@ pub struct ProjectMount {
 
 /// Get the current branch name for a git repository.
 fn git_current_branch(repo_path: &Path) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|e| {
-            let msg = format!("Failed to run git rev-parse: {}", e);
-            warn!("git_current_branch: {} (repo={})", msg, repo_path.display());
-            msg
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let msg = format!(
-            "git rev-parse failed in {}: {}",
-            repo_path.display(),
-            stderr.trim()
-        );
-        warn!("git_current_branch: {}", msg);
-        return Err(msg);
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let repo = git2::Repository::open(repo_path).map_err(|e| {
+        let msg = format!("git2 open failed: {}", e);
+        warn!("git_current_branch: {} (repo={})", msg, repo_path.display());
+        msg
+    })?;
+    let head = repo.head().map_err(|e| {
+        let msg = format!("git2 head failed: {}", e);
+        warn!("git_current_branch: {} (repo={})", msg, repo_path.display());
+        msg
+    })?;
+    let branch = head
+        .shorthand()
+        .unwrap_or("HEAD")
+        .to_string();
+    Ok(branch)
 }
 
 /// Create a local clone of a repository on a new branch.
@@ -250,13 +244,24 @@ fn git_current_branch(repo_path: &Path) -> Result<String, String> {
 /// The clone has a real `.git` directory (not a gitdir file), so git works
 /// correctly even when mounted into a VM via VirtioFS.
 fn git_clone_local(repo_path: &Path, clone_path: &Path, branch_name: &str) -> Result<(), String> {
-    // Create the branch in the source repo
-    let branch_output = Command::new("git")
-        .args(["branch", branch_name])
-        .current_dir(repo_path)
-        .output()
+    // Open source repo and create the branch at HEAD.
+    let source = git2::Repository::open(repo_path).map_err(|e| {
+        let msg = format!("git2 open failed: {}", e);
+        warn!("git_clone_local: {} (repo={})", msg, repo_path.display());
+        msg
+    })?;
+    let head_commit = source
+        .head()
+        .and_then(|h| h.peel_to_commit())
         .map_err(|e| {
-            let msg = format!("Failed to run git branch: {}", e);
+            let msg = format!("git2 head commit failed: {}", e);
+            warn!("git_clone_local: {} (repo={})", msg, repo_path.display());
+            msg
+        })?;
+    source
+        .branch(branch_name, &head_commit, false)
+        .map_err(|e| {
+            let msg = format!("git2 branch create failed: {}", e);
             warn!(
                 "git_clone_local: {} (repo={}, branch={})",
                 msg,
@@ -266,55 +271,24 @@ fn git_clone_local(repo_path: &Path, clone_path: &Path, branch_name: &str) -> Re
             msg
         })?;
 
-    if !branch_output.status.success() {
-        let stderr = String::from_utf8_lossy(&branch_output.stderr);
-        let msg = format!(
-            "git branch failed in {}: {}",
-            repo_path.display(),
-            stderr.trim()
-        );
-        warn!("git_clone_local: {} (branch={})", msg, branch_name);
-        return Err(msg);
-    }
+    // Clone locally using git2. RepoBuilder with local clone (no hardlinks
+    // for cross-device compat). Checkout the named branch.
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.branch(branch_name);
+    // Use local clone (copies objects, no hardlinks) for cross-device compat.
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.download_tags(git2::AutotagOption::All);
+    builder.fetch_options(fetch_opts);
 
-    // Clone locally. On non-Windows use --local + --no-hardlinks for
-    // cross-device compatibility in containers. On Windows, --local is
-    // ignored by git and triggers UNC path resolution which fails when the
-    // hostname contains invalid characters (common on Azure VMs). Omit both
-    // flags on Windows so git auto-detects local paths correctly.
-    let mut clone_args = vec!["clone"];
-    #[cfg(not(target_os = "windows"))]
-    {
-        clone_args.push("--local");
-        clone_args.push("--no-hardlinks");
-    }
-    let repo_str = repo_path.to_string_lossy();
-    let clone_str = clone_path.to_string_lossy();
-    clone_args.extend(["--branch", branch_name, &repo_str, &clone_str]);
-
-    let output = Command::new("git")
-        .args(&clone_args)
-        .output()
-        .map_err(|e| {
-            let msg = format!("Failed to run git clone: {}", e);
-            warn!(
-                "git_clone_local: {} (repo={}, clone={}, branch={})",
-                msg,
-                repo_path.display(),
-                clone_path.display(),
-                branch_name
-            );
-            msg
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Clean up the branch we created since clone failed
-        let _ = Command::new("git")
-            .args(["branch", "-D", branch_name])
-            .current_dir(repo_path)
-            .output();
-        let msg = format!("git clone failed: {}", stderr.trim());
+    let clone_result = builder.clone(
+        repo_path.to_string_lossy().as_ref(),
+        clone_path,
+    );
+    if let Err(e) = clone_result {
+        // Clean up the branch we created since clone failed.
+        let _ = source.find_branch(branch_name, git2::BranchType::Local)
+            .and_then(|mut b| b.delete());
+        let msg = format!("git2 clone failed: {}", e);
         warn!(
             "git_clone_local: {} (repo={}, clone={}, branch={})",
             msg,
@@ -339,24 +313,11 @@ fn git_clone_local_from_head(
     clone_path: &Path,
     branch_name: &str,
 ) -> Result<(), String> {
-    // Clone from current HEAD (default branch, no --branch flag).
-    // On non-Windows use --local + --no-hardlinks (cross-device compat in
-    // containers). Omit both on Windows (see git_clone_local for rationale).
-    let mut clone_args = vec!["clone"];
-    #[cfg(not(target_os = "windows"))]
-    {
-        clone_args.push("--local");
-        clone_args.push("--no-hardlinks");
-    }
-    let repo_str = repo_path.to_string_lossy();
-    let clone_str = clone_path.to_string_lossy();
-    clone_args.extend([repo_str.as_ref(), clone_str.as_ref()]);
-
-    let output = Command::new("git")
-        .args(&clone_args)
-        .output()
+    // Clone from current HEAD (default branch).
+    let cloned = git2::build::RepoBuilder::new()
+        .clone(repo_path.to_string_lossy().as_ref(), clone_path)
         .map_err(|e| {
-            let msg = format!("Failed to run git clone: {}", e);
+            let msg = format!("git2 clone failed: {}", e);
             warn!(
                 "git_clone_local_from_head: {} (repo={}, clone={})",
                 msg,
@@ -366,25 +327,19 @@ fn git_clone_local_from_head(
             msg
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let msg = format!("git clone failed: {}", stderr.trim());
-        warn!(
-            "git_clone_local_from_head: {} (repo={}, clone={})",
-            msg,
-            repo_path.display(),
-            clone_path.display()
-        );
-        return Err(msg);
-    }
-
-    // Create and checkout the branch locally in the clone
-    let branch_output = Command::new("git")
-        .args(["checkout", "-b", branch_name])
-        .current_dir(clone_path)
-        .output()
+    // Create and checkout a new branch in the clone.
+    let head_commit = cloned
+        .head()
+        .and_then(|h| h.peel_to_commit())
         .map_err(|e| {
-            let msg = format!("Failed to create branch in clone: {}", e);
+            let msg = format!("git2 head commit failed: {}", e);
+            warn!("git_clone_local_from_head: {} (clone={})", msg, clone_path.display());
+            msg
+        })?;
+    let branch = cloned
+        .branch(branch_name, &head_commit, false)
+        .map_err(|e| {
+            let msg = format!("git2 branch create failed: {}", e);
             warn!(
                 "git_clone_local_from_head: {} (clone={}, branch={})",
                 msg,
@@ -393,18 +348,21 @@ fn git_clone_local_from_head(
             );
             msg
         })?;
-
-    if !branch_output.status.success() {
-        let stderr = String::from_utf8_lossy(&branch_output.stderr);
-        let msg = format!("git checkout -b failed in clone: {}", stderr.trim());
-        warn!(
-            "git_clone_local_from_head: {} (clone={}, branch={})",
-            msg,
-            clone_path.display(),
-            branch_name
-        );
-        return Err(msg);
-    }
+    let branch_ref = branch.into_reference();
+    cloned
+        .set_head(branch_ref.name().unwrap_or("refs/heads/main"))
+        .map_err(|e| {
+            let msg = format!("git2 set_head failed: {}", e);
+            warn!("git_clone_local_from_head: {} (branch={})", msg, branch_name);
+            msg
+        })?;
+    cloned
+        .checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+        .map_err(|e| {
+            let msg = format!("git2 checkout failed: {}", e);
+            warn!("git_clone_local_from_head: {} (branch={})", msg, branch_name);
+            msg
+        })?;
 
     ensure_nanosb_state_gitignored(clone_path);
     Ok(())
@@ -444,9 +402,21 @@ fn ensure_nanosb_state_gitignored(clone_path: &Path) {
 /// After this call, `ProjectMount::detect()` will classify the directory as
 /// `ProjectLayout::SingleRepo` and all normal clone/branch/teardown logic applies.
 fn git_init_project(path: &Path) -> Result<(), String> {
-    // Guard: if the directory is already a git repo, nothing to do.
+    // Guard: if the directory is already a valid git repo, nothing to do.
     if path.join(".git").exists() {
-        return Ok(());
+        // Verify the repo is usable (has HEAD). If not, clean up stale state.
+        if git2::Repository::open(path).is_ok() {
+            return Ok(());
+        }
+        // Stale/corrupt .git — remove lock files and let init recreate it.
+        let lock = path.join(".git/config.lock");
+        if lock.exists() {
+            let _ = std::fs::remove_file(&lock);
+        }
+        let index_lock = path.join(".git/index.lock");
+        if index_lock.exists() {
+            let _ = std::fs::remove_file(&index_lock);
+        }
     }
 
     // Write generic .gitignore only when one does not already exist.
@@ -459,62 +429,55 @@ fn git_init_project(path: &Path) -> Result<(), String> {
         })?;
     }
 
-    // git init
-    let init = Command::new("git")
-        .args(["init"])
-        .current_dir(path)
-        .output()
-        .map_err(|e| {
-            let msg = format!("Failed to run git init: {}", e);
-            warn!("git_init_project: {} (path={})", msg, path.display());
-            msg
-        })?;
-    if !init.status.success() {
-        let stderr = String::from_utf8_lossy(&init.stderr);
-        let msg = format!("git init failed: {}", stderr.trim());
+    // Use git2 (libgit2) so this works on Windows without git CLI installed.
+    // git2::Repository::init is safe to call on an existing repo (idempotent).
+    let repo = git2::Repository::init(path).map_err(|e| {
+        let msg = format!("git2 init failed: {}", e);
         warn!("git_init_project: {} (path={})", msg, path.display());
-        return Err(msg);
-    }
+        msg
+    })?;
 
-    // git add -A
-    let add = Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(path)
-        .output()
+    // Stage all files (respecting .gitignore) — equivalent to `git add -A`.
+    let mut index = repo.index().map_err(|e| {
+        let msg = format!("git2 index failed: {}", e);
+        warn!("git_init_project: {} (path={})", msg, path.display());
+        msg
+    })?;
+    index
+        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
         .map_err(|e| {
-            let msg = format!("Failed to run git add: {}", e);
+            let msg = format!("git2 add_all failed: {}", e);
             warn!("git_init_project: {} (path={})", msg, path.display());
             msg
         })?;
-    if !add.status.success() {
-        let stderr = String::from_utf8_lossy(&add.stderr);
-        let msg = format!("git add failed: {}", stderr.trim());
+    index.write().map_err(|e| {
+        let msg = format!("git2 index write failed: {}", e);
         warn!("git_init_project: {} (path={})", msg, path.display());
-        return Err(msg);
-    }
+        msg
+    })?;
+    let tree_oid = index.write_tree().map_err(|e| {
+        let msg = format!("git2 write_tree failed: {}", e);
+        warn!("git_init_project: {} (path={})", msg, path.display());
+        msg
+    })?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| {
+        let msg = format!("git2 find_tree failed: {}", e);
+        warn!("git_init_project: {} (path={})", msg, path.display());
+        msg
+    })?;
 
-    // git commit — use explicit author/committer so this works without global git config
-    let commit = Command::new("git")
-        .args([
-            "-c", "user.email=nanosb@local",
-            "-c", "user.name=nanosandbox",
-            "commit",
-            "--allow-empty",
-            "-m", "initial snapshot",
-        ])
-        .current_dir(path)
-        .output()
+    // Commit with explicit author — no global git config required.
+    let sig = git2::Signature::now("nanosandbox", "nanosb@local").map_err(|e| {
+        let msg = format!("git2 signature failed: {}", e);
+        warn!("git_init_project: {} (path={})", msg, path.display());
+        msg
+    })?;
+    repo.commit(Some("HEAD"), &sig, &sig, "initial snapshot", &tree, &[])
         .map_err(|e| {
-            let msg = format!("Failed to run git commit: {}", e);
+            let msg = format!("git2 commit failed: {}", e);
             warn!("git_init_project: {} (path={})", msg, path.display());
             msg
         })?;
-    if !commit.status.success() {
-        let stderr = String::from_utf8_lossy(&commit.stderr);
-        let msg = format!("git commit failed: {}", stderr.trim());
-        warn!("git_init_project: {} (path={})", msg, path.display());
-        return Err(msg);
-    }
 
     Ok(())
 }
@@ -538,31 +501,15 @@ pub fn clones_dir(source_path: &Path) -> PathBuf {
 
 /// Resolve a unique branch name by appending `-2`, `-3`, etc. if the desired name already exists.
 fn resolve_branch_name(repo_path: &Path, desired: &str) -> String {
-    let output = Command::new("git")
-        .args(["rev-parse", "--verify", &format!("refs/heads/{}", desired)])
-        .current_dir(repo_path)
-        .output();
-
-    if let Ok(out) = output {
-        if out.status.success() {
-            // Branch exists, try with suffix
-            for i in 2..100 {
-                let candidate = format!("{}-{}", desired, i);
-                let check = Command::new("git")
-                    .args([
-                        "rev-parse",
-                        "--verify",
-                        &format!("refs/heads/{}", candidate),
-                    ])
-                    .current_dir(repo_path)
-                    .output();
-                if let Ok(c) = check {
-                    if !c.status.success() {
-                        return candidate;
-                    }
-                } else {
-                    return candidate;
-                }
+    let repo = match git2::Repository::open(repo_path) {
+        Ok(r) => r,
+        Err(_) => return desired.to_string(),
+    };
+    if repo.find_branch(desired, git2::BranchType::Local).is_ok() {
+        for i in 2..100 {
+            let candidate = format!("{}-{}", desired, i);
+            if repo.find_branch(&candidate, git2::BranchType::Local).is_err() {
+                return candidate;
             }
         }
     }
@@ -578,13 +525,26 @@ fn auto_commit_and_sync(
     clone_path: &Path,
     branch_name: &str,
 ) -> Result<(), String> {
-    // Check for uncommitted changes in the clone
-    let status_output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(clone_path)
-        .output()
+    let clone_repo = git2::Repository::open(clone_path).map_err(|e| {
+        let msg = format!("git2 open clone failed: {}", e);
+        warn!(
+            "auto_commit_and_sync: {} (clone={}, branch={})",
+            msg,
+            clone_path.display(),
+            branch_name
+        );
+        msg
+    })?;
+
+    // Check for uncommitted changes via git2 status.
+    let statuses = clone_repo
+        .statuses(Some(
+            git2::StatusOptions::new()
+                .include_untracked(true)
+                .recurse_untracked_dirs(true),
+        ))
         .map_err(|e| {
-            let msg = format!("Failed to run git status: {}", e);
+            let msg = format!("git2 status failed: {}", e);
             warn!(
                 "auto_commit_and_sync: {} (clone={}, branch={})",
                 msg,
@@ -594,89 +554,102 @@ fn auto_commit_and_sync(
             msg
         })?;
 
-    if !status_output.status.success() {
-        let stderr = String::from_utf8_lossy(&status_output.stderr);
-        let msg = format!("git status failed: {}", stderr.trim());
+    if !statuses.is_empty() {
+        // Stage all changes.
+        let mut index = clone_repo.index().map_err(|e| {
+            let msg = format!("git2 index failed: {}", e);
+            warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+            msg
+        })?;
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT | git2::IndexAddOption::CHECK_PATHSPEC, None)
+            .map_err(|e| {
+                let msg = format!("git2 add_all failed: {}", e);
+                warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+                msg
+            })?;
+        // Also remove deleted files from index.
+        let cb_clone_path = clone_path.to_path_buf();
+        index
+            .update_all(["*"], Some(&mut |path: &Path, _| {
+                // Return 0 to accept the update (remove from index if file deleted).
+                let full = cb_clone_path.join(path);
+                if full.exists() { 1 } else { 0 }  // 0 = accept removal, 1 = skip
+            }))
+            .map_err(|e| {
+                let msg = format!("git2 update_all failed: {}", e);
+                warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+                msg
+            })?;
+        index.write().map_err(|e| {
+            let msg = format!("git2 index write failed: {}", e);
+            warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+            msg
+        })?;
+        let tree_oid = index.write_tree().map_err(|e| {
+            let msg = format!("git2 write_tree failed: {}", e);
+            warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+            msg
+        })?;
+        let tree = clone_repo.find_tree(tree_oid).map_err(|e| {
+            let msg = format!("git2 find_tree failed: {}", e);
+            warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+            msg
+        })?;
+
+        let sig = git2::Signature::now("nanosandbox", "nanosandbox@localhost").map_err(|e| {
+            let msg = format!("git2 signature failed: {}", e);
+            warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+            msg
+        })?;
+        let parent = clone_repo
+            .head()
+            .and_then(|h| h.peel_to_commit())
+            .map_err(|e| {
+                let msg = format!("git2 head commit failed: {}", e);
+                warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+                msg
+            })?;
+        clone_repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "nanosb: auto-save on sandbox destroy",
+                &tree,
+                &[&parent],
+            )
+            .map_err(|e| {
+                let msg = format!("git2 commit failed: {}", e);
+                warn!("auto_commit_and_sync: {} (clone={})", msg, clone_path.display());
+                msg
+            })?;
+    }
+
+    // Fetch the branch from clone back to source repo (update the branch ref).
+    let source = git2::Repository::open(source_repo_path).map_err(|e| {
+        let msg = format!("git2 open source failed: {}", e);
         warn!(
-            "auto_commit_and_sync: {} (clone={}, branch={})",
+            "auto_commit_and_sync: {} (source={}, clone={})",
             msg,
-            clone_path.display(),
-            branch_name
+            source_repo_path.display(),
+            clone_path.display()
         );
-        return Err(msg);
-    }
-
-    let status_text = String::from_utf8_lossy(&status_output.stdout);
-    if !status_text.trim().is_empty() {
-        // Stage all changes
-        let add_output = Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(clone_path)
-            .output()
-            .map_err(|e| {
-                let msg = format!("Failed to run git add: {}", e);
-                warn!(
-                    "auto_commit_and_sync: {} (clone={}, branch={})",
-                    msg,
-                    clone_path.display(),
-                    branch_name
-                );
-                msg
-            })?;
-
-        if !add_output.status.success() {
-            let stderr = String::from_utf8_lossy(&add_output.stderr);
-            let msg = format!("git add failed: {}", stderr.trim());
-            warn!(
-                "auto_commit_and_sync: {} (clone={}, branch={})",
-                msg,
-                clone_path.display(),
-                branch_name
-            );
-            return Err(msg);
-        }
-
-        // Commit
-        let commit_output = Command::new("git")
-            .args(["commit", "-m", "nanosb: auto-save on sandbox destroy"])
-            .current_dir(clone_path)
-            .env("GIT_AUTHOR_NAME", "nanosandbox")
-            .env("GIT_AUTHOR_EMAIL", "nanosandbox@localhost")
-            .env("GIT_COMMITTER_NAME", "nanosandbox")
-            .env("GIT_COMMITTER_EMAIL", "nanosandbox@localhost")
-            .output()
-            .map_err(|e| {
-                let msg = format!("Failed to run git commit: {}", e);
-                warn!(
-                    "auto_commit_and_sync: {} (clone={}, branch={})",
-                    msg,
-                    clone_path.display(),
-                    branch_name
-                );
-                msg
-            })?;
-
-        if !commit_output.status.success() {
-            let stderr = String::from_utf8_lossy(&commit_output.stderr);
-            let msg = format!("git commit failed: {}", stderr.trim());
-            warn!(
-                "auto_commit_and_sync: {} (clone={}, branch={})",
-                msg,
-                clone_path.display(),
-                branch_name
-            );
-            return Err(msg);
-        }
-    }
-
-    // Fetch the branch from clone back to source repo (update the branch ref)
-    let refspec = format!("{}:{}", branch_name, branch_name);
-    let fetch_output = Command::new("git")
-        .args(["fetch", &clone_path.to_string_lossy(), &refspec, "--force"])
-        .current_dir(source_repo_path)
-        .output()
+        msg
+    })?;
+    let clone_url = clone_path.to_string_lossy();
+    let mut remote = source
+        .remote_anonymous(&clone_url)
         .map_err(|e| {
-            let msg = format!("Failed to run git fetch: {}", e);
+            let msg = format!("git2 remote_anonymous failed: {}", e);
+            warn!("auto_commit_and_sync: {} (source={})", msg, source_repo_path.display());
+            msg
+        })?;
+    let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+    remote
+        .fetch(&[&refspec], None, None)
+        .map_err(|e| {
+            let msg = format!("git2 fetch from clone failed: {}", e);
             warn!(
                 "auto_commit_and_sync: {} (source={}, clone={}, branch={})",
                 msg,
@@ -686,19 +659,6 @@ fn auto_commit_and_sync(
             );
             msg
         })?;
-
-    if !fetch_output.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch_output.stderr);
-        let msg = format!("git fetch from clone failed: {}", stderr.trim());
-        warn!(
-            "auto_commit_and_sync: {} (source={}, clone={}, branch={})",
-            msg,
-            source_repo_path.display(),
-            clone_path.display(),
-            branch_name
-        );
-        return Err(msg);
-    }
 
     Ok(())
 }
@@ -1206,11 +1166,13 @@ impl ProjectMount {
         if !self.created_branches.is_empty() {
             // Already created — just do a fetch
             for (source_path, branch_name) in &self.created_branches {
-                let refspec = format!("{}:{}", branch_name, branch_name);
-                let _ = Command::new("git")
-                    .args(["fetch", &clone_base.to_string_lossy(), &refspec, "--force"])
-                    .current_dir(source_path)
-                    .output();
+                if let Ok(source) = git2::Repository::open(source_path) {
+                    let clone_url = clone_base.to_string_lossy();
+                    if let Ok(mut remote) = source.remote_anonymous(&clone_url) {
+                        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+                        let _ = remote.fetch(&[&refspec], None, None);
+                    }
+                }
             }
             return Ok(());
         }
@@ -1227,59 +1189,41 @@ impl ProjectMount {
                 let branch_name = resolve_branch_name(repo_path, branch_name);
 
                 // Create branch in source
-                let output = Command::new("git")
-                    .args(["branch", &branch_name])
-                    .current_dir(repo_path)
-                    .output()
-                    .map_err(|e| {
-                        let msg = format!("git branch failed: {}", e);
-                        warn!(
-                            "ProjectMount::create_source_branch_and_fetch: {} (repo={}, branch={})",
-                            msg,
-                            repo_path.display(),
-                            branch_name
-                        );
-                        msg
-                    })?;
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let msg = format!("git branch failed: {}", stderr.trim());
+                let source = git2::Repository::open(repo_path).map_err(|e| {
+                    let msg = format!("git2 open failed: {}", e);
+                    warn!("create_source_branch_and_fetch: {} (repo={})", msg, repo_path.display());
+                    msg
+                })?;
+                let head_commit = source.head().and_then(|h| h.peel_to_commit()).map_err(|e| {
+                    let msg = format!("git2 head commit failed: {}", e);
+                    warn!("create_source_branch_and_fetch: {} (repo={})", msg, repo_path.display());
+                    msg
+                })?;
+                source.branch(&branch_name, &head_commit, false).map_err(|e| {
+                    let msg = format!("git2 branch create failed: {}", e);
                     warn!(
-                        "ProjectMount::create_source_branch_and_fetch: {} (repo={}, branch={})",
-                        msg,
-                        repo_path.display(),
-                        branch_name
+                        "create_source_branch_and_fetch: {} (repo={}, branch={})",
+                        msg, repo_path.display(), branch_name
                     );
-                    return Err(msg);
-                }
+                    msg
+                })?;
 
                 // Fetch from clone to source
-                let refspec = format!("{}:{}", branch_name, branch_name);
-                let fetch = Command::new("git")
-                    .args(["fetch", &clone_base.to_string_lossy(), &refspec, "--force"])
-                    .current_dir(repo_path)
-                    .output()
-                    .map_err(|e| {
-                        let msg = format!("git fetch failed: {}", e);
-                        warn!(
-                            "ProjectMount::create_source_branch_and_fetch: {} (repo={}, branch={})",
-                            msg,
-                            repo_path.display(),
-                            branch_name
-                        );
-                        msg
-                    })?;
-                if !fetch.status.success() {
-                    let stderr = String::from_utf8_lossy(&fetch.stderr);
-                    let msg = format!("git fetch failed: {}", stderr.trim());
+                let clone_url = clone_base.to_string_lossy();
+                let mut remote = source.remote_anonymous(&clone_url).map_err(|e| {
+                    let msg = format!("git2 remote_anonymous failed: {}", e);
+                    warn!("create_source_branch_and_fetch: {}", msg);
+                    msg
+                })?;
+                let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+                remote.fetch(&[&refspec], None, None).map_err(|e| {
+                    let msg = format!("git2 fetch failed: {}", e);
                     warn!(
-                        "ProjectMount::create_source_branch_and_fetch: {} (repo={}, branch={})",
-                        msg,
-                        repo_path.display(),
-                        branch_name
+                        "create_source_branch_and_fetch: {} (repo={}, branch={})",
+                        msg, repo_path.display(), branch_name
                     );
-                    return Err(msg);
-                }
+                    msg
+                })?;
 
                 self.created_branches.push((repo_path.clone(), branch_name));
                 self.deferred_branch = None;
@@ -1298,39 +1242,30 @@ impl ProjectMount {
                     let branch_name = resolve_branch_name(&repo.absolute_path, &base_branch);
                     let clone_path = clone_base.join(&repo.relative_path);
 
-                    let output = Command::new("git")
-                        .args(["branch", &branch_name])
-                        .current_dir(&repo.absolute_path)
-                        .output()
-                        .map_err(|e| {
-                            let msg = format!("git branch failed: {}", e);
-                            warn!(
-                                "ProjectMount::create_source_branch_and_fetch: {} (repo={}, branch={})",
-                                msg,
-                                repo.absolute_path.display(),
-                                branch_name
-                            );
-                            msg
-                        })?;
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        let msg = format!(
-                            "git branch failed in {}: {}",
-                            repo.relative_path.display(),
-                            stderr.trim()
-                        );
+                    let source = git2::Repository::open(&repo.absolute_path).map_err(|e| {
+                        let msg = format!("git2 open failed: {}", e);
                         warn!(
-                            "ProjectMount::create_source_branch_and_fetch: {} (branch={})",
-                            msg, branch_name
+                            "create_source_branch_and_fetch: {} (repo={})",
+                            msg, repo.absolute_path.display()
                         );
-                        return Err(msg);
-                    }
+                        msg
+                    })?;
+                    let head_commit = source.head().and_then(|h| h.peel_to_commit()).map_err(|e| {
+                        let msg = format!("git2 head commit failed: {}", e);
+                        warn!("create_source_branch_and_fetch: {} (repo={})", msg, repo.absolute_path.display());
+                        msg
+                    })?;
+                    source.branch(&branch_name, &head_commit, false).map_err(|e| {
+                        let msg = format!("git2 branch create failed in {}: {}", repo.relative_path.display(), e);
+                        warn!("create_source_branch_and_fetch: {} (branch={})", msg, branch_name);
+                        msg
+                    })?;
 
-                    let refspec = format!("{}:{}", branch_name, branch_name);
-                    let _ = Command::new("git")
-                        .args(["fetch", &clone_path.to_string_lossy(), &refspec, "--force"])
-                        .current_dir(&repo.absolute_path)
-                        .output();
+                    let clone_url = clone_path.to_string_lossy();
+                    if let Ok(mut remote) = source.remote_anonymous(&clone_url) {
+                        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+                        let _ = remote.fetch(&[&refspec], None, None);
+                    }
 
                     self.created_branches
                         .push((repo.absolute_path.clone(), branch_name));

@@ -10,6 +10,7 @@ use runtime::{
 };
 
 use super::{AgentSandboxConfig, ClaudeSettings, McpServerConfig};
+use crate::secrets::payload::SecretSource;
 
 /// Represents a parsed `sandbox.yml` file.
 #[derive(Debug, Clone, Deserialize)]
@@ -51,6 +52,8 @@ pub struct SandboxDefaults {
     pub model: Option<String>,
     /// Claude-specific settings (theme, etc.).
     pub claude: Option<ClaudeSettingsDef>,
+    /// Secrets configuration for this sandbox.
+    pub secrets: Option<SecretSource>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -87,6 +90,8 @@ pub struct SandboxDefinition {
     pub model: Option<String>,
     /// Claude-specific settings (theme, etc.).
     pub claude: Option<ClaudeSettingsDef>,
+    /// Secrets configuration for this sandbox.
+    pub secrets: Option<SecretSource>,
 }
 
 /// Network configuration in YAML.
@@ -296,6 +301,18 @@ pub fn resolve_sandbox_configs(
         }
         config.env = env;
 
+        // Deprecation warning: check if any env var keys look like secrets
+        let secret_suffixes = ["_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"];
+        for k in config.env.keys() {
+            let upper = k.to_uppercase();
+            if secret_suffixes.iter().any(|suffix| upper.ends_with(suffix)) {
+                tracing::warn!(
+                    "Sandbox '{}': env var '{}' looks like a secret. Consider using the 'secrets:' config section instead.",
+                    key, k
+                );
+            }
+        }
+
         // Network: per-sandbox overrides defaults at field level
         let net_def = def.network.as_ref();
         let net_defaults = defaults.network.as_ref();
@@ -455,6 +472,9 @@ pub fn resolve_sandbox_configs(
         if let Some(theme) = claude_theme {
             agent_config.claude_settings = Some(ClaudeSettings { theme: Some(theme) });
         }
+
+        // Secrets: per-sandbox overrides defaults entirely
+        agent_config.secrets = def.secrets.clone().or_else(|| file.defaults.secrets.clone());
 
         // Validate model against known models if both type and model are set.
         if let (Some(agent_type), Some(ref model)) = (agent_config.agent_type, &agent_config.model)
@@ -1336,6 +1356,71 @@ sandboxes:
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
         assert_eq!(configs[0].1.sandbox.workdir, "/workspace");
+    }
+
+    #[test]
+    fn test_secrets_config_parsing() {
+        let yaml = r#"
+defaults:
+  secrets:
+    file: /etc/secrets.sops.yaml
+    keys: [GITHUB_TOKEN, OPENAI_KEY]
+    intercept_patterns: ["~/.config/gh/hosts.yml"]
+sandboxes:
+  test:
+    image: test:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let secrets = file.defaults.secrets.as_ref().unwrap();
+        assert_eq!(secrets.file.as_deref(), Some("/etc/secrets.sops.yaml"));
+        assert_eq!(secrets.keys, vec!["GITHUB_TOKEN", "OPENAI_KEY"]);
+        assert_eq!(secrets.intercept_patterns, vec!["~/.config/gh/hosts.yml"]);
+
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        let resolved_secrets = configs[0].1.secrets.as_ref().unwrap();
+        assert_eq!(resolved_secrets.file.as_deref(), Some("/etc/secrets.sops.yaml"));
+        assert_eq!(resolved_secrets.keys, vec!["GITHUB_TOKEN", "OPENAI_KEY"]);
+    }
+
+    #[test]
+    fn test_secrets_config_per_sandbox_overrides_defaults() {
+        let yaml = r#"
+defaults:
+  image: base:latest
+  secrets:
+    file: /etc/defaults.sops.yaml
+    keys: [DEFAULT_KEY]
+sandboxes:
+  test:
+    secrets:
+      file: /etc/sandbox.sops.yaml
+      keys: [SANDBOX_TOKEN]
+      intercept_patterns: ["~/.netrc"]
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        // Per-sandbox secrets should completely replace defaults
+        let secrets = configs[0].1.secrets.as_ref().unwrap();
+        assert_eq!(secrets.file.as_deref(), Some("/etc/sandbox.sops.yaml"));
+        assert_eq!(secrets.keys, vec!["SANDBOX_TOKEN"]);
+        assert_eq!(secrets.intercept_patterns, vec!["~/.netrc"]);
+        // Defaults keys should NOT appear
+        assert!(!secrets.keys.contains(&"DEFAULT_KEY".to_string()));
+    }
+
+    #[test]
+    fn test_no_secrets_config_is_none() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        assert!(file.defaults.secrets.is_none());
+        assert!(file.sandboxes["test"].secrets.is_none());
+
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert!(configs[0].1.secrets.is_none());
     }
 
     #[test]
