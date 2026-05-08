@@ -65,6 +65,5 @@ pub use config::file::{
     resolve_sandbox_configs, SandboxFile,
 };
 pub use error::{Error, Result};
-pub use secrets::payload::SecretSource;
 pub use session::Session;
 pub use settings::UserSettings;

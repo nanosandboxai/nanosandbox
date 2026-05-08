@@ -233,9 +233,6 @@ pub struct AgentSandboxConfig {
     pub model: Option<String>,
     /// Claude-specific settings (theme, etc.) written to ~/.claude/settings.json.
     pub claude_settings: Option<ClaudeSettings>,
-    /// Secrets configuration (source of secrets for this sandbox).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secrets: Option<crate::secrets::payload::SecretSource>,
 }
 
 impl Default for AgentSandboxConfig {
@@ -252,7 +249,6 @@ impl Default for AgentSandboxConfig {
             agent_type: None,
             model: None,
             claude_settings: None,
-            secrets: None,
         }
     }
 }

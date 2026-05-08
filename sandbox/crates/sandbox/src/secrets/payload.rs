@@ -42,19 +42,6 @@ impl SecretPayload {
     }
 }
 
-/// Describes where secrets should come from for a sandbox run.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SecretSource {
-    /// SOPS-encrypted file path to load secrets from.
-    pub file: Option<String>,
-    /// Explicit key names to pull from the host environment.
-    #[serde(default)]
-    pub keys: Vec<String>,
-    /// File glob patterns whose matching files should be intercepted.
-    #[serde(default)]
-    pub intercept_patterns: Vec<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,12 +89,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_secret_source_defaults() {
-        let json = r#"{"file": null}"#;
-        let src: SecretSource = serde_json::from_str(json).expect("deserialize");
-        assert!(src.file.is_none());
-        assert!(src.keys.is_empty());
-        assert!(src.intercept_patterns.is_empty());
-    }
 }

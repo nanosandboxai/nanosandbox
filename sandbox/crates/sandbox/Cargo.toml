@@ -38,7 +38,6 @@ toml = "0.8"
 
 # Utilities
 tracing = "0.1"
-glob = "0.3"
 dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
