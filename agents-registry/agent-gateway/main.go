@@ -329,8 +329,11 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 	// Claude Code refuse --dangerously-skip-permissions when running as root.
 	cmd.SysProcAttr = sysProcAttrForDeveloper()
 
-	// Build environment: inherit base env, overlay request-specific vars.
+	// Build environment: inherit base env, overlay secrets, overlay request-specific vars.
 	cmdEnv := os.Environ()
+	for k, v := range getSecretsEnv() {
+		cmdEnv = setEnv(cmdEnv, k, v)
+	}
 	for k, v := range env {
 		cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", k, v))
 	}
@@ -586,6 +589,103 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 
 	code := exitCode
 	sseWrite(w, SSEEvent{Type: "exit", Code: &code})
+}
+
+// ---------------------------------------------------------------------------
+// Package Installation Handler
+// ---------------------------------------------------------------------------
+
+// PkgRequest is the JSON body for POST /api/v1/pkg/install.
+type PkgRequest struct {
+	Command string   `json:"command"` // e.g. "apt-get", "apt"
+	Args    []string `json:"args"`    // e.g. ["install", "-y", "python3"]
+}
+
+// pkgInstallHandler runs package manager commands as root.
+//
+// Code agents run as UID 1000 (developer) and cannot install system packages.
+// This endpoint runs the command as root (agent-gateway's UID) so that apt-get,
+// dpkg, and other system package managers work. The microVM is the security
+// boundary — root inside the VM is contained by the hypervisor.
+//
+// Only allows a fixed set of package manager commands for safety.
+func pkgInstallHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req PkgRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
+		return
+	}
+
+	// Allowlist of package manager commands that may run as root.
+	// Use full paths to avoid hitting the wrapper scripts at /usr/local/bin/.
+	allowed := map[string]string{
+		"apt-get": "/usr/bin/apt-get",
+		"apt":     "/usr/bin/apt",
+		"dpkg":    "/usr/bin/dpkg",
+	}
+	binPath, ok := allowed[req.Command]
+	if !ok {
+		http.Error(w, fmt.Sprintf(`{"error":"command not allowed: %s"}`, req.Command), http.StatusForbidden)
+		return
+	}
+
+	log.Printf("[agent-gateway] pkg: %s %v", req.Command, req.Args)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binPath, req.Args...)
+	cmd.Env = append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	)
+
+	// Stream output line-by-line (like classic apt-get)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"stdout pipe: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+	cmd.Stderr = cmd.Stdout // merge stderr into stdout
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(w, "Error: %v\n", err)
+		return
+	}
+
+	// Stream each line as it arrives
+	flusher, canFlush := w.(http.Flusher)
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
+	for scanner.Scan() {
+		fmt.Fprintln(w, scanner.Text())
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+
+	exitCode := 0
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+	}
+
+	// Final line with exit code for the wrapper to parse
+	fmt.Fprintf(w, "\n__EXIT_CODE__:%d\n", exitCode)
+	if canFlush {
+		flusher.Flush()
+	}
 }
 
 func stopHandler(w http.ResponseWriter, r *http.Request) {
@@ -1126,6 +1226,7 @@ func setupMux(mcpMgr *mcp.Manager, skillsMgr *skills.Manager) *http.ServeMux {
 	mux.HandleFunc("/api/v1/health", healthHandler)
 	mux.HandleFunc("/api/v1/message", messageHandler)
 	mux.HandleFunc("/api/v1/exec", execHandler)
+	mux.HandleFunc("POST /api/v1/pkg/install", pkgInstallHandler)
 	mux.HandleFunc("/api/v1/stop", stopHandler)
 
 	// MCP management routes
@@ -1149,6 +1250,20 @@ func setupMux(mcpMgr *mcp.Manager, skillsMgr *skills.Manager) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/agent", agentSetHandler(skillsMgr, mcpMgr))
 	mux.HandleFunc("POST /api/v1/agent/bootstrap", agentBootstrapHandler(skillsMgr, mcpMgr))
 	mux.HandleFunc("POST /api/v1/agent/restart", agentRestartHandler())
+
+	// Secrets injection (populates env store for SSH sessions and exec)
+	mux.HandleFunc("POST /api/v1/secrets/env", func(w http.ResponseWriter, r *http.Request) {
+		var env map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		SetSecretsEnv(env)
+		log.Printf("[agent-gateway] secrets env updated: %d keys", len(env))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"status":"ok","keys":%d}`, len(env))
+	})
 
 	return mux
 }
@@ -1254,6 +1369,14 @@ func main() {
 			log.Fatalf("[agent-gateway] server error: %v", err)
 		}
 	}()
+
+	// Start embedded SSH server.
+	go func() {
+		if err := startSSHServer(); err != nil {
+			log.Printf("[agent-gateway] SSH server error: %v", err)
+		}
+	}()
+	log.Println("[agent-gateway] SSH server started on :22")
 
 	// Wait for shutdown signal.
 	sig := <-sigCh

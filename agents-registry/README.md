@@ -111,7 +111,7 @@ Dockerfile.base (node:22-slim + agent-gateway + MCP packages + SSH)
 - agent-gateway binary (from sandbox repo)
 - Pre-installed MCP server npm packages (github, filesystem, memory, brave-search, context7)
 - Non-root `developer` user (UID 1000)
-- nanosb-init.sh (starts sshd + agent-gateway)
+- nanosb-init.sh (sets up mounts, SSH keys, execs agent-gateway)
 
 ### Available Images
 

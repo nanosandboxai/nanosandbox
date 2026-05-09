@@ -1,7 +1,7 @@
 #!/bin/sh
 # nanosb-init.sh — PID 1 init script for nanosandbox VMs
 #
-# Starts sshd for direct access, then execs agent-gateway.
+# Sets up mounts, SSH keys, and execs agent-gateway (which embeds the SSH server).
 #
 # Networking is NOT configured here — it is handled by the VM runtime:
 #   - Linux/macOS: libkrun VMM configures gvproxy virtio-net
@@ -81,7 +81,7 @@ fi
 # ---------------------------------------------------------------
 # When the rootfs is a Plan9 share from a Windows host, NTFS doesn't
 # track Unix permissions. All files appear as 0777 through 9P.
-# sshd requires strict permissions on host keys and authorized_keys.
+# SSH requires strict permissions on host keys and authorized_keys.
 # We detect this via a kernel cmdline flag set by the Windows runtime.
 NANOSB_9P_MODE=false
 if grep -q 'nanosb.9p_rootfs=1' /proc/cmdline 2>/dev/null; then
@@ -186,66 +186,55 @@ if [ -d /workspace ]; then
     echo "nanosb-init: agent state symlinks created (workspace-backed)"
 fi
 
+
 # ---------------------------------------------------------------
-# 2. Start dropbear (background) — enables SSH health check + access
+# 2. SSH key setup + developer account prep
 # ---------------------------------------------------------------
-# dropbear is used instead of openssh-server to avoid privilege separation
-# issues on Linux virtiofs: openssh privsep requires /run/sshd owned by root,
-# but virtiofs exposes all files with the host user's UID so chown fails.
-# dropbear has no privsep requirement and works uniformly on all platforms.
-if [ -x /usr/sbin/dropbear ]; then
+# SSH server is embedded in agent-gateway.
+# This section handles SSH key injection and developer account setup.
 
-    if [ "$NANOSB_9P_MODE" = "true" ]; then
-        # 9P mode (Windows HCS): NTFS doesn't track Unix permissions.
-        # dropbear stores host keys in /etc/dropbear — mount a tmpfs so
-        # the auto-generated keys (-R) get proper 0600 permissions.
-        mkdir -p /etc/dropbear 2>/dev/null || true
-        mount -t tmpfs tmpfs /etc/dropbear 2>/dev/null || true
+if [ "$NANOSB_9P_MODE" = "true" ]; then
+    # 9P mode (Windows HCS): NTFS doesn't track Unix permissions.
+    # Mount tmpfs for SSH key storage so permissions are correct.
 
-        # Inject SSH public key from kernel cmdline (set by Windows runtime)
-        NANOSB_SSH_KEY=$(get_cmdline_param nanosb.ssh_key)
-        if [ -n "$NANOSB_SSH_KEY" ]; then
-            SSH_KEY=$(echo "$NANOSB_SSH_KEY" | tr ',' ' ')
-            mkdir -p /root/.ssh 2>/dev/null || true
-            mount -t tmpfs tmpfs /root/.ssh 2>/dev/null || true
-            echo "$SSH_KEY" > /root/.ssh/authorized_keys
-            chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
-            echo "nanosb-init: SSH key injected from kernel cmdline"
-        fi
-        echo "nanosb-init: 9P dropbear setup complete"
-    else
-        # Normal mode (virtiofs / macOS / Linux)
-        chown 0:0 /root 2>/dev/null || true
-        chown -R 0:0 /root/.ssh 2>/dev/null || true
+    # Inject SSH public key from kernel cmdline (set by Windows runtime)
+    NANOSB_SSH_KEY=$(get_cmdline_param nanosb.ssh_key)
+    if [ -n "$NANOSB_SSH_KEY" ]; then
+        SSH_KEY=$(echo "$NANOSB_SSH_KEY" | tr ',' ' ')
+        mkdir -p /root/.ssh 2>/dev/null || true
+        mount -t tmpfs tmpfs /root/.ssh 2>/dev/null || true
+        echo "$SSH_KEY" > /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+        echo "nanosb-init: SSH key injected from kernel cmdline"
     fi
-
-    # Copy authorized_keys to developer user — TUI connects as 'developer'
-    # because agents like Claude Code refuse --dangerously-skip-permissions as root.
-    if [ -f /root/.ssh/authorized_keys ]; then
-        mkdir -p /home/developer/.ssh 2>/dev/null || true
-        if [ "$NANOSB_9P_MODE" = "true" ]; then
-            mount -t tmpfs tmpfs /home/developer/.ssh 2>/dev/null || true
-        fi
-        cp /root/.ssh/authorized_keys /home/developer/.ssh/authorized_keys 2>/dev/null || true
-        chown -R developer:developer /home/developer/.ssh 2>/dev/null || true
-        chmod 700 /home/developer/.ssh 2>/dev/null || true
-        chmod 600 /home/developer/.ssh/authorized_keys 2>/dev/null || true
-    fi
-
-    # Unlock developer account (Debian locks accounts with '!' in /etc/shadow).
-    usermod -p '*' developer 2>/dev/null || true
-
-    # Fix ownership of developer home and workspace.
-    chown -R developer:developer /home/developer 2>/dev/null || true
-    chown -R developer:developer /workspace 2>/dev/null || true
-
-    # Start dropbear: -R auto-generates host keys, -E logs to stderr, -p 22
-    if /usr/sbin/dropbear -R -E -p 22 2>&1; then
-        echo "nanosb-init: dropbear started"
-    else
-        echo "nanosb-init: ERROR: dropbear failed to start (exit $?)" >&2
-    fi
+    echo "nanosb-init: 9P SSH key setup complete"
+else
+    # Normal mode (virtiofs / macOS / Linux)
+    chown 0:0 /root 2>/dev/null || true
+    chown -R 0:0 /root/.ssh 2>/dev/null || true
 fi
+
+# Copy authorized_keys to developer user — TUI connects as 'developer'
+# because agents like Claude Code refuse --dangerously-skip-permissions as root.
+if [ -f /root/.ssh/authorized_keys ]; then
+    mkdir -p /home/developer/.ssh 2>/dev/null || true
+    if [ "$NANOSB_9P_MODE" = "true" ]; then
+        mount -t tmpfs tmpfs /home/developer/.ssh 2>/dev/null || true
+    fi
+    cp /root/.ssh/authorized_keys /home/developer/.ssh/authorized_keys 2>/dev/null || true
+    chown -R developer:developer /home/developer/.ssh 2>/dev/null || true
+    chmod 700 /home/developer/.ssh 2>/dev/null || true
+    chmod 600 /home/developer/.ssh/authorized_keys 2>/dev/null || true
+fi
+
+# Unlock developer account (Debian locks accounts with '!' in /etc/shadow).
+usermod -p '*' developer 2>/dev/null || true
+
+# Fix ownership of developer home and workspace.
+chown -R developer:developer /home/developer 2>/dev/null || true
+chown -R developer:developer /workspace 2>/dev/null || true
+
+echo "nanosb-init: SSH key setup and developer account ready"
 
 # ---------------------------------------------------------------
 # 3. Start agent-gateway (foreground) — handles agent API + MCP

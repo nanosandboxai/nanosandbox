@@ -10,8 +10,7 @@ func sysMount(source, target, fstype string) error {
 }
 
 // sysProcAttrForDeveloper returns SysProcAttr that drops to the 'developer'
-// user (UID 1000, GID 1000). Agents like Claude Code refuse
-// --dangerously-skip-permissions when running as root.
+// user (UID 1000, GID 1000). Agents like Claude Code refuse to run as root.
 func sysProcAttrForDeveloper() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{
 		Credential: &syscall.Credential{
