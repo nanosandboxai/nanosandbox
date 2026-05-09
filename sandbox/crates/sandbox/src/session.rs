@@ -11,6 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 /// Schema version for forward compatibility.
 pub const SESSION_VERSION: u32 = 1;
@@ -73,6 +74,10 @@ pub struct SessionPanel {
     /// should not be passed.
     #[serde(default)]
     pub had_interaction: bool,
+    /// Explicit agent-native session ID selected by the user for resume.
+    /// When set, CLI should prefer this ID over generic latest-continue flags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_agent_session_id: Option<String>,
 }
 
 /// Issues discovered when validating a saved session.
@@ -84,6 +89,15 @@ pub struct SessionIssue {
     pub message: String,
     /// Whether the session can still be resumed despite this issue.
     pub recoverable: bool,
+}
+
+/// Session entry for listing session history.
+#[derive(Debug, Clone)]
+pub struct SessionListEntry {
+    /// Unique session identifier.
+    pub id: String,
+    /// Session payload.
+    pub session: Session,
 }
 
 impl std::fmt::Display for SessionIssue {
@@ -114,9 +128,44 @@ pub fn session_dir(project_path: &Path) -> PathBuf {
         .join(hash)
 }
 
-/// Path to the session metadata file within a session directory.
-fn session_file(dir: &Path) -> PathBuf {
-    dir.join("session.json")
+const LEGACY_SESSION_FILE: &str = "session.json";
+
+/// Path to the legacy session metadata file within a session directory.
+fn legacy_session_file(dir: &Path) -> PathBuf {
+    dir.join(LEGACY_SESSION_FILE)
+}
+
+/// Path to a session metadata file for a specific session id.
+fn session_file_for_id(dir: &Path, session_id: &str) -> PathBuf {
+    dir.join(format!("session-{}.json", session_id))
+}
+
+fn parse_session_id_from_filename(name: &str) -> Option<String> {
+    if name == LEGACY_SESSION_FILE {
+        return Some("legacy".to_string());
+    }
+
+    if let Some(stripped) = name.strip_prefix("session-") {
+        return stripped
+            .strip_suffix(".json")
+            .map(std::string::ToString::to_string);
+    }
+
+    None
+}
+
+fn session_file_from_id(dir: &Path, session_id: &str) -> PathBuf {
+    if session_id == "legacy" {
+        legacy_session_file(dir)
+    } else {
+        session_file_for_id(dir, session_id)
+    }
+}
+
+fn generate_session_id() -> String {
+    let ts = Utc::now().format("%Y%m%d%H%M%S");
+    let short_uuid = Uuid::new_v4().simple().to_string();
+    format!("{}-{}", ts, &short_uuid[..8])
 }
 
 /// Compute a SHA-256 hex digest of a string (used for config hashing).
@@ -150,8 +199,18 @@ impl Session {
     ///
     /// Returns `None` if no session file exists or if it cannot be parsed.
     pub fn load(project_path: &Path) -> Option<Self> {
+        Self::list(project_path)
+            .into_iter()
+            .max_by_key(|entry| entry.session.updated_at)
+            .map(|entry| entry.session)
+    }
+
+    /// Load a specific session from disk by session id.
+    ///
+    /// Returns `None` if the id does not exist or if the payload is invalid.
+    pub fn load_by_id(project_path: &Path, session_id: &str) -> Option<Self> {
         let dir = session_dir(project_path);
-        let file = session_file(&dir);
+        let file = session_file_from_id(&dir, session_id);
 
         if !file.exists() {
             return None;
@@ -160,7 +219,6 @@ impl Session {
         let content = fs::read_to_string(&file).ok()?;
         let session: Session = serde_json::from_str(&content).ok()?;
 
-        // Reject incompatible schema versions
         if session.version > SESSION_VERSION {
             return None;
         }
@@ -168,18 +226,74 @@ impl Session {
         Some(session)
     }
 
+    /// List all persisted sessions for a project (latest first).
+    pub fn list(project_path: &Path) -> Vec<SessionListEntry> {
+        let dir = session_dir(project_path);
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut sessions = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+
+            let Some(id) = parse_session_id_from_filename(name) else {
+                continue;
+            };
+
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(session) = serde_json::from_str::<Session>(&content) else {
+                continue;
+            };
+
+            if session.version > SESSION_VERSION {
+                continue;
+            }
+
+            sessions.push(SessionListEntry { id, session });
+        }
+
+        sessions.sort_by(|a, b| b.session.updated_at.cmp(&a.session.updated_at));
+        sessions
+    }
+
     /// Save this session to disk.
-    pub fn save(&self) -> Result<(), String> {
+    ///
+    /// Returns the generated session ID.
+    pub fn save(&self) -> Result<String, String> {
+        self.save_with_id(None)
+    }
+
+    /// Save this session to disk, optionally reusing an existing session id.
+    ///
+    /// When `session_id` is provided, the corresponding session file is overwritten.
+    /// When `None`, a new session id is generated.
+    pub fn save_with_id(&self, session_id: Option<&str>) -> Result<String, String> {
         let dir = session_dir(&self.project_path);
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create session dir: {}", e))?;
 
-        let file = session_file(&dir);
+        let session_id = session_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(std::string::ToString::to_string)
+            .unwrap_or_else(generate_session_id);
+        let file = session_file_from_id(&dir, &session_id);
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize session: {}", e))?;
 
         fs::write(&file, content).map_err(|e| format!("Failed to write session file: {}", e))?;
 
-        Ok(())
+        Ok(session_id)
     }
 
     /// Delete the session file and optionally the entire session directory.
@@ -193,11 +307,13 @@ impl Session {
                     .map_err(|e| format!("Failed to remove session dir: {}", e))?;
             }
         } else {
-            // Only remove the session metadata file
-            let file = session_file(&dir);
-            if file.exists() {
-                fs::remove_file(&file)
-                    .map_err(|e| format!("Failed to remove session file: {}", e))?;
+            // Remove the latest session metadata file only.
+            if let Some(latest) = Self::list(project_path).first() {
+                let file = session_file_from_id(&dir, &latest.id);
+                if file.exists() {
+                    fs::remove_file(&file)
+                        .map_err(|e| format!("Failed to remove session file: {}", e))?;
+                }
             }
         }
 
@@ -293,89 +409,6 @@ impl Session {
     }
 }
 
-/// Choice the user makes when a previous session is detected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResumeChoice {
-    /// Resume the previous session.
-    Resume,
-    /// Clear session state and restart with new sandboxes.
-    ClearAndRestart,
-    /// Destroy old session data and start fresh.
-    Destroy,
-}
-
-/// Ensure the Windows console is in cooked mode (line-buffered with echo).
-///
-/// A previously crashed TUI session can leave the console in raw mode, which
-/// makes `stdin().read_line()` hang because Enter is delivered as a raw key
-/// event instead of `\r\n`. This resets the console to normal interactive mode.
-#[cfg(windows)]
-fn ensure_cooked_mode() {
-    unsafe {
-        extern "system" {
-            fn GetStdHandle(nStdHandle: u32) -> isize;
-            fn GetConsoleMode(hConsoleHandle: isize, lpMode: *mut u32) -> i32;
-            fn SetConsoleMode(hConsoleHandle: isize, dwMode: u32) -> i32;
-        }
-        const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
-        const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
-        const ENABLE_LINE_INPUT: u32 = 0x0002;
-        const ENABLE_ECHO_INPUT: u32 = 0x0004;
-
-        let handle = GetStdHandle(STD_INPUT_HANDLE);
-        if handle != -1_isize {
-            let mut mode: u32 = 0;
-            if GetConsoleMode(handle, &mut mode) != 0 {
-                // Set the three flags needed for normal interactive line reading
-                let cooked = mode | ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT;
-                SetConsoleMode(handle, cooked);
-            }
-        }
-    }
-}
-
-/// Prompt the user for their resume choice (before entering TUI alternate screen).
-///
-/// Reads from stdin/stdout. Returns `Resume` on empty input (default).
-pub fn prompt_resume(session: &Session, issues: &[SessionIssue]) -> ResumeChoice {
-    println!("Previous session found ({})", session.summary());
-
-    if !issues.is_empty() {
-        for issue in issues {
-            let prefix = if issue.recoverable { "!" } else { "x" };
-            println!("  [{}] {}", prefix, issue);
-        }
-    }
-
-    let has_fatal = issues.iter().any(|i| !i.recoverable);
-    if has_fatal {
-        println!("Session has unrecoverable issues. Starting fresh.");
-        return ResumeChoice::ClearAndRestart;
-    }
-
-    print!("[R]esume / [F]resh start / [D]estroy? [R] ");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-
-    // On Windows, a previously crashed TUI session may leave the console in
-    // raw mode. read_line() needs cooked mode (ENABLE_LINE_INPUT + ENABLE_ECHO_INPUT)
-    // otherwise keystrokes are delivered as raw events and Enter never produces \r\n,
-    // making the prompt appear frozen.
-    #[cfg(windows)]
-    ensure_cooked_mode();
-
-    let mut input = String::new();
-    if std::io::stdin().read_line(&mut input).is_err() {
-        return ResumeChoice::Resume;
-    }
-
-    match input.trim().to_lowercase().as_str() {
-        "" | "r" | "resume" => ResumeChoice::Resume,
-        "f" | "fresh" => ResumeChoice::ClearAndRestart,
-        "d" | "destroy" => ResumeChoice::Destroy,
-        _ => ResumeChoice::Resume,
-    }
-}
-
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -410,6 +443,7 @@ mod tests {
                 env_keys: vec!["ANTHROPIC_API_KEY".to_string()],
                 visible: true,
                 had_interaction: false,
+                selected_agent_session_id: None,
             }],
         }
     }
@@ -477,6 +511,62 @@ mod tests {
         // Cleanup
         Session::delete(&project_path, true).unwrap();
         assert!(Session::load(&project_path).is_none());
+    }
+
+    #[test]
+    fn test_list_and_load_by_id() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project_path = tmp.path().join("my-project");
+        std::fs::create_dir_all(&project_path).unwrap();
+
+        let mut first = make_test_session(&project_path);
+        first.panels[0].clone_path = None;
+        first.updated_at = Utc::now() - chrono::Duration::minutes(5);
+        first.save().unwrap();
+
+        let mut second = make_test_session(&project_path);
+        second.panels[0].clone_path = None;
+        second.updated_at = Utc::now();
+        second.save().unwrap();
+
+        let listed = Session::list(&project_path);
+        assert_eq!(listed.len(), 2);
+
+        // list() returns latest first
+        assert!(listed[0].session.updated_at >= listed[1].session.updated_at);
+
+        let id = listed[0].id.clone();
+        let loaded = Session::load_by_id(&project_path, &id).unwrap();
+        assert_eq!(loaded.version, SESSION_VERSION);
+        assert_eq!(loaded.panels.len(), 1);
+
+        Session::delete(&project_path, true).unwrap();
+    }
+
+    #[test]
+    fn test_save_with_id_overwrites_existing_session_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project_path = tmp.path().join("my-project");
+        std::fs::create_dir_all(&project_path).unwrap();
+
+        let mut first = make_test_session(&project_path);
+        first.panels[0].clone_path = None;
+        let id = first.save().unwrap();
+
+        let mut second = make_test_session(&project_path);
+        second.panels[0].clone_path = None;
+        second.panels[0].agent_name = "codex".to_string();
+        let reused_id = second.save_with_id(Some(&id)).unwrap();
+
+        assert_eq!(reused_id, id);
+        let listed = Session::list(&project_path);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, id);
+
+        let loaded = Session::load_by_id(&project_path, &listed[0].id).unwrap();
+        assert_eq!(loaded.panels[0].agent_name, "codex");
+
+        Session::delete(&project_path, true).unwrap();
     }
 
     #[test]
