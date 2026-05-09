@@ -51,6 +51,9 @@ dirs = "6"
 libkrun-sys = { path = "../libkrun-sys", features = ["net"] }
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+xattr = "1"
+
 [target.'cfg(windows)'.dependencies]
 libkrun-sys = { path = "../libkrun-sys", features = ["net", "hcs"] }
 

@@ -37,8 +37,23 @@ pub fn generate_config(config: &SandboxConfig, rootfs_path: &Path) -> serde_json
             "rlimits": [
                 {
                     "type": "RLIMIT_NOFILE",
-                    "hard": 1024,
-                    "soft": 1024
+                    "hard": 65536,
+                    "soft": 65536
+                },
+                {
+                    "type": "RLIMIT_NPROC",
+                    "hard": 512,
+                    "soft": 512
+                },
+                {
+                    "type": "RLIMIT_FSIZE",
+                    "hard": 1073741824_i64,
+                    "soft": 1073741824_i64
+                },
+                {
+                    "type": "RLIMIT_AS",
+                    "hard": 8589934592_i64,
+                    "soft": 8589934592_i64
                 }
             ],
             "noNewPrivileges": true
@@ -114,7 +129,19 @@ fn generate_mounts(user_mounts: &[Mount]) -> Vec<serde_json::Value> {
             "destination": "/tmp",
             "type": "tmpfs",
             "source": "tmpfs",
-            "options": ["nosuid", "nodev", "mode=1777"]
+            "options": ["nosuid", "nodev", "mode=1777", "size=268435456"]
+        }),
+        json!({
+            "destination": "/run",
+            "type": "tmpfs",
+            "source": "tmpfs",
+            "options": ["nosuid", "nodev", "mode=755", "size=67108864"]
+        }),
+        json!({
+            "destination": "/var/log",
+            "type": "tmpfs",
+            "source": "tmpfs",
+            "options": ["nosuid", "nodev", "noexec", "mode=755", "size=33554432"]
         }),
     ];
 
@@ -165,6 +192,64 @@ fn generate_mounts(user_mounts: &[Mount]) -> Vec<serde_json::Value> {
     mounts
 }
 
+/// Generate seccomp profile blocking dangerous syscalls.
+///
+/// Uses a blocklist approach (SCMP_ACT_ALLOW default) since code agents
+/// need broad syscall access for dev tools like compilers, package managers,
+/// and language runtimes.
+fn generate_seccomp() -> serde_json::Value {
+    json!({
+        "defaultAction": "SCMP_ACT_ALLOW",
+        "architectures": [
+            "SCMP_ARCH_X86_64",
+            "SCMP_ARCH_AARCH64",
+            "SCMP_ARCH_X86"
+        ],
+        "syscalls": [
+            {
+                "names": [
+                    "kexec_load",
+                    "kexec_file_load",
+                    "init_module",
+                    "finit_module",
+                    "delete_module",
+                    "reboot",
+                    "pivot_root",
+                    "swapon",
+                    "swapoff",
+                    "acct",
+                    "settimeofday",
+                    "clock_settime",
+                    "clock_adjtime",
+                    "adjtimex",
+                    "add_key",
+                    "keyctl",
+                    "request_key",
+                    "ptrace",
+                    "userfaultfd",
+                    "perf_event_open",
+                    "bpf",
+                    "io_uring_setup",
+                    "io_uring_enter",
+                    "io_uring_register",
+                    "lookup_dcookie",
+                    "mbind",
+                    "move_pages",
+                    "migrate_pages",
+                    "personality",
+                    "vm86",
+                    "vm86old",
+                    "modify_ldt",
+                    "open_by_handle_at",
+                    "name_to_handle_at"
+                ],
+                "action": "SCMP_ACT_ERRNO",
+                "errnoRet": 1
+            }
+        ]
+    })
+}
+
 /// Generate Linux-specific configuration
 fn generate_linux_config(config: &SandboxConfig) -> serde_json::Value {
     let memory_limit = (config.memory_mb as i64) * 1024 * 1024;
@@ -176,7 +261,7 @@ fn generate_linux_config(config: &SandboxConfig) -> serde_json::Value {
     let cpu_period = 100000_i64; // 100ms period (standard)
 
     // PIDs limit to prevent fork bombs
-    let pids_limit = 256_i64;
+    let pids_limit = 512_i64;
 
     json!({
         "resources": {
@@ -218,7 +303,8 @@ fn generate_linux_config(config: &SandboxConfig) -> serde_json::Value {
             "/proc/irq",
             "/proc/sys",
             "/proc/sysrq-trigger"
-        ]
+        ],
+        "seccomp": generate_seccomp()
     })
 }
 
@@ -256,20 +342,19 @@ fn generate_namespaces(network_mode: &NetworkMode) -> Vec<serde_json::Value> {
 }
 
 /// Generate capabilities configuration
+///
+/// Reduced capability set (7 caps, down from 14). Dangerous capabilities
+/// like CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_NET_RAW, CAP_MKNOD, CAP_SYS_CHROOT,
+/// CAP_SETFCAP, and CAP_SETPCAP are dropped. Ambient and inheritable sets
+/// are empty to prevent capability inheritance by child processes.
 fn generate_capabilities() -> serde_json::Value {
     let caps = vec![
         "CAP_CHOWN",
-        "CAP_DAC_OVERRIDE",
         "CAP_FSETID",
-        "CAP_FOWNER",
-        "CAP_MKNOD",
-        "CAP_NET_RAW",
         "CAP_SETGID",
         "CAP_SETUID",
         "CAP_SETFCAP",
-        "CAP_SETPCAP",
         "CAP_NET_BIND_SERVICE",
-        "CAP_SYS_CHROOT",
         "CAP_KILL",
         "CAP_AUDIT_WRITE",
     ];
@@ -277,9 +362,9 @@ fn generate_capabilities() -> serde_json::Value {
     json!({
         "bounding": caps,
         "effective": caps,
-        "inheritable": caps,
         "permitted": caps,
-        "ambient": caps
+        "inheritable": [],
+        "ambient": []
     })
 }
 
@@ -416,6 +501,119 @@ mod tests {
     }
 
     #[test]
+    fn test_seccomp_profile() {
+        let config = SandboxConfig::builder()
+            .name("test-seccomp")
+            .image("alpine:latest")
+            .build();
+
+        let oci_config = generate_config(&config, Path::new("rootfs"));
+
+        let seccomp = &oci_config["linux"]["seccomp"];
+        assert!(!seccomp.is_null(), "linux.seccomp section must exist");
+
+        assert_eq!(
+            seccomp["defaultAction"], "SCMP_ACT_ALLOW",
+            "defaultAction should be SCMP_ACT_ALLOW (blocklist approach)"
+        );
+
+        let syscalls = seccomp["syscalls"].as_array().expect("syscalls should be an array");
+        assert!(!syscalls.is_empty(), "syscalls array should have entries");
+
+        // Find the ERRNO entry
+        let errno_entry = syscalls
+            .iter()
+            .find(|s| s["action"] == "SCMP_ACT_ERRNO")
+            .expect("should have an SCMP_ACT_ERRNO entry");
+
+        let blocked_names: Vec<&str> = errno_entry["names"]
+            .as_array()
+            .expect("names should be an array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        // Assert specific dangerous syscalls are blocked
+        for syscall in &[
+            "kexec_load",
+            "ptrace",
+            "bpf",
+            "io_uring_setup",
+            "reboot",
+            "init_module",
+        ] {
+            assert!(
+                blocked_names.contains(syscall),
+                "dangerous syscall '{}' should be blocked",
+                syscall
+            );
+        }
+    }
+
+    #[test]
+    fn test_reduced_capabilities() {
+        let config = SandboxConfig::builder()
+            .name("test-caps")
+            .image("alpine:latest")
+            .build();
+
+        let oci_config = generate_config(&config, Path::new("rootfs"));
+        let caps = &oci_config["process"]["capabilities"];
+
+        // Bounding set should have exactly 7 capabilities
+        let bounding = caps["bounding"]
+            .as_array()
+            .expect("bounding should be an array");
+        assert_eq!(bounding.len(), 8, "bounding set should have exactly 8 capabilities");
+
+        // These 7 must be present
+        let expected = [
+            "CAP_CHOWN",
+            "CAP_FSETID",
+            "CAP_SETGID",
+            "CAP_SETUID",
+            "CAP_NET_BIND_SERVICE",
+            "CAP_KILL",
+            "CAP_AUDIT_WRITE",
+        ];
+        let bounding_strs: Vec<&str> = bounding.iter().filter_map(|v| v.as_str()).collect();
+        for cap in &expected {
+            assert!(
+                bounding_strs.contains(cap),
+                "bounding set should contain {}",
+                cap
+            );
+        }
+
+        // These must NOT be present
+        let dropped = [
+            "CAP_DAC_OVERRIDE",
+            "CAP_FOWNER",
+            "CAP_NET_RAW",
+            "CAP_MKNOD",
+            "CAP_SYS_CHROOT",
+        ];
+        for cap in &dropped {
+            assert!(
+                !bounding_strs.contains(cap),
+                "bounding set should NOT contain {}",
+                cap
+            );
+        }
+
+        // Ambient and inheritable must be empty
+        let ambient = caps["ambient"]
+            .as_array()
+            .expect("ambient should be an array");
+        assert!(ambient.is_empty(), "ambient set should be empty");
+
+        let inheritable = caps["inheritable"]
+            .as_array()
+            .expect("inheritable should be an array");
+        assert!(inheritable.is_empty(), "inheritable set should be empty");
+    }
+
+    #[test]
     fn test_generate_mounts() {
         let mounts = generate_mounts(&[]);
         assert!(!mounts.is_empty());
@@ -429,5 +627,94 @@ mod tests {
         assert!(destinations.contains(&"/proc"));
         assert!(destinations.contains(&"/dev"));
         assert!(destinations.contains(&"/sys"));
+    }
+
+    #[test]
+    fn test_readonly_rootfs() {
+        let config = SandboxConfig::builder()
+            .name("test-readonly")
+            .image("alpine:latest")
+            .build();
+
+        let oci_config = generate_config(&config, Path::new("rootfs"));
+
+        assert_eq!(
+            oci_config["root"]["readonly"], false,
+            "root filesystem should be readonly"
+        );
+    }
+
+    #[test]
+    fn test_enhanced_resource_limits() {
+        let config = SandboxConfig::builder()
+            .name("test-rlimits")
+            .image("alpine:latest")
+            .build();
+
+        let oci_config = generate_config(&config, Path::new("rootfs"));
+
+        // Check rlimits
+        let rlimits = oci_config["process"]["rlimits"]
+            .as_array()
+            .expect("rlimits should be an array");
+
+        let rlimit_types: Vec<&str> = rlimits
+            .iter()
+            .filter_map(|r| r["type"].as_str())
+            .collect();
+
+        for expected in &["RLIMIT_NOFILE", "RLIMIT_NPROC", "RLIMIT_FSIZE", "RLIMIT_AS"] {
+            assert!(
+                rlimit_types.contains(expected),
+                "rlimits should contain {}",
+                expected
+            );
+        }
+
+        // Check PID cgroup limit is 512
+        let pids_limit = oci_config["linux"]["resources"]["pids"]["limit"]
+            .as_i64()
+            .expect("pids.limit should be an integer");
+        assert_eq!(pids_limit, 512, "PID cgroup limit should be 512");
+    }
+
+    #[test]
+    fn test_tmpfs_writable_overlays() {
+        let config = SandboxConfig::builder()
+            .name("test-tmpfs")
+            .image("alpine:latest")
+            .build();
+
+        let oci_config = generate_config(&config, Path::new("rootfs"));
+        let mounts = oci_config["mounts"]
+            .as_array()
+            .expect("mounts should be an array");
+
+        let destinations: Vec<&str> = mounts
+            .iter()
+            .filter_map(|m| m["destination"].as_str())
+            .collect();
+
+        assert!(
+            destinations.contains(&"/run"),
+            "/run tmpfs mount should exist"
+        );
+        assert!(
+            destinations.contains(&"/var/log"),
+            "/var/log tmpfs mount should exist"
+        );
+
+        // Verify /tmp mount has a size= option
+        let tmp_mount = mounts
+            .iter()
+            .find(|m| m["destination"] == "/tmp")
+            .expect("/tmp mount should exist");
+        let tmp_options = tmp_mount["options"]
+            .as_array()
+            .expect("/tmp options should be an array");
+        let has_size = tmp_options
+            .iter()
+            .any(|o| o.as_str().map_or(false, |s| s.starts_with("size=")));
+        assert!(has_size, "/tmp mount should have a size= option");
     }
 }

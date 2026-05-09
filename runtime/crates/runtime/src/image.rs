@@ -44,6 +44,53 @@ fn unpack_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> std::io::Re
     }
 }
 
+/// Set ownership xattrs on all files from a tar archive.
+///
+/// On macOS, virtiofs passthrough cannot use chown/fchownat (Linux-only).
+/// Instead, libkrun's passthrough reads `user.containers.override_stat` xattrs
+/// to override file ownership in stat_common(). This function writes that xattr
+/// for every file in the tar, preserving the original UID/GID from the OCI image.
+///
+/// Called as a second pass after unpack_archive() extracts the files.
+#[cfg(target_os = "macos")]
+fn set_ownership_xattrs<R: Read>(archive: &mut Archive<R>, dest: &Path) {
+    const XATTR_KEY: &str = "user.containers.override_stat";
+
+    let entries = match archive.entries() {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("Failed to read tar entries for xattr pass: {}", e);
+            return;
+        }
+    };
+
+    for entry_result in entries {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = match entry.path() {
+            Ok(p) => dest.join(p),
+            Err(_) => continue,
+        };
+
+        if !path.exists() {
+            continue;
+        }
+
+        let header = entry.header();
+        let uid = header.uid().unwrap_or(0);
+        let gid = header.gid().unwrap_or(0);
+        let mode = header.mode().unwrap_or(0o644);
+
+        let xattr_value = format!("{}:{}:{:o}", uid, gid, mode);
+        if let Err(e) = xattr::set(&path, XATTR_KEY, xattr_value.as_bytes()) {
+            tracing::trace!("Failed to set xattr on {}: {}", path.display(), e);
+        }
+    }
+}
+
 /// Windows-specific tar extraction that gracefully handles Unix-isms.
 ///
 /// - Regular files / directories: extracted normally.
@@ -944,6 +991,15 @@ impl ImageManager {
                 error!("Failed to unpack gzip layer {}: {}", digest_short, e);
                 Error::LayerExtractionFailed(format!("Failed to unpack gzip: {}", e))
             })?;
+
+            // macOS: second pass to set ownership xattrs from tar headers
+            #[cfg(target_os = "macos")]
+            {
+                let file2 = File::open(&blob_path)?;
+                let decoder2 = GzDecoder::new(file2);
+                let mut archive2 = Archive::new(decoder2);
+                set_ownership_xattrs(&mut archive2, dest);
+            }
         } else {
             // Try as plain tar
             let file = File::open(&blob_path)?;
@@ -955,6 +1011,14 @@ impl ImageManager {
                 error!("Failed to unpack tar layer {}: {}", digest_short, e);
                 Error::LayerExtractionFailed(format!("Failed to unpack tar: {}", e))
             })?;
+
+            // macOS: second pass to set ownership xattrs from tar headers
+            #[cfg(target_os = "macos")]
+            {
+                let file2 = File::open(&blob_path)?;
+                let mut archive2 = Archive::new(file2);
+                set_ownership_xattrs(&mut archive2, dest);
+            }
         }
 
         Ok(())
@@ -1214,6 +1278,16 @@ impl ImageManager {
                 error!("Failed to unpack tar layer {}/{} {:?}: {}", i + 1, num_layers, tar_path.file_name().unwrap_or_default(), e);
                 Error::LayerExtractionFailed(format!("Failed to unpack tar: {}", e))
             })?;
+
+            // macOS: second pass to set ownership xattrs from tar headers
+            #[cfg(target_os = "macos")]
+            {
+                let file2 = File::open(tar_path).map_err(|e| {
+                    Error::LayerExtractionFailed(format!("Reopen tar for xattr: {}", e))
+                })?;
+                let mut archive2 = Archive::new(file2);
+                set_ownership_xattrs(&mut archive2, dest);
+            }
         }
 
         #[cfg(not(windows))]
