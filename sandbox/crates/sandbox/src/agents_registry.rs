@@ -8,7 +8,16 @@ use crate::config::{AgentDefinition, AgentMcpRef, McpServerConfig, ResolvedAgent
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tracing::{debug, warn};
+
+const DEFAULT_PUBLIC_SKILLS_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/nanosandboxai/nanosandbox.ai/main/src/data/skills-public.json";
+const DEFAULT_REMOTE_LOCAL_SKILLS_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/nanosandboxai/nanosandbox.ai/main/src/data/skills-local.json";
+const DEFAULT_LOCAL_SKILLS_RAW_BASE_URL: &str =
+    "https://raw.githubusercontent.com/nanosandboxai/agents-registry/main";
+const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 
 /// Registry index (parsed from index.json).
 #[derive(Debug, Clone, Deserialize)]
@@ -43,6 +52,46 @@ pub struct RegistrySkillEntry {
     #[serde(default)]
     pub tags: Vec<String>,
     pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillSource {
+    Local,
+    Public,
+}
+
+#[derive(Debug, Clone)]
+struct SkillCatalogEntry {
+    name: String,
+    source: SkillSource,
+    description: String,
+    tags: Vec<String>,
+    local_path: Option<String>,
+    source_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PublicSkillCatalogEntry {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default, rename = "sourceUrl")]
+    source_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteLocalSkillCatalogEntry {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    path: Option<String>,
 }
 
 /// Raw agent YAML file structure.
@@ -85,8 +134,12 @@ struct AgentYamlMcp {
 /// Client for reading agent definitions and skills from a local registry directory.
 #[derive(Debug, Clone)]
 pub struct AgentsRegistryClient {
-    base_path: PathBuf,
+    base_path: Option<PathBuf>,
     index: RegistryIndex,
+    public_skills_catalog_url: String,
+    remote_local_skills_catalog_url: String,
+    local_skills_raw_base_url: String,
+    http_timeout_secs: u64,
 }
 
 impl AgentsRegistryClient {
@@ -112,9 +165,42 @@ impl AgentsRegistryClient {
         );
 
         Ok(Self {
-            base_path: path.to_path_buf(),
+            base_path: Some(path.to_path_buf()),
             index,
+            public_skills_catalog_url: std::env::var("NANOSB_SKILLS_PUBLIC_CATALOG_URL")
+                .unwrap_or_else(|_| DEFAULT_PUBLIC_SKILLS_CATALOG_URL.to_string()),
+            remote_local_skills_catalog_url: std::env::var("NANOSB_SKILLS_LOCAL_CATALOG_URL")
+                .unwrap_or_else(|_| DEFAULT_REMOTE_LOCAL_SKILLS_CATALOG_URL.to_string()),
+            local_skills_raw_base_url: std::env::var("NANOSB_LOCAL_SKILLS_RAW_BASE_URL")
+                .unwrap_or_else(|_| DEFAULT_LOCAL_SKILLS_RAW_BASE_URL.to_string()),
+            http_timeout_secs: std::env::var("NANOSB_SKILLS_HTTP_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(DEFAULT_HTTP_TIMEOUT_SECS),
         })
+    }
+
+    /// Create a client with no local registry and online metadata enabled.
+    pub fn online_only() -> Self {
+        Self {
+            base_path: None,
+            index: RegistryIndex {
+                agents: Vec::new(),
+                skills: Vec::new(),
+            },
+            public_skills_catalog_url: std::env::var("NANOSB_SKILLS_PUBLIC_CATALOG_URL")
+                .unwrap_or_else(|_| DEFAULT_PUBLIC_SKILLS_CATALOG_URL.to_string()),
+            remote_local_skills_catalog_url: std::env::var("NANOSB_SKILLS_LOCAL_CATALOG_URL")
+                .unwrap_or_else(|_| DEFAULT_REMOTE_LOCAL_SKILLS_CATALOG_URL.to_string()),
+            local_skills_raw_base_url: std::env::var("NANOSB_LOCAL_SKILLS_RAW_BASE_URL")
+                .unwrap_or_else(|_| DEFAULT_LOCAL_SKILLS_RAW_BASE_URL.to_string()),
+            http_timeout_secs: std::env::var("NANOSB_SKILLS_HTTP_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(DEFAULT_HTTP_TIMEOUT_SECS),
+        }
     }
 
     /// List all available agent names.
@@ -136,7 +222,11 @@ impl AgentsRegistryClient {
             .find(|a| a.name == name)
             .ok_or_else(|| format!("Agent '{}' not found in registry", name))?;
 
-        let yaml_path = self.base_path.join(&entry.path);
+        let base_path = self
+            .base_path
+            .as_ref()
+            .ok_or_else(|| "No local agents registry available for agent resolution".to_string())?;
+        let yaml_path = base_path.join(&entry.path);
         let content = std::fs::read_to_string(&yaml_path)
             .map_err(|e| format!("Failed to read agent file {}: {}", yaml_path.display(), e))?;
 
@@ -163,20 +253,29 @@ impl AgentsRegistryClient {
         })
     }
 
-    /// Resolve a skill by name from the registry.
+    /// Resolve a skill by name using skill catalog metadata.
+    ///
+    /// Resolution is deterministic:
+    /// - Match by name in merged metadata.
+    /// - Prefer local source over public when duplicates exist.
+    /// - If name is absent from metadata, return unknown skill.
     pub fn resolve_skill(&self, name: &str) -> Result<SkillDef, String> {
-        let entry = self
-            .index
-            .skills
-            .iter()
-            .find(|s| s.name == name)
-            .ok_or_else(|| format!("Skill '{}' not found in registry", name))?;
+        if let Some(local_entry) = self.local_catalog_entry_for(name) {
+            return self.resolve_local_skill_from_catalog_entry(&local_entry);
+        }
 
-        let md_path = self.base_path.join(&entry.path);
-        let content = std::fs::read_to_string(&md_path)
-            .map_err(|e| format!("Failed to read skill file {}: {}", md_path.display(), e))?;
+        let remote_catalog = self.load_remote_skill_catalog();
+        let entry = select_skill_entry(name, &remote_catalog).ok_or_else(|| {
+            format!(
+                "Unknown skill '{}': not found in skill metadata catalog",
+                name
+            )
+        })?;
 
-        parse_skill_markdown(name, &content)
+        match entry.source {
+            SkillSource::Local => self.resolve_local_skill_from_catalog_entry(&entry),
+            SkillSource::Public => self.resolve_public_skill_from_catalog_entry(&entry),
+        }
     }
 
     /// Resolve a full agent config: agent definition + all skills + MCPs.
@@ -234,10 +333,7 @@ impl AgentsRegistryClient {
     ///
     /// Returns a `ResolvedAgentConfig` with only the given skills populated
     /// and all other fields at their defaults.
-    pub fn resolve_skills_only(
-        &self,
-        skills: &[String],
-    ) -> Result<ResolvedAgentConfig, String> {
+    pub fn resolve_skills_only(&self, skills: &[String]) -> Result<ResolvedAgentConfig, String> {
         let mut resolved_skills = Vec::new();
         for name in skills {
             match self.resolve_skill(name) {
@@ -256,6 +352,272 @@ impl AgentsRegistryClient {
             claude_settings: None,
         })
     }
+
+    fn local_catalog_entry_for(&self, name: &str) -> Option<SkillCatalogEntry> {
+        self.index
+            .skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .map(|skill| SkillCatalogEntry {
+                name: skill.name.clone(),
+                source: SkillSource::Local,
+                description: skill.description.clone(),
+                tags: skill.tags.clone(),
+                local_path: Some(skill.path.clone()),
+                source_url: None,
+            })
+    }
+
+    fn load_remote_skill_catalog(&self) -> Vec<SkillCatalogEntry> {
+        let mut entries = Vec::new();
+
+        let remote_local_raw = match fetch_text(
+            &self.remote_local_skills_catalog_url,
+            self.http_timeout_secs,
+        ) {
+            Ok(raw) => raw,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch remote local skills catalog {}: {}",
+                    self.remote_local_skills_catalog_url, e
+                );
+                String::new()
+            }
+        };
+        if !remote_local_raw.is_empty() {
+            match serde_json::from_str::<Vec<RemoteLocalSkillCatalogEntry>>(&remote_local_raw) {
+                Ok(remote_local_entries) => {
+                    for skill in remote_local_entries {
+                        if skill.name.trim().is_empty() {
+                            continue;
+                        }
+                        entries.push(SkillCatalogEntry {
+                            name: skill.name,
+                            source: SkillSource::Local,
+                            description: skill.description,
+                            tags: skill.tags,
+                            local_path: skill.path,
+                            source_url: None,
+                        });
+                    }
+                }
+                Err(e) => warn!(
+                    "Failed to parse remote local skills catalog {}: {}",
+                    self.remote_local_skills_catalog_url, e
+                ),
+            }
+        }
+
+        let public_raw = match fetch_text(&self.public_skills_catalog_url, self.http_timeout_secs) {
+            Ok(raw) => raw,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch public skills catalog {}: {}",
+                    self.public_skills_catalog_url, e
+                );
+                String::new()
+            }
+        };
+        if !public_raw.is_empty() {
+            match serde_json::from_str::<Vec<PublicSkillCatalogEntry>>(&public_raw) {
+                Ok(public_entries) => {
+                    for skill in public_entries {
+                        if skill.name.trim().is_empty() {
+                            continue;
+                        }
+                        entries.push(SkillCatalogEntry {
+                            name: skill.name,
+                            source: SkillSource::Public,
+                            description: skill.description,
+                            tags: skill.tags,
+                            local_path: None,
+                            source_url: skill.source_url,
+                        });
+                    }
+                }
+                Err(e) => warn!(
+                    "Failed to parse public skills catalog {}: {}",
+                    self.public_skills_catalog_url, e
+                ),
+            }
+        }
+
+        entries
+    }
+
+    fn resolve_local_skill_from_catalog_entry(
+        &self,
+        entry: &SkillCatalogEntry,
+    ) -> Result<SkillDef, String> {
+        let local_path = entry
+            .local_path
+            .as_deref()
+            .ok_or_else(|| format!("Local skill '{}' missing path in metadata", entry.name))?;
+
+        if let Some(base_path) = &self.base_path {
+            let md_path = base_path.join(local_path);
+            if md_path.exists() {
+                let content = std::fs::read_to_string(&md_path).map_err(|e| {
+                    format!("Failed to read skill file {}: {}", md_path.display(), e)
+                })?;
+                return parse_skill_markdown(&entry.name, &content);
+            }
+        }
+
+        let raw_url = format!(
+            "{}/{}",
+            self.local_skills_raw_base_url.trim_end_matches('/'),
+            local_path.trim_start_matches('/')
+        );
+        let content = fetch_text(&raw_url, self.http_timeout_secs).map_err(|e| {
+            format!(
+                "Failed to fetch local skill '{}' from {}: {}",
+                entry.name, raw_url, e
+            )
+        })?;
+        parse_skill_markdown(&entry.name, &content)
+    }
+
+    fn resolve_public_skill_from_catalog_entry(
+        &self,
+        entry: &SkillCatalogEntry,
+    ) -> Result<SkillDef, String> {
+        let source_url = entry.source_url.as_deref().ok_or_else(|| {
+            format!(
+                "Public skill '{}' missing sourceUrl in metadata",
+                entry.name
+            )
+        })?;
+
+        let content = fetch_public_skill_markdown(source_url, &entry.name, self.http_timeout_secs)
+            .map_err(|e| {
+                format!(
+                    "Failed to resolve public skill '{}' from {}: {}",
+                    entry.name, source_url, e
+                )
+            })?;
+        parse_skill_markdown(&entry.name, &content)
+    }
+}
+
+fn select_skill_entry(name: &str, entries: &[SkillCatalogEntry]) -> Option<SkillCatalogEntry> {
+    let mut matches: Vec<SkillCatalogEntry> = entries
+        .iter()
+        .filter(|entry| entry.name == name)
+        .cloned()
+        .collect();
+    if matches.is_empty() {
+        return None;
+    }
+
+    matches.sort_by(|a, b| {
+        let rank_a = skill_source_rank(a.source);
+        let rank_b = skill_source_rank(b.source);
+        rank_a
+            .cmp(&rank_b)
+            .then_with(|| b.description.len().cmp(&a.description.len()))
+            .then_with(|| b.tags.len().cmp(&a.tags.len()))
+    });
+
+    matches.into_iter().next()
+}
+
+fn skill_source_rank(source: SkillSource) -> u8 {
+    match source {
+        SkillSource::Local => 0,
+        SkillSource::Public => 1,
+    }
+}
+
+fn fetch_text(url: &str, timeout_secs: u64) -> Result<String, String> {
+    let timeout = Duration::from_secs(timeout_secs.max(1));
+    let response = ureq::AgentBuilder::new()
+        .timeout_connect(timeout)
+        .timeout_read(timeout)
+        .build()
+        .get(url)
+        .call()
+        .map_err(|e| format!("HTTP GET failed for {}: {}", url, e))?;
+
+    response
+        .into_string()
+        .map_err(|e| format!("Failed to read response body for {}: {}", url, e))
+}
+
+fn fetch_public_skill_markdown(
+    source_url: &str,
+    skill_name: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    if source_url.contains("raw.githubusercontent.com") && source_url.ends_with(".md") {
+        return fetch_text(source_url, timeout_secs);
+    }
+
+    let mut candidates: Vec<String> = Vec::new();
+
+    if let Some(base) = github_tree_or_blob_to_raw_base(source_url) {
+        candidates.push(format!("{}/SKILL.md", base));
+        candidates.push(format!("{}/README.md", base));
+        candidates.push(format!("{}/{}.md", base, skill_name));
+        candidates.push(format!("{}/{}.md", base, skill_name.replace('-', "_")));
+    } else if let Some(base) = github_repo_to_raw_base(source_url) {
+        candidates.push(format!("{}/SKILL.md", base));
+        candidates.push(format!("{}/README.md", base));
+        candidates.push(format!("{}/{}.md", base, skill_name));
+    }
+
+    for candidate in candidates {
+        match fetch_text(&candidate, timeout_secs) {
+            Ok(content) => return Ok(content),
+            Err(_) => continue,
+        }
+    }
+
+    Err("No supported markdown entrypoint found for public skill source".to_string())
+}
+
+fn github_tree_or_blob_to_raw_base(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let parts: Vec<&str> = trimmed.split('/').collect();
+    if parts.len() < 7 {
+        return None;
+    }
+    if parts[2] != "github.com" {
+        return None;
+    }
+    if parts[5] != "tree" && parts[5] != "blob" {
+        return None;
+    }
+    let owner = parts[3];
+    let repo = parts[4];
+    let branch = parts[6];
+    let path = if parts.len() > 7 {
+        format!("/{}", parts[7..].join("/"))
+    } else {
+        String::new()
+    };
+
+    Some(format!(
+        "https://raw.githubusercontent.com/{}/{}/{}{}",
+        owner, repo, branch, path
+    ))
+}
+
+fn github_repo_to_raw_base(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let parts: Vec<&str> = trimmed.split('/').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    if parts[2] != "github.com" {
+        return None;
+    }
+    let owner = parts[3];
+    let repo = parts[4];
+    Some(format!(
+        "https://raw.githubusercontent.com/{}/{}/main",
+        owner, repo
+    ))
 }
 
 /// Parse a skill markdown file with YAML frontmatter.
@@ -528,6 +890,44 @@ Use conventional commits.
         let client = AgentsRegistryClient::from_path(&base).unwrap();
         let result = client.resolve_skill("nonexistent");
         assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("not found in skill metadata catalog"));
+    }
+
+    #[test]
+    fn test_select_skill_entry_prefers_local_source() {
+        let entries = vec![
+            SkillCatalogEntry {
+                name: "tdd".to_string(),
+                source: SkillSource::Public,
+                description: "public".to_string(),
+                tags: vec!["public".to_string()],
+                local_path: None,
+                source_url: Some("https://example.com/public".to_string()),
+            },
+            SkillCatalogEntry {
+                name: "tdd".to_string(),
+                source: SkillSource::Local,
+                description: "local".to_string(),
+                tags: vec!["local".to_string()],
+                local_path: Some("skills/tdd.md".to_string()),
+                source_url: None,
+            },
+        ];
+
+        let selected = select_skill_entry("tdd", &entries).unwrap();
+        assert_eq!(selected.source, SkillSource::Local);
+    }
+
+    #[test]
+    fn test_github_tree_to_raw_base() {
+        let url = "https://github.com/anthropics/skills/tree/main/skills/frontend-design";
+        let raw = github_tree_or_blob_to_raw_base(url).unwrap();
+        assert_eq!(
+            raw,
+            "https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design"
+        );
     }
 
     #[test]
