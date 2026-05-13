@@ -22,6 +22,7 @@ pub struct Sandbox {
     project_mount: Option<ProjectMount>,
     gateway: Option<gateway::GatewayClient>,
     ssh_port: Option<u16>,
+    ssh_host: Option<String>,
     ssh_key_path: Option<PathBuf>,
 }
 
@@ -47,6 +48,7 @@ impl Sandbox {
             project_mount,
             gateway: None,
             ssh_port: None,
+            ssh_host: None,
             ssh_key_path: None,
         })
     }
@@ -77,6 +79,7 @@ impl Sandbox {
             project_mount,
             gateway: None,
             ssh_port: None,
+            ssh_host: None,
             ssh_key_path: None,
         })
     }
@@ -91,6 +94,7 @@ impl Sandbox {
             project_mount: None,
             gateway: None,
             ssh_port: None,
+            ssh_host: None,
             ssh_key_path: None,
         }
     }
@@ -134,6 +138,13 @@ impl Sandbox {
     /// SSH port for connecting to the sandbox, if available.
     pub fn ssh_port(&self) -> Option<u16> {
         self.ssh_port
+    }
+
+    /// SSH host for connecting to the sandbox.
+    /// On Windows with HCN NAT, this is the guest's IP address.
+    /// On other platforms (or HvSocket fallback), this is None (use 127.0.0.1).
+    pub fn ssh_host(&self) -> Option<String> {
+        self.ssh_host.clone()
     }
 
     /// Path to the SSH private key for this sandbox, if available.
@@ -273,34 +284,35 @@ impl Sandbox {
 
             #[cfg(target_os = "windows")]
             {
-                // On Windows, all host↔guest communication uses HvSocket (AF_HYPERV),
-                // bypassing HCN NAT TCP convergence delay (~60s).
                 if let Some(ref rt) = self.inner.runtime_ref() {
+                    let guest_ip = rt.guest_ip(self.inner.id());
+
+                    if let Some(ref ip) = guest_ip {
+                        // TCP path via HCN NAT: connect directly to the guest IP.
+                        // This uses the standard Windows TCP/IP stack which is
+                        // reliable — no HvSocket ring buffer deadlocks.
+                        gateway_addr = Some(format!("{}:8080", ip));
+                        self.ssh_port = Some(22);
+                        self.ssh_host = Some(ip.clone());
+                        info!("Gateway: TCP via {}, SSH: TCP via {}:22", ip, ip);
+                    } else {
+                        return Err(runtime::Error::SandboxCreationFailed(
+                            "Guest IP not available — HCN NAT networking required".to_string()
+                        ));
+                    }
+
+                    // DNS + TCP outbound proxies are still needed for guest→internet.
                     if let Some(vm_id) = rt.hcs_vm_id(self.inner.id()) {
-                        gateway_addr = Some("127.0.0.1:8080".to_string());
-
-                        // SSH: TCP→HvSocket proxy (host binds random port, forwards via HvSocket to guest:22)
-                        let port = gateway::hvsocket::start_ssh_proxy(&vm_id)
-                            .map_err(|e| runtime::Error::SandboxCreationFailed(
-                                format!("Failed to start SSH HvSocket proxy: {}", e)
-                            ))?;
-                        self.ssh_port = Some(port);
-                        info!("Gateway: HvSocket, SSH: HvSocket via 127.0.0.1:{}", port);
-
-                        // DNS relay: guest vsock 50053 → 8.8.8.8:53
                         gateway::hvsocket::start_dns_proxy(&vm_id)
                             .map_err(|e| runtime::Error::SandboxCreationFailed(
-                                format!("Failed to start DNS HvSocket proxy: {}", e)
+                                format!("Failed to start DNS proxy: {}", e)
                             ))?;
 
-                        // TCP connect relay: guest vsock 50080 → internet
                         gateway::hvsocket::start_tcp_proxy(&vm_id)
                             .map_err(|e| runtime::Error::SandboxCreationFailed(
-                                format!("Failed to start TCP HvSocket proxy: {}", e)
+                                format!("Failed to start TCP proxy: {}", e)
                             ))?;
 
-                        // Dynamic inbound port forwarders for user-requested port mappings
-                        // (excluding 8080/22 which have dedicated paths).
                         for mapping in &self.inner.config().network.port_mappings {
                             if mapping.container_port == 8080 || mapping.container_port == 22 {
                                 continue;

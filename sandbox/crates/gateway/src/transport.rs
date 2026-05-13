@@ -32,14 +32,7 @@ impl Transport {
 
     /// Check if the transport has a valid gateway endpoint.
     pub fn is_available(&self) -> bool {
-        #[cfg(target_os = "windows")]
-        {
-            return self.hcs_vm_id.is_some();
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            self.gateway_addr.is_some()
-        }
+        self.gateway_addr.is_some()
     }
 
     /// Get the gateway TCP address.
@@ -63,47 +56,20 @@ impl Transport {
 
     /// HTTP GET to the gateway.
     pub fn http_get(&self, path: &str) -> Result<(u16, String)> {
-        #[cfg(target_os = "windows")]
-        {
-            let vm_id = self.hcs_vm_id.as_ref().ok_or(Error::NotAvailable)?;
-            return crate::http::http_get_hvsocket(vm_id, path)
-                .map_err(Error::HttpFailed);
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let addr = self.require_addr()?;
-            crate::http::http_get(addr, path).map_err(Error::HttpFailed)
-        }
+        let addr = self.gateway_addr.as_ref().ok_or(Error::NotAvailable)?;
+        crate::http::http_get(addr, path).map_err(Error::HttpFailed)
     }
 
     /// HTTP POST to the gateway.
     pub fn http_post(&self, path: &str, json_body: &str) -> Result<(u16, String)> {
-        #[cfg(target_os = "windows")]
-        {
-            let vm_id = self.hcs_vm_id.as_ref().ok_or(Error::NotAvailable)?;
-            return crate::http::http_post_hvsocket(vm_id, path, json_body)
-                .map_err(Error::HttpFailed);
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let addr = self.require_addr()?;
-            crate::http::http_post(addr, path, json_body).map_err(Error::HttpFailed)
-        }
+        let addr = self.gateway_addr.as_ref().ok_or(Error::NotAvailable)?;
+        crate::http::http_post(addr, path, json_body).map_err(Error::HttpFailed)
     }
 
     /// HTTP DELETE to the gateway.
     pub fn http_delete(&self, path: &str) -> Result<(u16, String)> {
-        #[cfg(target_os = "windows")]
-        {
-            let vm_id = self.hcs_vm_id.as_ref().ok_or(Error::NotAvailable)?;
-            return crate::http::http_delete_hvsocket(vm_id, path)
-                .map_err(Error::HttpFailed);
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let addr = self.require_addr()?;
-            crate::http::http_delete(addr, path).map_err(Error::HttpFailed)
-        }
+        let addr = self.gateway_addr.as_ref().ok_or(Error::NotAvailable)?;
+        crate::http::http_delete(addr, path).map_err(Error::HttpFailed)
     }
 
     /// HTTP POST with SSE streaming to the gateway.
@@ -111,17 +77,8 @@ impl Transport {
     where
         F: Fn(&str, bool) + Send + Sync,
     {
-        #[cfg(target_os = "windows")]
-        {
-            let vm_id = self.hcs_vm_id.as_ref().ok_or(Error::NotAvailable)?;
-            return crate::http::http_post_sse_hvsocket(vm_id, path, json_body, &on_output)
-                .map_err(Error::HttpFailed);
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let addr = self.require_addr()?;
-            crate::http::http_post_sse(addr, path, json_body, on_output)
-                .map_err(Error::HttpFailed)
-        }
+        let addr = self.gateway_addr.as_ref().ok_or(Error::NotAvailable)?;
+        crate::http::http_post_sse(addr, path, json_body, on_output)
+            .map_err(Error::HttpFailed)
     }
 }
