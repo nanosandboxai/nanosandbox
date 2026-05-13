@@ -160,6 +160,21 @@ impl HvSocketStream {
             return Err(io::Error::last_os_error());
         }
 
+        // Increase HvSocket VMBus ring buffer sizes from the default 24KB
+        // to the maximum 256KB.  The ring buffer size is derived from
+        // SO_SNDBUF/SO_RCVBUF on Windows 10 v5+ hosts.  Larger buffers
+        // reduce the chance of a backpressure deadlock where both
+        // directions fill their tiny ring buffers simultaneously.
+        const HVSOCK_BUF_SIZE: u32 = 262144; // 256KB (max supported)
+        const SO_SNDBUF: i32 = 0x1001;
+        const SO_RCVBUF: i32 = 0x1002;
+        unsafe {
+            setsockopt(sock, SOL_SOCKET, SO_SNDBUF,
+                &HVSOCK_BUF_SIZE as *const u32 as *const u8, 4);
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                &HVSOCK_BUF_SIZE as *const u32 as *const u8, 4);
+        }
+
         // Set send/recv timeouts BEFORE connect() so the connect call itself
         // is bounded. Without this, connect() can hang forever if the guest
         // vsock listener isn't ready.

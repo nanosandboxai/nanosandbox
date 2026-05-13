@@ -1192,12 +1192,35 @@ pub fn build_microvm(
             .find(|cfg| cfg.fs_id == "/dev/root")
             .map(|cfg| std::path::PathBuf::from(&cfg.shared_dir));
 
-        // HCN NAT is removed — all networking goes through HvSocket proxies.
-        // Guest DNS → vsock 50053 → host DNS relay → 8.8.8.8
-        // Guest TCP → iptables REDIRECT → vsock 50080 → host TCP relay → internet
-        // No net_config needed — init scripts configure resolv.conf and iptables directly.
-        let hcn_networking: Option<hcs::hcn::HcnNetworking> = None;
-        let net_config: Option<hcs::initrd::NetConfig> = None;
+        // HCN NAT networking: creates a NAT network with a guest IP so that
+        // SSH and gateway HTTP use reliable TCP instead of HvSocket (which
+        // suffers from VMBus ring buffer deadlocks).  Guest outbound
+        // networking (DNS, TCP) still uses HvSocket vsock proxies.
+        eprintln!("hcs: setting up HCN NAT networking...");
+        let port_map = std::collections::HashMap::new();
+        // No port mappings needed — we connect directly to guest_ip:22 and
+        // guest_ip:8080 via HCN NAT routing (no portproxy needed).
+        let hcn_networking = match hcs::hcn::HcnNetworking::create(&port_map) {
+            Ok(hcn) => {
+                eprintln!("hcs: HCN NAT ready, guest IP: {}", hcn.guest_ip());
+                Some(hcn)
+            }
+            Err(e) => {
+                eprintln!("hcs: HCN NAT setup FAILED: {}", e);
+                None
+            }
+        };
+        // Provide guest-side NIC config in the initrd so the HCN endpoint IP is
+        // actually configured inside the VM (eth0). Without this, host->guest TCP
+        // to guest_ip:22/8080 can time out even though the endpoint exists.
+        let net_config: Option<hcs::initrd::NetConfig> = hcn_networking.as_ref().map(|hcn| {
+            hcs::initrd::NetConfig {
+                ip: hcn.guest_ip().to_string(),
+                prefix_len: hcn.prefix_len(),
+                gateway: hcn.gateway_ip().to_string(),
+                dns: Vec::new(),
+            }
+        });
 
         // Rootfs is always served via HCS Plan 9 share (vsock 9P).
         // VHDX mode was removed — Plan 9 is the only supported path on Windows.

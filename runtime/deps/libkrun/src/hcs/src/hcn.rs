@@ -8,7 +8,7 @@
 //! guest services (like agent-gateway on port 8080) are reachable
 //! from the host.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ptr;
 
 use log::{error, info, warn};
@@ -279,7 +279,7 @@ impl HcnNetworking {
         cleanup_stale_endpoints(&network_guid);
 
         // Allocate a unique guest IP from the 172.28.0.0/16 subnet.
-        let guest_ip = allocate_guest_ip();
+        let guest_ip = allocate_guest_ip_with_retries(4);
         info!("hcn: allocated guest IP: {}", guest_ip);
 
         // Build port mapping policies for the endpoint.
@@ -402,7 +402,7 @@ impl HcnNetworking {
             }
         };
 
-        let guest_ip = allocate_guest_ip();
+        let guest_ip = allocate_guest_ip_with_retries(4);
         info!("hcn: allocated guest IP (minimal): {}", guest_ip);
 
         let endpoint_settings = serde_json::json!({
@@ -573,15 +573,16 @@ fn create_endpoint(
     Ok(handle)
 }
 
-/// Allocate a unique guest IP address from the 172.28.0.0/16 subnet.
-///
-/// Enumerates existing HCN endpoints, queries each for its actual IP via
-/// `HcnQueryEndpointProperties`, then picks the first unused address
-/// starting from 172.28.0.2.
-fn allocate_guest_ip() -> String {
+fn allocate_guest_ip_excluding(excluded_ips: &HashSet<String>) -> String {
     let used_ips = enumerate_endpoint_ips();
-    if !used_ips.is_empty() {
-        info!("hcn: IPs currently in use: {:?}", used_ips);
+    if !used_ips.is_empty() || !excluded_ips.is_empty() {
+        info!(
+            "hcn: IPs currently in use ({}): {:?}; excluded ({}): {:?}",
+            used_ips.len(),
+            used_ips,
+            excluded_ips.len(),
+            excluded_ips
+        );
     }
 
     // Start from .2 (gateway is .1)
@@ -589,20 +590,49 @@ fn allocate_guest_ip() -> String {
         let start = if high == 0 { 2u16 } else { 1 };
         for low in start..=254 {
             let candidate = format!("172.28.{}.{}", high, low);
-            if !used_ips.contains(&candidate) {
+            if !used_ips.contains(&candidate) && !excluded_ips.contains(&candidate) {
+                info!("hcn: selected guest IP candidate: {}", candidate);
                 return candidate;
             }
         }
     }
 
     // Extremely unlikely: all 65000+ IPs in use.
+    warn!("hcn: guest IP space appears exhausted; falling back to 172.28.0.2");
     "172.28.0.2".to_string()
+}
+
+fn allocate_guest_ip_with_retries(max_attempts: usize) -> String {
+    let mut excluded_ips = HashSet::new();
+
+    for attempt in 1..=max_attempts {
+        let candidate = allocate_guest_ip_excluding(&excluded_ips);
+        let still_used = enumerate_endpoint_ips();
+        if still_used.contains(&candidate) {
+            warn!(
+                "hcn: guest IP candidate {} already in use on attempt {}/{}; retrying",
+                candidate,
+                attempt,
+                max_attempts
+            );
+            excluded_ips.insert(candidate);
+            continue;
+        }
+
+        return candidate;
+    }
+
+    warn!(
+        "hcn: failed to allocate a stable guest IP after {} attempts; using best effort",
+        max_attempts
+    );
+    allocate_guest_ip_excluding(&excluded_ips)
 }
 
 /// Enumerate all HCN endpoints and extract their actual IP addresses
 /// by querying each endpoint's properties via `HcnQueryEndpointProperties`.
-fn enumerate_endpoint_ips() -> std::collections::HashSet<String> {
-    let mut ips = std::collections::HashSet::new();
+fn enumerate_endpoint_ips() -> HashSet<String> {
+    let mut ips = HashSet::new();
 
     let endpoint_ids = enumerate_endpoint_guids();
 
@@ -759,12 +789,41 @@ fn cleanup_stale_endpoints(_network_id: &Guid) {
             continue;
         }
 
-        // Delete all endpoints belonging to our network. After a force-kill
-        // the HCN State/HostComputeSystem fields may remain stale, so we
-        // cannot reliably detect orphaned endpoints. Since we create fresh
-        // endpoints for each VM, it's safe to clean them all up on startup.
+        // Only delete endpoints we can confidently identify as stale.
+        // Never delete live/in-progress endpoints here, otherwise a new VM
+        // startup can disrupt another sandbox that is still running.
+        let state = props.get("State").and_then(|v| v.as_u64());
+        let has_compute_system = ["HostComputeSystem", "ComputeSystem", "VirtualMachine"]
+            .iter()
+            .any(|field| {
+                props
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
+            });
+
+        // HCN states vary by Windows build. Be conservative:
+        // - keep endpoint if it has a backing compute system reference
+        // - keep endpoint unless state is explicitly 0 (not attached)
+        let definitely_stale = state == Some(0) && !has_compute_system;
+        if !definitely_stale {
+            info!(
+                "hcn: keeping endpoint {} (state={:?}, has_compute_system={})",
+                ep_id_str,
+                state,
+                has_compute_system
+            );
+            continue;
+        }
+
         if let Ok(()) = delete_endpoint(&ep_guid) {
-            info!("hcn: cleaned up stale endpoint {}", ep_id_str);
+            info!(
+                "hcn: cleaned up stale endpoint {} (state={:?}, has_compute_system={})",
+                ep_id_str,
+                state,
+                has_compute_system
+            );
         }
     }
 }

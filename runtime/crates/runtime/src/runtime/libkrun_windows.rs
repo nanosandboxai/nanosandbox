@@ -567,9 +567,9 @@ impl LibkrunRuntime {
                         } else if let Some(vid) = l.strip_prefix("NANOSB_HCS_VM_ID=") {
                             hcs_vm_id = Some(vid.trim().to_string());
                         }
-                        // Stop once we have HCS VM ID (needed for HvSocket — primary path),
-                        // or all three values (HCN networking path).
-                        if hcs_vm_id.is_some() {
+                        // Stop once we have both VM ID and guest IP.
+                        // Guest IP is needed for TCP networking.
+                        if hcs_vm_id.is_some() && guest_ip.is_some() {
                             break;
                         }
                     }

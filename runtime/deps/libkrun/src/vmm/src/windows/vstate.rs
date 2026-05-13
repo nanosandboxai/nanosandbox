@@ -407,6 +407,12 @@ impl Vcpu {
             }
         }
 
+        // Output guest IP so the parent process can connect via TCP.
+        if let Some(ref hcn) = self.hcn_networking {
+            println!("NANOSB_GUEST_IP={}", hcn.guest_ip());
+            println!("NANOSB_ENDPOINT_ID={}", hcn.endpoint_id_string());
+        }
+
         // Wait for the VM to exit.
         let wait_start = std::time::Instant::now();
         match vm.wait() {

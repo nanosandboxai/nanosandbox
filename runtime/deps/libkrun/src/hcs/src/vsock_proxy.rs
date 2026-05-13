@@ -117,8 +117,10 @@ fn write_str(s: &str) {
 }
 
 /// Proxy data between two fds until one side closes.
+/// Uses a 64KB buffer to match the increased HvSocket ring buffer sizes
+/// and reduce syscall overhead during heavy SSH traffic.
 fn proxy_fds(a: i32, b: i32) {
-    let mut buf = [0u8; 8192];
+    let mut buf = [0u8; 65536];
     loop {
         let n = unsafe { read(a, buf.as_mut_ptr(), buf.len()) };
         if n <= 0 {
@@ -160,7 +162,23 @@ fn connect_tcp(tcp_port: u16) -> i32 {
         return -1;
     }
     set_tcp_nodelay(sock);
+    set_large_buffers(sock);
     sock
+}
+
+/// Increase socket buffer sizes to reduce backpressure deadlocks.
+/// On HvSocket/vsock the kernel maps SO_SNDBUF/SO_RCVBUF to the
+/// underlying VMBus ring buffer size (up to 256KB on Win10 v5+).
+fn set_large_buffers(fd: i32) {
+    const SO_SNDBUF: i32 = 7;  // Linux SOL_SOCKET SO_SNDBUF
+    const SO_RCVBUF: i32 = 8;  // Linux SOL_SOCKET SO_RCVBUF
+    let size: i32 = 262144; // 256KB
+    unsafe {
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF,
+            &size as *const i32 as *const c_void, 4);
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF,
+            &size as *const i32 as *const c_void, 4);
+    }
 }
 
 fn connect_vsock(port: u32) -> i32 {
@@ -168,6 +186,9 @@ fn connect_vsock(port: u32) -> i32 {
     if sock < 0 {
         return -1;
     }
+
+    // Increase ring buffer sizes before connect.
+    set_large_buffers(sock);
 
     let addr = SockaddrVm {
         svm_family: AF_VSOCK as u16,
@@ -211,6 +232,9 @@ fn run_inbound_proxy(vsock_port: u32, tcp_port: u16) -> ! {
             4,
         );
     }
+    // Pre-set large buffers on the listener — inherited by accepted sockets
+    // on some kernels.
+    set_large_buffers(srv);
 
     let addr = SockaddrVm {
         svm_family: AF_VSOCK as u16,
@@ -243,6 +267,9 @@ fn run_inbound_proxy(vsock_port: u32, tcp_port: u16) -> ! {
         if client < 0 {
             continue;
         }
+
+        // Increase ring buffer sizes on the accepted vsock connection.
+        set_large_buffers(client);
 
         let backend = connect_tcp(tcp_port);
         if backend < 0 {
