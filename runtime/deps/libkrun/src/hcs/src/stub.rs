@@ -42,23 +42,10 @@ pub struct VmConfig {
     pub cmdline: String,
     pub memory_mb: u32,
     pub cpu_count: u32,
-    pub plan9_shares: Vec<Plan9Share>,
     pub network_adapter: Option<NetworkAdapterConfig>,
-    pub scsi_disks: Vec<ScsiDisk>,
 }
 
 pub struct NetworkAdapterConfig {
     pub endpoint_id: String,
 }
 
-pub struct ScsiDisk {
-    pub path: PathBuf,
-    pub read_only: bool,
-}
-
-pub struct Plan9Share {
-    pub name: String,
-    pub host_path: PathBuf,
-    pub access_name: String,
-    pub port: u32,
-}

@@ -40,11 +40,18 @@ pub struct SandboxConfig {
     #[serde(default = "default_timeout")]
     pub timeout_secs: u32,
 
+    /// Run agent commands as root user inside the guest.
+    ///
+    /// Accepts both snake_case (`run_as_root`) and camelCase (`runAsRoot`)
+    /// in serialized config formats.
+    #[serde(default, alias = "runAsRoot")]
+    pub run_as_root: bool,
+
     /// Optional project mount configuration.
     #[serde(default)]
     pub project: Option<ProjectConfig>,
 
-    /// SSH public key to pass via kernel cmdline for 9P mode.
+    /// SSH public key to pass via kernel cmdline for FUSE mode.
     /// Set internally by the sandbox layer; not exposed to users.
     #[serde(default, skip_serializing)]
     pub ssh_pubkey: Option<String>,
@@ -89,6 +96,7 @@ impl Default for SandboxConfig {
             network: NetworkConfig::default(),
             workdir: default_workdir(),
             timeout_secs: default_timeout(),
+            run_as_root: false,
             project: None,
             ssh_pubkey: None,
             command: None,
@@ -217,6 +225,12 @@ impl SandboxConfigBuilder {
     /// Set the timeout
     pub fn timeout_secs(mut self, timeout: u32) -> Self {
         self.config.timeout_secs = timeout;
+        self
+    }
+
+    /// Set whether agent commands run as root in guest.
+    pub fn run_as_root(mut self, run_as_root: bool) -> Self {
+        self.config.run_as_root = run_as_root;
         self
     }
 

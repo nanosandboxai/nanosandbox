@@ -39,26 +39,10 @@ impl fmt::Display for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Configuration for a Plan9 filesystem share.
-pub struct Plan9Share {
-    pub name: String,
-    pub host_path: PathBuf,
-    pub access_name: String,
-    pub port: u32,
-}
-
 /// Network adapter configuration for an HCS VM.
 pub struct NetworkAdapterConfig {
     /// HCN endpoint ID (GUID string like `{XXXXXXXX-...}`).
     pub endpoint_id: String,
-}
-
-/// SCSI virtual disk configuration.
-pub struct ScsiDisk {
-    /// Path to the virtual disk file on the host.
-    pub path: PathBuf,
-    /// Read-only attachment.
-    pub read_only: bool,
 }
 
 /// Configuration for an HCS virtual machine.
@@ -68,11 +52,8 @@ pub struct VmConfig {
     pub cmdline: String,
     pub memory_mb: u32,
     pub cpu_count: u32,
-    pub plan9_shares: Vec<Plan9Share>,
     /// Optional network adapter (HCN endpoint).
     pub network_adapter: Option<NetworkAdapterConfig>,
-    /// SCSI virtual disks (appear as /dev/sda, /dev/sdb, etc. in guest).
-    pub scsi_disks: Vec<ScsiDisk>,
     /// Enable HvSocket for direct host↔guest communication (bypasses HCN NAT).
     pub enable_hvsocket: bool,
 }
@@ -87,19 +68,6 @@ impl VmConfig {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let shares: Vec<serde_json::Value> = self
-            .plan9_shares
-            .iter()
-            .map(|s| {
-                json!({
-                    "Name": s.name,
-                    "Path": s.host_path.to_string_lossy().to_string(),
-                    "AccessName": s.access_name,
-                    "Port": s.port
-                })
-            })
-            .collect();
-
         let pipe_name = format!("\\\\.\\pipe\\libkrun-console-{}", std::process::id());
 
         let mut devices = json!({
@@ -107,9 +75,6 @@ impl VmConfig {
                 "0": {
                     "NamedPipe": pipe_name
                 }
-            },
-            "Plan9": {
-                "Shares": shares
             }
         });
 
@@ -126,59 +91,45 @@ impl VmConfig {
         // This allows the host to connect to AF_VSOCK listeners in the guest,
         // bypassing HCN NAT which has a ~60s TCP convergence delay.
         if self.enable_hvsocket {
+            const HVSOCK_FUSE_WORKSPACE_BASE_PORT: u32 = 50010;
+            const HVSOCK_FUSE_WORKSPACE_MAX_SHARES: u32 = 16;
+
             // ServiceTable entries are required for HCS to actually route
             // AF_HYPERV connections to the guest's AF_VSOCK listeners.
+            // Port 50000 (FUSE rootfs)    = GUID 0000C350-FACB-11E6-BD58-64006A7986D3
             // Port 50001 (gateway)        = GUID 0000C351-FACB-11E6-BD58-64006A7986D3
+            // Port 50002 (FUSE blobs)     = GUID 0000C352-FACB-11E6-BD58-64006A7986D3
             // Port 50022 (SSH)            = GUID 0000C366-FACB-11E6-BD58-64006A7986D3
             // Port 50090 (inbound fwd)    = GUID 0000C3AA-FACB-11E6-BD58-64006A7986D3
+            // Ports 50010-50025           = FUSE workspace shares
+            let mut service_table = serde_json::Map::new();
+            let service_entry = json!({
+                "BindSecurityDescriptor": "D:P(A;;FA;;;WD)",
+                "ConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
+                "AllowWildcardBinds": true
+            });
+
+            let mut insert_port = |port: u32| {
+                service_table.insert(
+                    format!("{:08X}-FACB-11E6-BD58-64006A7986D3", port),
+                    service_entry.clone(),
+                );
+            };
+
+            insert_port(50000);
+            insert_port(50001);
+            insert_port(50002);
+            insert_port(50022);
+            insert_port(50090);
+            for i in 0..HVSOCK_FUSE_WORKSPACE_MAX_SHARES {
+                insert_port(HVSOCK_FUSE_WORKSPACE_BASE_PORT + i);
+            }
+
             devices["HvSocket"] = json!({
                 "HvSocketConfig": {
                     "DefaultBindSecurityDescriptor": "D:P(A;;FA;;;WD)",
                     "DefaultConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                    "ServiceTable": {
-                        "0000C351-FACB-11E6-BD58-64006A7986D3": {
-                            "BindSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "ConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "AllowWildcardBinds": true
-                        },
-                        "0000C366-FACB-11E6-BD58-64006A7986D3": {
-                            "BindSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "ConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "AllowWildcardBinds": true
-                        },
-                        "0000C3AA-FACB-11E6-BD58-64006A7986D3": {
-                            "BindSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "ConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "AllowWildcardBinds": true
-                        },
-                        "0000C3A5-FACB-11E6-BD58-64006A7986D3": {
-                            "BindSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "ConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "AllowWildcardBinds": true
-                        },
-                        "0000C3B0-FACB-11E6-BD58-64006A7986D3": {
-                            "BindSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "ConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
-                            "AllowWildcardBinds": true
-                        }
-                    }
-                }
-            });
-        }
-
-        // Add SCSI disks if configured
-        if !self.scsi_disks.is_empty() {
-            let mut attachments = serde_json::Map::new();
-            for (i, disk) in self.scsi_disks.iter().enumerate() {
-                attachments.insert(i.to_string(), json!({
-                    "Type": "VirtualDisk",
-                    "Path": disk.path.to_string_lossy().to_string(),
-                    "ReadOnly": disk.read_only
-                }));
-            }
-            devices["Scsi"] = json!({
-                "primary": {
-                    "Attachments": attachments
+                    "ServiceTable": service_table
                 }
             });
         }

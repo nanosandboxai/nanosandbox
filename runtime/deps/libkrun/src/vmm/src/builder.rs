@@ -639,8 +639,6 @@ fn boot_speed_flags() -> &'static str {
     }
 }
 
-/// Pre-create the base VHDX for a rootfs directory, if not already cached.
-///
 /// Grant the Hyper-V Virtual Machines security principal full access to a directory.
 ///
 /// HCS runs VM worker processes (`vmwp.exe`) under `NT VIRTUAL MACHINE\Virtual Machines`,
@@ -1182,10 +1180,15 @@ pub fn build_microvm(
             }
         };
 
-        // On Windows/HCS, the rootfs is shared via Plan9 (9p) and a minimal
-        // boot initrd (busybox + init.krun) mounts it. This avoids packing the
-        // entire rootfs into the initrd, which doesn't scale for large images
-        // (the WSL2 kernel's initramfs unpacker can't handle >500MB).
+        // On Windows/HCS, the rootfs is shared via a FUSE server over HvSocket/vsock.
+        // A host-side FUSE server (Server<PassthroughFs>) runs in a background thread
+        // and serves the rootfs directory to the guest via the FUSE protocol. The guest
+        // runs fuse_mount which bridges /dev/fuse ↔ vsock to the host server.
+        //
+        // The FUSE approach provides:
+        //   - Correct symlink and permission handling (no NTFS artifacts)
+        //   - Unified filesystem protocol with Linux/macOS (virtio-fs FUSE)
+        //   - Better performance (direct FUSE passthrough)
         let rootfs_path = vm_resources
             .fs
             .iter()
@@ -1222,27 +1225,26 @@ pub fn build_microvm(
             }
         });
 
-        // Rootfs is always served via HCS Plan 9 share (vsock 9P).
-        // VHDX mode was removed — Plan 9 is the only supported path on Windows.
-        let (initrd_path, scsi_disks, plan9_shares, memory_mb, hcs_cmdline) = if let Some(ref rootfs) = rootfs_path {
+        // Rootfs is served via a FUSE server over HvSocket (vsock port 50000).
+        let (initrd_path, memory_mb, hcs_cmdline) = if let Some(ref rootfs) = rootfs_path {
             let real_rootfs = resolve_rootfs_path(rootfs);
             let mem = vm_resources
                 .vm_config()
                 .mem_size_mib
                 .ok_or(StartMicrovmError::MissingMemSizeConfig)? as u32;
 
-            eprintln!("hcs: rootfs mode = plan9 (HCS 9P share)");
+            eprintln!("hcs: rootfs mode = fuse (FUSE over HvSocket)");
 
-            // Build a minimal initrd (busybox + init script that mounts 9p)
+            // Build a minimal initrd (busybox + init script that mounts FUSE)
             let initrd = hcs::initrd::generate_boot_initrd(
                 exec_config.as_ref(),
                 net_config.as_ref(),
             ).map_err(|e| StartMicrovmError::KernelCmdline(
-                format!("Plan9 initrd generation failed: {e}")
+                format!("FUSE initrd generation failed: {e}")
             ))?;
-            eprintln!("hcs: plan9 initrd: {}", initrd.display());
+            eprintln!("hcs: fuse initrd: {}", initrd.display());
 
-            // Convert rootfs path to Windows path for HCS Plan9 share
+            // Convert rootfs path to Windows path
             let rootfs_host_path = {
                 let p = std::fs::canonicalize(&real_rootfs)
                     .unwrap_or_else(|_| real_rootfs.clone());
@@ -1259,51 +1261,16 @@ pub fn build_microvm(
 
             // In-guest extraction mode: if the host wrote a `.nanosb-layers`
             // manifest into the rootfs share, the rootfs holds only metadata
-            // (manifest + thin overlay files) and the OCI layer tars must be
-            // shared from the blobs cache so plan9_mount can extract them
-            // into a tmpfs rootfs inside the guest.
+            // and the OCI layer tars must be shared from the blobs cache so
+            // fuse_mount can extract them into a tmpfs rootfs inside the guest.
             let manifest_path = real_rootfs.join(".nanosb-layers");
             let extract_layers = manifest_path.exists();
 
-            let mut shares = vec![hcs::Plan9Share {
-                name: "rootfs".to_string(),
-                host_path: rootfs_host_path,
-                access_name: "rootfs".to_string(),
-                port: 50000,
-            }];
-
             if extract_layers {
-                if let Ok(home) = std::env::var("USERPROFILE") {
-                    let blobs_dir = std::path::PathBuf::from(home)
-                        .join(".nanosandbox")
-                        .join("blobs")
-                        .join("sha256");
-                    if blobs_dir.exists() {
-                        let blobs_host_path = std::fs::canonicalize(&blobs_dir)
-                            .unwrap_or(blobs_dir.clone());
-                        let blobs_host_path = {
-                            let s = blobs_host_path.to_string_lossy();
-                            if let Some(stripped) = s.strip_prefix(r"\\?\") {
-                                std::path::PathBuf::from(stripped)
-                            } else {
-                                blobs_host_path
-                            }
-                        };
-                        grant_hyper_v_access(&blobs_host_path);
-                        shares.push(hcs::Plan9Share {
-                            name: "blobs".to_string(),
-                            host_path: blobs_host_path,
-                            access_name: "blobs".to_string(),
-                            port: 50002,
-                        });
-                        eprintln!("hcs: in-guest extraction enabled, blobs share at port 50002");
-                    } else {
-                        eprintln!("hcs: WARNING: .nanosb-layers manifest present but blobs dir not found at {}", blobs_dir.display());
-                    }
-                }
+                eprintln!("hcs: in-guest extraction enabled, blobs FUSE server on port 50002");
             }
 
-            // rdinit=/init.krun: exec /init.krun from initramfs (the 9p mount script).
+            // rdinit=/init.krun: exec /init.krun from initramfs (the FUSE mount script).
             // Without this, the kernel tries to find a root block device and panics.
             let extract_flag = if extract_layers { " nanosb.extract_layers=1" } else { "" };
             let cmdline = format!(
@@ -1315,7 +1282,7 @@ pub fn build_microvm(
             );
 
             let mem = mem.max(512);
-            (Some(initrd), Vec::new(), shares, mem, cmdline)
+            (Some(initrd), mem, cmdline)
         } else {
             let mem = vm_resources
                 .vm_config()
@@ -1326,7 +1293,7 @@ pub fn build_microvm(
                  random.trust_cpu=on no_timer_check tsc=reliable 8250.nr_uarts=1 {}",
                 boot_speed_flags()
             );
-            (None, Vec::new(), Vec::new(), mem.max(2048), cmdline)
+            (None, mem.max(2048), cmdline)
         };
         let cpu_count = vcpu_config.vcpu_count as u32;
 
@@ -1336,10 +1303,20 @@ pub fn build_microvm(
         // The image's nanosb-init.sh uses this flag to:
         //   - skip eth0 / gvproxy network setup (we use vsock_proxy + iptables REDIRECT)
         //   - run agent-gateway with --skip-network-init
-        //   - apply tmpfs overlays for ssh dirs in 9P (NTFS) mode
-        // The flag name "9p_rootfs" is retained for guest-side compatibility:
-        // nanosb-init.sh keys off it to take the HCS/Plan 9 boot path.
-        hcs_cmdline.push_str(" nanosb.9p_rootfs=1");
+        //   - apply tmpfs overlays for ssh dirs in FUSE (NTFS) mode
+        hcs_cmdline.push_str(" nanosb.fuse_rootfs=1");
+
+        // Pass run-as-root mode to guest init / agent-gateway.
+        // Set by runtime (BootVmRequest.run_as_root) as NANOSB_RUN_AS_ROOT=1.
+        let run_as_root = std::env::var("NANOSB_RUN_AS_ROOT")
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false);
+        if run_as_root {
+            hcs_cmdline.push_str(" nanosb.run_as_root=1");
+        }
 
         // Append network config as nanosb.* params
         if let Some(ref net) = net_config {
@@ -1404,9 +1381,7 @@ pub fn build_microvm(
             hcs_cmdline,
             memory_mb,
             cpu_count,
-            plan9_shares,
             hcn_networking,
-            scsi_disks,
             &exit_evt,
         )
         .map_err(Error::Vcpu)

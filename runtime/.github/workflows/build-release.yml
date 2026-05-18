@@ -336,19 +336,19 @@ jobs:
           echo "=== Kernel bundle ==="
           ls -lh windows-prep/kernel-bundle/
 
-      - name: Cross-build vsock_proxy + plan9_mount (x86_64-unknown-linux-musl)
+      - name: Cross-build vsock_proxy + fuse_mount (x86_64-unknown-linux-musl)
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
-          cargo build --release -p hcs --bin vsock_proxy --bin plan9_mount \
+          cargo build --release -p hcs --bin vsock_proxy --bin fuse_mount \
             --target x86_64-unknown-linux-musl
           mkdir -p windows-prep/binaries
           cp target/x86_64-unknown-linux-musl/release/vsock_proxy \
              windows-prep/binaries/vsock_proxy
-          cp target/x86_64-unknown-linux-musl/release/plan9_mount \
-             windows-prep/binaries/plan9_mount
-          file windows-prep/binaries/vsock_proxy windows-prep/binaries/plan9_mount
-          ls -lh windows-prep/binaries/vsock_proxy windows-prep/binaries/plan9_mount
+          cp target/x86_64-unknown-linux-musl/release/fuse_mount \
+             windows-prep/binaries/fuse_mount
+          file windows-prep/binaries/vsock_proxy windows-prep/binaries/fuse_mount
+          ls -lh windows-prep/binaries/vsock_proxy windows-prep/binaries/fuse_mount
 
       - name: Download static busybox (from busybox:musl docker image)
         run: |
@@ -491,7 +491,7 @@ jobs:
         run: |
           mkdir -p dist
           cd zip-staging
-          zip -r ../dist/deps-windows-amd64.zip libkrunfw.dll vsock_proxy plan9_mount busybox
+          zip -r ../dist/deps-windows-amd64.zip libkrunfw.dll vsock_proxy fuse_mount busybox
           cd ..
           ls -lh dist/deps-windows-amd64.zip
           unzip -l dist/deps-windows-amd64.zip

@@ -55,6 +55,9 @@ pub struct BootVmRequest {
     pub dns: Vec<String>,
     /// Path to the gvproxy Unix socket (if gvproxy networking is active)
     pub gvproxy_socket: Option<String>,
+    /// Run agent processes as root inside guest.
+    #[serde(default)]
+    pub run_as_root: bool,
 }
 
 /// Entry point for the `internal-boot-vm` subprocess.
@@ -89,6 +92,10 @@ pub fn handle_boot_vm_subprocess() -> ! {
     // Enable libkrun's internal logging to stderr (captured by parent).
     // WARN level avoids the very verbose vCPU MMIO/interrupt traces from DEBUG.
     let _ = ffi::init_log(ffi::KRUN_LOG_TARGET_DEFAULT, ffi::KRUN_LOG_LEVEL_WARN);
+
+    if config.run_as_root {
+        std::env::set_var("NANOSB_RUN_AS_ROOT", "1");
+    }
 
     // Build environment variables for the VM
     let mut env = HashMap::new();
@@ -272,6 +279,8 @@ struct SandboxState {
     command: Option<String>,
     /// PID 1 command arguments.
     command_args: Vec<String>,
+    /// Run agent processes as root inside guest.
+    run_as_root: bool,
 }
 
 /// Direct libkrun FFI runtime for macOS and Linux
@@ -620,6 +629,7 @@ impl LibkrunRuntime {
             vm_pid: None,
             command: config.command.clone(),
             command_args: config.command_args.clone(),
+            run_as_root: config.run_as_root,
         };
 
         info!(
@@ -666,6 +676,7 @@ impl LibkrunRuntime {
             mounts,
             dns,
             gvproxy_socket,
+            run_as_root,
         ) = {
             let sandboxes = self.lock_sandboxes();
             let state = sandboxes
@@ -683,6 +694,7 @@ impl LibkrunRuntime {
                     .gvproxy
                     .as_ref()
                     .map(|g| g.socket_path().to_string_lossy().to_string()),
+                state.run_as_root,
             )
         };
 
@@ -704,6 +716,7 @@ impl LibkrunRuntime {
                 &mounts,
                 &dns,
                 gvproxy_socket.as_deref(),
+                run_as_root,
             )
         })
         .await
@@ -801,6 +814,7 @@ impl LibkrunRuntime {
         mounts: &[(String, String)],
         dns: &[String],
         gvproxy_socket: Option<&str>,
+        run_as_root: bool,
     ) -> std::result::Result<i32, String> {
         // Serialize VM configuration for the subprocess
         let request = BootVmRequest {
@@ -815,6 +829,7 @@ impl LibkrunRuntime {
             mounts: mounts.to_vec(),
             dns: dns.to_vec(),
             gvproxy_socket: gvproxy_socket.map(|s| s.to_string()),
+            run_as_root,
         };
 
         let config_json = serde_json::to_string(&request)

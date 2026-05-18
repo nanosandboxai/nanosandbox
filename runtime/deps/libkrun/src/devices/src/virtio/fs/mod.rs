@@ -4,7 +4,8 @@ mod filesystem;
 pub mod fuse;
 #[allow(dead_code)]
 mod multikey;
-mod server;
+pub mod server;
+pub mod socket_worker;
 mod worker;
 
 #[cfg(target_os = "linux")]

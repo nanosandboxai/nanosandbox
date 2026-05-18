@@ -155,8 +155,10 @@ impl<'a> DescriptorChainConsumer<'a> {
                 // There must be at least one element in `other` because we checked
                 // its `size` value in the call to `position` above.
                 let front = other.pop_front().expect("empty VecDeque after split");
+                // self gets the first `rem` bytes of this buffer.
                 self.buffers
-                    .push_back(front.offset(rem).map_err(Error::VolatileMemoryError)?);
+                    .push_back(front.subslice(0, rem).map_err(Error::VolatileMemoryError)?);
+                // other gets the remaining bytes after `rem`.
                 other.push_front(front.offset(rem).map_err(Error::VolatileMemoryError)?);
             }
 
@@ -188,6 +190,33 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// Construct a new Reader backed by a raw byte buffer.
+    ///
+    /// This is used for socket-based FUSE transport (e.g., virtio-fs over vsock)
+    /// where FUSE messages arrive as contiguous byte buffers rather than through
+    /// virtio descriptor chains in guest memory.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `data` remains valid and immutable for the lifetime `'a`.
+    pub fn from_buffer(data: &'a [u8]) -> Reader<'a> {
+        let mut buffers = VecDeque::with_capacity(1);
+        if !data.is_empty() {
+            // Safety: We cast away mutability but Reader only reads from the slice.
+            // The VolatileSlice is only used via the Read trait which copies data out.
+            let vs = unsafe {
+                VolatileSlice::new(data.as_ptr() as *mut u8, data.len())
+            };
+            buffers.push_back(vs);
+        }
+        Reader {
+            buffer: DescriptorChainConsumer {
+                buffers,
+                bytes_consumed: 0,
+            },
+        }
+    }
+
     /// Construct a new Reader wrapper over `desc_chain`.
     pub fn new(mem: &'a GuestMemoryMmap, chain: DescriptorChain<'a>) -> Result<Reader<'a>> {
         let mut total_len: usize = 0;
@@ -340,6 +369,33 @@ pub struct Writer<'a> {
 }
 
 impl<'a> Writer<'a> {
+    /// Construct a new Writer backed by a raw mutable byte buffer.
+    ///
+    /// This is used for socket-based FUSE transport (e.g., virtio-fs over vsock)
+    /// where FUSE responses are written into a contiguous byte buffer that will be
+    /// sent over the socket, rather than into virtio descriptor chains in guest memory.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `data` remains valid and exclusively accessible for the
+    /// lifetime `'a`.
+    pub fn from_buffer(data: &'a mut [u8]) -> Writer<'a> {
+        let mut buffers = VecDeque::with_capacity(1);
+        if !data.is_empty() {
+            // Safety: the mutable reference guarantees exclusive access for 'a.
+            let vs = unsafe {
+                VolatileSlice::new(data.as_mut_ptr(), data.len())
+            };
+            buffers.push_back(vs);
+        }
+        Writer {
+            buffer: DescriptorChainConsumer {
+                buffers,
+                bytes_consumed: 0,
+            },
+        }
+    }
+
     /// Construct a new Writer wrapper over `desc_chain`.
     pub fn new(mem: &'a GuestMemoryMmap, chain: DescriptorChain<'a>) -> Result<Writer<'a>> {
         let mut total_len: usize = 0;

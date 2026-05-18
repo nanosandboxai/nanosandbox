@@ -9,7 +9,24 @@
 //! VM's HCS identity and a service GUID derived from the vsock port number.
 
 use std::io::{self, Read, Write};
-use tracing::{debug, warn};
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use tracing::{debug, error, info, warn};
+
+use devices::virtio::fs::socket_worker;
+
+/// AF_HYPERV vsock port for FUSE rootfs server (host side).
+pub const HVSOCK_FUSE_ROOTFS_PORT: u32 = 50000;
+
+/// AF_HYPERV vsock port for optional FUSE blobs server (host side).
+pub const HVSOCK_FUSE_BLOBS_PORT: u32 = 50002;
+
+/// AF_HYPERV vsock base port for workspace FUSE servers (host side).
+pub const HVSOCK_FUSE_WORKSPACE_BASE_PORT: u32 = 50010;
+
+/// Maximum number of workspace FUSE shares exposed over HvSocket.
+pub const HVSOCK_FUSE_WORKSPACE_MAX_SHARES: u32 = 16;
 
 /// AF_HYPERV vsock proxy port for gateway HTTP (guest side).
 pub const HVSOCK_GATEWAY_PORT: u32 = 50001;
@@ -298,7 +315,13 @@ impl Drop for HvSocketStream {
 /// Registers both gateway (50001) and SSH (50022) ports.
 /// Must be run as administrator (typically during installation).
 pub fn ensure_hvsock_service_registered() {
+    register_hvsock_port(HVSOCK_FUSE_ROOTFS_PORT, "nanosandbox-fuse-rootfs");
     register_hvsock_port(HVSOCK_GATEWAY_PORT, "nanosandbox-gateway");
+    register_hvsock_port(HVSOCK_FUSE_BLOBS_PORT, "nanosandbox-fuse-blobs");
+    for i in 0..HVSOCK_FUSE_WORKSPACE_MAX_SHARES {
+        let port = HVSOCK_FUSE_WORKSPACE_BASE_PORT + i;
+        register_hvsock_port(port, "nanosandbox-fuse-workspace");
+    }
     register_hvsock_port(HVSOCK_SSH_PORT, "nanosandbox-ssh");
     register_hvsock_port(HVSOCK_DNS_PORT, "nanosandbox-dns");
     register_hvsock_port(HVSOCK_TCP_PROXY_PORT, "nanosandbox-tcp-proxy");
@@ -812,6 +835,233 @@ pub fn start_tcp_proxy(vm_id: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Start a host-side FUSE rootfs server for the given VM.
+///
+/// The guest `fuse_mount` process connects to vsock port 50000. For each
+/// accepted connection we run a FUSE protocol server backed by `root_dir`.
+pub fn start_fuse_rootfs_server(vm_id: &str, root_dir: &Path) -> io::Result<()> {
+    let root_dir = root_dir.to_string_lossy().to_string();
+    info!(
+        "FUSE rootfs: starting host server for VM '{}' on port {} (root={})",
+        vm_id,
+        HVSOCK_FUSE_ROOTFS_PORT,
+        root_dir
+    );
+
+    let listener = hvsock_listener(vm_id, HVSOCK_FUSE_ROOTFS_PORT)?;
+    debug!(
+        "FUSE rootfs: listener created on port {} for VM '{}'",
+        HVSOCK_FUSE_ROOTFS_PORT,
+        vm_id
+    );
+
+    std::thread::spawn(move || {
+        loop {
+            let client_sock = unsafe { accept(listener, std::ptr::null_mut(), std::ptr::null_mut()) };
+            if client_sock == INVALID_SOCKET || client_sock == 0 {
+                warn!("FUSE rootfs: accept failed on port {}", HVSOCK_FUSE_ROOTFS_PORT);
+                continue;
+            }
+
+            let root_dir_for_client = root_dir.clone();
+            std::thread::spawn(move || {
+                info!(
+                    "FUSE rootfs: client connected on port {}",
+                    HVSOCK_FUSE_ROOTFS_PORT
+                );
+                let stream = AcceptedHvSocket { sock: client_sock };
+                let stop = Arc::new(AtomicBool::new(false));
+                socket_worker::serve_fuse_on_stream(
+                    "rootfs",
+                    &root_dir_for_client,
+                    stream,
+                    &stop,
+                );
+                info!("FUSE rootfs: client disconnected");
+            });
+        }
+    });
+
+    Ok(())
+}
+
+/// Start a host-side blob streaming server for the given VM.
+///
+/// The guest connects to vsock port 50002 in extraction mode and sends a
+/// manifest (newline-separated layer digests, terminated by an empty line).
+/// For each digest the host sends `[8-byte LE file size][raw tar bytes]`.
+/// This is vastly faster than FUSE-over-vsock because it eliminates per-chunk
+/// round-trips and FUSE protocol overhead.
+pub fn start_fuse_blobs_server(vm_id: &str, blobs_dir: &Path) -> io::Result<()> {
+    let blobs_dir = blobs_dir.to_string_lossy().to_string();
+    info!(
+        "blob-stream: starting for VM '{}' on port {} (blobs={})",
+        vm_id,
+        HVSOCK_FUSE_BLOBS_PORT,
+        blobs_dir
+    );
+
+    let listener = hvsock_listener(vm_id, HVSOCK_FUSE_BLOBS_PORT)?;
+
+    std::thread::spawn(move || {
+        loop {
+            let client_sock = unsafe { accept(listener, std::ptr::null_mut(), std::ptr::null_mut()) };
+            if client_sock == INVALID_SOCKET || client_sock == 0 {
+                warn!("blob-stream: accept failed on port {}", HVSOCK_FUSE_BLOBS_PORT);
+                continue;
+            }
+
+            let blobs_dir_for_client = blobs_dir.clone();
+            std::thread::spawn(move || {
+                info!("blob-stream: client connected on port {}", HVSOCK_FUSE_BLOBS_PORT);
+                let mut stream = AcceptedHvSocket { sock: client_sock };
+
+                // Read manifest: newline-separated digests, terminated by empty line.
+                let mut manifest = Vec::new();
+                let mut byte = [0u8; 1];
+                loop {
+                    match stream.read(&mut byte) {
+                        Ok(1) => manifest.push(byte[0]),
+                        _ => {
+                            warn!("blob-stream: failed to read manifest");
+                            return;
+                        }
+                    }
+                    // Detect end: "\n\n"
+                    if manifest.len() >= 2
+                        && manifest[manifest.len() - 1] == b'\n'
+                        && manifest[manifest.len() - 2] == b'\n'
+                    {
+                        break;
+                    }
+                }
+
+                let manifest_str = String::from_utf8_lossy(&manifest);
+                let digests: Vec<&str> = manifest_str
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+
+                info!("blob-stream: streaming {} layers", digests.len());
+
+                for (i, digest) in digests.iter().enumerate() {
+                    let tar_path = std::path::Path::new(&blobs_dir_for_client)
+                        .join(format!("{}.tar", digest));
+
+                    let file_len = match std::fs::metadata(&tar_path) {
+                        Ok(m) => m.len(),
+                        Err(e) => {
+                            warn!("blob-stream: layer {}/{} missing {}: {}",
+                                i + 1, digests.len(), tar_path.display(), e);
+                            // Send size=0 to signal error to guest.
+                            let _ = stream.write_all(&0u64.to_le_bytes());
+                            return;
+                        }
+                    };
+
+                    // Send 8-byte LE file size.
+                    if stream.write_all(&file_len.to_le_bytes()).is_err() {
+                        warn!("blob-stream: send size failed for layer {}", i + 1);
+                        return;
+                    }
+
+                    // Stream the tar file contents in large chunks.
+                    let mut file = match std::fs::File::open(&tar_path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            warn!("blob-stream: open failed {}: {}", tar_path.display(), e);
+                            return;
+                        }
+                    };
+
+                    let mut buf = vec![0u8; 256 * 1024]; // 256 KB chunks
+                    let mut sent: u64 = 0;
+                    loop {
+                        let n = match std::io::Read::read(&mut file, &mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(e) => {
+                                warn!("blob-stream: read file error: {}", e);
+                                return;
+                            }
+                        };
+                        if stream.write_all(&buf[..n]).is_err() {
+                            warn!("blob-stream: send data failed at byte {}", sent);
+                            return;
+                        }
+                        sent += n as u64;
+                    }
+
+                    if i < 3 || i == digests.len() - 1 {
+                        info!(
+                            "blob-stream: layer {}/{} streamed ({} bytes)",
+                            i + 1,
+                            digests.len(),
+                            sent
+                        );
+                    }
+                }
+
+                info!("blob-stream: all layers streamed");
+            });
+        }
+    });
+
+    Ok(())
+}
+
+/// Start a host-side FUSE server for a workspace share on a custom port.
+///
+/// Used for additional mounts like /workspace. Each mount gets a dedicated
+/// HvSocket/vsock port (typically 50010+N) and a dedicated FUSE server rooted
+/// at the corresponding host path.
+pub fn start_fuse_workspace_server(vm_id: &str, workspace_dir: &Path, port: u32) -> io::Result<()> {
+    let workspace_dir = workspace_dir.to_string_lossy().to_string();
+    let share_name = format!("workspace-{}", port);
+
+    info!(
+        "FUSE workspace: starting host server for VM '{}' on port {} (root={})",
+        vm_id,
+        port,
+        workspace_dir
+    );
+
+    let listener = hvsock_listener(vm_id, port)?;
+    debug!(
+        "FUSE workspace: listener created on port {} for VM '{}'",
+        port,
+        vm_id
+    );
+
+    std::thread::spawn(move || {
+        loop {
+            let client_sock = unsafe { accept(listener, std::ptr::null_mut(), std::ptr::null_mut()) };
+            if client_sock == INVALID_SOCKET || client_sock == 0 {
+                warn!("FUSE workspace: accept failed on port {}", port);
+                continue;
+            }
+
+            let workspace_dir_for_client = workspace_dir.clone();
+            let share_name_for_client = share_name.clone();
+            std::thread::spawn(move || {
+                info!("FUSE workspace: client connected on port {}", port);
+                let stream = AcceptedHvSocket { sock: client_sock };
+                let stop = Arc::new(AtomicBool::new(false));
+                socket_worker::serve_fuse_on_stream(
+                    &share_name_for_client,
+                    &workspace_dir_for_client,
+                    stream,
+                    &stop,
+                );
+                info!("FUSE workspace: client disconnected on port {}", port);
+            });
+        }
+    });
+
+    Ok(())
+}
+
 // --- Helper functions for host-side HvSocket listener ---
 
 extern "system" {
@@ -860,6 +1110,45 @@ fn hvsock_listener(vm_id: &str, port: u32) -> io::Result<usize> {
         format!("{:08X}-FACB-11E6-BD58-64006A7986D3", port));
 
     Ok(sock)
+}
+
+/// Wrapper for an accepted AF_HYPERV socket that implements Read/Write.
+struct AcceptedHvSocket {
+    sock: usize,
+}
+
+impl Read for AcceptedHvSocket {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let ret = unsafe { recv(self.sock, buf.as_mut_ptr(), buf.len() as i32, 0) };
+        if ret < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(ret as usize)
+        }
+    }
+}
+
+impl Write for AcceptedHvSocket {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let ret = unsafe { send(self.sock, buf.as_ptr(), buf.len() as i32, 0) };
+        if ret < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(ret as usize)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for AcceptedHvSocket {
+    fn drop(&mut self) {
+        if unsafe { closesocket(self.sock) } != 0 {
+            error!("FUSE rootfs: closesocket failed for accepted client socket");
+        }
+    }
 }
 
 /// Receive exactly `buf.len()` bytes from an HvSocket.

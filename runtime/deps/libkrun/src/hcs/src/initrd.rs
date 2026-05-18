@@ -5,7 +5,7 @@
 //!
 //! On Linux/macOS, libkrun uses virtio-fs to share the rootfs directory with
 //! the guest kernel. On Windows, HCS doesn't support virtio-fs and the WSL
-//! kernel blocks 9p mounts, so we pack the entire rootfs into the initrd.
+//! kernel doesn't support FUSE mounts in initrd, so we pack a minimal initrd.
 //! The kernel unpacks it as the root filesystem — same result, different
 //! mechanism.
 
@@ -664,7 +664,7 @@ fi
 "#;
 
 /// Generate a minimal boot initrd (~3MB) containing only busybox, init.krun,
-/// and config files. The actual rootfs is mounted via Plan9 (9p) share.
+/// and config files. The actual rootfs is mounted via FUSE over vsock.
 ///
 /// This avoids packing the entire rootfs into the initrd, which doesn't scale
 /// for large images (the WSL2 kernel's initramfs unpacker runs out of memory
@@ -786,36 +786,27 @@ pub fn generate_boot_initrd(
             data.len()
         );
     } else {
-        info!("boot initrd: vsock_proxy not found in deps search paths, outbound networking will not work in Plan9 mode");
+        info!("boot initrd: vsock_proxy not found in deps search paths, outbound networking will not work");
     }
 
-    // Inject plan9_mount binary if available (uses AF_VSOCK for 9p mount —
-    // required because the WSL2 kernel lacks the 9pnet_hyperv transport module).
-    // Looked up via the same dep search as busybox/vsock_proxy so installed
-    // nanosb (which has no `target/` dir) finds it under ~/.nanosandbox/libs/.
-    let has_plan9_mount = if let Some(plan9_mount_src) = find_dep_bin("plan9_mount") {
-        let data = std::fs::read(&plan9_mount_src)?;
-        cpio_entry(&mut cpio, ino, 0o0100755, "bin/plan9_mount", &data, 0, 0);
+    // Inject fuse_mount binary (FUSE-over-vsock transport).
+    // fuse_mount bridges /dev/fuse with a vsock connection to the host's
+    // FUSE server (Server<PassthroughFs>).
+    if let Some(fuse_mount_src) = find_dep_bin("fuse_mount") {
+        let data = std::fs::read(&fuse_mount_src)?;
+        cpio_entry(&mut cpio, ino, 0o0100755, "bin/fuse_mount", &data, 0, 0);
         ino += 1;
         info!(
-            "boot initrd: injected plan9_mount from {} ({} bytes)",
-            plan9_mount_src.display(),
+            "boot initrd: injected fuse_mount from {} ({} bytes)",
+            fuse_mount_src.display(),
             data.len()
         );
-        true
     } else {
-        info!("boot initrd: plan9_mount not found in deps search paths, using shell-only 9p init (will likely fail on WSL kernel)");
-        false
-    };
+        info!("boot initrd: WARNING: fuse_mount not found in deps search paths, FUSE rootfs will not work");
+    }
 
-    // Inject init.krun — if plan9_mount binary is present, use it for vsock-based
-    // 9p mount; otherwise fall back to shell-based mount (requires 9pnet_hyperv).
-    let init_script = if has_plan9_mount {
-        INIT_KRUN_9P_VSOCK_SCRIPT
-    } else {
-        INIT_KRUN_9P_SCRIPT
-    };
-    cpio_entry(&mut cpio, ino, 0o0100755, "init.krun", init_script.as_bytes(), 0, 0);
+    // Inject init.krun — the FUSE vsock init script.
+    cpio_entry(&mut cpio, ino, 0o0100755, "init.krun", INIT_KRUN_FUSE_VSOCK_SCRIPT.as_bytes(), 0, 0);
     ino += 1;
 
     // Trailer
@@ -832,22 +823,27 @@ pub fn generate_boot_initrd(
     Ok(initrd_path)
 }
 
-/// Init script for 9p-rootfs mode using plan9_mount binary (vsock transport).
-/// plan9_mount connects to the HCS Plan9 service via AF_VSOCK, mounts 9p with
-/// trans=fd, chroots into the rootfs, and execs the user command.
+/// Init script for FUSE-rootfs mode using fuse_mount binary (vsock transport).
 ///
-/// Since plan9_mount chroots into /mnt after mounting, files from the initrd
+/// fuse_mount connects to the host's FUSE server via AF_VSOCK, opens /dev/fuse,
+/// mounts a FUSE filesystem at /mnt, bridges FUSE messages between /dev/fuse and
+/// vsock, chroots into the rootfs, and execs the user command.
+///
+/// The FUSE approach provides correct symlink/permission handling and good
+/// performance via direct passthrough.
+///
+/// Since fuse_mount chroots into /mnt after mounting, files from the initrd
 /// (/etc/krun/cmd) are not accessible. We read the cmd content before calling
-/// plan9_mount and pass it inline as the user_command argument.
-const INIT_KRUN_9P_VSOCK_SCRIPT: &str = r#"#!/bin/busybox sh
-# /init.krun — HCS VM init (9p rootfs mode, vsock transport)
-# Uses plan9_mount binary for AF_VSOCK-based 9p mount.
+/// fuse_mount and pass it inline as the user_command argument.
+const INIT_KRUN_FUSE_VSOCK_SCRIPT: &str = r#"#!/bin/busybox sh
+# /init.krun — HCS VM init (FUSE rootfs mode, vsock transport)
+# Uses fuse_mount binary for /dev/fuse + AF_VSOCK FUSE protocol bridge.
 
 BB=/bin/busybox
 
-$BB echo "init.krun: starting (9p vsock mode)"
+$BB echo "init.krun: starting (FUSE vsock mode)"
 
-# plan9_mount handles devtmpfs/proc/sysfs mounting internally,
+# fuse_mount handles devtmpfs/proc/sysfs mounting internally,
 # but we need to mount them first to read /etc/krun/cmd and set up networking.
 $BB mount -t proc proc /proc 2>/dev/null
 $BB mount -t sysfs sysfs /sys 2>/dev/null
@@ -873,242 +869,38 @@ if [ -f /etc/krun/net ]; then
 fi
 
 # Start vsock proxy for HvSocket host communication.
-# Must run AFTER /etc/krun/net so vsock proxy overrides DNS and routes.
 if [ -x /bin/vsock_proxy ]; then
   /bin/vsock_proxy >/dev/console 2>&1 &
   sleep 0.2
-  # Add a default route so the kernel has a path for outbound packets.
-  # Without this, connecting to external IPs returns ENETUNREACH before
-  # iptables REDIRECT can capture the packet.
   ip addr add 10.0.0.1/32 dev lo 2>/dev/null
   ip route add default via 10.0.0.1 dev lo 2>/dev/null
-  # Use iptables-nft (nftables built-in in WSL kernel; legacy iptables is modular
-  # and unavailable with nomodule). Fall back to iptables for non-WSL kernels.
   for _ipt in iptables-nft iptables; do
     if type "$_ipt" >/dev/null 2>&1; then
       "$_ipt" -t nat -A OUTPUT -p tcp ! -d 127.0.0.0/8 -j REDIRECT --to-port 1080 2>/dev/null
       break
     fi
   done
-  # Override DNS to use vsock_proxy DNS forwarder on 127.0.0.1:53.
-  # /etc/krun/net may have set nameserver to 8.8.8.8, but that's unreachable
-  # without a real network — UDP DNS can't be captured by iptables REDIRECT.
   echo "nameserver 127.0.0.1" > /etc/resolv.conf
   echo "init.krun: vsock_proxy started, DNS via 127.0.0.1, iptables REDIRECT to :1080"
 fi
 
 # Read the exec command from /etc/krun/cmd (written by initrd generator).
-# After plan9_mount chroots into the 9p rootfs, the initrd's /etc/krun/cmd
+# After fuse_mount chroots into the FUSE rootfs, the initrd's /etc/krun/cmd
 # won't be accessible, so we extract the exec line and pass it inline.
 USER_CMD="/bin/sh"
 if [ -f /etc/krun/cmd ]; then
-  # The cmd script has: cd 'dir' + exec 'prog' 'arg1' ...
-  # Extract just the exec line (last line starting with exec)
   EXEC_LINE=$(grep "^exec " /etc/krun/cmd | tail -1)
   if [ -n "$EXEC_LINE" ]; then
-    # Remove the 'exec ' prefix and single quotes to get the raw command
     USER_CMD=$(echo "$EXEC_LINE" | sed "s/^exec //; s/'//g")
   fi
 fi
 
 echo "init.krun: user command: $USER_CMD"
-echo "init.krun: launching plan9_mount (vsock port 50000)..."
+echo "init.krun: launching fuse_mount (vsock port 50000)..."
 
-# plan9_mount connects AF_VSOCK to port 50000 (HCS Plan9 server),
-# mounts 9p share "rootfs" at /mnt with trans=fd, chroots into /mnt, execs USER_CMD.
-exec /bin/plan9_mount 50000 rootfs "$USER_CMD"
-"#;
-
-/// Init script for 9p-rootfs mode. Mounts Plan9 share at /mnt, then
-/// switch_root into it and exec the command from /etc/krun/cmd.
-const INIT_KRUN_9P_SCRIPT: &str = r#"#!/bin/busybox sh
-# /init.krun — HCS VM init (9p rootfs mode)
-# Mounts the rootfs from a Plan9 share, then switch_root into it.
-
-BB=/bin/busybox
-
-$BB echo "init.krun: starting (9p rootfs mode)"
-
-# Mount essential filesystems
-$BB mount -t proc proc /proc 2>/dev/null
-$BB mount -t sysfs sysfs /sys 2>/dev/null
-$BB mount -t devtmpfs devtmpfs /dev 2>/dev/null
-$BB mount -t tmpfs tmpfs /tmp 2>/dev/null
-$BB mkdir -p /dev/pts 2>/dev/null
-$BB mount -t devpts devpts /dev/pts 2>/dev/null
-
-# Install busybox symlinks
-$BB --install -s /bin 2>/dev/null
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-# Bring up loopback (required for vsock_proxy to connect to 127.0.0.1)
-ip link set lo up 2>/dev/null
-
-# Configure DNS to use local vsock proxy
-mkdir -p /etc 2>/dev/null
-echo "nameserver 127.0.0.1" > /etc/resolv.conf
-
-# Legacy networking (HCN NAT — disabled)
-if [ -f /etc/krun/net ]; then
-  echo "init.krun: configuring legacy network"
-  . /etc/krun/net
-fi
-
-# Start vsock proxy for HvSocket host communication.
-# Must run AFTER /etc/krun/net so vsock proxy overrides DNS and routes.
-if [ -x /bin/vsock_proxy ]; then
-  /bin/vsock_proxy >/dev/console 2>&1 &
-  sleep 0.2
-  # Add a default route so the kernel has a path for outbound packets.
-  # Without this, connecting to external IPs returns ENETUNREACH before
-  # iptables REDIRECT can capture the packet.
-  ip addr add 10.0.0.1/32 dev lo 2>/dev/null
-  ip route add default via 10.0.0.1 dev lo 2>/dev/null
-  # Use iptables-nft (nftables built-in in WSL kernel; legacy iptables is modular
-  # and unavailable with nomodule). Fall back to iptables for non-WSL kernels.
-  for _ipt in iptables-nft iptables; do
-    if type "$_ipt" >/dev/null 2>&1; then
-      "$_ipt" -t nat -A OUTPUT -p tcp ! -d 127.0.0.0/8 -j REDIRECT --to-port 1080 2>/dev/null
-      break
-    fi
-  done
-  # Override DNS to use vsock_proxy DNS forwarder on 127.0.0.1:53.
-  # /etc/krun/net may have set nameserver to 8.8.8.8, but that's unreachable
-  # without a real network — UDP DNS can't be captured by iptables REDIRECT.
-  echo "nameserver 127.0.0.1" > /etc/resolv.conf
-  echo "init.krun: vsock_proxy started, DNS via 127.0.0.1, iptables REDIRECT to :1080"
-fi
-
-# Mount the rootfs via Plan9 (9p) share
-echo "init.krun: mounting 9p rootfs..."
-mkdir -p /mnt 2>/dev/null
-# Diagnostics: check available 9p transports and VMBus devices
-echo "init.krun: 9p modules:"
-ls /sys/module/9p* 2>/dev/null || echo "  (none)"
-echo "init.krun: VMBus devices:"
-ls /sys/bus/vmbus/devices/ 2>/dev/null | head -5 || echo "  (none)"
-echo "init.krun: virtio devices:"
-ls /sys/bus/virtio/devices/ 2>/dev/null | head -5 || echo "  (none)"
-
-for TRANS in hyperv virtio ""; do
-  if [ -n "$TRANS" ]; then
-    OPTS="trans=$TRANS,version=9p2000.L,msize=262144"
-  else
-    OPTS="version=9p2000.L"
-  fi
-  echo "init.krun: trying mount -t 9p -o $OPTS rootfs /mnt"
-  mount -t 9p -o "$OPTS" rootfs /mnt 2>&1
-  RC=$?
-  if [ $RC -eq 0 ]; then
-    break
-  fi
-  echo "init.krun: failed (rc=$RC)"
-done
-
-if [ $RC -ne 0 ]; then
-  echo "init.krun: ERROR - could not mount 9p rootfs"
-  echo "init.krun: available filesystems:"
-  cat /proc/filesystems 2>/dev/null
-  echo "init.krun: falling back to initrd-only mode"
-  # If /etc/krun/cmd exists in the initrd, run it directly
-  if [ -x /etc/krun/cmd ]; then
-    exec /etc/krun/cmd
-  fi
-  exec /bin/sh
-fi
-
-echo "init.krun: 9p rootfs mounted at /mnt"
-ls /mnt/ 2>/dev/null | head -5
-
-# Copy config files into the rootfs
-mkdir -p /mnt/etc/krun 2>/dev/null
-if [ -f /etc/krun/cmd ]; then
-  cp /etc/krun/cmd /mnt/etc/krun/cmd
-  chmod +x /mnt/etc/krun/cmd
-fi
-if [ -f /etc/krun/net ]; then
-  cp /etc/krun/net /mnt/etc/krun/net
-fi
-# Copy resolv.conf if we configured networking
-if [ -f /etc/resolv.conf ]; then
-  mkdir -p /mnt/etc 2>/dev/null
-  cp /etc/resolv.conf /mnt/etc/resolv.conf
-fi
-
-# Ensure /etc/hosts has localhost entries
-if [ ! -f /mnt/etc/hosts ] || ! grep -q '127.0.0.1' /mnt/etc/hosts 2>/dev/null; then
-  mkdir -p /mnt/etc 2>/dev/null
-  printf '127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost\n' > /mnt/etc/hosts
-fi
-
-# Parse kernel cmdline for SSH key
-CMDLINE=$(cat /proc/cmdline)
-get_param() {
-  local result=""
-  for word in $CMDLINE; do
-    case "$word" in
-      "$1="*) result="${word#*=}" ;;
-    esac
-  done
-  echo "$result"
-}
-
-NANOSB_SSH=$(get_param nanosb.ssh_key)
-
-# Inject SSH key (comma-separated from cmdline -> spaces)
-if [ -n "$NANOSB_SSH" ]; then
-  SSH_KEY=$(echo "$NANOSB_SSH" | tr ',' ' ')
-  for d in /mnt/root/.ssh /mnt/home/developer/.ssh; do
-    mkdir -p "$d"
-    echo "$SSH_KEY" > "$d/authorized_keys"
-    chmod 700 "$d"
-    chmod 600 "$d/authorized_keys"
-  done
-  chown -R 0:0 /mnt/root/.ssh 2>/dev/null
-  chown -R 1000:1000 /mnt/home/developer/.ssh 2>/dev/null
-  echo "init.krun: SSH key injected"
-fi
-
-# Ensure essential mount points exist in the rootfs
-mkdir -p /mnt/proc /mnt/sys /mnt/dev /mnt/tmp /mnt/dev/pts 2>/dev/null
-
-# Fix missing usr-merge symlinks (broken during Windows extraction of OCI layers)
-for d in bin sbin lib lib64; do
-  if [ ! -e /mnt/$d ] && [ -d /mnt/usr/$d ]; then
-    echo "init.krun: creating /$d -> usr/$d symlink"
-    ln -s usr/$d /mnt/$d
-  fi
-done
-if [ ! -d /mnt/etc ]; then
-  mkdir -p /mnt/etc
-  echo "init.krun: created /etc"
-fi
-
-# Move mount points into rootfs for switch_root
-mount --move /proc /mnt/proc 2>/dev/null || true
-mount --move /sys /mnt/sys 2>/dev/null || true
-mount --move /dev /mnt/dev 2>/dev/null || true
-mount --move /tmp /mnt/tmp 2>/dev/null || true
-
-# switch_root into the 9p rootfs and exec the command
-echo "init.krun: switch_root to /mnt"
-if [ -x /mnt/etc/krun/cmd ]; then
-  exec switch_root /mnt /etc/krun/cmd
-fi
-
-# Fallback: try common init paths
-if [ -x /mnt/usr/local/bin/nanosb-init.sh ]; then
-  exec switch_root /mnt /usr/local/bin/nanosb-init.sh
-fi
-if [ -x /mnt/usr/local/bin/agent-gateway ]; then
-  exec switch_root /mnt /usr/local/bin/agent-gateway
-fi
-if [ -x /mnt/sbin/init ]; then
-  exec switch_root /mnt /sbin/init
-fi
-
-echo "init.krun: no command found, dropping to shell"
-exec switch_root /mnt /bin/sh
+# fuse_mount connects AF_VSOCK to port 50000 (host FUSE server),
+# opens /dev/fuse, mounts FUSE at /mnt, bridges messages, chroots, execs USER_CMD.
+exec /bin/fuse_mount 50000 "$USER_CMD"
 "#;
 
 /// Init script for direct root boot (no initrd). This script lives on the

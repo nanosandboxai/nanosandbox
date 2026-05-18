@@ -1591,27 +1591,27 @@ async fn test_mcp_skills_agent_e2e() {
 }
 
 // ============================================================================
-// Plan9 (9P) Rootfs E2E Tests
+// FUSE Rootfs E2E Tests
 // ============================================================================
 
-/// Test running echo command on a Plan9-backed rootfs (the only mode).
+/// Test running echo command on a FUSE-backed rootfs (the only mode).
 ///
-/// This exercises the full P9 path:
-/// 1. HCS shares rootfs dir via built-in 9P server
-/// 2. Guest boots initrd, mounts 9p, chroots, execs command
+/// This exercises the full FUSE path:
+/// 1. HCS shares rootfs dir via built-in FUSE server
+/// 2. Guest boots initrd, mounts fuse, chroots, execs command
 /// 3. Verifies output matches expected
 #[tokio::test]
-async fn test_alpine_echo_plan9_rootfs() {
+async fn test_alpine_echo_fuse_rootfs() {
     use runtime::Sandbox;
 
     let config = SandboxConfig::builder()
-        .name("plan9-echo-test")
+        .name("fuse-echo-test")
         .image("alpine:3.19")
         .cpus(1)
         .memory_mb(512)
         .build();
 
-    println!("=== Plan9 Rootfs E2E Test ===");
+    println!("=== FUSE Rootfs E2E Test ===");
 
     let sandbox_result = Sandbox::create(config).await;
 
@@ -1621,11 +1621,11 @@ async fn test_alpine_echo_plan9_rootfs() {
 
             match sandbox.start().await {
                 Ok(_) => {
-                    println!("Sandbox started (plan9 mode)");
+                    println!("Sandbox started (fuse mode)");
 
                     // Execute echo command
-                    println!("Executing: echo Hello plan9");
-                    match sandbox.exec("echo", &["Hello", "plan9"]).await {
+                    println!("Executing: echo Hello fuse");
+                    match sandbox.exec("echo", &["Hello", "fuse"]).await {
                         Ok(result) => {
                             println!("Exit code: {}", result.exit_code);
                             println!("Stdout: {}", result.stdout);
@@ -1634,31 +1634,31 @@ async fn test_alpine_echo_plan9_rootfs() {
 
                             assert_eq!(result.exit_code, 0, "Command should succeed");
                             assert!(
-                                result.stdout.contains("Hello plan9"),
-                                "Output should contain 'Hello plan9', got: {}",
+                                result.stdout.contains("Hello fuse"),
+                                "Output should contain 'Hello fuse', got: {}",
                                 result.stdout
                             );
-                            println!("=== Plan9 echo test PASSED ===");
+                            println!("=== FUSE echo test PASSED ===");
                         }
                         Err(e) => {
-                            println!("Exec failed (plan9): {}", e);
+                            println!("Exec failed (fuse): {}", e);
                         }
                     }
 
-                    // Verify filesystem content to confirm 9p mount worked
-                    println!("Verifying rootfs content via plan9...");
+                    // Verify filesystem content to confirm fuse mount worked
+                    println!("Verifying rootfs content via fuse...");
                     if let Ok(result) = sandbox.exec("cat", &["/etc/alpine-release"]).await {
-                        println!("Alpine version (via plan9): {}", result.stdout.trim());
+                        println!("Alpine version (via fuse): {}", result.stdout.trim());
                         assert!(
                             !result.stdout.trim().is_empty(),
-                            "Should be able to read /etc/alpine-release via 9p rootfs"
+                            "Should be able to read /etc/alpine-release via fuse rootfs"
                         );
                     }
 
                     let _ = sandbox.stop().await;
                 }
                 Err(e) => {
-                    println!("Start failed (plan9 mode, runtime may not be installed): {}", e);
+                    println!("Start failed (fuse mode, runtime may not be installed): {}", e);
                 }
             }
 
@@ -1673,13 +1673,13 @@ async fn test_alpine_echo_plan9_rootfs() {
     }
 }
 
-/// Test Plan9 rootfs with ls to verify directory structure is intact.
+/// Test FUSE rootfs with ls to verify directory structure is intact.
 #[tokio::test]
-async fn test_alpine_ls_plan9_rootfs() {
+async fn test_alpine_ls_fuse_rootfs() {
     use runtime::Sandbox;
 
     let config = SandboxConfig::builder()
-        .name("plan9-ls-test")
+        .name("fuse-ls-test")
         .image("alpine:3.19")
         .cpus(1)
         .memory_mb(512)
@@ -1694,16 +1694,16 @@ async fn test_alpine_ls_plan9_rootfs() {
                     // List root to verify full rootfs is mounted
                     match sandbox.exec("ls", &["-la", "/"]).await {
                         Ok(result) => {
-                            println!("=== Plan9 rootfs / listing ===");
+                            println!("=== FUSE rootfs / listing ===");
                             println!("{}", result.stdout);
                             assert_eq!(result.exit_code, 0);
                             // Verify key directories exist
                             assert!(result.stdout.contains("bin"), "Should have /bin");
                             assert!(result.stdout.contains("etc"), "Should have /etc");
                             assert!(result.stdout.contains("usr"), "Should have /usr");
-                            println!("=== Plan9 ls test PASSED ===");
+                            println!("=== FUSE ls test PASSED ===");
                         }
-                        Err(e) => println!("Exec failed (plan9 ls): {}", e),
+                        Err(e) => println!("Exec failed (fuse ls): {}", e),
                     }
 
                     let _ = sandbox.stop().await;
@@ -1725,7 +1725,7 @@ async fn test_alpine_ls_plan9_rootfs() {
 /// Test that a persistent agent sandbox (cursor) has SSH and agent gateway available.
 ///
 /// This test:
-/// 1. Creates a persistent sandbox with cursor agent image (Plan9 mode)
+/// 1. Creates a persistent sandbox with cursor agent image (FUSE mode)
 /// 2. Waits for VM boot and gateway health check
 /// 3. Verifies SSH port is allocated and reachable
 /// 4. Verifies agent gateway port (8080) is reachable
@@ -1747,7 +1747,7 @@ async fn test_cursor_ssh_and_gateway() {
         .memory_mb(2048)
         .build();
 
-    println!("=== Creating cursor sandbox (plan9 rootfs) ===");
+    println!("=== Creating cursor sandbox (fuse rootfs) ===");
 
     let mut sandbox = match Sandbox::create(config).await {
         Ok(sb) => sb,

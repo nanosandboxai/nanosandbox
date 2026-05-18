@@ -1223,7 +1223,7 @@ impl ImageManager {
         );
 
         // On Windows, skip host-side extraction. Layers are extracted inside the
-        // microVM by plan9_mount: it mounts the blobs dir over 9P and runs busybox
+        // microVM by fuse_mount: it mounts the blobs dir over FUSE and runs busybox
         // tar against the decompressed .tar files into a tmpfs rootfs. Host-side
         // extraction can't preserve Unix symlinks/permissions on NTFS.
         //

@@ -18,7 +18,7 @@ use log::{error, info};
 use utils::eventfd::EventFd;
 use vm_memory::GuestMemoryMmap;
 
-use hcs::{HcsVm, NetworkAdapterConfig, Plan9Share, VmConfig};
+use hcs::{HcsVm, NetworkAdapterConfig, VmConfig};
 
 use crate::vmm_config::machine_config::CpuFeaturesTemplate;
 
@@ -164,12 +164,8 @@ pub struct Vcpu {
     memory_mb: u32,
     /// CPU count.
     cpu_count: u32,
-    /// Plan9 shares for rootfs.
-    plan9_shares: Vec<Plan9Share>,
     /// Pre-created HCN networking (keeps endpoint alive for VM lifetime).
     hcn_networking: Option<hcs::hcn::HcnNetworking>,
-    /// SCSI disks attached to the VM (currently unused; reserved for future block-device support).
-    scsi_disks: Vec<hcs::ScsiDisk>,
     /// Channel to receive events from VMM.
     event_receiver: Receiver<VcpuEvent>,
     event_sender: Option<Sender<VcpuEvent>>,
@@ -189,9 +185,7 @@ impl Vcpu {
         cmdline: String,
         memory_mb: u32,
         cpu_count: u32,
-        plan9_shares: Vec<Plan9Share>,
         hcn_networking: Option<hcs::hcn::HcnNetworking>,
-        scsi_disks: Vec<hcs::ScsiDisk>,
         exit_evt: &EventFd,
     ) -> Result<Self> {
         let (event_sender, event_receiver) = unbounded();
@@ -204,9 +198,7 @@ impl Vcpu {
             cmdline,
             memory_mb,
             cpu_count,
-            plan9_shares,
             hcn_networking,
-            scsi_disks,
             event_receiver,
             event_sender: Some(event_sender),
             response_sender,
@@ -257,9 +249,7 @@ impl Vcpu {
             cmdline: self.cmdline.clone(),
             memory_mb: self.memory_mb,
             cpu_count: self.cpu_count,
-            plan9_shares: std::mem::take(&mut self.plan9_shares),
             network_adapter,
-            scsi_disks: std::mem::take(&mut self.scsi_disks),
             enable_hvsocket: true,
         };
 
@@ -272,10 +262,6 @@ impl Vcpu {
         }
         eprintln!("hcs: memory={}MB, cpus={}", self.memory_mb, self.cpu_count);
         eprintln!("hcs: cmdline={}", self.cmdline);
-        for (i, disk) in config.scsi_disks.iter().enumerate() {
-            eprintln!("hcs: scsi[{}]={} (ro={})", i, disk.path.display(), disk.read_only);
-        }
-
         // Create the HCS VM.
         eprintln!("hcs: creating HCS VM '{}'...", vm_id);
         let vm = match HcsVm::create(&vm_id, &config) {

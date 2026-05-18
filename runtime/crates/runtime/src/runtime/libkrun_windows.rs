@@ -35,9 +35,12 @@ pub struct BootVmRequest {
     #[serde(default)]
     pub dns_zones: HashMap<String, String>,
     pub gvproxy_socket: Option<String>,
-    /// SSH public key to inject via kernel cmdline (for 9P mode where rootfs perms are broken)
+    /// SSH public key to inject via kernel cmdline (for FUSE mode where rootfs perms are broken)
     #[serde(default)]
     pub ssh_pubkey: Option<String>,
+    /// Run agent processes as root inside guest.
+    #[serde(default)]
+    pub run_as_root: bool,
 }
 
 /// Add `~/.nanosandbox/libs/` to the Windows DLL search path.
@@ -77,6 +80,20 @@ fn add_libs_to_dll_search_path() {
     }
 }
 
+/// Derive image blobs cache directory from bundle rootfs path.
+///
+/// Expected bundle layout is `<cache>/bundles/<sandbox-id>/rootfs`.
+/// Returns `<cache>/blobs/sha256` when that structure is present.
+fn blobs_dir_from_rootfs(rootfs_path: &Path) -> Option<PathBuf> {
+    let bundle_dir = rootfs_path.parent()?;
+    let bundles_dir = bundle_dir.parent()?;
+    if bundles_dir.file_name()?.to_string_lossy() != "bundles" {
+        return None;
+    }
+    let cache_dir = bundles_dir.parent()?;
+    Some(cache_dir.join("blobs").join("sha256"))
+}
+
 /// Entry point for the `internal-boot-vm` subprocess on Windows.
 pub fn handle_boot_vm_subprocess() -> ! {
     // Add ~/.nanosandbox/libs/ to the DLL search path so libkrunfw.dll can be found.
@@ -105,6 +122,9 @@ pub fn handle_boot_vm_subprocess() -> ! {
     // Pass SSH pubkey so builder appends it to kernel cmdline as nanosb.ssh_key=...
     if let Some(ref key) = config.ssh_pubkey {
         std::env::set_var("NANOSB_SSH_PUBKEY", key);
+    }
+    if config.run_as_root {
+        std::env::set_var("NANOSB_RUN_AS_ROOT", "1");
     }
 
     let mut env = HashMap::new();
@@ -170,6 +190,7 @@ struct SandboxState {
     /// HCS VM identity string — used for AF_HYPERV (HvSocket) connections.
     hcs_vm_id: Option<String>,
     ssh_pubkey: Option<String>,
+    run_as_root: bool,
     /// PID 1 command override (set by sandbox layer via config.command).
     command: Option<String>,
     /// PID 1 command arguments.
@@ -334,6 +355,7 @@ impl LibkrunRuntime {
         dns_zones: &HashMap<String, String>,
         gvproxy_socket: Option<&str>,
         ssh_pubkey: Option<&str>,
+        run_as_root: bool,
     ) -> std::result::Result<std::process::Child, String> {
         let request = BootVmRequest {
             sandbox_id: sandbox_id.to_string(),
@@ -349,6 +371,7 @@ impl LibkrunRuntime {
             dns_zones: dns_zones.clone(),
             gvproxy_socket: gvproxy_socket.map(|s| s.to_string()),
             ssh_pubkey: ssh_pubkey.map(|s| s.to_string()),
+            run_as_root,
         };
 
         let json = serde_json::to_string(&request)
@@ -441,6 +464,22 @@ impl LibkrunRuntime {
                 .collect::<Vec<_>>()
                 .join("\n");
             let _ = std::fs::write(&mount_config_path, &mount_config);
+
+            // Write FUSE workspace mount config for fuse_mount.
+            // Format: <port>:<container_path>
+            // Example: 50010:/workspace
+            let fuse_mount_config_path = rootfs_path.join("etc/nanosb-fuse-mounts");
+            let fuse_mount_config: String = mounts
+                .iter()
+                .enumerate()
+                .take(crate::hvsocket::HVSOCK_FUSE_WORKSPACE_MAX_SHARES as usize)
+                .map(|(i, (_, container))| {
+                    let port = crate::hvsocket::HVSOCK_FUSE_WORKSPACE_BASE_PORT + i as u32;
+                    format!("{}:{}", port, container)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = std::fs::write(&fuse_mount_config_path, &fuse_mount_config);
         }
 
         // DNS defaults: add public DNS if network enabled but none specified
@@ -470,18 +509,19 @@ impl LibkrunRuntime {
             hcn_endpoint_id: None,
             hcs_vm_id: None,
             ssh_pubkey: config.ssh_pubkey.clone(),
+            run_as_root: config.run_as_root,
             command: config.command.clone(),
             command_args: config.command_args.clone(),
         };
 
         self.lock_sandboxes().insert(id.to_string(), state);
-        info!("Created sandbox '{}' (Windows/HCS, plan9 rootfs)", id);
+        info!("Created sandbox '{}' (Windows/HCS, fuse rootfs)", id);
         Ok(())
     }
 
     pub async fn start(&self, id: &str) -> Result<()> {
         // Read sandbox state for VM boot
-        let (rootfs_path, cpus, memory_mb, network_scope, port_mappings, mounts, dns, dns_zones, ssh_pubkey) = {
+        let (rootfs_path, cpus, memory_mb, network_scope, port_mappings, mounts, dns, dns_zones, ssh_pubkey, run_as_root) = {
             let sandboxes = self.lock_sandboxes();
             let state = sandboxes.get(id).ok_or_else(|| {
                 error!("Sandbox '{}' not found in start()", id);
@@ -497,6 +537,7 @@ impl LibkrunRuntime {
                 state.dns.clone(),
                 state.dns_zones.clone(),
                 state.ssh_pubkey.clone(),
+                state.run_as_root,
             )
         };
 
@@ -530,6 +571,7 @@ impl LibkrunRuntime {
             &dns_zones,
             None,
             ssh_pubkey.as_deref(),
+            run_as_root,
         ).map_err(|e| {
             error!("Failed to launch VM subprocess for sandbox '{}': {}", id, e);
             Error::SandboxCreationFailed(e)
@@ -598,6 +640,100 @@ impl LibkrunRuntime {
         }
         if let Some(ref vid) = hcs_vm_id {
             info!("HCS VM ID for sandbox '{}': {}", id, vid);
+        }
+
+        // Start host-side FUSE rootfs server over HvSocket (vsock port 50000).
+        // The guest's /bin/fuse_mount connects to this server during early boot.
+        if let Some(ref vid) = hcs_vm_id {
+            crate::hvsocket::start_fuse_rootfs_server(vid, Path::new(&rootfs_path)).map_err(|e| {
+                error!(
+                    "Failed to start FUSE rootfs server for sandbox '{}' (vm_id={}): {}",
+                    id, vid, e
+                );
+                Error::SandboxCreationFailed(format!("failed to start FUSE rootfs server: {e}"))
+            })?;
+            info!("Started FUSE rootfs server for sandbox '{}'", id);
+
+            // If in-guest extraction mode is active (.nanosb-layers present),
+            // also serve the blobs cache over HvSocket (vsock port 50002).
+            let rootfs = Path::new(&rootfs_path);
+            if rootfs.join(".nanosb-layers").exists() {
+                let blobs_dir = blobs_dir_from_rootfs(rootfs).ok_or_else(|| {
+                    let msg = format!(
+                        "failed to derive blobs dir from rootfs path {}",
+                        rootfs.display()
+                    );
+                    error!("Sandbox '{}': {}", id, msg);
+                    Error::SandboxCreationFailed(msg)
+                })?;
+
+                if !blobs_dir.exists() {
+                    let msg = format!("blobs dir does not exist: {}", blobs_dir.display());
+                    error!("Sandbox '{}': {}", id, msg);
+                    return Err(Error::SandboxCreationFailed(msg));
+                }
+
+                crate::hvsocket::start_fuse_blobs_server(vid, &blobs_dir).map_err(|e| {
+                    error!(
+                        "Failed to start FUSE blobs server for sandbox '{}' (vm_id={}, blobs={}): {}",
+                        id,
+                        vid,
+                        blobs_dir.display(),
+                        e
+                    );
+                    Error::SandboxCreationFailed(format!("failed to start FUSE blobs server: {e}"))
+                })?;
+                info!(
+                    "Started FUSE blobs server for sandbox '{}' (blobs={})",
+                    id,
+                    blobs_dir.display()
+                );
+            }
+
+            // Start per-workspace FUSE servers (ports 50010+N).
+            if mounts.len() > crate::hvsocket::HVSOCK_FUSE_WORKSPACE_MAX_SHARES as usize {
+                warn!(
+                    "Sandbox '{}': {} mounts configured, truncating to {} FUSE workspace shares",
+                    id,
+                    mounts.len(),
+                    crate::hvsocket::HVSOCK_FUSE_WORKSPACE_MAX_SHARES
+                );
+            }
+            for (i, (host_path, container_path)) in mounts
+                .iter()
+                .enumerate()
+                .take(crate::hvsocket::HVSOCK_FUSE_WORKSPACE_MAX_SHARES as usize)
+            {
+                let port = crate::hvsocket::HVSOCK_FUSE_WORKSPACE_BASE_PORT + i as u32;
+                let host = Path::new(host_path);
+                crate::hvsocket::start_fuse_workspace_server(vid, host, port).map_err(|e| {
+                    error!(
+                        "Failed to start FUSE workspace server for sandbox '{}' (vm_id={}, port={}, host={}, container={}): {}",
+                        id,
+                        vid,
+                        port,
+                        host.display(),
+                        container_path,
+                        e
+                    );
+                    Error::SandboxCreationFailed(format!(
+                        "failed to start FUSE workspace server on port {}: {}",
+                        port, e
+                    ))
+                })?;
+                info!(
+                    "Started FUSE workspace server for sandbox '{}' (port={}, host={}, container={})",
+                    id,
+                    port,
+                    host.display(),
+                    container_path
+                );
+            }
+        } else {
+            warn!(
+                "Sandbox '{}': HCS VM ID missing; cannot start FUSE rootfs server on port 50000",
+                id
+            );
         }
 
         // Register HvSocket service GUID (one-time, requires admin).
