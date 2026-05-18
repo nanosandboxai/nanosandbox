@@ -119,6 +119,8 @@ function Install-NanosandboxDeps {
         New-Item -ItemType Directory -Path $libsDir -Force | Out-Null
     }
 
+    $requiredDeps = @('libkrunfw.dll', 'busybox', 'vsock_proxy', 'plan9_mount')
+
     $bundle = "deps-$Platform.zip"
     $url = "https://github.com/$GitHubRepo/releases/download/$ver/$bundle"
     $tmpDir = Join-Path $env:TEMP "nanosb-install-$(Get-Random)"
@@ -194,9 +196,22 @@ function Install-NanosandboxDeps {
         } else {
             Write-Warn "plan9_mount not found in bundle (rootfs mount will fail on WSL2 kernel)"
         }
+
+        $missingDeps = @()
+        foreach ($dep in $requiredDeps) {
+            $depPath = Join-Path $libsDir $dep
+            if (-not (Test-Path $depPath)) {
+                $missingDeps += $dep
+            }
+        }
+
+        if ($missingDeps.Count -gt 0) {
+            Write-Err ("Missing required runtime files after install: {0}" -f ($missingDeps -join ', '))
+            throw "Runtime dependency installation incomplete"
+        }
     } catch {
-        Write-Warn "Failed to download deps bundle: $_"
-        Write-Info "You may need to place files manually in: $libsDir"
+        Write-Err "Dependency installation failed: $_"
+        throw
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }

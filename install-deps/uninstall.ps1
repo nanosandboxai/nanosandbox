@@ -38,8 +38,10 @@ function Assert-Administrator {
     if (-not $current.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Write-Host "  [ERROR] This uninstaller must be run as Administrator." -ForegroundColor Red
         Write-Info "Right-click PowerShell and select 'Run as administrator', then try again."
-        return
+        return $false
     }
+
+    return $true
 }
 
 # ─── Remove files ────────────────────────────────────────────────────────────
@@ -81,15 +83,20 @@ function Remove-Dependencies {
 function Remove-FromPath {
     Write-Header "Cleaning PATH"
 
-    $machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-    $entries = $machinePath -split ';' | Where-Object { $_ -ne $InstallDir -and $_ -ne '' }
+    foreach ($scope in @('Machine', 'User')) {
+        $pathValue = [Environment]::GetEnvironmentVariable('PATH', $scope)
+        if ([string]::IsNullOrEmpty($pathValue)) {
+            continue
+        }
 
-    if ($entries.Count -lt ($machinePath -split ';').Count) {
-        $newPath = $entries -join ';'
-        [Environment]::SetEnvironmentVariable('PATH', $newPath, 'Machine')
-        Write-OK "Removed $InstallDir from system PATH"
-    } else {
-        Write-Info "$InstallDir was not in system PATH"
+        $entries = $pathValue -split ';' | Where-Object { $_ -ne $InstallDir -and $_ -ne '' }
+        if ($entries.Count -lt ($pathValue -split ';').Count) {
+            $newPath = $entries -join ';'
+            [Environment]::SetEnvironmentVariable('PATH', $newPath, $scope)
+            Write-OK "Removed $InstallDir from $scope PATH"
+        } else {
+            Write-Info "$InstallDir was not in $scope PATH"
+        }
     }
 }
 
@@ -134,7 +141,9 @@ function Main {
     Write-Host "Nanosandbox Runtime Dependencies Uninstaller (Windows)" -ForegroundColor Cyan
     Write-Host "======================================================="
 
-    Assert-Administrator
+    if (-not (Assert-Administrator)) {
+        return
+    }
     Remove-Dependencies
     Remove-FromPath
     Remove-Caches
