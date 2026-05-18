@@ -150,7 +150,29 @@ async fn validate_windows_detailed() -> ValidationResult {
         );
     }
 
-    // Check 2: WSL kernel (HCS uses the WSL2 kernel to boot Linux VMs)
+    // Check 2: Hyper-V access for the current user.
+    // The HCS APIs require the caller to be a member of the local
+    // "Hyper-V Administrators" group, or to be running elevated as
+    // Administrator. Without either, sandbox creation fails with confusing
+    // access-denied errors from vmcompute. (issue #133)
+    debug!("Checking Hyper-V access for current user...");
+    if !check_hyperv_access().await {
+        result.add_error(
+            "Hyper-V Access",
+            "Current user is not in the 'Hyper-V Administrators' group and is not running as Administrator. \
+             HCS will reject sandbox creation.",
+            Some(
+                "Add the current user to the Hyper-V Administrators group:\n\
+                 Run in an elevated PowerShell:\n\
+                     Add-LocalGroupMember -Group 'Hyper-V Administrators' -Member $env:USERNAME\n\
+                 Then log out and back in for the group to take effect.\n\
+                 Alternatively, re-run nanosb in an elevated terminal."
+                    .to_string(),
+            ),
+        );
+    }
+
+    // Check 3: WSL kernel (HCS uses the WSL2 kernel to boot Linux VMs)
     debug!("Checking WSL kernel...");
     let wsl_kernel = r"C:\Program Files\WSL\tools\kernel";
     if !std::path::Path::new(wsl_kernel).exists() {
@@ -161,7 +183,7 @@ async fn validate_windows_detailed() -> ValidationResult {
         );
     }
 
-    // Check 3: libkrunfw.dll (kernel firmware, loaded at runtime by libkrun)
+    // Check 4: libkrunfw.dll (kernel firmware, loaded at runtime by libkrun)
     debug!("Checking libkrunfw.dll...");
     let found_krunfw = check_libkrunfw_dll();
     if !found_krunfw {
@@ -176,15 +198,31 @@ async fn validate_windows_detailed() -> ValidationResult {
         );
     }
 
-    // Check 4: Disk performance (SSD recommended for fast rootfs / boot)
+    // Check 5: userspace helper binaries required by initrd on Windows
+    for dep in ["busybox", "vsock_proxy", "fuse_mount"] {
+        debug!("Checking {}...", dep);
+        if !check_windows_runtime_dep(dep) {
+            result.add_error(
+                dep,
+                format!("{} not found. Required for Windows VM boot path.", dep),
+                Some(
+                    "Install runtime deps:\n\
+                     irm https://github.com/nanosandboxai/install-deps/releases/latest/download/install.ps1 | iex"
+                        .to_string(),
+                ),
+            );
+        }
+    }
+
+    // Check 6: Disk performance (SSD recommended for fast rootfs / boot)
     debug!("Checking disk performance characteristics...");
     check_windows_disk_performance(&mut result).await;
 
-    // Check 5: System resources (RAM)
+    // Check 7: System resources (RAM)
     debug!("Checking system resources...");
     check_windows_resources(&mut result);
 
-    // Check 6: Disk space (rootfs + cached images need several GB)
+    // Check 8: Disk space (rootfs + cached images need several GB)
     debug!("Checking disk space...");
     check_windows_disk_space(&mut result);
 
@@ -332,25 +370,31 @@ fn check_windows_disk_space(result: &mut ValidationResult) {
 
 #[cfg(target_os = "windows")]
 fn check_libkrunfw_dll() -> bool {
+    check_windows_runtime_dep("libkrunfw.dll")
+}
+
+#[cfg(target_os = "windows")]
+fn check_windows_runtime_dep(name: &str) -> bool {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
 
     // ~/.nanosandbox/libs/ (current layout)
     if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".nanosandbox").join("libs").join("libkrunfw.dll"));
-        // Legacy: old install-deps placed it at root level
-        candidates.push(home.join(".nanosandbox").join("libkrunfw.dll"));
+        candidates.push(home.join(".nanosandbox").join("libs").join(name));
+        // Legacy: old install-deps placed files at root level
+        candidates.push(home.join(".nanosandbox").join(name));
     }
 
-    // Next to the current executable
+    // Next to the current executable (custom install dir)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("libkrunfw.dll"));
+            candidates.push(dir.join("libs").join(name));
+            candidates.push(dir.join(name));
         }
     }
 
     candidates.iter().any(|p| {
         if p.exists() {
-            debug!("Found libkrunfw.dll at: {}", p.display());
+            debug!("Found {} at: {}", name, p.display());
             true
         } else {
             false
@@ -368,6 +412,36 @@ async fn check_hcs_service() -> bool {
             "-Command",
             "(Get-Service vmcompute -ErrorAction SilentlyContinue).Status -eq 'Running'",
         ])
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        return stdout.trim().eq_ignore_ascii_case("true");
+    }
+    false
+}
+
+/// Check whether the current Windows user can talk to HCS.
+///
+/// HCS requires the caller to be a member of the local "Hyper-V
+/// Administrators" group (well-known SID `S-1-5-32-578`) or to be running
+/// elevated as Administrator (well-known SID `S-1-5-32-544`). Anything else
+/// gets a confusing access-denied error from vmcompute, so doctor surfaces
+/// this up front.
+#[cfg(target_os = "windows")]
+async fn check_hyperv_access() -> bool {
+    use tokio::process::Command;
+
+    let script = "\
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent();\
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity);\
+        $admin = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544');\
+        $hyperv = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-578');\
+        ($principal.IsInRole($admin)) -or ($principal.IsInRole($hyperv))";
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
         .output()
         .await;
 
