@@ -26,6 +26,9 @@ function Install-NanosandboxDeps {
         [string]$InstallDir = "$env:USERPROFILE\.nanosandbox"
     )
 
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+
     $GitHubRepo = 'nanosandboxai/install-deps'
     $Platform = 'windows-amd64'
     $targetDir = $InstallDir
@@ -83,8 +86,47 @@ function Install-NanosandboxDeps {
     } else {
         Write-Warn "WSL kernel not found at: $wslKernel"
         Write-Info "Nanosandbox uses the WSL2 kernel to boot Linux VMs via HCS."
-        Write-Info "Install WSL with: wsl --install --no-distribution"
-        Write-Info ""
+
+        if (-not $isAdmin) {
+            Write-Warn "Automatic WSL kernel install requires Administrator privileges."
+            Write-Info "Re-run in elevated PowerShell or run: wsl --install --no-distribution"
+            Write-Info ""
+        } else {
+            $wslExe = Join-Path $env:WINDIR "System32\wsl.exe"
+            if (-not (Test-Path $wslExe)) {
+                Write-Warn "wsl.exe not found at $wslExe"
+                Write-Info "Install WSL with: wsl --install --no-distribution"
+                Write-Info ""
+            } else {
+                Write-Info "Attempting automatic WSL kernel installation..."
+
+                # First try updating/downloading the kernel for existing WSL installs.
+                try {
+                    & $wslExe --update --web-download | Out-Null
+                } catch {
+                    Write-Info "WSL update command returned: $_"
+                }
+
+                # If still missing, install WSL without a Linux distribution.
+                if (-not (Test-Path $wslKernel)) {
+                    try {
+                        & $wslExe --install --no-distribution --web-download | Out-Null
+                    } catch {
+                        Write-Info "WSL install command returned: $_"
+                    }
+                }
+
+                # Re-check after attempted installation.
+                if (Test-Path $wslKernel) {
+                    Write-OK "WSL kernel installed"
+                } else {
+                    Write-Warn "WSL kernel is still missing after automatic install attempt"
+                    Write-Info "Run manually in elevated PowerShell: wsl --install --no-distribution"
+                    Write-Info "A reboot may be required before the kernel file appears."
+                    Write-Info ""
+                }
+            }
+        }
     }
 
     # --- Version resolution ---
