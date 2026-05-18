@@ -140,13 +140,32 @@ credentials.json\n\
 secrets.json\n\
 secrets.yml\n\
 \n\
-# OS\n\
+# OS — macOS\n\
 .DS_Store\n\
 ._*\n\
 .AppleDouble\n\
+\n\
+# OS — Windows\n\
 Thumbs.db\n\
 Desktop.ini\n\
 $RECYCLE.BIN/\n\
+NTUSER.DAT*\n\
+ntuser.dat*\n\
+AppData/\n\
+\n\
+# Windows user profile dirs (when project path is ~)\n\
+Documents/\n\
+Downloads/\n\
+Pictures/\n\
+Videos/\n\
+Music/\n\
+Favorites/\n\
+Links/\n\
+Saved Games/\n\
+Searches/\n\
+Contacts/\n\
+3D Objects/\n\
+OneDrive/\n\
 \n\
 # IDE / Editor\n\
 .idea/\n\
@@ -703,6 +722,32 @@ impl ProjectMount {
             }
         };
 
+        // Reject paths that are the user's home directory — scanning/cloning
+        // a home dir is almost never intended and is dangerous on Windows where
+        // it contains AppData, NTUSER.DAT, junction points, etc.
+        if let Some(home) = dirs::home_dir() {
+            if let Ok(canon_home) = home.canonicalize() {
+                #[cfg(target_os = "windows")]
+                let canon_home = {
+                    let s = canon_home.to_string_lossy();
+                    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                        PathBuf::from(stripped)
+                    } else {
+                        canon_home
+                    }
+                };
+                if canonical == canon_home {
+                    let msg = format!(
+                        "Refusing to use home directory as project path: {}. \
+                         Please specify a project subdirectory instead.",
+                        canonical.display()
+                    );
+                    warn!("ProjectMount::detect: {}", msg);
+                    return Err(msg);
+                }
+            }
+        }
+
         // Check if the path itself is a git repo
         if canonical.join(".git").exists() {
             let branch = git_current_branch(&canonical)?;
@@ -748,6 +793,20 @@ impl ProjectMount {
 
             let child_path = entry.path();
 
+            // On Windows, skip NTFS reparse points (junctions, symlinks) which
+            // can create circular references (e.g. AppData\Local\Application Data)
+            // and return ACCESS_DENIED when enumerated.
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+                if let Ok(meta) = entry.metadata() {
+                    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                        continue;
+                    }
+                }
+            }
+
             if child_path.is_dir() && child_path.join(".git").exists() {
                 let branch = git_current_branch(&child_path)?;
                 repos.push(GitRepo {
@@ -755,7 +814,11 @@ impl ProjectMount {
                     absolute_path: child_path,
                     current_branch: branch,
                 });
-            } else {
+            } else if child_path.is_file() {
+                // Only collect loose *files* (Makefile, docker-compose.yml, etc.)
+                // — never loose directories.  Recursively copying arbitrary
+                // directories is unsafe on Windows (NTFS junctions, user profile
+                // dirs like AppData/, Documents/) and expensive everywhere.
                 loose_items.push(PathBuf::from(&*name_str));
             }
         }
@@ -923,38 +986,18 @@ impl ProjectMount {
                         .push((repo.absolute_path.clone(), resolved));
                 }
 
-                // Symlink (or copy) loose items
+                // Copy loose files (detect() now only collects files, not directories)
                 for item in &loose_items {
                     let src = self.source_path.join(item);
                     let dst = base_dir.join(item);
 
                     #[cfg(unix)]
                     {
+                        // Prefer symlink; fall back to copy on failure.
                         if std::os::unix::fs::symlink(&src, &dst).is_err() {
-                            // Fallback to copy
-                            if src.is_dir() {
-                                copy_dir_recursive(&src, &dst)?;
-                            } else {
-                                std::fs::copy(&src, &dst).map_err(|e| {
-                                    let msg =
-                                        format!("Failed to copy {}: {}", item.display(), e);
-                                    warn!(
-                                        "ProjectMount::setup: {} (sandbox_id={})",
-                                        msg, sandbox_id
-                                    );
-                                    msg
-                                })?;
-                            }
-                        }
-                    }
-
-                    #[cfg(not(unix))]
-                    {
-                        if src.is_dir() {
-                            copy_dir_recursive(&src, &dst)?;
-                        } else {
                             std::fs::copy(&src, &dst).map_err(|e| {
-                                let msg = format!("Failed to copy {}: {}", item.display(), e);
+                                let msg =
+                                    format!("Failed to copy {}: {}", item.display(), e);
                                 warn!(
                                     "ProjectMount::setup: {} (sandbox_id={})",
                                     msg, sandbox_id
@@ -962,6 +1005,18 @@ impl ProjectMount {
                                 msg
                             })?;
                         }
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        std::fs::copy(&src, &dst).map_err(|e| {
+                            let msg = format!("Failed to copy {}: {}", item.display(), e);
+                            warn!(
+                                "ProjectMount::setup: {} (sandbox_id={})",
+                                msg, sandbox_id
+                            );
+                            msg
+                        })?;
                     }
                 }
 
@@ -1103,35 +1158,17 @@ impl ProjectMount {
                     git_clone_local_from_head(&repo.absolute_path, &clone_path, &branch_name)?;
                 }
 
-                // Symlink loose items (same as setup)
+                // Copy loose files (detect() now only collects files, not directories)
                 for item in &loose_items {
                     let src = self.source_path.join(item);
                     let dst = base_dir.join(item);
                     #[cfg(unix)]
                     {
+                        // Prefer symlink; fall back to copy on failure.
                         if std::os::unix::fs::symlink(&src, &dst).is_err() {
-                            if src.is_dir() {
-                                copy_dir_recursive(&src, &dst)?;
-                            } else {
-                                std::fs::copy(&src, &dst).map_err(|e| {
-                                    let msg =
-                                        format!("Failed to copy {}: {}", item.display(), e);
-                                    warn!(
-                                        "ProjectMount::setup_deferred: {} (sandbox_id={})",
-                                        msg, sandbox_id
-                                    );
-                                    msg
-                                })?;
-                            }
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        if src.is_dir() {
-                            copy_dir_recursive(&src, &dst)?;
-                        } else {
                             std::fs::copy(&src, &dst).map_err(|e| {
-                                let msg = format!("Failed to copy {}: {}", item.display(), e);
+                                let msg =
+                                    format!("Failed to copy {}: {}", item.display(), e);
                                 warn!(
                                     "ProjectMount::setup_deferred: {} (sandbox_id={})",
                                     msg, sandbox_id
@@ -1139,6 +1176,17 @@ impl ProjectMount {
                                 msg
                             })?;
                         }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        std::fs::copy(&src, &dst).map_err(|e| {
+                            let msg = format!("Failed to copy {}: {}", item.display(), e);
+                            warn!(
+                                "ProjectMount::setup_deferred: {} (sandbox_id={})",
+                                msg, sandbox_id
+                            );
+                            msg
+                        })?;
                     }
                 }
 
@@ -1474,48 +1522,7 @@ impl ProjectMount {
     }
 }
 
-/// Recursively copy a directory.
-#[allow(dead_code)]
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dst).map_err(|e| {
-        let msg = format!("Failed to create dir {}: {}", dst.display(), e);
-        warn!("copy_dir_recursive: {}", msg);
-        msg
-    })?;
 
-    let entries = std::fs::read_dir(src).map_err(|e| {
-        let msg = format!("Failed to read dir {}: {}", src.display(), e);
-        warn!("copy_dir_recursive: {}", msg);
-        msg
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| {
-            let msg = format!("Failed to read entry: {}", e);
-            warn!("copy_dir_recursive: {} (src={})", msg, src.display());
-            msg
-        })?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path).map_err(|e| {
-                let msg = format!(
-                    "Failed to copy {} to {}: {}",
-                    src_path.display(),
-                    dst_path.display(),
-                    e
-                );
-                warn!("copy_dir_recursive: {}", msg);
-                msg
-            })?;
-        }
-    }
-
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
