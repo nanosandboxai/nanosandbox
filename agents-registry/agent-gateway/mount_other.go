@@ -17,3 +17,14 @@ func sysMount(source, target, fstype string) error {
 func sysProcAttrForDeveloper() *syscall.SysProcAttr {
 	return nil
 }
+
+// sysProcAttrForRoot is a no-op on non-Linux platforms.
+// The agent-gateway only runs inside Linux VMs.
+func sysProcAttrForRoot() *syscall.SysProcAttr {
+	return nil
+}
+
+// setNonDumpable is a no-op on non-Linux platforms.
+func setNonDumpable() error {
+	return nil
+}

@@ -77,16 +77,16 @@ NFTRULE
 fi
 
 # ---------------------------------------------------------------
-# 0c. Detect 9P rootfs mode (Windows HCS)
+# 0c. Detect Windows shared-rootfs mode (FUSE)
 # ---------------------------------------------------------------
-# When the rootfs is a Plan9 share from a Windows host, NTFS doesn't
-# track Unix permissions. All files appear as 0777 through 9P.
+# When the rootfs is shared from a Windows host over FUSE, NTFS doesn't
+# track Unix permissions.
 # SSH requires strict permissions on host keys and authorized_keys.
 # We detect this via a kernel cmdline flag set by the Windows runtime.
-NANOSB_9P_MODE=false
-if grep -q 'nanosb.9p_rootfs=1' /proc/cmdline 2>/dev/null; then
-    NANOSB_9P_MODE=true
-    echo "nanosb-init: 9P rootfs mode detected (Windows HCS)"
+NANOSB_FUSE_ROOTFS_MODE=false
+if grep -q 'nanosb.fuse_rootfs=1' /proc/cmdline 2>/dev/null; then
+    NANOSB_FUSE_ROOTFS_MODE=true
+    echo "nanosb-init: Windows shared-rootfs mode detected (FUSE)"
 fi
 
 # Helper: parse a key=value parameter from /proc/cmdline
@@ -96,11 +96,65 @@ get_cmdline_param() {
 }
 
 # ---------------------------------------------------------------
+# 0d. Detect runAsRoot mode (host sets nanosb.run_as_root=1)
+# ---------------------------------------------------------------
+# When true the agent-gateway SSH/exec layer runs the user shell as uid 0
+# inside a fresh PID namespace (set by sysProcAttrForRoot in the Go code).
+# Otherwise the legacy developer (uid 1000) behavior applies.
+NANOSB_RUN_AS_ROOT=false
+if grep -qE '(^| )nanosb\.run_as_root=1( |$)' /proc/cmdline 2>/dev/null; then
+    NANOSB_RUN_AS_ROOT=true
+    echo "nanosb-init: run-as-root mode enabled (nanosb.run_as_root=1)"
+fi
+export NANOSB_RUN_AS_ROOT
+
+# Persist for any service that doesn't see our env (e.g. systemd-spawned).
+mkdir -p /etc/nanosb 2>/dev/null || true
+if [ "$NANOSB_RUN_AS_ROOT" = "true" ]; then
+    echo 1 > /etc/nanosb/run-as-root
+else
+    echo 0 > /etc/nanosb/run-as-root
+fi
+
+# ---------------------------------------------------------------
+# 0e. Hardening: protect agent-gateway from spawned user shells
+# ---------------------------------------------------------------
+# These steps are applied unconditionally — they cost nothing for the
+# developer-mode case and prevent in-VM tampering when a user shell runs
+# as root in the same VM. They are belt-and-braces alongside the PID
+# namespace separation enforced by sysProcAttrForRoot() in the gateway.
+#
+#   - yama.ptrace_scope=2: only processes with CAP_SYS_PTRACE in the
+#     gateway's user_ns can ptrace it. The user shell (even as root,
+#     in a child PID namespace) does not have it.
+#   - bind-mount the gateway binary read-only over itself so a compromised
+#     shell cannot overwrite it between gateway restarts.
+#   - bind-mount /etc/nanosb read-only so the run-as-root file can't be
+#     flipped by a user shell.
+if [ -w /proc/sys/kernel/yama/ptrace_scope ]; then
+    echo 2 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || true
+fi
+if [ -x /usr/local/bin/agent-gateway ]; then
+    mount --bind /usr/local/bin/agent-gateway /usr/local/bin/agent-gateway 2>/dev/null \
+      && mount -o remount,bind,ro /usr/local/bin/agent-gateway 2>/dev/null \
+      || true
+fi
+if [ -d /etc/nanosb ]; then
+    mount --bind /etc/nanosb /etc/nanosb 2>/dev/null \
+      && mount -o remount,bind,ro /etc/nanosb 2>/dev/null \
+      || true
+fi
+
+# ---------------------------------------------------------------
 # 1. Mount virtiofs shared directories
 # ---------------------------------------------------------------
 # The host writes /etc/nanosb-mounts with lines: "<tag> <mountpoint>"
 # Each line corresponds to a virtiofs device registered via krun_add_virtiofs.
-if [ -f /etc/nanosb-mounts ]; then
+# In Windows FUSE-rootfs mode, workspace mounts are handled earlier by
+# fuse_mount before chroot, so skip this virtiofs loop.
+if [ "$NANOSB_FUSE_ROOTFS_MODE" = "true" ]; then
+    echo "nanosb-init: skipping virtiofs mount loop in Windows shared-rootfs mode"
+elif [ -f /etc/nanosb-mounts ]; then
     while read -r tag mountpoint; do
         [ -z "$tag" ] && continue
         mkdir -p "$mountpoint" 2>/dev/null || true
@@ -193,8 +247,8 @@ fi
 # SSH server is embedded in agent-gateway.
 # This section handles SSH key injection and developer account setup.
 
-if [ "$NANOSB_9P_MODE" = "true" ]; then
-    # 9P mode (Windows HCS): NTFS doesn't track Unix permissions.
+if [ "$NANOSB_FUSE_ROOTFS_MODE" = "true" ]; then
+    # Windows FUSE-rootfs mode (Windows HCS): NTFS doesn't track Unix permissions.
     # Mount tmpfs for SSH key storage so permissions are correct.
 
     # Inject SSH public key from kernel cmdline (set by Windows runtime)
@@ -207,7 +261,7 @@ if [ "$NANOSB_9P_MODE" = "true" ]; then
         chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
         echo "nanosb-init: SSH key injected from kernel cmdline"
     fi
-    echo "nanosb-init: 9P SSH key setup complete"
+    echo "nanosb-init: FUSE SSH key setup complete"
 else
     # Normal mode (virtiofs / macOS / Linux)
     chown 0:0 /root 2>/dev/null || true
@@ -218,7 +272,7 @@ fi
 # because agents like Claude Code refuse --dangerously-skip-permissions as root.
 if [ -f /root/.ssh/authorized_keys ]; then
     mkdir -p /home/developer/.ssh 2>/dev/null || true
-    if [ "$NANOSB_9P_MODE" = "true" ]; then
+    if [ "$NANOSB_FUSE_ROOTFS_MODE" = "true" ]; then
         mount -t tmpfs tmpfs /home/developer/.ssh 2>/dev/null || true
     fi
     cp /root/.ssh/authorized_keys /home/developer/.ssh/authorized_keys 2>/dev/null || true
@@ -241,12 +295,12 @@ echo "nanosb-init: SSH key setup and developer account ready"
 # ---------------------------------------------------------------
 if [ -x /usr/local/bin/agent-gateway ]; then
     echo "nanosb-init: starting agent-gateway"
-    # On Windows HCS (9P mode), networking is handled by init.krun's
+    # On Windows HCS (FUSE-rootfs mode), networking is handled by init.krun's
     # vsock_proxy + iptables REDIRECT — agent-gateway must skip eth0
     # setup. On Linux/macOS (libkrun + gvproxy virtio-net), agent-gateway
     # owns eth0 bring-up and DHCP-style static IP assignment, so it must
     # NOT skip — otherwise eth0 stays DOWN and gvproxy can't ARP the guest.
-    if [ "$NANOSB_9P_MODE" = "true" ]; then
+    if [ "$NANOSB_FUSE_ROOTFS_MODE" = "true" ]; then
         exec /usr/local/bin/agent-gateway --skip-network-init
     else
         exec /usr/local/bin/agent-gateway

@@ -35,10 +35,42 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	listenAddr     = ":8080"
-	defaultTimeout = 300 * time.Second
-	defaultWorkDir = "/workspace"
+	listenAddr      = ":8080"
+	defaultTimeout  = 300 * time.Second
+	defaultWorkDir  = "/workspace"
+	runAsRootEnv    = "NANOSB_RUN_AS_ROOT"
+	runAsRootFile   = "/etc/nanosb/run-as-root"
 )
+
+// runAsRoot is set at process startup from NANOSB_RUN_AS_ROOT (or the
+// fallback file at /etc/nanosb/run-as-root). When true, ssh sessions and
+// HTTP exec commands run with uid 0 inside a fresh PID namespace.
+//
+// Set once in main() before any goroutines spawn; treat as read-only after.
+var runAsRoot bool
+
+// resolveRunAsRoot reads NANOSB_RUN_AS_ROOT (truthy: "1","true","yes","on")
+// and, as a fallback, the contents of /etc/nanosb/run-as-root. Returns false
+// if neither source indicates an affirmative value.
+func resolveRunAsRoot() bool {
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv(runAsRootEnv))); v != "" {
+		switch v {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	data, err := os.ReadFile(runAsRootFile)
+	if err == nil {
+		v := strings.ToLower(strings.TrimSpace(string(data)))
+		switch v {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -324,10 +356,11 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = defaultWorkDir
 
-	// Run agent commands as the 'developer' user (UID 1000, GID 1000).
-	// The agent-gateway runs as root (started by init), but agents like
-	// Claude Code refuse --dangerously-skip-permissions when running as root.
-	cmd.SysProcAttr = sysProcAttrForDeveloper()
+	// Pick the spawning user: either the legacy developer (uid 1000) or, when
+	// the sandbox was started with runAsRoot=true, uid 0 inside a fresh PID
+	// namespace that hides the agent-gateway process from the child.
+	su := resolveSessionUser()
+	cmd.SysProcAttr = su.procAttr
 
 	// Build environment: inherit base env, overlay secrets, overlay request-specific vars.
 	cmdEnv := os.Environ()
@@ -337,13 +370,12 @@ func streamCommand(ctx context.Context, w http.ResponseWriter, bin string, args 
 	for k, v := range env {
 		cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", k, v))
 	}
-	// Ensure basic vars are set. HOME/USER must be force-overwritten: the
-	// gateway runs as root (inherits HOME=/root from PID 1) but subprocesses
-	// run as developer (UID 1000). glibc's getenv returns the FIRST matching
-	// entry in environ, so appending alone is not enough — we must strip
-	// any pre-existing HOME=/USER= entries before setting the developer values.
-	cmdEnv = setEnv(cmdEnv, "HOME", "/home/developer")
-	cmdEnv = setEnv(cmdEnv, "USER", "developer")
+	// Ensure basic vars are set. HOME/USER must be force-overwritten because
+	// glibc's getenv returns the FIRST matching entry — appending alone is
+	// not enough. The resolved-user helper supplies the right values for the
+	// developer-mode (uid 1000) or run-as-root (uid 0) case.
+	cmdEnv = setEnv(cmdEnv, "HOME", su.home)
+	cmdEnv = setEnv(cmdEnv, "USER", su.user)
 	cmdEnv = ensureEnv(cmdEnv, "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	cmdEnv = ensureEnv(cmdEnv, "TERM", "dumb")
 	// Goose permissions are set via environment variable.
@@ -1292,6 +1324,19 @@ func main() {
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Printf("[agent-gateway] starting... (PID: %d)", os.Getpid())
+
+	// Resolve runAsRoot once at startup. The result is read from every
+	// session/exec spawn site afterwards and never mutated.
+	runAsRoot = resolveRunAsRoot()
+	log.Printf("[agent-gateway] runAsRoot=%v", runAsRoot)
+
+	// Harden the gateway itself against tampering by spawned user processes.
+	// PR_SET_DUMPABLE=0 prevents ptrace/process_vm_readv against us. This is
+	// applied unconditionally — it costs nothing in developer-mode but it
+	// matters once a user shell is running as root in the same VM.
+	if err := setNonDumpable(); err != nil {
+		log.Printf("[agent-gateway] WARN: PR_SET_DUMPABLE failed: %v", err)
+	}
 
 	// As PID 1 we must reap orphan children to avoid zombies.
 	// We do NOT ignore SIGCHLD because Go's exec.Cmd.Wait() uses waitpid()

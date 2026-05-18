@@ -11,12 +11,46 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/gliderlabs/ssh"
 )
+
+// ---------------------------------------------------------------------------
+// User resolution (developer vs root)
+// ---------------------------------------------------------------------------
+
+// sessionUser describes the resolved user context for a spawned session.
+type sessionUser struct {
+	home     string
+	user     string
+	procAttr *syscall.SysProcAttr
+}
+
+// resolveSessionUser returns the resolved user context to apply to the
+// spawned shell or exec command. It honors the package-level runAsRoot flag
+// (set in main.go from the NANOSB_RUN_AS_ROOT env var or the kernel cmdline).
+//
+// When runAsRoot is true the spawned process runs with uid 0 but inside a
+// fresh PID namespace, so it cannot signal or ptrace agent-gateway.
+// Otherwise the legacy developer (uid 1000) behavior is used.
+func resolveSessionUser() sessionUser {
+	if runAsRoot {
+		return sessionUser{
+			home:     "/root",
+			user:     "root",
+			procAttr: sysProcAttrForRoot(),
+		}
+	}
+	return sessionUser{
+		home:     "/home/developer",
+		user:     "developer",
+		procAttr: sysProcAttrForDeveloper(),
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Secrets env store — populated via POST /api/v1/secrets/env
@@ -62,7 +96,9 @@ func setEnvVar(env []string, key, value string) []string {
 }
 
 // buildSessionEnv constructs the full environment for an SSH session.
-func buildSessionEnv(s ssh.Session) []string {
+// The HOME/USER/LOGNAME values come from resolveSessionUser() so they match
+// whichever uid the spawned process will actually run as.
+func buildSessionEnv(s ssh.Session, su sessionUser) []string {
 	env := os.Environ()
 
 	// Add secrets
@@ -75,10 +111,10 @@ func buildSessionEnv(s ssh.Session) []string {
 		env = append(env, e)
 	}
 
-	// Force developer user context
-	env = setEnvVar(env, "HOME", "/home/developer")
-	env = setEnvVar(env, "USER", "developer")
-	env = setEnvVar(env, "LOGNAME", "developer")
+	// Force the resolved user context (root or developer)
+	env = setEnvVar(env, "HOME", su.home)
+	env = setEnvVar(env, "USER", su.user)
+	env = setEnvVar(env, "LOGNAME", su.user)
 
 	return env
 }
@@ -88,7 +124,8 @@ func buildSessionEnv(s ssh.Session) []string {
 // ---------------------------------------------------------------------------
 
 func sshSessionHandler(s ssh.Session) {
-	env := buildSessionEnv(s)
+	su := resolveSessionUser()
+	env := buildSessionEnv(s, su)
 
 	ptyReq, winCh, isPty := s.Pty()
 
@@ -96,8 +133,8 @@ func sshSessionHandler(s ssh.Session) {
 		// Interactive session with PTY
 		cmd := exec.Command("bash", "--login")
 		cmd.Env = env
-		cmd.Dir = "/home/developer"
-		cmd.SysProcAttr = sysProcAttrForDeveloper()
+		cmd.Dir = su.home
+		cmd.SysProcAttr = su.procAttr
 
 		f, err := pty.Start(cmd)
 		if err != nil {
@@ -134,8 +171,8 @@ func sshSessionHandler(s ssh.Session) {
 		args := s.Command()
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Env = env
-		cmd.Dir = "/home/developer"
-		cmd.SysProcAttr = sysProcAttrForDeveloper()
+		cmd.Dir = su.home
+		cmd.SysProcAttr = su.procAttr
 		cmd.Stdin = s
 		cmd.Stdout = s
 		cmd.Stderr = s.Stderr()
