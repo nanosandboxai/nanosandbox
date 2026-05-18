@@ -112,12 +112,14 @@ function Install-NanosandboxDeps {
     }
 
     # --- Download & install dependencies ---
-    Write-Header "Installing dependencies (libkrunfw.dll + busybox + vsock_proxy + plan9_mount)"
+    Write-Header "Installing dependencies (libkrunfw.dll + busybox + vsock_proxy + fuse_mount)"
 
     $libsDir = Join-Path $targetDir "libs"
     if (-not (Test-Path $libsDir)) {
         New-Item -ItemType Directory -Path $libsDir -Force | Out-Null
     }
+
+    $requiredDeps = @('libkrunfw.dll', 'busybox', 'vsock_proxy', 'fuse_mount')
 
     $bundle = "deps-$Platform.zip"
     $url = "https://github.com/$GitHubRepo/releases/download/$ver/$bundle"
@@ -182,21 +184,33 @@ function Install-NanosandboxDeps {
             Write-Warn "vsock_proxy not found in bundle (HvSocket communication will not work)"
         }
 
-        # plan9_mount — static Linux ELF, mounts the HCS Plan 9 rootfs share via AF_VSOCK
-        # Without this binary, the VM's init script falls back to in-kernel 9p transports
-        # (trans=hyperv / trans=virtio) which don't work on the WSL2 kernel, and the rootfs
-        # never mounts.
-        $p9Src = Get-ChildItem -Path $tmpDir -Filter "plan9_mount" -Recurse | Select-Object -First 1
-        if ($p9Src) {
-            Copy-Item $p9Src.FullName -Destination (Join-Path $libsDir "plan9_mount") -Force
-            $size = $p9Src.Length / 1KB
-            Write-OK ("plan9_mount ({0:N0} KB) -> $libsDir" -f $size)
+        # fuse_mount — static Linux ELF, bridges /dev/fuse with AF_VSOCK to the host
+        # FUSE server during early guest boot. Required for Windows/HCS rootfs and
+        # workspace bring-up over the WSL2 kernel.
+        $fuseSrc = Get-ChildItem -Path $tmpDir -Filter "fuse_mount" -Recurse | Select-Object -First 1
+        if ($fuseSrc) {
+            Copy-Item $fuseSrc.FullName -Destination (Join-Path $libsDir "fuse_mount") -Force
+            $size = $fuseSrc.Length / 1KB
+            Write-OK ("fuse_mount ({0:N0} KB) -> $libsDir" -f $size)
         } else {
-            Write-Warn "plan9_mount not found in bundle (rootfs mount will fail on WSL2 kernel)"
+            Write-Warn "fuse_mount not found in bundle (rootfs mount will fail on WSL2 kernel)"
+        }
+
+        $missingDeps = @()
+        foreach ($dep in $requiredDeps) {
+            $depPath = Join-Path $libsDir $dep
+            if (-not (Test-Path $depPath)) {
+                $missingDeps += $dep
+            }
+        }
+
+        if ($missingDeps.Count -gt 0) {
+            Write-Err ("Missing required runtime files after install: {0}" -f ($missingDeps -join ', '))
+            throw "Runtime dependency installation incomplete"
         }
     } catch {
-        Write-Warn "Failed to download deps bundle: $_"
-        Write-Info "You may need to place files manually in: $libsDir"
+        Write-Err "Dependency installation failed: $_"
+        throw
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
