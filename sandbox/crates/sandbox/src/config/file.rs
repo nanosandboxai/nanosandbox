@@ -29,6 +29,10 @@ pub struct SandboxDefaults {
     pub cpus: Option<u32>,
     pub memory: Option<u32>,
     pub timeout: Option<u32>,
+    /// Run agent commands as root inside the guest VM.
+    /// Accepts both snake_case (`run_as_root`) and camelCase (`runAsRoot`).
+    #[serde(alias = "runAsRoot")]
+    pub run_as_root: Option<bool>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
     /// Path to a .env file to load environment variables from.
@@ -62,6 +66,10 @@ pub struct SandboxDefinition {
     pub cpus: Option<u32>,
     pub memory: Option<u32>,
     pub timeout: Option<u32>,
+    /// Run agent commands as root inside the guest VM.
+    /// Accepts both snake_case (`run_as_root`) and camelCase (`runAsRoot`).
+    #[serde(alias = "runAsRoot")]
+    pub run_as_root: Option<bool>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
     /// Path to a .env file to load environment variables from.
@@ -260,6 +268,9 @@ pub fn resolve_sandbox_configs(
         }
         if let Some(timeout) = def.timeout.or(defaults.timeout) {
             config.timeout_secs = timeout;
+        }
+        if let Some(run_as_root) = def.run_as_root.or(defaults.run_as_root) {
+            config.run_as_root = run_as_root;
         }
 
         // Env vars merge order: defaults env_file → defaults env → per-sandbox env_file → per-sandbox env
@@ -668,6 +679,40 @@ sandboxes:
         );
         assert_eq!(file.sandboxes["codex"].cpus, Some(4));
         assert!(file.sandboxes["claude"].image.is_none());
+    }
+
+    #[test]
+    fn test_resolve_run_as_root_snake_and_camel() {
+        let yaml = r#"
+defaults:
+  image: ghcr.io/nanosandboxai/agents-registry/claude:rc23
+  runAsRoot: true
+
+sandboxes:
+  a:
+    # inherit defaults.runAsRoot=true
+    cpus: 2
+  b:
+    run_as_root: false
+"#;
+
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(configs.len(), 2);
+
+        let a = configs
+            .iter()
+            .find(|(k, _)| k == "a")
+            .map(|(_, cfg)| cfg)
+            .unwrap();
+        let b = configs
+            .iter()
+            .find(|(k, _)| k == "b")
+            .map(|(_, cfg)| cfg)
+            .unwrap();
+
+        assert!(a.sandbox.run_as_root);
+        assert!(!b.sandbox.run_as_root);
     }
 
     #[test]

@@ -282,6 +282,10 @@ impl AgentSandboxConfigBuilder {
         self.config.sandbox.timeout_secs = secs;
         self
     }
+    pub fn run_as_root(mut self, run_as_root: bool) -> Self {
+        self.config.sandbox.run_as_root = run_as_root;
+        self
+    }
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.config.sandbox.env.insert(key.into(), value.into());
         self
