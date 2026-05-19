@@ -8,6 +8,7 @@ pub mod models;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Agent permission level controlling how much autonomy the agent has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -102,6 +103,95 @@ impl std::str::FromStr for AgentType {
             )),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent compute defaults
+// ---------------------------------------------------------------------------
+
+/// Default compute resources for a specific agent type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentComputeDefaults {
+    /// Number of virtual CPUs.
+    pub cpus: u32,
+    /// Memory in megabytes.
+    pub memory_mb: u32,
+}
+
+/// Top-level structure for the agent_defaults.yaml file.
+///
+/// Example `~/.nanosandbox/agent_defaults.yaml`:
+/// ```yaml
+/// claude:
+///   cpus: 2
+///   memory_mb: 4096
+/// codex:
+///   cpus: 2
+///   memory_mb: 2048
+/// goose:
+///   cpus: 2
+///   memory_mb: 2048
+/// cursor:
+///   cpus: 2
+///   memory_mb: 2048
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentDefaultsFile(pub HashMap<String, AgentComputeDefaults>);
+
+/// Built-in compute defaults for each agent type.
+///
+/// These are the fallback values when no user override file exists.
+/// Claude gets the highest allocation because its Node.js working set is
+/// the largest (~1.5-2 GB); other agents are comfortable at 2 GB.
+fn builtin_agent_defaults() -> HashMap<AgentType, AgentComputeDefaults> {
+    let mut m = HashMap::new();
+    m.insert(AgentType::Claude, AgentComputeDefaults { cpus: 2, memory_mb: 4096 });
+    m.insert(AgentType::Codex, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
+    m.insert(AgentType::Goose, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
+    m.insert(AgentType::Cursor, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
+    m
+}
+
+/// Returns the path to the user override file: `~/.nanosandbox/agent_defaults.yaml`.
+pub fn agent_defaults_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".nanosandbox")
+        .join("agent_defaults.yaml")
+}
+
+/// Load agent compute defaults, merging built-in values with any user overrides.
+///
+/// Resolution order (last wins):
+/// 1. Built-in defaults (hardcoded per agent type)
+/// 2. `~/.nanosandbox/agent_defaults.yaml` (user overrides)
+///
+/// Returns a map from `AgentType` to `AgentComputeDefaults`.
+pub fn load_agent_defaults() -> HashMap<AgentType, AgentComputeDefaults> {
+    let mut defaults = builtin_agent_defaults();
+
+    // Merge user overrides if the file exists.
+    let path = agent_defaults_path();
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Ok(user_file) = serde_yaml::from_str::<AgentDefaultsFile>(&contents) {
+            for (key, compute) in user_file.0 {
+                if let Ok(agent_type) = key.parse::<AgentType>() {
+                    defaults.insert(agent_type, compute);
+                }
+            }
+        }
+    }
+
+    defaults
+}
+
+/// Look up compute defaults for a specific agent type.
+///
+/// Returns `None` if the agent type is unknown or not configured.
+pub fn agent_compute_for(agent_type: AgentType) -> AgentComputeDefaults {
+    load_agent_defaults()
+        .remove(&agent_type)
+        .unwrap_or(AgentComputeDefaults { cpus: 2, memory_mb: 2048 })
 }
 
 fn default_enabled() -> bool {

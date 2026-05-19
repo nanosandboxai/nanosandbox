@@ -55,8 +55,10 @@ pub use crate::project::{BranchStrategy, GitRepo, ProjectLayout, ProjectMount};
 // Re-exports from this crate
 pub use agents_registry::AgentsRegistryClient;
 pub use config::{
-    normalize_image, AgentDefinition, AgentMcpRef, AgentSandboxConfig, AgentSandboxConfigBuilder,
-    AgentType, McpServerConfig, Permissions, ResolvedAgentConfig, SkillDef,
+    normalize_image, agent_compute_for, agent_defaults_path, load_agent_defaults,
+    AgentComputeDefaults, AgentDefinition, AgentMcpRef, AgentSandboxConfig,
+    AgentSandboxConfigBuilder, AgentType, McpServerConfig, Permissions, ResolvedAgentConfig,
+    SkillDef,
 };
 // SandboxConfig at the nanosandbox level = the agent-aware config (includes agent, skills, mcp etc.)
 pub use config::AgentSandboxConfig as SandboxConfig;

@@ -479,6 +479,19 @@ pub fn resolve_sandbox_configs(
             agent_config.claude_settings = Some(ClaudeSettings { theme: Some(theme) });
         }
 
+        // Apply agent-type-aware compute defaults when the user has not
+        // explicitly set cpus or memory in the sandbox.yml (either in the
+        // per-sandbox block or in the defaults block).
+        if let Some(agent_type) = agent_config.agent_type {
+            let agent_defaults = super::agent_compute_for(agent_type);
+            if def.cpus.is_none() && defaults.cpus.is_none() {
+                config.cpus = agent_defaults.cpus;
+            }
+            if def.memory.is_none() && defaults.memory.is_none() {
+                config.memory_mb = agent_defaults.memory_mb;
+            }
+        }
+
         // Validate model against known models if both type and model are set.
         if let (Some(agent_type), Some(ref model)) = (agent_config.agent_type, &agent_config.model)
         {
