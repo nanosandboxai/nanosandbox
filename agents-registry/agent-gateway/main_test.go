@@ -164,14 +164,82 @@ func TestBuildAgentCommand_Claude_Resume(t *testing.T) {
 }
 
 func TestBuildAgentCommand_Goose_FirstMessage(t *testing.T) {
+	prevSecrets := getSecretsEnv()
+	SetSecretsEnv(map[string]string{})
+	defer SetSecretsEnv(prevSecrets)
+
+	prevConfigPath := gooseConfigPath
+	gooseConfigPath = t.TempDir() + "/config.yaml"
+	defer func() { gooseConfigPath = prevConfigPath }()
+
 	req := &MessageRequest{Agent: "goose", Message: "start"}
 	sess := &agentSession{}
 	bin, args := buildAgentCommand(req, sess)
 	if bin != "goose" {
 		t.Errorf("expected bin=goose, got %q", bin)
 	}
+	if len(args) < 1 || args[0] != "configure" {
+		t.Errorf("expected goose configure, got %v", args)
+	}
+}
+
+func TestBuildAgentCommand_Goose_FirstMessage_Configured(t *testing.T) {
+	prevSecrets := getSecretsEnv()
+	SetSecretsEnv(map[string]string{})
+	defer SetSecretsEnv(prevSecrets)
+
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	if err := os.WriteFile(path, []byte("GOOSE_PROVIDER: \"openai\"\n"), 0644); err != nil {
+		t.Fatalf("write goose config: %v", err)
+	}
+
+	prevConfigPath := gooseConfigPath
+	gooseConfigPath = path
+	defer func() { gooseConfigPath = prevConfigPath }()
+
+	req := &MessageRequest{Agent: "goose", Message: "start"}
+	sess := &agentSession{}
+	_, args := buildAgentCommand(req, sess)
+
 	if len(args) < 2 || args[0] != "run" || args[1] != "--text" {
 		t.Errorf("expected goose run --text, got %v", args)
+	}
+}
+
+func TestBuildAgentCommand_Goose_FirstMessage_ProviderInSecrets(t *testing.T) {
+	prevSecrets := getSecretsEnv()
+	SetSecretsEnv(map[string]string{"OPENAI_API_KEY": "secret"})
+	defer SetSecretsEnv(prevSecrets)
+
+	prevConfigPath := gooseConfigPath
+	gooseConfigPath = t.TempDir() + "/config.yaml"
+	defer func() { gooseConfigPath = prevConfigPath }()
+
+	req := &MessageRequest{Agent: "goose", Message: "start"}
+	sess := &agentSession{}
+	_, args := buildAgentCommand(req, sess)
+
+	if len(args) < 2 || args[0] != "run" || args[1] != "--text" {
+		t.Errorf("expected goose run --text with secrets provider, got %v", args)
+	}
+}
+
+func TestBuildAgentCommand_Goose_FirstMessage_ProviderInRequestEnv(t *testing.T) {
+	prevSecrets := getSecretsEnv()
+	SetSecretsEnv(map[string]string{})
+	defer SetSecretsEnv(prevSecrets)
+
+	prevConfigPath := gooseConfigPath
+	gooseConfigPath = t.TempDir() + "/config.yaml"
+	defer func() { gooseConfigPath = prevConfigPath }()
+
+	req := &MessageRequest{Agent: "goose", Message: "start", Env: map[string]string{"ANTHROPIC_API_KEY": "secret"}}
+	sess := &agentSession{}
+	_, args := buildAgentCommand(req, sess)
+
+	if len(args) < 2 || args[0] != "run" || args[1] != "--text" {
+		t.Errorf("expected goose run --text with request env provider, got %v", args)
 	}
 }
 

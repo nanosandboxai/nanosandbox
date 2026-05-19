@@ -227,6 +227,9 @@ func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []strin
 		if sess.sessionID != "" {
 			return "goose", []string{"session", "resume", sess.sessionID, "--message", message}
 		}
+		if sess.messageCount == 0 && !isGooseProviderConfigured() && !gooseProviderAvailableForRequest(req) {
+			return "goose", []string{"configure"}
+		}
 		return "goose", []string{"run", "--text", message}
 
 	case "codex":
@@ -1102,6 +1105,14 @@ func detectGooseProviderFromEnv(env map[string]string) *mcp.GooseProviderConfig 
 	}
 
 	return nil
+}
+
+func gooseProviderAvailableForRequest(req *MessageRequest) bool {
+	env := getSecretsEnv()
+	for k, v := range req.Env {
+		env[k] = v
+	}
+	return detectGooseProviderFromEnv(env) != nil
 }
 
 // autoMode controls whether agents run fully autonomously (no confirmation prompts).
