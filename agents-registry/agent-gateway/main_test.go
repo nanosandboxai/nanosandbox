@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -435,5 +436,62 @@ func TestBuildAgentCommand_NoAutoMode(t *testing.T) {
 			t.Errorf("should not have auto mode flags when auto mode is off, got %v", args3)
 			break
 		}
+	}
+}
+
+func TestDetectGooseProviderFromEnv_Priority(t *testing.T) {
+	env := map[string]string{
+		"OPENAI_API_KEY":    "openai-key",
+		"ANTHROPIC_API_KEY": "anthropic-key",
+		"GOOGLE_API_KEY":    "google-key",
+		"GROQ_API_KEY":      "groq-key",
+	}
+
+	p := detectGooseProviderFromEnv(env)
+	if p == nil {
+		t.Fatal("expected provider detection, got nil")
+	}
+	if p.Provider != "anthropic" {
+		t.Fatalf("expected anthropic priority, got %q", p.Provider)
+	}
+	if p.Model != "claude-sonnet-4-5-20250929" {
+		t.Fatalf("expected anthropic default model, got %q", p.Model)
+	}
+}
+
+func TestDetectGooseProviderFromEnv_EmptyValuesIgnored(t *testing.T) {
+	env := map[string]string{
+		"OPENAI_API_KEY": "   ",
+	}
+
+	if p := detectGooseProviderFromEnv(env); p != nil {
+		t.Fatalf("expected nil provider when key value is empty, got %+v", p)
+	}
+}
+
+func TestIsGooseProviderConfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+
+	prev := gooseConfigPath
+	gooseConfigPath = path
+	defer func() { gooseConfigPath = prev }()
+
+	if isGooseProviderConfigured() {
+		t.Fatal("expected false when config does not exist")
+	}
+
+	if err := os.WriteFile(path, []byte("extensions:\n  foo: {}\n"), 0644); err != nil {
+		t.Fatalf("write config without provider: %v", err)
+	}
+	if isGooseProviderConfigured() {
+		t.Fatal("expected false when GOOSE_PROVIDER is absent")
+	}
+
+	if err := os.WriteFile(path, []byte("GOOSE_PROVIDER: \"openai\"\nextensions:\n  foo: {}\n"), 0644); err != nil {
+		t.Fatalf("write config with provider: %v", err)
+	}
+	if !isGooseProviderConfigured() {
+		t.Fatal("expected true when GOOSE_PROVIDER is present")
 	}
 }

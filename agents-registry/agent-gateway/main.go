@@ -35,11 +35,11 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	listenAddr      = ":8080"
-	defaultTimeout  = 300 * time.Second
-	defaultWorkDir  = "/workspace"
-	runAsRootEnv    = "NANOSB_RUN_AS_ROOT"
-	runAsRootFile   = "/etc/nanosb/run-as-root"
+	listenAddr     = ":8080"
+	defaultTimeout = 300 * time.Second
+	defaultWorkDir = "/workspace"
+	runAsRootEnv   = "NANOSB_RUN_AS_ROOT"
+	runAsRootFile  = "/etc/nanosb/run-as-root"
 )
 
 // runAsRoot is set at process startup from NANOSB_RUN_AS_ROOT (or the
@@ -742,10 +742,10 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 // remove, enable, disable). Includes per-agent compatibility info and any
 // warnings from config generation.
 type mcpMutationResponse struct {
-	Status   string                                `json:"status"`
-	Name     string                                `json:"name"`
-	Agents   map[string]*mcp.ServerAgentStatus     `json:"agents,omitempty"`
-	Warnings []string                              `json:"warnings,omitempty"`
+	Status   string                            `json:"status"`
+	Name     string                            `json:"name"`
+	Agents   map[string]*mcp.ServerAgentStatus `json:"agents,omitempty"`
+	Warnings []string                          `json:"warnings,omitempty"`
 }
 
 func mcpListHandler(mgr *mcp.Manager) http.HandlerFunc {
@@ -1059,6 +1059,51 @@ type BootstrapRequest struct {
 	ClaudeSettings *ClaudeSettings              `json:"claude_settings,omitempty"`
 }
 
+var gooseConfigPath = "/home/developer/.config/goose/config.yaml"
+
+func isGooseProviderConfigured() bool {
+	data, err := os.ReadFile(gooseConfigPath)
+	if err != nil {
+		return false
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "GOOSE_PROVIDER:") {
+			v := strings.TrimSpace(strings.TrimPrefix(line, "GOOSE_PROVIDER:"))
+			v = strings.Trim(v, `"'`)
+			return v != ""
+		}
+	}
+
+	return false
+}
+
+func detectGooseProviderFromEnv(env map[string]string) *mcp.GooseProviderConfig {
+	providerByPriority := []struct {
+		key      string
+		provider string
+		model    string
+	}{
+		{key: "ANTHROPIC_API_KEY", provider: "anthropic", model: "claude-sonnet-4-5-20250929"},
+		{key: "OPENAI_API_KEY", provider: "openai", model: "gpt-4o"},
+		{key: "GOOGLE_API_KEY", provider: "google-gemini", model: "gemini-2.0-flash"},
+		{key: "GROQ_API_KEY", provider: "groq", model: "llama-3.3-70b-versatile"},
+	}
+
+	for _, p := range providerByPriority {
+		if val, ok := env[p.key]; ok && strings.TrimSpace(val) != "" {
+			return &mcp.GooseProviderConfig{Provider: p.provider, Model: p.model}
+		}
+	}
+
+	return nil
+}
+
 // autoMode controls whether agents run fully autonomously (no confirmation prompts).
 // Set via bootstrap request.
 var autoMode bool
@@ -1116,6 +1161,17 @@ func agentBootstrapHandler(skillsMgr *skills.Manager, mcpMgr *mcp.Manager) http.
 			skillsMgr.SetAgentType(req.AgentType)
 			mcpMgr.SetAgentType(req.AgentType)
 			log.Printf("[agent-gateway] agent type set to %q", req.AgentType)
+		}
+
+		if isGooseProviderConfigured() {
+			mcpMgr.SetGooseProvider("", "")
+			log.Printf("[agent-gateway] goose config already has GOOSE_PROVIDER; skipping provider auto-detection")
+		} else if provider := detectGooseProviderFromEnv(getSecretsEnv()); provider != nil {
+			mcpMgr.SetGooseProvider(provider.Provider, provider.Model)
+			log.Printf("[agent-gateway] auto-configured goose provider=%q model=%q from secrets env", provider.Provider, provider.Model)
+		} else {
+			mcpMgr.SetGooseProvider("", "")
+			log.Printf("[agent-gateway] no goose provider key detected in secrets env")
 		}
 
 		// Set agent definition

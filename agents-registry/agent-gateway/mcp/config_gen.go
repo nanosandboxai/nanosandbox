@@ -58,7 +58,12 @@ func (m *Manager) generateForAgent(agentName string, agentCfg *AgentMcpConfig) e
 
 	switch agentCfg.Format {
 	case "goose":
-		data, err = GenerateGooseConfig(servers)
+		var provider *GooseProviderConfig
+		if m.gooseProvider != nil {
+			cp := *m.gooseProvider
+			provider = &cp
+		}
+		data, err = GenerateGooseConfigWithProvider(servers, provider)
 	case "codex":
 		data, err = GenerateCodexConfig(servers)
 	case "cursor":
@@ -159,8 +164,30 @@ func GenerateClaudeConfig(servers map[string]*McpServerDef) ([]byte, error) {
 
 // --- Goose Format ---
 
+// GooseProviderConfig holds optional provider/model settings to write into
+// the goose config.yaml alongside MCP extensions. When empty, the provider
+// section is omitted and goose falls back to its own config or env vars.
+type GooseProviderConfig struct {
+	Provider string // e.g. "anthropic", "openai", "google-gemini"
+	Model    string // e.g. "claude-sonnet-4-5-20250929"
+}
+
 func GenerateGooseConfig(servers map[string]*McpServerDef) ([]byte, error) {
+	return GenerateGooseConfigWithProvider(servers, nil)
+}
+
+func GenerateGooseConfigWithProvider(servers map[string]*McpServerDef, provider *GooseProviderConfig) ([]byte, error) {
 	var b strings.Builder
+
+	// Write provider/model settings if provided.
+	if provider != nil && provider.Provider != "" {
+		b.WriteString(fmt.Sprintf("GOOSE_PROVIDER: %q\n", provider.Provider))
+		if provider.Model != "" {
+			b.WriteString(fmt.Sprintf("GOOSE_MODEL: %q\n", provider.Model))
+		}
+		b.WriteString("\n")
+	}
+
 	b.WriteString("extensions:\n")
 
 	names := sortedKeys(servers)

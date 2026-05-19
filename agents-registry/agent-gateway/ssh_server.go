@@ -119,6 +119,25 @@ func buildSessionEnv(s ssh.Session, su sessionUser) []string {
 	return env
 }
 
+func envSliceToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		m[k] = v
+	}
+	return m
+}
+
+func shouldPrintGooseConfigureHint(env []string) bool {
+	if isGooseProviderConfigured() {
+		return false
+	}
+	return detectGooseProviderFromEnv(envSliceToMap(env)) == nil
+}
+
 // ---------------------------------------------------------------------------
 // SSH session handler
 // ---------------------------------------------------------------------------
@@ -130,6 +149,11 @@ func sshSessionHandler(s ssh.Session) {
 	ptyReq, winCh, isPty := s.Pty()
 
 	if isPty {
+		if shouldPrintGooseConfigureHint(env) {
+			fmt.Fprintln(s, "[nanosandbox] No LLM provider configured for goose.")
+			fmt.Fprintln(s, "Run 'goose configure' to set up your provider and model.")
+		}
+
 		// Interactive session with PTY
 		cmd := exec.Command("bash", "--login")
 		cmd.Env = env
@@ -169,6 +193,10 @@ func sshSessionHandler(s ssh.Session) {
 	} else if len(s.Command()) > 0 {
 		// Exec session (non-interactive)
 		args := s.Command()
+		if args[0] == "goose" && shouldPrintGooseConfigureHint(env) {
+			fmt.Fprintln(s, "[nanosandbox] No LLM provider configured for goose.")
+			fmt.Fprintln(s, "Run 'goose configure' to set up your provider and model.")
+		}
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Env = env
 		cmd.Dir = su.home

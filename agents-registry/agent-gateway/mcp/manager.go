@@ -17,6 +17,9 @@ type Manager struct {
 	mu        sync.RWMutex
 	config    McpConfig
 	agentType string // when set, only generate for this agent type
+	// gooseProvider is optional provider/model config used when writing
+	// ~/.config/goose/config.yaml. When nil, provider keys are omitted.
+	gooseProvider *GooseProviderConfig
 }
 
 // NewManager creates an empty Manager with built-in agent config paths.
@@ -94,6 +97,26 @@ func (m *Manager) AgentType() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.agentType
+}
+
+// SetGooseProvider sets optional goose provider/model values used during
+// goose config generation. Passing an empty provider clears the override.
+func (m *Manager) SetGooseProvider(provider, model string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if provider == "" {
+		m.gooseProvider = nil
+		log.Printf("[mcp] goose provider override cleared")
+		return
+	}
+
+	m.gooseProvider = &GooseProviderConfig{Provider: provider, Model: model}
+	if model != "" {
+		log.Printf("[mcp] goose provider override set to %q (model=%q)", provider, model)
+	} else {
+		log.Printf("[mcp] goose provider override set to %q", provider)
+	}
 }
 
 // ListServers returns a deep copy of all configured server definitions.

@@ -74,6 +74,56 @@ func TestGenerateGooseConfig(t *testing.T) {
 	}
 }
 
+func TestGenerateGooseConfigWithProvider_WritesProviderAndModel(t *testing.T) {
+	provider := &GooseProviderConfig{Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"}
+	out, err := GenerateGooseConfigWithProvider(testServers, provider)
+	if err != nil {
+		t.Fatalf("GenerateGooseConfigWithProvider failed: %v", err)
+	}
+
+	yamlStr := string(out)
+	if !strings.Contains(yamlStr, `GOOSE_PROVIDER: "anthropic"`) {
+		t.Error("expected GOOSE_PROVIDER in goose config")
+	}
+	if !strings.Contains(yamlStr, `GOOSE_MODEL: "claude-sonnet-4-5-20250929"`) {
+		t.Error("expected GOOSE_MODEL in goose config")
+	}
+}
+
+func TestGenerateGooseConfigWithProvider_NilProviderBackwardCompatible(t *testing.T) {
+	outA, err := GenerateGooseConfig(testServers)
+	if err != nil {
+		t.Fatalf("GenerateGooseConfig failed: %v", err)
+	}
+	outB, err := GenerateGooseConfigWithProvider(testServers, nil)
+	if err != nil {
+		t.Fatalf("GenerateGooseConfigWithProvider failed: %v", err)
+	}
+
+	if string(outA) != string(outB) {
+		t.Errorf("expected wrapper output to match legacy output\nlegacy:\n%s\nwithProvider:nil:\n%s", outA, outB)
+	}
+}
+
+func TestGenerateGooseConfigWithProvider_KeepsExtensions(t *testing.T) {
+	provider := &GooseProviderConfig{Provider: "openai", Model: "gpt-4o"}
+	out, err := GenerateGooseConfigWithProvider(testServers, provider)
+	if err != nil {
+		t.Fatalf("GenerateGooseConfigWithProvider failed: %v", err)
+	}
+
+	yamlStr := string(out)
+	if !strings.Contains(yamlStr, `GOOSE_PROVIDER: "openai"`) {
+		t.Error("expected provider section")
+	}
+	if !strings.Contains(yamlStr, "extensions:") {
+		t.Error("expected extensions section")
+	}
+	if !strings.Contains(yamlStr, "github:") {
+		t.Error("expected github extension entry")
+	}
+}
+
 func TestGenerateCodexConfig(t *testing.T) {
 	out, err := GenerateCodexConfig(testServers)
 	if err != nil {
