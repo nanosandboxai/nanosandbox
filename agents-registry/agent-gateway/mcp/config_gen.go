@@ -179,16 +179,20 @@ func GenerateGooseConfig(servers map[string]*McpServerDef) ([]byte, error) {
 func GenerateGooseConfigWithProvider(servers map[string]*McpServerDef, provider *GooseProviderConfig) ([]byte, error) {
 	var b strings.Builder
 
+	// Disable telemetry consent dialog so goose skips the interactive
+	// first-run prompt inside the sandbox (same idea as the Claude
+	// .claude.json hasCompletedOnboarding pre-seed).
+	b.WriteString("GOOSE_TELEMETRY_ENABLED: false\n")
+
 	// Write provider/model settings if provided.
 	if provider != nil && provider.Provider != "" {
 		b.WriteString(fmt.Sprintf("GOOSE_PROVIDER: %q\n", provider.Provider))
 		if provider.Model != "" {
 			b.WriteString(fmt.Sprintf("GOOSE_MODEL: %q\n", provider.Model))
 		}
-		b.WriteString("\n")
 	}
 
-	b.WriteString("extensions:\n")
+	b.WriteString("\nextensions:\n")
 
 	names := sortedKeys(servers)
 	for _, name := range names {

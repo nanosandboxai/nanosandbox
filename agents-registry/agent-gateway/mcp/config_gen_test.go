@@ -60,6 +60,9 @@ func TestGenerateGooseConfig(t *testing.T) {
 
 	yamlStr := string(out)
 
+	if !strings.Contains(yamlStr, "GOOSE_TELEMETRY_ENABLED: false") {
+		t.Error("expected 'GOOSE_TELEMETRY_ENABLED: false' in goose config")
+	}
 	if !strings.Contains(yamlStr, "extensions:") {
 		t.Error("expected 'extensions:' in goose config")
 	}
