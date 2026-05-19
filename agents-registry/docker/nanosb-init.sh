@@ -210,6 +210,14 @@ if [ -d /workspace ]; then
         rm -rf /home/developer/.config/goose 2>/dev/null || true
     fi
     ln -sfn "$STATE_DIR/.config/goose" /home/developer/.config/goose 2>/dev/null || true
+    # Goose: pre-seed config.yaml so goose skips the first-run setup wizard
+    # and telemetry consent dialog (same pattern as Claude's .claude.json below).
+    # Guard: only write if config.yaml doesn't exist yet (preserves user changes
+    # from prior boots, since the file is workspace-backed via the symlink above).
+    if [ ! -f "$STATE_DIR/.config/goose/config.yaml" ]; then
+        printf 'GOOSE_TELEMETRY_OFF: true\nextensions: {}\n' \
+            > "$STATE_DIR/.config/goose/config.yaml" 2>/dev/null || true
+    fi
 
     # ~/.claude.json (Claude auth + preferences — lives outside ~/.claude/, needs own symlink)
     ln -sfn "$STATE_DIR/.claude.json" "/home/developer/.claude.json" 2>/dev/null || true
