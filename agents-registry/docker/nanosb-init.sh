@@ -215,7 +215,7 @@ if [ -d /workspace ]; then
     # Guard: only write if config.yaml doesn't exist yet (preserves user changes
     # from prior boots, since the file is workspace-backed via the symlink above).
     if [ ! -f "$STATE_DIR/.config/goose/config.yaml" ]; then
-        printf 'GOOSE_TELEMETRY_OFF: true\nextensions: {}\n' \
+        printf 'GOOSE_TELEMETRY_ENABLED: false\nextensions: {}\n' \
             > "$STATE_DIR/.config/goose/config.yaml" 2>/dev/null || true
     fi
 
