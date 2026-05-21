@@ -203,13 +203,24 @@ if [ -d /workspace ]; then
         ln -sfn "$STATE_DIR/$dir" "/home/developer/$dir" 2>/dev/null || true
     done
 
-    # Goose: ~/.config/goose/ (sessions, config.yaml)
+    # Goose config: ~/.config/goose/ (config.yaml, secrets.yaml)
     mkdir -p "$STATE_DIR/.config/goose" 2>/dev/null || true
     mkdir -p /home/developer/.config 2>/dev/null || true
     if [ -e /home/developer/.config/goose ] && [ ! -L /home/developer/.config/goose ]; then
         rm -rf /home/developer/.config/goose 2>/dev/null || true
     fi
     ln -sfn "$STATE_DIR/.config/goose" /home/developer/.config/goose 2>/dev/null || true
+
+    # Goose sessions/data: redirect ~/.local/share/goose/ into the already
+    # persisted .config/goose tree. This avoids mount-timing issues with a
+    # separate .local/share state subtree.
+    mkdir -p "$STATE_DIR/.config/goose/data/sessions" 2>/dev/null || true
+    mkdir -p /home/developer/.local/share 2>/dev/null || true
+    if [ -e /home/developer/.local/share/goose ] && [ ! -L /home/developer/.local/share/goose ]; then
+        rm -rf /home/developer/.local/share/goose 2>/dev/null || true
+    fi
+    ln -sfn "$STATE_DIR/.config/goose/data" /home/developer/.local/share/goose 2>/dev/null || true
+
     # Goose: pre-seed config.yaml so goose skips the first-run setup wizard
     # and telemetry consent dialog (same pattern as Claude's .claude.json below).
     # Guard: only write if config.yaml doesn't exist yet (preserves user changes

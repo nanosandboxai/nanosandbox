@@ -81,6 +81,13 @@ func (m *Manager) generateForAgent(agentName string, agentCfg *AgentMcpConfig) e
 		return fmt.Errorf("writing %s: %w", agentCfg.ConfigPath, err)
 	}
 
+	if agentCfg.Format == "goose" {
+		gooseSessionsDir := filepath.Join(filepath.Dir(agentCfg.ConfigPath), "data", "sessions")
+		if err := os.MkdirAll(gooseSessionsDir, 0755); err != nil {
+			return fmt.Errorf("creating goose sessions dir %s: %w", gooseSessionsDir, err)
+		}
+	}
+
 	log.Printf("[mcp] wrote %s config: %s (%d servers)", agentName, agentCfg.ConfigPath, len(servers))
 	return nil
 }
