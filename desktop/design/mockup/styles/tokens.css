@@ -1,8 +1,7 @@
 /* ============================================================
    nanosb desktop — Design Tokens
-   Single source of truth for all CSS variables.
-   Referenced by: layout.css, components.css, and at runtime
-   by the Tauri theme_get() command.
+   Accent: coral red (#F05454) from the nanosb logo.
+   Structure: dark navy bg, warm red neon glow.
    ============================================================ */
 
 /* ── Dark theme (default) ────────────────────────────────── */
@@ -10,62 +9,62 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* Backgrounds */
-  --bg-app:         #040b16;
-  --bg-surface:     #041321;
-  --bg-elevated:    #061b2a;
-  --bg-pane-header: #05101e;
-  --bg-input:       #041321;
+  /* Backgrounds — warm dark navy with slight red undertone */
+  --bg-app:         #0d0808;
+  --bg-surface:     #130c0c;
+  --bg-elevated:    #1c1010;
+  --bg-pane-header: #170d0d;
+  --bg-input:       #130c0c;
 
-  /* Accent */
-  --accent:             #22d3ee;
-  --accent-2:           #34d399;
-  --accent-gradient:    linear-gradient(135deg, #22d3ee, #34d399);
-  --accent-rgb:         34, 211, 238;
-  --accent-2-rgb:       52, 211, 153;
+  /* Accent — nanosb coral red from logo */
+  --accent:          #F05454;
+  --accent-2:        #FF8080;
+  --accent-gradient: linear-gradient(135deg, #F05454, #FF8080);
+  --accent-rgb:      240, 84, 84;
+  --accent-2-rgb:    255, 128, 128;
 
   /* Text */
-  --text:           #e5e7eb;
-  --text-subtle:    #9ca3af;
-  --text-muted:     #6b7280;
-  --text-on-accent: #040b16;
+  --text:           #f0eded;
+  --text-subtle:    #a89898;
+  --text-muted:     #6b5858;
+  --text-on-accent: #0d0808;
 
   /* Status */
-  --success: #10b981;
-  --warning: #f59e0b;
+  --success: #3dba7e;
+  --warning: #e89c3a;
   --error:   #ef4444;
-  --info:    #3b82f6;
+  --info:    #5b8dee;
 
-  /* Status dot (running sandbox indicator) */
-  --dot-connected:    #10b981;
-  --dot-loading:      #f59e0b;
+  /* Status dot */
+  --dot-connected:    #3dba7e;
+  --dot-loading:      #e89c3a;
   --dot-error:        #ef4444;
-  --dot-disconnected: #6b7280;
+  --dot-disconnected: #6b5858;
 
   /* Status bar */
-  --status-bar-bg:   #030a12;
-  --status-bar-text: #9ca3af;
+  --status-bar-bg:   #090505;
+  --status-bar-text: #a89898;
 
   /* Selection */
-  --selection-bg: rgba(34, 211, 238, 0.25);
-  --selection-fg: #e5e7eb;
+  --selection-bg: rgba(240, 84, 84, 0.25);
+  --selection-fg: #f0eded;
 
   /* Borders */
-  --border:         rgba(34, 211, 238, 0.15);
-  --border-focused: rgba(34, 211, 238, 0.60);
-  --border-subtle:  rgba(34, 211, 238, 0.08);
+  --border:         rgba(240, 84, 84, 0.18);
+  --border-focused: rgba(240, 84, 84, 0.65);
+  --border-subtle:  rgba(240, 84, 84, 0.08);
 
-  /* Glow effects */
-  --glow-accent:    0 0 14px rgba(34, 211, 238, 0.28);
-  --glow-accent-sm: 0 0  7px rgba(34, 211, 238, 0.18);
-  --glow-success:   0 0 10px rgba(16, 185, 129, 0.25);
+  /* Glow — matches logo neon halo */
+  --glow-accent:    0 0 16px rgba(240, 84, 84, 0.35);
+  --glow-accent-sm: 0 0  8px rgba(240, 84, 84, 0.22);
+  --glow-success:   0 0 10px rgba(61, 186, 126, 0.25);
 
   /* Scrim */
-  --scrim: rgba(4, 11, 22, 0.72);
+  --scrim: rgba(13, 8, 8, 0.75);
 
   /* Scrollbar */
-  --scrollbar-thumb:       rgba(34, 211, 238, 0.28);
-  --scrollbar-thumb-hover: rgba(34, 211, 238, 0.55);
+  --scrollbar-thumb:       rgba(240, 84, 84, 0.30);
+  --scrollbar-thumb-hover: rgba(240, 84, 84, 0.55);
   --scrollbar-track:       transparent;
 }
 
@@ -74,61 +73,61 @@
   color-scheme: light;
 
   /* Backgrounds */
-  --bg-app:         #f0f4f8;
+  --bg-app:         #fdf5f5;
   --bg-surface:     #ffffff;
-  --bg-elevated:    #e8edf4;
-  --bg-pane-header: #dde4ed;
+  --bg-elevated:    #f7ecec;
+  --bg-pane-header: #eedede;
   --bg-input:       #ffffff;
 
-  /* Accent */
-  --accent:          #0891b2;
-  --accent-2:        #059669;
-  --accent-gradient: linear-gradient(135deg, #0891b2, #059669);
-  --accent-rgb:      8, 145, 178;
-  --accent-2-rgb:    5, 150, 105;
+  /* Accent — deeper red for contrast on white */
+  --accent:          #c93535;
+  --accent-2:        #e05555;
+  --accent-gradient: linear-gradient(135deg, #c93535, #e05555);
+  --accent-rgb:      201, 53, 53;
+  --accent-2-rgb:    224, 85, 85;
 
   /* Text */
-  --text:           #111827;
-  --text-subtle:    #6b7280;
-  --text-muted:     #9ca3af;
+  --text:           #1a0f0f;
+  --text-subtle:    #6b5858;
+  --text-muted:     #a89898;
   --text-on-accent: #ffffff;
 
   /* Status */
-  --success: #059669;
-  --warning: #d97706;
-  --error:   #dc2626;
-  --info:    #2563eb;
+  --success: #1a8f5c;
+  --warning: #b87320;
+  --error:   #c93535;
+  --info:    #2d5fc4;
 
   /* Status dot */
-  --dot-connected:    #059669;
-  --dot-loading:      #d97706;
-  --dot-error:        #dc2626;
-  --dot-disconnected: #9ca3af;
+  --dot-connected:    #1a8f5c;
+  --dot-loading:      #b87320;
+  --dot-error:        #c93535;
+  --dot-disconnected: #a89898;
 
   /* Status bar */
-  --status-bar-bg:   #dde4ed;
-  --status-bar-text: #6b7280;
+  --status-bar-bg:   #eedede;
+  --status-bar-text: #6b5858;
 
   /* Selection */
-  --selection-bg: rgba(8, 145, 178, 0.20);
-  --selection-fg: #111827;
+  --selection-bg: rgba(201, 53, 53, 0.18);
+  --selection-fg: #1a0f0f;
 
   /* Borders */
-  --border:         rgba(8, 145, 178, 0.18);
-  --border-focused: rgba(8, 145, 178, 0.70);
-  --border-subtle:  rgba(8, 145, 178, 0.08);
+  --border:         rgba(201, 53, 53, 0.20);
+  --border-focused: rgba(201, 53, 53, 0.65);
+  --border-subtle:  rgba(201, 53, 53, 0.08);
 
   /* Glow */
-  --glow-accent:    0 0 10px rgba(8, 145, 178, 0.18);
+  --glow-accent:    0 0 10px rgba(201, 53, 53, 0.15);
   --glow-accent-sm: none;
   --glow-success:   none;
 
   /* Scrim */
-  --scrim: rgba(240, 244, 248, 0.76);
+  --scrim: rgba(253, 245, 245, 0.78);
 
   /* Scrollbar */
-  --scrollbar-thumb:       rgba(8, 145, 178, 0.30);
-  --scrollbar-thumb-hover: rgba(8, 145, 178, 0.55);
+  --scrollbar-thumb:       rgba(201, 53, 53, 0.28);
+  --scrollbar-thumb-hover: rgba(201, 53, 53, 0.50);
   --scrollbar-track:       transparent;
 }
 

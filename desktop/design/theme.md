@@ -2,10 +2,10 @@
 
 Visual baseline for the nanosb desktop terminal app.
 
-Adapted from **dd-code** (deep navy + cyan/emerald accent family) with terminal-first
-optimisations: higher foreground contrast for long sessions, Warp-style command-block
-headers, and a faithful light-theme inversion. Behavior and chrome structure mirror the
-existing nanosb TUI exactly.
+Accent color derived from the **nanosb logo** (coral red `#F05454` neon glow on a very
+dark warm-black background). Structure follows dd-code conventions. Warp-style chrome
+(command-block pane headers, dense status bar, centred palette) combined with exact TUI
+behavior parity.
 
 ---
 
@@ -56,25 +56,25 @@ inverts luminance while keeping the same hue family.
 
 | CSS Variable | Value | Notes |
 |-------------|-------|-------|
-| `--bg-app` | `#040b16` | dd-code `bg-primary` — deep navy |
-| `--bg-surface` | `#041321` | dd-code `bg-surface` |
-| `--bg-elevated` | `#061b2a` | dd-code `bg-secondary` — palette/popup |
-| `--bg-pane-header` | `#05101e` | Between surface and secondary — Warp-style header strip |
-| `--accent` | `#22d3ee` | dd-code `accent-primary` — cyan |
-| `--accent-2` | `#34d399` | dd-code `accent-secondary` — emerald |
-| `--accent-gradient` | `linear-gradient(135deg, #22d3ee, #34d399)` | Decorative |
-| `--text` | `#e5e7eb` | dd-code `text-primary` |
-| `--text-muted` | `#6b7280` | dd-code `text-muted` |
-| `--text-subtle` | `#9ca3af` | dd-code `text-secondary` — mid-level |
-| `--success` | `#10b981` | dd-code `status-success` |
-| `--warning` | `#f59e0b` | dd-code `status-warning` |
-| `--error` | `#ef4444` | dd-code `status-error` |
-| `--info` | `#3b82f6` | dd-code `status-info` |
-| `--status-bar-bg` | `#030a12` | Slightly darker than bg-app for visual separation |
-| `--selection-bg` | `rgba(34, 211, 238, 0.25)` | Cyan tint |
-| `--selection-fg` | `#e5e7eb` | Same as text primary |
-| `--border` | `rgba(34, 211, 238, 0.15)` | Subtle cyan tint — dd-code border adapted |
-| `--border-focused` | `rgba(34, 211, 238, 0.6)` | High-visibility focused state |
+| `--bg-app` | `#0d0808` | Very dark warm black — matches logo background |
+| `--bg-surface` | `#130c0c` | Panel/card fill |
+| `--bg-elevated` | `#1c1010` | Palette/popup — slightly lighter |
+| `--bg-pane-header` | `#170d0d` | Warp-style command-block header strip |
+| `--accent` | `#F05454` | **nanosb logo coral red** — primary accent |
+| `--accent-2` | `#FF8080` | Lighter coral — hover, gradient pair |
+| `--accent-gradient` | `linear-gradient(135deg, #F05454, #FF8080)` | Decorative |
+| `--text` | `#f0eded` | Warm near-white |
+| `--text-muted` | `#6b5858` | Warm gray — unfocused hints |
+| `--text-subtle` | `#a89898` | Mid-level warm gray |
+| `--success` | `#3dba7e` | Teal-green |
+| `--warning` | `#e89c3a` | Amber |
+| `--error` | `#ef4444` | Red |
+| `--info` | `#5b8dee` | Blue |
+| `--status-bar-bg` | `#090505` | Darker than bg-app |
+| `--selection-bg` | `rgba(240, 84, 84, 0.25)` | Red tint |
+| `--selection-fg` | `#f0eded` | Same as text primary |
+| `--border` | `rgba(240, 84, 84, 0.18)` | Subtle red tint |
+| `--border-focused` | `rgba(240, 84, 84, 0.65)` | High-visibility focused state |
 | `--border-radius` | `6px` | Pane chrome corners |
 | `--border-radius-sm` | `4px` | Input, palette item |
 | `--scrim` | `rgba(4, 11, 22, 0.7)` | Popup backdrop |
@@ -90,25 +90,25 @@ teal/indigo that retains contrast on white backgrounds.
 
 | CSS Variable | Value | Notes |
 |-------------|-------|-------|
-| `--bg-app` | `#f0f4f8` | Cool near-white |
+| `--bg-app` | `#fdf5f5` | Warm near-white with faint red tint |
 | `--bg-surface` | `#ffffff` | Pure white panel |
-| `--bg-elevated` | `#e8edf4` | Palette / popup |
-| `--bg-pane-header` | `#dde4ed` | Pane header strip |
-| `--accent` | `#0891b2` | Deeper cyan for contrast on white (Tailwind cyan-600) |
-| `--accent-2` | `#059669` | Deeper emerald (Tailwind emerald-600) |
-| `--accent-gradient` | `linear-gradient(135deg, #0891b2, #059669)` | |
-| `--text` | `#111827` | Near-black |
-| `--text-muted` | `#6b7280` | Same as dark |
-| `--text-subtle` | `#9ca3af` | Same as dark |
-| `--success` | `#059669` | Emerald-600 |
-| `--warning` | `#d97706` | Amber-600 |
-| `--error` | `#dc2626` | Red-600 |
-| `--info` | `#2563eb` | Blue-600 |
-| `--status-bar-bg` | `#dde4ed` | Matches pane header |
-| `--selection-bg` | `rgba(8, 145, 178, 0.2)` | Teal tint |
-| `--selection-fg` | `#111827` | |
-| `--border` | `rgba(8, 145, 178, 0.18)` | |
-| `--border-focused` | `rgba(8, 145, 178, 0.7)` | |
+| `--bg-elevated` | `#f7ecec` | Palette / popup |
+| `--bg-pane-header` | `#eedede` | Pane header strip |
+| `--accent` | `#c93535` | Deeper red for contrast on white |
+| `--accent-2` | `#e05555` | Lighter red pair |
+| `--accent-gradient` | `linear-gradient(135deg, #c93535, #e05555)` | |
+| `--text` | `#1a0f0f` | Warm near-black |
+| `--text-muted` | `#a89898` | Warm gray |
+| `--text-subtle` | `#6b5858` | Mid warm gray |
+| `--success` | `#1a8f5c` | Dark teal-green |
+| `--warning` | `#b87320` | Dark amber |
+| `--error` | `#c93535` | Matches accent |
+| `--info` | `#2d5fc4` | Blue |
+| `--status-bar-bg` | `#eedede` | Matches pane header |
+| `--selection-bg` | `rgba(201, 53, 53, 0.18)` | Red tint |
+| `--selection-fg` | `#1a0f0f` | |
+| `--border` | `rgba(201, 53, 53, 0.20)` | |
+| `--border-focused` | `rgba(201, 53, 53, 0.65)` | |
 | `--border-radius` | `6px` | |
 | `--border-radius-sm` | `4px` | |
 | `--scrim` | `rgba(240, 244, 248, 0.75)` | |
@@ -206,28 +206,28 @@ The `theme_get()` Tauri command (defined in D3 — IPC schema) returns an xterm.
 
 | xterm.js key | Dark token source | Light token source |
 |-------------|-------------------|--------------------|
-| `background` | `#040b16` | `#ffffff` |
-| `foreground` | `#e5e7eb` | `#111827` |
-| `cursor` | `#22d3ee` | `#0891b2` |
-| `cursorAccent` | `#040b16` | `#ffffff` |
-| `selectionBackground` | `rgba(34,211,238,0.25)` | `rgba(8,145,178,0.2)` |
-| `selectionForeground` | `#e5e7eb` | `#111827` |
-| `black` | `#1e2433` | `#374151` |
+| `background` | `#0d0808` | `#ffffff` |
+| `foreground` | `#f0eded` | `#1a0f0f` |
+| `cursor` | `#F05454` | `#c93535` |
+| `cursorAccent` | `#0d0808` | `#ffffff` |
+| `selectionBackground` | `rgba(240,84,84,0.25)` | `rgba(201,53,53,0.18)` |
+| `selectionForeground` | `#f0eded` | `#1a0f0f` |
+| `black` | `#201414` | `#3d2020` |
 | `red` | `#ef4444` | `#dc2626` |
-| `green` | `#10b981` | `#059669` |
-| `yellow` | `#f59e0b` | `#d97706` |
-| `blue` | `#3b82f6` | `#2563eb` |
-| `magenta` | `#a78bfa` | `#7c3aed` |
-| `cyan` | `#22d3ee` | `#0891b2` |
-| `white` | `#e5e7eb` | `#f9fafb` |
-| `brightBlack` | `#4b5563` | `#6b7280` |
-| `brightRed` | `#f87171` | `#ef4444` |
-| `brightGreen` | `#34d399` | `#10b981` |
-| `brightYellow` | `#fcd34d` | `#f59e0b` |
-| `brightBlue` | `#60a5fa` | `#3b82f6` |
-| `brightMagenta` | `#c4b5fd` | `#a78bfa` |
-| `brightCyan` | `#67e8f9` | `#22d3ee` |
-| `brightWhite` | `#f9fafb` | `#ffffff` |
+| `green` | `#3dba7e` | `#1a8f5c` |
+| `yellow` | `#e89c3a` | `#b87320` |
+| `blue` | `#5b8dee` | `#2d5fc4` |
+| `magenta` | `#c47bbd` | `#9b3d95` |
+| `cyan` | `#5bcaca` | `#2a9090` |
+| `white` | `#f0eded` | `#f9fafb` |
+| `brightBlack` | `#7a5555` | `#8a6060` |
+| `brightRed` | `#FF8080` | `#e05555` |
+| `brightGreen` | `#5dd4a0` | `#3dba7e` |
+| `brightYellow` | `#f4b96a` | `#e89c3a` |
+| `brightBlue` | `#82aaee` | `#5b8dee` |
+| `brightMagenta` | `#e0a8da` | `#c47bbd` |
+| `brightCyan` | `#87dede` | `#5bcaca` |
+| `brightWhite` | `#f9f5f5` | `#ffffff` |
 
 ---
 
@@ -245,8 +245,9 @@ The `theme_get()` Tauri command (defined in D3 — IPC schema) returns an xterm.
 
 ## 11. Contrast audit notes
 
-- **Cyan `#22d3ee` on `#040b16`**: contrast ratio ≈ 9.6:1 — passes WCAG AA + AAA.
-- **Text `#e5e7eb` on `#040b16`**: contrast ratio ≈ 14.7:1 — passes AAA.
-- **Muted `#6b7280` on `#040b16`**: contrast ratio ≈ 4.7:1 — passes AA for normal text.
-- **Light accent `#0891b2` on `#ffffff`**: contrast ratio ≈ 4.9:1 — passes AA.
-- **Light text `#111827` on `#ffffff`**: contrast ratio ≈ 18.1:1 — passes AAA.
+- **Coral red `#F05454` on `#0d0808`**: contrast ratio ≈ 7.2:1 — passes WCAG AA + AAA.
+- **Text `#f0eded` on `#0d0808`**: contrast ratio ≈ 17.1:1 — passes AAA.
+- **Muted `#6b5858` on `#0d0808`**: contrast ratio ≈ 4.6:1 — passes AA for normal text.
+- **Light accent `#c93535` on `#ffffff`**: contrast ratio ≈ 5.1:1 — passes AA.
+- **Light text `#1a0f0f` on `#ffffff`**: contrast ratio ≈ 18.0:1 — passes AAA.
+- **Logo neon halo**: `0 0 16px rgba(240, 84, 84, 0.35)` — matches the glow ring in `logo.png`.

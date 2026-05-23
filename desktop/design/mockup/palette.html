@@ -45,40 +45,35 @@
   <a href="auth-browser.html">Auth</a>
 </nav>
 
-<div class="nsb-app">
-  <!-- Grid in background (dimmed by scrim) -->
-  <div class="nsb-grid" data-layout="1x2" style="opacity:0.4;pointer-events:none;">
+<!-- Background grid (dimmed) -->
+<div class="nsb-app" style="opacity:0.35;pointer-events:none;">
+  <div class="nsb-grid" data-layout="1x2">
     <div class="nsb-pane is-focused">
       <div class="nsb-pane__header">
+        <img src="assets/logo.png" style="width:14px;height:14px;border-radius:3px;flex-shrink:0;" alt="">
         <div class="nsb-dot nsb-dot--connected"></div>
         <span class="nsb-pane__name">claude · sb-a1b2</span>
-        <span class="nsb-pane__id">0</span>
       </div>
       <div class="nsb-pane__terminal">
-        <div class="nsb-terminal-mock" style="color:var(--text-muted);">
-          <div><span class="prompt">developer@sb-a1b2:~$</span> <span class="cmd">claude</span></div>
+        <div class="nsb-terminal-mock">
+          <div><span class="prompt">&gt;&gt; sb-a1b2 ~$</span></div>
           <div class="output">Waiting for input…</div>
         </div>
       </div>
     </div>
     <div class="nsb-pane">
       <div class="nsb-pane__header">
+        <img src="assets/logo.png" style="width:14px;height:14px;border-radius:3px;flex-shrink:0;" alt="">
         <div class="nsb-dot nsb-dot--connected"></div>
         <span class="nsb-pane__name">codex · sb-e5f6</span>
-        <span class="nsb-pane__id">1</span>
       </div>
       <div class="nsb-pane__terminal">
-        <div class="nsb-terminal-mock" style="color:var(--text-muted);">
-          <div class="output">Running tests…</div>
-        </div>
+        <div class="nsb-terminal-mock"><div class="output">Running tests…</div></div>
       </div>
     </div>
   </div>
-
-  <!-- Input bar (also dimmed) -->
   <div class="nsb-input-bar" style="opacity:0.4;">
-    <div class="nsb-input-bar__mode-badge">panel 0</div>
-    <span class="nsb-input-bar__prompt">›</span>
+    <span class="nsb-input-bar__prompt">&gt;&gt;</span>
     <input class="nsb-input-bar__input" readonly>
   </div>
   <div class="nsb-status-bar" style="opacity:0.4;">
@@ -88,23 +83,17 @@
   </div>
 </div>
 
-<!-- Palette overlay (on top) -->
-<div class="nsb-palette-scrim" onclick="void(0)">
+<!-- Palette overlay -->
+<div class="nsb-palette-scrim">
   <div class="nsb-palette">
 
-    <!-- Input row -->
+    <!-- Header with logo + input -->
     <div class="nsb-palette__input-row">
-      <span class="nsb-palette__input-icon">›</span>
-      <input
-        class="nsb-palette__input"
-        value="/add "
-        placeholder="Type a command…"
-        autofocus
-      >
+      <img src="assets/logo.png" style="width:18px;height:18px;border-radius:4px;flex-shrink:0;" alt="">
+      <input class="nsb-palette__input" value="/add " autofocus>
       <kbd class="nsb-kbd">Esc</kbd>
     </div>
 
-    <!-- Results list -->
     <div class="nsb-palette__list">
 
       <div class="nsb-palette__item is-selected">
@@ -120,19 +109,19 @@
       <div class="nsb-palette__item">
         <span class="nsb-palette__item-icon" style="color:var(--text-muted);">●</span>
         <span class="nsb-palette__item-name">/add claude</span>
-        <span class="nsb-palette__item-desc">Claude Code by Anthropic</span>
+        <span class="nsb-palette__item-desc">Claude Code · Anthropic</span>
       </div>
 
       <div class="nsb-palette__item">
         <span class="nsb-palette__item-icon" style="color:var(--text-muted);">●</span>
         <span class="nsb-palette__item-name">/add goose</span>
-        <span class="nsb-palette__item-desc">Goose by Block</span>
+        <span class="nsb-palette__item-desc">Goose · Block</span>
       </div>
 
       <div class="nsb-palette__item">
         <span class="nsb-palette__item-icon" style="color:var(--text-muted);">●</span>
         <span class="nsb-palette__item-name">/add codex</span>
-        <span class="nsb-palette__item-desc">Codex CLI by OpenAI</span>
+        <span class="nsb-palette__item-desc">Codex CLI · OpenAI</span>
       </div>
 
       <div class="nsb-palette__item">
@@ -148,23 +137,22 @@
       <div class="nsb-palette__item">
         <span class="nsb-palette__item-icon" style="color:var(--text-muted);">⚙</span>
         <span class="nsb-palette__item-name">/add claude --auto-mode</span>
-        <span class="nsb-palette__item-desc">Headless autonomous mode</span>
+        <span class="nsb-palette__item-desc">Headless autonomous</span>
       </div>
 
       <div class="nsb-palette__item">
         <span class="nsb-palette__item-icon" style="color:var(--text-muted);">⚙</span>
         <span class="nsb-palette__item-name">/add claude --tag rc11</span>
-        <span class="nsb-palette__item-desc">Pin to specific version</span>
+        <span class="nsb-palette__item-desc">Pin to version</span>
       </div>
 
     </div>
 
-    <!-- Footer hints -->
     <div class="nsb-palette__footer">
       <kbd class="nsb-kbd">↑ ↓</kbd> navigate &nbsp;
       <kbd class="nsb-kbd">Enter</kbd> confirm &nbsp;
       <kbd class="nsb-kbd">Esc</kbd> dismiss
-      <span style="margin-left:auto; color: var(--text-muted);">7 results</span>
+      <span style="margin-left:auto;">7 results</span>
     </div>
 
   </div>

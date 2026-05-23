@@ -46,12 +46,12 @@
 </nav>
 
 <div class="nsb-app">
-  <!-- 2x2 pane grid -->
   <div class="nsb-grid" data-layout="2x2">
 
-    <!-- Panel 1: focused, claude, running -->
+    <!-- Panel 0: focused, claude, running -->
     <div class="nsb-pane is-focused">
       <div class="nsb-pane__header">
+        <img src="assets/logo.png" style="width:14px;height:14px;border-radius:3px;flex-shrink:0;" alt="">
         <div class="nsb-dot nsb-dot--connected"></div>
         <span class="nsb-pane__name">claude · sb-a1b2</span>
         <span class="nsb-pane__id">0</span>
@@ -59,24 +59,20 @@
       </div>
       <div class="nsb-pane__terminal">
         <div class="nsb-terminal-mock">
-<div><span class="prompt">developer@sb-a1b2:~$</span> <span class="cmd">claude --dangerously-skip-permissions</span></div>
-<div class="output">╭─────────────────────────────────────────────────────╮</div>
-<div class="output">│ Claude Code v1.1.4                                  │</div>
-<div class="output">│ ✓ Connected to anthropic · claude-opus-4-5          │</div>
-<div class="output">╰─────────────────────────────────────────────────────╯</div>
+<div><span class="prompt">&gt;&gt; sb-a1b2 ~$</span> <span class="cmd">claude --dangerously-skip-permissions</span></div>
+<div class="output">╭──────────────────────────────────────────────────────╮</div>
+<div class="output">│ ✦ Claude Code v1.1.4  ·  claude-opus-4-5             │</div>
+<div class="output">╰──────────────────────────────────────────────────────╯</div>
 <div>&nbsp;</div>
-<div><span class="output">? </span><span class="cmd">Implement a REST API for user authentication using JWT tokens and bcrypt password hashing.</span></div>
+<div><span class="output">? </span><span class="cmd">Implement JWT auth with bcrypt password hashing.</span></div>
 <div>&nbsp;</div>
 <div class="success-line">● Thinking… (analyzing requirements)</div>
 <div>&nbsp;</div>
-<div class="output">I'll implement a complete JWT authentication system. Let me start by</div>
-<div class="output">examining the project structure.</div>
+<div class="output">I'll implement a complete JWT authentication system.</div>
+<div class="output">Let me examine the project structure first.</div>
 <div>&nbsp;</div>
 <div class="info-line">⚡ Tool: Read(/workspace/src/)</div>
-<div class="output">  src/</div>
-<div class="output">  ├── auth/</div>
-<div class="output">  ├── middleware/</div>
-<div class="output">  └── routes/</div>
+<div class="output">  ├── auth/   ├── middleware/   └── routes/</div>
 <div>&nbsp;</div>
 <div class="info-line">⚡ Tool: Write(/workspace/src/auth/jwt.ts)</div>
 <div class="success-line">  ✓ Created jwt.ts (84 lines)</div>
@@ -86,9 +82,10 @@
       </div>
     </div>
 
-    <!-- Panel 2: goose, loading -->
+    <!-- Panel 1: goose, loading -->
     <div class="nsb-pane">
       <div class="nsb-pane__header">
+        <img src="assets/logo.png" style="width:14px;height:14px;border-radius:3px;flex-shrink:0;" alt="">
         <div class="nsb-dot nsb-dot--loading"></div>
         <span class="nsb-pane__name">goose · sb-c3d4</span>
         <span class="nsb-pane__id">1</span>
@@ -96,9 +93,9 @@
       </div>
       <div class="nsb-pane__terminal">
         <div class="nsb-terminal-mock" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;height:100%;color:var(--text-muted);">
-          <div style="font-size:24px;">⬡</div>
+          <img src="assets/logo.png" style="width:36px;height:36px;border-radius:8px;opacity:0.5;" alt="">
           <div style="font-size:var(--font-size-sm);">Starting sandbox…</div>
-          <div style="font-size:var(--font-size-sm);color:var(--text-muted);opacity:0.6;">Pulling nanosb/goose:latest</div>
+          <div style="font-size:var(--font-size-sm);opacity:0.5;">Pulling nanosb/goose:latest</div>
           <div style="width:120px;">
             <div class="nsb-progress">
               <div class="nsb-progress__fill" style="width:42%"></div>
@@ -108,9 +105,10 @@
       </div>
     </div>
 
-    <!-- Panel 3: codex, running, scrolled up -->
+    <!-- Panel 2: codex, completed -->
     <div class="nsb-pane">
       <div class="nsb-pane__header">
+        <img src="assets/logo.png" style="width:14px;height:14px;border-radius:3px;flex-shrink:0;" alt="">
         <div class="nsb-dot nsb-dot--connected"></div>
         <span class="nsb-pane__name">codex · sb-e5f6</span>
         <span class="nsb-pane__id">2</span>
@@ -121,23 +119,22 @@
 <div class="success-line">✓ Task completed in 7m 38s</div>
 <div>&nbsp;</div>
 <div class="output">Changes made:</div>
-<div class="success-line">  + src/utils/validation.ts          (+142 lines)</div>
-<div class="success-line">  + tests/validation.test.ts         (+88 lines)</div>
-<div class="success-line">  + src/middleware/rate-limit.ts     (+61 lines)</div>
-<div class="warn-line">  ~ src/routes/api.ts                (modified)</div>
+<div class="success-line">  + src/utils/validation.ts     (+142)</div>
+<div class="success-line">  + tests/validation.test.ts    (+88)</div>
+<div class="success-line">  + src/middleware/rate-limit.ts (+61)</div>
+<div class="warn-line">  ~ src/routes/api.ts           (modified)</div>
 <div>&nbsp;</div>
-<div class="output">Test results:</div>
-<div class="success-line">  ✓ 34 tests passed</div>
-<div class="output">  ─ 0 skipped</div>
+<div class="success-line">  ✓ 34 tests passed  ─ 0 skipped</div>
 <div>&nbsp;</div>
-<div><span class="prompt">developer@sb-e5f6:~$</span> <span class="cursor"></span></div>
+<div><span class="prompt">&gt;&gt; sb-e5f6 ~$</span> <span class="cursor"></span></div>
         </div>
       </div>
     </div>
 
-    <!-- Panel 4: cursor, error -->
+    <!-- Panel 3: cursor, error -->
     <div class="nsb-pane">
       <div class="nsb-pane__header">
+        <img src="assets/logo.png" style="width:14px;height:14px;border-radius:3px;flex-shrink:0;filter:saturate(0);" alt="">
         <div class="nsb-dot nsb-dot--error"></div>
         <span class="nsb-pane__name">cursor · sb-g7h8</span>
         <span class="nsb-pane__id">3</span>
@@ -147,12 +144,12 @@
         <div class="nsb-terminal-mock">
 <div class="error-line">✗ SSH connection lost</div>
 <div>&nbsp;</div>
-<div class="output" style="color:var(--text-muted)">The sandbox connection was interrupted.</div>
-<div class="output" style="color:var(--text-muted)">Use /reconnect to re-establish the SSH session.</div>
+<div class="output">The sandbox connection was interrupted.</div>
+<div class="output">Use /reconnect to re-establish the session.</div>
 <div>&nbsp;</div>
-<div style="margin-top:8px;">
+<div>
   <span style="font-family:var(--font-mono);font-size:var(--font-size-sm);color:var(--text-muted)">
-    Press <kbd class="nsb-kbd">r</kbd> or type <span style="color:var(--accent)">/reconnect</span>
+    Type <span style="color:var(--accent)">/reconnect</span> to retry
   </span>
 </div>
         </div>
@@ -164,7 +161,7 @@
   <!-- Input bar -->
   <div class="nsb-input-bar">
     <div class="nsb-input-bar__mode-badge">panel 0</div>
-    <span class="nsb-input-bar__prompt">›</span>
+    <span class="nsb-input-bar__prompt">&gt;&gt;</span>
     <input class="nsb-input-bar__input" value="/add " readonly>
     <span class="nsb-input-bar__hint">
       <kbd class="nsb-kbd">Tab</kbd> next &nbsp;
@@ -190,9 +187,7 @@
     <div class="nsb-status-bar__right">
       <div class="nsb-status-item">sb-a1b2 · focused</div>
       <div class="nsb-status-bar__sep"></div>
-      <div class="nsb-status-item">
-        <kbd class="nsb-kbd">?</kbd> help
-      </div>
+      <div class="nsb-status-item"><kbd class="nsb-kbd">?</kbd> help</div>
     </div>
   </div>
 </div>

@@ -8,7 +8,6 @@
   <link rel="stylesheet" href="styles/layout.css">
   <link rel="stylesheet" href="styles/components.css">
   <style>
-    /* Mockup navigation */
     .nav {
       position: fixed;
       top: var(--space-3);
@@ -29,18 +28,15 @@
       background: var(--bg-elevated);
       transition: color var(--dur-fast), border-color var(--dur-fast);
     }
-    .nav a:hover { color: var(--accent); border-color: var(--border-focused); }
-    .nav a.active { color: var(--accent); border-color: var(--border-focused); }
-
-    /* Theme toggle */
+    .nav a:hover, .nav a.active {
+      color: var(--accent);
+      border-color: var(--border-focused);
+    }
     .theme-toggle {
       position: fixed;
       top: var(--space-3);
       left: var(--space-3);
       z-index: 9999;
-      display: flex;
-      align-items: center;
-      gap: var(--space-2);
     }
     .theme-toggle button {
       font-family: var(--font-mono);
@@ -53,7 +49,7 @@
       cursor: pointer;
     }
 
-    /* Welcome screen */
+    /* Welcome layout */
     .welcome {
       flex: 1;
       display: flex;
@@ -64,16 +60,26 @@
       padding: var(--space-8);
     }
 
-    .welcome__logo {
+    .welcome__hero {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: var(--space-3);
+      gap: var(--space-4);
+    }
+
+    /* Logo from logo.png */
+    .welcome__logo-img {
+      width: 72px;
+      height: 72px;
+      border-radius: 16px;
+      /* Replicate the logo's red neon halo */
+      box-shadow: 0 0 28px rgba(240, 84, 84, 0.5),
+                  0 0 60px rgba(240, 84, 84, 0.18);
     }
 
     .welcome__wordmark {
       font-family: var(--font-mono);
-      font-size: 28px;
+      font-size: 30px;
       font-weight: 700;
       letter-spacing: -0.02em;
     }
@@ -107,22 +113,6 @@
       align-items: center;
       gap: var(--space-2);
     }
-
-    /* Animated gradient border on logo */
-    .welcome__logo-mark {
-      width: 60px;
-      height: 60px;
-      border-radius: 14px;
-      background: var(--accent-gradient);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-family: var(--font-mono);
-      font-size: 26px;
-      font-weight: 700;
-      color: #040b16;
-      box-shadow: var(--glow-accent);
-    }
   </style>
 </head>
 <body>
@@ -140,10 +130,11 @@
 </nav>
 
 <div class="nsb-app">
-  <!-- Body area — welcome / empty state -->
   <div class="welcome">
-    <div class="welcome__logo">
-      <div class="welcome__logo-mark">⬡</div>
+    <div class="welcome__hero">
+      <!-- nanosb logo -->
+      <img class="welcome__logo-img" src="assets/logo.png" alt="nanosb logo">
+
       <div class="welcome__wordmark">
         <span class="nsb-gradient-text">nanosb</span>
       </div>
@@ -181,7 +172,7 @@
 
   <!-- Input bar -->
   <div class="nsb-input-bar">
-    <span class="nsb-input-bar__prompt">›</span>
+    <span class="nsb-input-bar__prompt">&gt;&gt;</span>
     <input class="nsb-input-bar__input" placeholder="Type a command or /help …" readonly>
     <span class="nsb-input-bar__hint">
       <kbd class="nsb-kbd">Ctrl+P</kbd> palette

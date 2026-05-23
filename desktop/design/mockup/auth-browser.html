@@ -30,103 +30,70 @@
       color: var(--accent); cursor: pointer;
     }
 
-    /* Simulated OAuth page inside the webview slot */
     .oauth-page {
-      width: 100%;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--bg-surface);
-      font-family: var(--font-sans);
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg-surface); font-family: var(--font-sans);
     }
 
     .oauth-card {
       width: 340px;
       padding: var(--space-8);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: var(--space-4);
+      display: flex; flex-direction: column;
+      align-items: center; gap: var(--space-4);
       background: var(--bg-elevated);
       border: 1px solid var(--border);
       border-radius: var(--radius-lg);
+      box-shadow: var(--glow-accent);
     }
 
-    .oauth-card__provider {
-      font-size: 28px;
+    .oauth-card__logo {
+      width: 52px; height: 52px; border-radius: 12px;
+      box-shadow: 0 0 20px rgba(240, 84, 84, 0.4);
     }
 
     .oauth-card__title {
-      font-size: 18px;
-      font-weight: 600;
-      color: var(--text);
-      text-align: center;
+      font-size: 18px; font-weight: 600; color: var(--text); text-align: center;
     }
 
     .oauth-card__desc {
-      font-size: var(--font-size-sm);
-      color: var(--text-muted);
-      text-align: center;
-      line-height: 1.6;
+      font-size: var(--font-size-sm); color: var(--text-muted);
+      text-align: center; line-height: 1.6;
     }
 
     .oauth-card__device-code {
       font-family: var(--font-mono);
-      font-size: 22px;
-      font-weight: 700;
-      letter-spacing: 0.15em;
+      font-size: 22px; font-weight: 700; letter-spacing: 0.15em;
       color: var(--accent);
-      background: rgba(var(--accent-rgb), 0.1);
+      background: rgba(240, 84, 84, 0.1);
       border: 1px solid var(--border-focused);
       border-radius: var(--radius-sm);
       padding: var(--space-3) var(--space-6);
+      box-shadow: var(--glow-accent-sm);
     }
 
     .oauth-card__timer {
-      font-family: var(--font-mono);
-      font-size: var(--font-size-sm);
-      color: var(--text-muted);
+      font-family: var(--font-mono); font-size: var(--font-size-sm); color: var(--text-muted);
     }
 
     .oauth-card__actions {
-      display: flex;
-      flex-direction: column;
-      gap: var(--space-2);
-      width: 100%;
+      display: flex; flex-direction: column; gap: var(--space-2); width: 100%;
     }
 
-    /* Webview label annotation */
     .webview-label {
-      position: absolute;
-      top: 52px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-family: var(--font-mono);
-      font-size: var(--font-size-xs);
-      color: var(--text-muted);
-      background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 2px 8px;
-      white-space: nowrap;
-      pointer-events: none;
+      position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
+      font-family: var(--font-mono); font-size: var(--font-size-xs);
+      color: var(--text-muted); background: var(--bg-elevated);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 2px 8px; white-space: nowrap; pointer-events: none;
     }
 
-    /* Status bar progress strip for OAuth countdown */
     .oauth-progress {
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      height: 2px;
-      background: var(--accent-gradient);
-      border-radius: 0;
+      position: absolute; bottom: 0; left: 0; height: 2px;
+      background: var(--accent-gradient); border-radius: 0;
       animation: countdown 120s linear forwards;
     }
-    @keyframes countdown {
-      from { width: 100%; }
-      to   { width: 0%; }
-    }
+    @keyframes countdown { from { width: 100%; } to { width: 0%; } }
   </style>
 </head>
 <body>
@@ -143,43 +110,37 @@
   <a href="auth-browser.html" class="active">Auth</a>
 </nav>
 
-<!-- Auth browser takes over the full window -->
 <div class="nsb-auth-browser" style="position:fixed;inset:0;">
 
-  <!-- Address bar -->
+  <!-- Address bar with logo -->
   <div class="nsb-auth-browser__bar">
-    <span class="nsb-auth-browser__lock" title="Secure HTTPS connection">🔒</span>
-    <div class="nsb-auth-browser__url" title="https://github.com/login/device">
-      https://github.com/login/device
-    </div>
+    <img src="assets/logo.png" style="width:20px;height:20px;border-radius:4px;flex-shrink:0;" alt="nanosb">
+    <span class="nsb-auth-browser__lock" title="Secure HTTPS">🔒</span>
+    <div class="nsb-auth-browser__url">https://github.com/login/device</div>
     <div style="display:flex;align-items:center;gap:var(--space-1);margin-left:var(--space-2);">
       <button class="nsb-btn nsb-btn--ghost" style="padding:3px 8px;font-size:var(--font-size-sm);">←</button>
       <button class="nsb-btn nsb-btn--ghost" style="padding:3px 8px;font-size:var(--font-size-sm);">→</button>
       <button class="nsb-btn nsb-btn--ghost" style="padding:3px 8px;font-size:var(--font-size-sm);">↻</button>
     </div>
-    <button class="nsb-auth-browser__close" title="Close browser (auth will be cancelled)" onclick="window.location='grid.html'">✕</button>
+    <button class="nsb-auth-browser__close" onclick="window.location='grid.html'">✕</button>
   </div>
 
-  <!-- Webview content area (in Tauri this is a <webview> element) -->
+  <!-- Webview area -->
   <div class="nsb-auth-browser__content" style="position:relative;">
+    <div class="webview-label">&lt;webview&gt; Tauri in-app browser — no OS browser spawned</div>
 
-    <!-- Label showing this is the webview boundary -->
-    <div class="webview-label">
-      &lt;webview&gt; — Tauri in-app browser (no external browser spawned)
-    </div>
-
-    <!-- Simulated GitHub device-code OAuth page -->
     <div class="oauth-page">
       <div class="oauth-card">
-        <div class="oauth-card__provider">⊛</div>
+        <!-- nanosb logo inside OAuth card -->
+        <img class="oauth-card__logo" src="assets/logo.png" alt="nanosb">
+
         <div class="oauth-card__title">Authorize nanosb</div>
         <div class="oauth-card__desc">
-          Enter the code below on<br>
-          <strong>github.com/login/device</strong><br>
-          to authorize access to your account.
+          Enter the code below at<br>
+          <strong style="color:var(--accent)">github.com/login/device</strong>
         </div>
 
-        <div class="oauth-card__device-code">WARP-4B2F</div>
+        <div class="oauth-card__device-code">NSBD-4F2A</div>
 
         <div class="oauth-card__timer">Expires in <span id="timer">01:58</span></div>
 
@@ -193,13 +154,11 @@
         </div>
 
         <div style="font-size:var(--font-size-sm);color:var(--text-muted);text-align:center;">
-          The OAuth callback will be received automatically.<br>
-          You can close this window at any time.
+          The OAuth callback will be received automatically.
         </div>
       </div>
     </div>
 
-    <!-- Countdown progress strip at bottom of webview -->
     <div class="oauth-progress"></div>
   </div>
 
@@ -210,8 +169,6 @@
     const html = document.documentElement;
     html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
   }
-
-  // Countdown timer (cosmetic)
   let secs = 118;
   const timerEl = document.getElementById('timer');
   setInterval(() => {
