@@ -8,7 +8,7 @@ use sandbox::AgentsRegistryClient;
 use sandbox::ImageManager;
 use sandbox::Sandbox;
 
-use pane_core::PanelState;
+use pane_core::{PanelRegistry, PanelState};
 use ratatui::layout::Rect;
 
 use super::commands::{self, Command, ParseResult};
@@ -337,6 +337,8 @@ impl std::ops::DerefMut for AgentPanel {
 pub struct App {
     /// The set of agent panels.
     pub panels: Vec<AgentPanel>,
+    /// Shared pane focus/visibility registry from pane-core.
+    pub panel_registry: PanelRegistry,
     /// Index of the currently focused panel.
     pub focused_panel: usize,
     /// Whether the application should exit.
@@ -426,6 +428,7 @@ impl App {
         let (theme, theme_name) = super::theme::Theme::resolve(&settings.ui.theme);
         Self {
             panels: Vec::new(),
+            panel_registry: PanelRegistry::default(),
             focused_panel: 0,
             should_quit: false,
             show_mcp_sidebar: false,
@@ -682,6 +685,26 @@ impl App {
         self.autocomplete_index = None;
     }
 
+    /// Keep `panel_registry` synchronized with legacy in-app fields.
+    ///
+    /// During the extraction transition, some call sites still read/write
+    /// `focused_panel` and `panel.visible` directly. This keeps both models
+    /// consistent so downstream desktop reuse can rely on `PanelRegistry`.
+    pub fn sync_panel_registry(&mut self) {
+        self.panel_registry.focused_panel = self.focused_panel.min(self.panels.len().saturating_sub(1));
+        self.panel_registry.hidden_panels.clear();
+        for (idx, panel) in self.panels.iter().enumerate() {
+            if !panel.visible {
+                self.panel_registry.hidden_panels.insert(idx);
+            }
+        }
+    }
+
+    fn set_focused_panel(&mut self, idx: usize) {
+        self.focused_panel = idx;
+        self.panel_registry.focused_panel = idx;
+    }
+
     /// Switch input focus to the focused panel's input bar.
     pub fn focus_panel_input(&mut self) {
         if !self.panels.is_empty() {
@@ -693,7 +716,7 @@ impl App {
     /// Move focus to the next visible panel.
     pub fn focus_next(&mut self) {
         if let Some(next) = self.next_visible_panel(self.focused_panel) {
-            self.focused_panel = next;
+            self.set_focused_panel(next);
             self.input_focus = InputFocus::Panel;
             if self.show_sandbox_sidebar {
                 self.refresh_sidebar_modified_files();
@@ -704,7 +727,7 @@ impl App {
     /// Move focus to the previous visible panel.
     pub fn focus_prev(&mut self) {
         if let Some(prev) = self.prev_visible_panel(self.focused_panel) {
-            self.focused_panel = prev;
+            self.set_focused_panel(prev);
             self.input_focus = InputFocus::Panel;
             if self.show_sandbox_sidebar {
                 self.refresh_sidebar_modified_files();

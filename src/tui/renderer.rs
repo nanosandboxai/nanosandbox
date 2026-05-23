@@ -16,6 +16,7 @@ const MAX_INPUT_HEIGHT: u16 = 10;
 
 /// Render a full TUI frame based on the current application state.
 pub fn render(frame: &mut Frame, app: &mut App) {
+    app.sync_panel_registry();
     let theme = app.theme;
 
     // Paint the theme background on the entire frame.
