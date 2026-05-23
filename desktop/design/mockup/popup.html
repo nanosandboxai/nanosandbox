@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nanosb desktop — System Popup</title>
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/layout.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <style>
+    .nav {
+      position: fixed; top: var(--space-3); right: var(--space-3);
+      display: flex; flex-direction: column; gap: var(--space-1); z-index: 9999;
+    }
+    .nav a {
+      font-family: var(--font-mono); font-size: var(--font-size-sm);
+      color: var(--text-muted); text-decoration: none;
+      padding: 3px 8px; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--bg-elevated);
+      transition: color var(--dur-fast), border-color var(--dur-fast);
+    }
+    .nav a:hover, .nav a.active { color: var(--accent); border-color: var(--border-focused); }
+    .theme-toggle {
+      position: fixed; top: var(--space-3); left: var(--space-3); z-index: 9999;
+    }
+    .theme-toggle button {
+      font-family: var(--font-mono); font-size: var(--font-size-sm);
+      padding: 3px 10px; border: 1px solid var(--border-focused);
+      border-radius: var(--radius-sm); background: var(--bg-elevated);
+      color: var(--accent); cursor: pointer;
+    }
+
+    /* Popup demo switcher */
+    .popup-switcher {
+      position: fixed;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: var(--space-2);
+      z-index: 9999;
+    }
+    .popup-switcher button {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-sm);
+      padding: 3px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all var(--dur-fast);
+    }
+    .popup-switcher button.active,
+    .popup-switcher button:hover {
+      color: var(--accent);
+      border-color: var(--border-focused);
+    }
+  </style>
+</head>
+<body>
+
+<div class="theme-toggle">
+  <button onclick="toggleTheme()">Toggle theme</button>
+</div>
+
+<nav class="nav">
+  <a href="index.html">Empty</a>
+  <a href="grid.html">2×2 Grid</a>
+  <a href="palette.html">Palette</a>
+  <a href="popup.html" class="active">Popup</a>
+  <a href="auth-browser.html">Auth</a>
+</nav>
+
+<!-- Background app (dimmed) -->
+<div class="nsb-app" style="opacity:0.35;pointer-events:none;">
+  <div class="nsb-grid" data-layout="1x1">
+    <div class="nsb-pane">
+      <div class="nsb-pane__header">
+        <div class="nsb-dot nsb-dot--connected"></div>
+        <span class="nsb-pane__name">claude · sb-a1b2</span>
+      </div>
+      <div class="nsb-pane__terminal">
+        <div class="nsb-terminal-mock">
+          <div><span class="prompt">developer@sb-a1b2:~$</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="nsb-input-bar"></div>
+  <div class="nsb-status-bar"></div>
+</div>
+
+<!-- Popup overlay -->
+<div class="nsb-popup-scrim" id="popup-scrim">
+
+  <!-- Info popup (default) -->
+  <div class="nsb-popup" id="popup-info">
+    <div class="nsb-popup__header">
+      <span class="nsb-popup__icon nsb-popup__icon--info">ℹ</span>
+      <span class="nsb-popup__title">Auth URL Detected</span>
+      <button class="nsb-popup__close" title="Dismiss (Esc)">✕</button>
+    </div>
+    <div class="nsb-popup__body">
+      <p>A browser authentication URL was detected in panel <strong>claude · sb-a1b2</strong>.</p>
+      <br>
+      <p style="font-family: var(--font-mono); font-size: var(--font-size-sm); color: var(--accent); word-break: break-all;">
+        https://auth.openai.com/oauth/authorize?client_id=…
+      </p>
+      <br>
+      <p>Click <strong>Open</strong> to complete sign-in in the in-app browser, or <strong>Dismiss</strong> to ignore.</p>
+    </div>
+    <div class="nsb-popup__footer">
+      <button class="nsb-btn nsb-btn--ghost">Dismiss</button>
+      <button class="nsb-btn nsb-btn--primary" onclick="window.location='auth-browser.html'">Open in browser</button>
+    </div>
+  </div>
+
+  <!-- Success popup (hidden by default) -->
+  <div class="nsb-popup" id="popup-success" style="display:none;">
+    <div class="nsb-popup__header">
+      <span class="nsb-popup__icon nsb-popup__icon--success">✓</span>
+      <span class="nsb-popup__title">Upload Complete</span>
+      <button class="nsb-popup__close">✕</button>
+    </div>
+    <div class="nsb-popup__body">
+      <p>File transferred to sandbox successfully.</p>
+      <br>
+      <p style="font-family: var(--font-mono); font-size: var(--font-size-sm); color: var(--text-subtle);">
+        screenshot-2025.png → /workspace/.uploads/screenshot-2025.png<br>
+        Size: 142 KB · 0.3 s
+      </p>
+    </div>
+    <div class="nsb-popup__footer">
+      <button class="nsb-btn nsb-btn--primary">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- Warning popup (hidden by default) -->
+  <div class="nsb-popup" id="popup-warning" style="display:none;">
+    <div class="nsb-popup__header">
+      <span class="nsb-popup__icon nsb-popup__icon--warning">⚠</span>
+      <span class="nsb-popup__title">Reconnect panels?</span>
+      <button class="nsb-popup__close">✕</button>
+    </div>
+    <div class="nsb-popup__body">
+      <p>2 panels are disconnected due to a network interruption.</p>
+      <br>
+      <p style="color: var(--text-muted);">Reconnecting will restart the SSH session for:</p>
+      <ul style="margin-top: 8px; padding-left: 20px; color: var(--warning); font-family: var(--font-mono); font-size: var(--font-size-sm);">
+        <li>claude · sb-a1b2</li>
+        <li>goose · sb-c3d4</li>
+      </ul>
+    </div>
+    <div class="nsb-popup__footer">
+      <button class="nsb-btn nsb-btn--ghost">No (n)</button>
+      <button class="nsb-btn nsb-btn--primary">Reconnect (y)</button>
+    </div>
+  </div>
+
+  <!-- Error popup (hidden by default) -->
+  <div class="nsb-popup" id="popup-error" style="display:none;">
+    <div class="nsb-popup__header">
+      <span class="nsb-popup__icon nsb-popup__icon--error">✗</span>
+      <span class="nsb-popup__title">Upload Failed</span>
+      <button class="nsb-popup__close">✕</button>
+    </div>
+    <div class="nsb-popup__body">
+      <p style="color: var(--error);">File too large: report.pdf (248 MB, max 100 MB)</p>
+      <br>
+      <p style="color: var(--text-muted); font-size: var(--font-size-sm);">
+        Maximum upload size is 100 MB. Consider compressing the file before uploading.
+      </p>
+    </div>
+    <div class="nsb-popup__footer">
+      <button class="nsb-btn nsb-btn--primary">Dismiss</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Popup demo switcher -->
+<div class="popup-switcher">
+  <button class="active" onclick="showPopup('info')">ℹ Info</button>
+  <button onclick="showPopup('success')">✓ Success</button>
+  <button onclick="showPopup('warning')">⚠ Warning</button>
+  <button onclick="showPopup('error')">✗ Error</button>
+</div>
+
+<script>
+  function toggleTheme() {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  }
+
+  function showPopup(type) {
+    ['info','success','warning','error'].forEach(t => {
+      document.getElementById('popup-' + t).style.display = t === type ? 'block' : 'none';
+    });
+    document.querySelectorAll('.popup-switcher button').forEach((btn, i) => {
+      btn.classList.toggle('active', ['info','success','warning','error'][i] === type);
+    });
+  }
+</script>
+</body>
+</html>

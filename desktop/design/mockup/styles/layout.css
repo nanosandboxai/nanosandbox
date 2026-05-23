@@ -1,0 +1,165 @@
+/* ============================================================
+   nanosb desktop — Layout
+   App shell, grid, pane sizing.
+   ============================================================ */
+
+/* ── Reset ───────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-app);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── App shell ───────────────────────────────────────────── */
+.nsb-app {
+  display: grid;
+  grid-template-rows: 1fr var(--input-bar-h) var(--status-bar-h);
+  width: 100%;
+  height: 100%;
+  background: var(--bg-app);
+  /* Subtle gradient matching dd-code body */
+  background-image: linear-gradient(180deg,
+    var(--bg-app) 0%,
+    var(--bg-surface) 60%,
+    var(--bg-app) 100%);
+}
+
+/* ── Pane grid ───────────────────────────────────────────── */
+.nsb-grid {
+  display: grid;
+  overflow: hidden;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-app);
+}
+
+/* Layout variants driven by panel count */
+.nsb-grid[data-layout="1x1"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+.nsb-grid[data-layout="1x2"] {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+.nsb-grid[data-layout="2x2"] {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.nsb-grid[data-layout="2x3"] {
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+/* ── Single pane ─────────────────────────────────────────── */
+.nsb-pane {
+  display: grid;
+  grid-template-rows: var(--pane-header-h) 1fr;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow   var(--dur-fast) var(--ease-out);
+}
+
+.nsb-pane:focus-within,
+.nsb-pane.is-focused {
+  border-color: var(--border-focused);
+  box-shadow: var(--glow-accent);
+}
+
+/* Pane header — Warp-style command-block strip */
+.nsb-pane__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  height: var(--pane-header-h);
+  background: var(--bg-pane-header);
+  border-bottom: 1px solid var(--border-subtle);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+/* Pane terminal area */
+.nsb-pane__terminal {
+  overflow: hidden;
+  position: relative;
+  background: var(--bg-surface);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-terminal);
+}
+
+/* ── Input bar ───────────────────────────────────────────── */
+.nsb-input-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  height: var(--input-bar-h);
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+
+/* ── Status bar ──────────────────────────────────────────── */
+.nsb-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-3);
+  height: var(--status-bar-h);
+  background: var(--status-bar-bg);
+  color: var(--status-bar-text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  letter-spacing: var(--letter-spacing-label);
+  border-top: 1px solid var(--border-subtle);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.nsb-status-bar__left,
+.nsb-status-bar__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.nsb-status-bar__sep {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+}
+
+/* ── Scrollbar styling ───────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb  { background: var(--scrollbar-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+
+/* ── Selection ───────────────────────────────────────────── */
+::selection {
+  background: var(--selection-bg);
+  color: var(--selection-fg);
+}
+
+/* ── Focus ring ──────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}

@@ -1,0 +1,502 @@
+/* ============================================================
+   nanosb desktop — Components
+   Pane chrome, input bar, status bar, palette, popup, badges,
+   buttons, auth-browser.
+   ============================================================ */
+
+/* ── Status dot ──────────────────────────────────────────── */
+.nsb-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.nsb-dot--connected    { background: var(--dot-connected);    box-shadow: 0 0 5px var(--dot-connected); }
+.nsb-dot--loading      { background: var(--dot-loading);      animation: pulse 1.6s ease-in-out infinite; }
+.nsb-dot--error        { background: var(--dot-error); }
+.nsb-dot--disconnected { background: var(--dot-disconnected); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+/* ── Pane header label ───────────────────────────────────── */
+.nsb-pane__name {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  letter-spacing: var(--letter-spacing-label);
+  color: var(--text);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nsb-pane__id {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.nsb-pane__time {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+/* ── Terminal placeholder (mockup only) ──────────────────── */
+.nsb-terminal-mock {
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-terminal);
+  letter-spacing: var(--letter-spacing-code);
+  color: var(--text);
+  height: 100%;
+  overflow-y: auto;
+}
+
+.nsb-terminal-mock .prompt {
+  color: var(--accent);
+}
+.nsb-terminal-mock .output {
+  color: var(--text-subtle);
+}
+.nsb-terminal-mock .cmd {
+  color: var(--text);
+}
+.nsb-terminal-mock .success-line { color: var(--success); }
+.nsb-terminal-mock .warn-line    { color: var(--warning); }
+.nsb-terminal-mock .error-line   { color: var(--error); }
+.nsb-terminal-mock .info-line    { color: var(--info); }
+.nsb-terminal-mock .cursor {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  animation: blink 1.2s step-end infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* ── Input bar ───────────────────────────────────────────── */
+.nsb-input-bar__prompt {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.nsb-input-bar__input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  caret-color: var(--accent);
+}
+
+.nsb-input-bar__hint {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.nsb-input-bar__mode-badge {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: var(--letter-spacing-label);
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(var(--accent-rgb), 0.15);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ── Status bar items ────────────────────────────────────── */
+.nsb-status-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.nsb-status-item--accent  { color: var(--accent); }
+.nsb-status-item--success { color: var(--success); }
+.nsb-status-item--warning { color: var(--warning); }
+.nsb-status-item--error   { color: var(--error); }
+
+.nsb-kbd {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+}
+
+/* ── Palette overlay ─────────────────────────────────────── */
+.nsb-palette-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 80px;
+  z-index: 100;
+  /* Fade-in animation */
+  animation: scrim-in var(--dur-base) var(--ease-out) both;
+}
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.nsb-palette {
+  width: var(--palette-w);
+  max-height: var(--palette-max-h);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-focused);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glow-accent), 0 20px 60px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  animation: palette-in var(--dur-base) var(--ease-out) both;
+}
+@keyframes palette-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)     scale(1); }
+}
+
+.nsb-palette__input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.nsb-palette__input-icon {
+  font-size: 14px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.nsb-palette__input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  caret-color: var(--accent);
+}
+
+.nsb-palette__list {
+  overflow-y: auto;
+  flex: 1;
+  padding: var(--space-1) 0;
+}
+
+.nsb-palette__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  cursor: default;
+  border-radius: 0;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.nsb-palette__item:hover,
+.nsb-palette__item.is-selected {
+  background: var(--selection-bg);
+}
+.nsb-palette__item.is-selected {
+  border-left: 2px solid var(--accent);
+  padding-left: calc(var(--space-3) - 2px);
+}
+
+.nsb-palette__item-icon {
+  font-size: 14px;
+  color: var(--accent);
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.nsb-palette__item-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.nsb-palette__item-desc {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.nsb-palette__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Popup / system notification ─────────────────────────── */
+.nsb-popup-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  animation: scrim-in var(--dur-base) var(--ease-out) both;
+}
+
+.nsb-popup {
+  width: 420px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-focused);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glow-accent), 0 16px 48px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  animation: palette-in var(--dur-base) var(--ease-out) both;
+}
+
+.nsb-popup__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-pane-header);
+}
+
+.nsb-popup__icon {
+  font-size: 16px;
+}
+.nsb-popup__icon--info    { color: var(--info); }
+.nsb-popup__icon--success { color: var(--success); }
+.nsb-popup__icon--warning { color: var(--warning); }
+.nsb-popup__icon--error   { color: var(--error); }
+
+.nsb-popup__title {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.nsb-popup__close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.nsb-popup__close:hover { color: var(--text); }
+
+.nsb-popup__body {
+  padding: var(--space-4);
+  font-size: var(--font-size-base);
+  color: var(--text-subtle);
+  line-height: var(--line-height-ui);
+}
+
+.nsb-popup__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+/* ── Buttons ─────────────────────────────────────────────── */
+.nsb-btn {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  padding: 5px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--dur-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.nsb-btn--primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+}
+.nsb-btn--primary:hover {
+  box-shadow: var(--glow-accent-sm);
+  filter: brightness(1.08);
+}
+
+.nsb-btn--secondary {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--border-focused);
+}
+.nsb-btn--secondary:hover {
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.nsb-btn--ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+.nsb-btn--ghost:hover {
+  color: var(--text);
+  border-color: var(--border-focused);
+}
+
+/* ── Auth browser ────────────────────────────────────────── */
+.nsb-auth-browser {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-app);
+  display: grid;
+  grid-template-rows: 44px 1fr;
+  z-index: 300;
+  animation: palette-in var(--dur-slow) var(--ease-out) both;
+}
+
+.nsb-auth-browser__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+
+.nsb-auth-browser__lock {
+  color: var(--success);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.nsb-auth-browser__url {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px var(--space-2);
+}
+
+.nsb-auth-browser__close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  transition: color var(--dur-fast);
+}
+.nsb-auth-browser__close:hover { color: var(--error); }
+
+.nsb-auth-browser__content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: var(--font-size-base);
+  font-family: var(--font-sans);
+  /* In Tauri this slot holds a <webview> element */
+  background: var(--bg-surface);
+}
+
+/* ── Upload overlay ──────────────────────────────────────── */
+.nsb-upload-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(var(--accent-rgb), 0.06);
+  border: 2px dashed var(--border-focused);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: 50;
+  animation: scrim-in var(--dur-fast) var(--ease-out) both;
+}
+
+.nsb-upload-overlay__icon {
+  font-size: 28px;
+  color: var(--accent);
+}
+
+.nsb-upload-overlay__label {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ── Progress bar (upload) ───────────────────────────────── */
+.nsb-progress {
+  width: 100%;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.nsb-progress__fill {
+  height: 100%;
+  background: var(--accent-gradient);
+  border-radius: 2px;
+  transition: width var(--dur-base) var(--ease-out);
+}
+
+/* ── Gradient text (decorative) ──────────────────────────── */
+.nsb-gradient-text {
+  background: var(--accent-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
