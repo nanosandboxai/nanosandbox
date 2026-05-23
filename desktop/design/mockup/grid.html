@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nanosb desktop — 2×2 Pane Grid</title>
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/layout.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <style>
+    .nav {
+      position: fixed; top: var(--space-3); right: var(--space-3);
+      display: flex; flex-direction: column; gap: var(--space-1); z-index: 9999;
+    }
+    .nav a {
+      font-family: var(--font-mono); font-size: var(--font-size-sm);
+      color: var(--text-muted); text-decoration: none;
+      padding: 3px 8px; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--bg-elevated);
+      transition: color var(--dur-fast), border-color var(--dur-fast);
+    }
+    .nav a:hover, .nav a.active { color: var(--accent); border-color: var(--border-focused); }
+    .theme-toggle {
+      position: fixed; top: var(--space-3); left: var(--space-3); z-index: 9999;
+    }
+    .theme-toggle button {
+      font-family: var(--font-mono); font-size: var(--font-size-sm);
+      padding: 3px 10px; border: 1px solid var(--border-focused);
+      border-radius: var(--radius-sm); background: var(--bg-elevated);
+      color: var(--accent); cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+<div class="theme-toggle">
+  <button onclick="toggleTheme()">Toggle theme</button>
+</div>
+
+<nav class="nav">
+  <a href="index.html">Empty</a>
+  <a href="grid.html" class="active">2×2 Grid</a>
+  <a href="palette.html">Palette</a>
+  <a href="popup.html">Popup</a>
+  <a href="auth-browser.html">Auth</a>
+</nav>
+
+<div class="nsb-app">
+  <!-- 2x2 pane grid -->
+  <div class="nsb-grid" data-layout="2x2">
+
+    <!-- Panel 1: focused, claude, running -->
+    <div class="nsb-pane is-focused">
+      <div class="nsb-pane__header">
+        <div class="nsb-dot nsb-dot--connected"></div>
+        <span class="nsb-pane__name">claude · sb-a1b2</span>
+        <span class="nsb-pane__id">0</span>
+        <span class="nsb-pane__time">2m 14s</span>
+      </div>
+      <div class="nsb-pane__terminal">
+        <div class="nsb-terminal-mock">
+<div><span class="prompt">developer@sb-a1b2:~$</span> <span class="cmd">claude --dangerously-skip-permissions</span></div>
+<div class="output">╭─────────────────────────────────────────────────────╮</div>
+<div class="output">│ Claude Code v1.1.4                                  │</div>
+<div class="output">│ ✓ Connected to anthropic · claude-opus-4-5          │</div>
+<div class="output">╰─────────────────────────────────────────────────────╯</div>
+<div>&nbsp;</div>
+<div><span class="output">? </span><span class="cmd">Implement a REST API for user authentication using JWT tokens and bcrypt password hashing.</span></div>
+<div>&nbsp;</div>
+<div class="success-line">● Thinking… (analyzing requirements)</div>
+<div>&nbsp;</div>
+<div class="output">I'll implement a complete JWT authentication system. Let me start by</div>
+<div class="output">examining the project structure.</div>
+<div>&nbsp;</div>
+<div class="info-line">⚡ Tool: Read(/workspace/src/)</div>
+<div class="output">  src/</div>
+<div class="output">  ├── auth/</div>
+<div class="output">  ├── middleware/</div>
+<div class="output">  └── routes/</div>
+<div>&nbsp;</div>
+<div class="info-line">⚡ Tool: Write(/workspace/src/auth/jwt.ts)</div>
+<div class="success-line">  ✓ Created jwt.ts (84 lines)</div>
+<div>&nbsp;</div>
+<span class="cursor"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel 2: goose, loading -->
+    <div class="nsb-pane">
+      <div class="nsb-pane__header">
+        <div class="nsb-dot nsb-dot--loading"></div>
+        <span class="nsb-pane__name">goose · sb-c3d4</span>
+        <span class="nsb-pane__id">1</span>
+        <span class="nsb-pane__time">0m 08s</span>
+      </div>
+      <div class="nsb-pane__terminal">
+        <div class="nsb-terminal-mock" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;height:100%;color:var(--text-muted);">
+          <div style="font-size:24px;">⬡</div>
+          <div style="font-size:var(--font-size-sm);">Starting sandbox…</div>
+          <div style="font-size:var(--font-size-sm);color:var(--text-muted);opacity:0.6;">Pulling nanosb/goose:latest</div>
+          <div style="width:120px;">
+            <div class="nsb-progress">
+              <div class="nsb-progress__fill" style="width:42%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel 3: codex, running, scrolled up -->
+    <div class="nsb-pane">
+      <div class="nsb-pane__header">
+        <div class="nsb-dot nsb-dot--connected"></div>
+        <span class="nsb-pane__name">codex · sb-e5f6</span>
+        <span class="nsb-pane__id">2</span>
+        <span class="nsb-pane__time">7m 42s</span>
+      </div>
+      <div class="nsb-pane__terminal">
+        <div class="nsb-terminal-mock">
+<div class="success-line">✓ Task completed in 7m 38s</div>
+<div>&nbsp;</div>
+<div class="output">Changes made:</div>
+<div class="success-line">  + src/utils/validation.ts          (+142 lines)</div>
+<div class="success-line">  + tests/validation.test.ts         (+88 lines)</div>
+<div class="success-line">  + src/middleware/rate-limit.ts     (+61 lines)</div>
+<div class="warn-line">  ~ src/routes/api.ts                (modified)</div>
+<div>&nbsp;</div>
+<div class="output">Test results:</div>
+<div class="success-line">  ✓ 34 tests passed</div>
+<div class="output">  ─ 0 skipped</div>
+<div>&nbsp;</div>
+<div><span class="prompt">developer@sb-e5f6:~$</span> <span class="cursor"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel 4: cursor, error -->
+    <div class="nsb-pane">
+      <div class="nsb-pane__header">
+        <div class="nsb-dot nsb-dot--error"></div>
+        <span class="nsb-pane__name">cursor · sb-g7h8</span>
+        <span class="nsb-pane__id">3</span>
+        <span class="nsb-pane__time">12m 03s</span>
+      </div>
+      <div class="nsb-pane__terminal">
+        <div class="nsb-terminal-mock">
+<div class="error-line">✗ SSH connection lost</div>
+<div>&nbsp;</div>
+<div class="output" style="color:var(--text-muted)">The sandbox connection was interrupted.</div>
+<div class="output" style="color:var(--text-muted)">Use /reconnect to re-establish the SSH session.</div>
+<div>&nbsp;</div>
+<div style="margin-top:8px;">
+  <span style="font-family:var(--font-mono);font-size:var(--font-size-sm);color:var(--text-muted)">
+    Press <kbd class="nsb-kbd">r</kbd> or type <span style="color:var(--accent)">/reconnect</span>
+  </span>
+</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Input bar -->
+  <div class="nsb-input-bar">
+    <div class="nsb-input-bar__mode-badge">panel 0</div>
+    <span class="nsb-input-bar__prompt">›</span>
+    <input class="nsb-input-bar__input" value="/add " readonly>
+    <span class="nsb-input-bar__hint">
+      <kbd class="nsb-kbd">Tab</kbd> next &nbsp;
+      <kbd class="nsb-kbd">Ctrl+Z</kbd> zoom &nbsp;
+      <kbd class="nsb-kbd">Ctrl+P</kbd> palette
+    </span>
+  </div>
+
+  <!-- Status bar -->
+  <div class="nsb-status-bar">
+    <div class="nsb-status-bar__left">
+      <div class="nsb-status-item nsb-status-item--accent">nanosb v0.2.0</div>
+      <div class="nsb-status-bar__sep"></div>
+      <div class="nsb-status-item nsb-status-item--success">
+        <div class="nsb-dot nsb-dot--connected" style="width:6px;height:6px;"></div>
+        2 running
+      </div>
+      <div class="nsb-status-bar__sep"></div>
+      <div class="nsb-status-item">1 loading</div>
+      <div class="nsb-status-bar__sep"></div>
+      <div class="nsb-status-item nsb-status-item--error">1 disconnected</div>
+    </div>
+    <div class="nsb-status-bar__right">
+      <div class="nsb-status-item">sb-a1b2 · focused</div>
+      <div class="nsb-status-bar__sep"></div>
+      <div class="nsb-status-item">
+        <kbd class="nsb-kbd">?</kbd> help
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function toggleTheme() {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  }
+</script>
+</body>
+</html>

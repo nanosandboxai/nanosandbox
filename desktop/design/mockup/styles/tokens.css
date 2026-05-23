@@ -1,0 +1,180 @@
+/* ============================================================
+   nanosb desktop — Design Tokens
+   Single source of truth for all CSS variables.
+   Referenced by: layout.css, components.css, and at runtime
+   by the Tauri theme_get() command.
+   ============================================================ */
+
+/* ── Dark theme (default) ────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Backgrounds */
+  --bg-app:         #040b16;
+  --bg-surface:     #041321;
+  --bg-elevated:    #061b2a;
+  --bg-pane-header: #05101e;
+  --bg-input:       #041321;
+
+  /* Accent */
+  --accent:             #22d3ee;
+  --accent-2:           #34d399;
+  --accent-gradient:    linear-gradient(135deg, #22d3ee, #34d399);
+  --accent-rgb:         34, 211, 238;
+  --accent-2-rgb:       52, 211, 153;
+
+  /* Text */
+  --text:           #e5e7eb;
+  --text-subtle:    #9ca3af;
+  --text-muted:     #6b7280;
+  --text-on-accent: #040b16;
+
+  /* Status */
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error:   #ef4444;
+  --info:    #3b82f6;
+
+  /* Status dot (running sandbox indicator) */
+  --dot-connected:    #10b981;
+  --dot-loading:      #f59e0b;
+  --dot-error:        #ef4444;
+  --dot-disconnected: #6b7280;
+
+  /* Status bar */
+  --status-bar-bg:   #030a12;
+  --status-bar-text: #9ca3af;
+
+  /* Selection */
+  --selection-bg: rgba(34, 211, 238, 0.25);
+  --selection-fg: #e5e7eb;
+
+  /* Borders */
+  --border:         rgba(34, 211, 238, 0.15);
+  --border-focused: rgba(34, 211, 238, 0.60);
+  --border-subtle:  rgba(34, 211, 238, 0.08);
+
+  /* Glow effects */
+  --glow-accent:    0 0 14px rgba(34, 211, 238, 0.28);
+  --glow-accent-sm: 0 0  7px rgba(34, 211, 238, 0.18);
+  --glow-success:   0 0 10px rgba(16, 185, 129, 0.25);
+
+  /* Scrim */
+  --scrim: rgba(4, 11, 22, 0.72);
+
+  /* Scrollbar */
+  --scrollbar-thumb:       rgba(34, 211, 238, 0.28);
+  --scrollbar-thumb-hover: rgba(34, 211, 238, 0.55);
+  --scrollbar-track:       transparent;
+}
+
+/* ── Light theme ─────────────────────────────────────────── */
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Backgrounds */
+  --bg-app:         #f0f4f8;
+  --bg-surface:     #ffffff;
+  --bg-elevated:    #e8edf4;
+  --bg-pane-header: #dde4ed;
+  --bg-input:       #ffffff;
+
+  /* Accent */
+  --accent:          #0891b2;
+  --accent-2:        #059669;
+  --accent-gradient: linear-gradient(135deg, #0891b2, #059669);
+  --accent-rgb:      8, 145, 178;
+  --accent-2-rgb:    5, 150, 105;
+
+  /* Text */
+  --text:           #111827;
+  --text-subtle:    #6b7280;
+  --text-muted:     #9ca3af;
+  --text-on-accent: #ffffff;
+
+  /* Status */
+  --success: #059669;
+  --warning: #d97706;
+  --error:   #dc2626;
+  --info:    #2563eb;
+
+  /* Status dot */
+  --dot-connected:    #059669;
+  --dot-loading:      #d97706;
+  --dot-error:        #dc2626;
+  --dot-disconnected: #9ca3af;
+
+  /* Status bar */
+  --status-bar-bg:   #dde4ed;
+  --status-bar-text: #6b7280;
+
+  /* Selection */
+  --selection-bg: rgba(8, 145, 178, 0.20);
+  --selection-fg: #111827;
+
+  /* Borders */
+  --border:         rgba(8, 145, 178, 0.18);
+  --border-focused: rgba(8, 145, 178, 0.70);
+  --border-subtle:  rgba(8, 145, 178, 0.08);
+
+  /* Glow */
+  --glow-accent:    0 0 10px rgba(8, 145, 178, 0.18);
+  --glow-accent-sm: none;
+  --glow-success:   none;
+
+  /* Scrim */
+  --scrim: rgba(240, 244, 248, 0.76);
+
+  /* Scrollbar */
+  --scrollbar-thumb:       rgba(8, 145, 178, 0.30);
+  --scrollbar-thumb-hover: rgba(8, 145, 178, 0.55);
+  --scrollbar-track:       transparent;
+}
+
+/* ── Shape & spacing ─────────────────────────────────────── */
+:root {
+  --radius:    6px;
+  --radius-sm: 4px;
+  --radius-lg: 10px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Chrome dimensions */
+  --pane-header-h: 28px;
+  --status-bar-h:  22px;
+  --input-bar-h:   36px;
+  --palette-w:     560px;
+  --palette-max-h: 360px;
+}
+
+/* ── Typography ──────────────────────────────────────────── */
+:root {
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+  --font-size-base: 13px;
+  --font-size-sm:   11px;
+  --font-size-xs:   10px;
+
+  --line-height-terminal: 1.4;
+  --line-height-ui:       1.5;
+
+  --letter-spacing-label: 0.05em;
+  --letter-spacing-code:  0.02em;
+}
+
+/* ── Motion ──────────────────────────────────────────────── */
+:root {
+  --dur-fast: 80ms;
+  --dur-base: 140ms;
+  --dur-slow: 260ms;
+
+  --ease-out: cubic-bezier(0.0, 0.0, 0.2, 1.0);
+  --ease-in:  cubic-bezier(0.4, 0.0, 1.0, 1.0);
+}
