@@ -1028,6 +1028,7 @@ fn render_panel(
 
     // Terminal mode: render PseudoTerminal widget for the entire inner area.
     if panel.mode == PanelMode::Terminal {
+        let notification = panel.notification.clone();
         if let Some(ref mut term) = panel.terminal {
             let pseudo_term = tui_term::widget::PseudoTerminal::new(term.screen());
             frame.render_widget(pseudo_term, inner_area);
@@ -1047,7 +1048,7 @@ fn render_panel(
             }
 
             // Render overlay notification banner (upload success/failure).
-            if let Some((ref msg, is_error, _)) = panel.notification {
+            if let Some((ref msg, is_error, _)) = notification {
                 render_panel_notification(frame, inner_area, msg, is_error, theme);
             }
 

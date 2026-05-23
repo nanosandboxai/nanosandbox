@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/command-core", "crates/pane-core", "crates/upload-core", "crates/terminal-core"]
+resolver = "2"
+
 [package]
 name = "nanosb-cli"
 version = "0.2.0"
@@ -12,6 +16,11 @@ name = "nanosb"
 path = "src/main.rs"
 
 [dependencies]
+command-core = { path = "crates/command-core" }
+pane-core = { path = "crates/pane-core" }
+upload-core = { path = "crates/upload-core" }
+terminal-core = { path = "crates/terminal-core" }
+
 # Sandbox SDK — wraps nanosandbox runtime with agent-aware features.
 sandbox = { path = "../sandbox/crates/sandbox" }
 # Direct runtime access for logging and low-level runtime APIs.

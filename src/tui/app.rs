@@ -1,7 +1,6 @@
 //! Application state for the TUI.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -9,6 +8,7 @@ use sandbox::AgentsRegistryClient;
 use sandbox::ImageManager;
 use sandbox::Sandbox;
 
+use pane_core::PanelState;
 use ratatui::layout::Rect;
 
 use super::commands::{self, Command, ParseResult};
@@ -141,15 +141,7 @@ impl MouseSelection {
 }
 
 /// Operating mode for a panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanelMode {
-    /// Loading animation — sandbox is booting or SSH is connecting.
-    Loading,
-    /// Embedded SSH terminal — keystrokes forwarded to remote PTY.
-    Terminal,
-    /// Headless mode — agent runs non-interactively, NDJSON output parsed into structured view.
-    Headless,
-}
+pub use pane_core::PanelMode;
 
 /// A single tool call logged in headless mode.
 pub struct HeadlessToolCall {
@@ -269,10 +261,8 @@ pub enum SubmitResult {
 
 /// State for a single agent panel.
 pub struct AgentPanel {
-    /// Agent type key (e.g. "claude", "codex") — used for CLI command resolution.
-    pub agent_name: String,
-    /// Display name shown in panel title. Falls back to agent_name if not set.
-    pub display_name: Option<String>,
+    /// Shared pure state/metadata extracted to pane-core.
+    pub state: PanelState,
     /// The sandbox instance backing this agent, wrapped in Arc<Mutex<>> for
     /// shared access between the event loop and background streaming tasks.
     pub sandbox: Option<Arc<Mutex<Sandbox>>>,
@@ -280,16 +270,6 @@ pub struct AgentPanel {
     pub chat_history: Vec<ChatMessage>,
     /// Current input buffer with cursor tracking and multiline support.
     pub input: TextInput,
-    /// Short identifier for the sandbox.
-    pub sandbox_id_short: String,
-    /// Per-panel environment variables (e.g., API keys).
-    /// Merged with host env when sending messages (panel env takes priority).
-    pub env: HashMap<String, String>,
-    /// Env keys that came from startup runtime env pool for this invocation.
-    /// These keys are runtime-only and must not be persisted into sessions.
-    pub runtime_env_keys: HashSet<String>,
-    /// Current operating mode of the panel.
-    pub mode: PanelMode,
     /// Last rendered input width (set by renderer, used by key handler for cursor movement).
     pub last_input_width: u16,
     /// Embedded SSH terminal state (vt100 parser + screen buffer).
@@ -306,70 +286,24 @@ pub struct AgentPanel {
     pub pending_urls: HashMap<String, (String, std::time::Instant)>,
     /// Active project mount for this panel's sandbox.
     pub project_mount: Option<sandbox::ProjectMount>,
-    /// Last known HEAD SHA in the clone (for commit auto-sync detection).
-    pub last_known_head: Option<String>,
-    /// Initial HEAD SHA of the clone at creation (base for committed files diff).
-    pub base_commit: Option<String>,
-    /// Per-panel sync override. Takes priority over global settings.
-    /// None = use global, Some(true) = force on, Some(false) = force off.
-    pub sync_override: Option<bool>,
-    /// SSH host port for port forwarding (stored from SandboxReady).
-    pub ssh_host_port: Option<u16>,
-    /// SSH host/IP used to reach the guest (e.g. 127.0.0.1 or HCN guest IP).
-    pub ssh_host: Option<String>,
-    /// SSH private key path for port forwarding (stored from SandboxReady).
-    pub ssh_key_path: Option<PathBuf>,
     /// Guest ports with active SSH local-port-forwards (`ssh -L`).
     pub forwarded_ports: HashSet<u16>,
     /// SSH port-forward child processes (killed on panel close).
     pub port_forward_children: Vec<std::process::Child>,
     /// Animation tick counter for the loading border sweep.
     pub loading_tick: u16,
-    /// Human-readable progress message shown below the logo during loading.
-    pub loading_message: Option<String>,
-    /// Error message shown below the logo when sandbox creation or SSH fails.
-    pub loading_error: Option<String>,
-    /// Whether a reconnect is in progress (suppresses auto-kill on disconnect).
-    pub reconnecting: bool,
-    /// Whether this panel is visible in the grid. Hidden panels keep running.
-    pub visible: bool,
-    /// Whether auto/headless mode is enabled for this panel's agent.
-    pub auto_mode: bool,
-    /// Agent permission level.
-    pub permissions: sandbox::Permissions,
-    /// Agent type (source of truth for CLI command + config format).
-    pub agent_type: Option<sandbox::AgentType>,
-    /// Model identifier for CLI flag generation (e.g., "claude-sonnet-4-5-20250929").
-    pub model: Option<String>,
     /// Headless mode state (NDJSON parsing and structured output).
     pub headless_state: Option<HeadlessState>,
-    /// Original AgentSandboxConfig used to create this panel (for session persistence).
-    pub original_config: Option<sandbox::AgentSandboxConfig>,
-    /// Whether this panel was resumed from a previous session (agent uses resume command).
-    pub is_resumed: bool,
-    /// Whether the user sent at least one keystroke to this agent's terminal.
-    /// Used to decide whether resume flags (--continue) are appropriate on next session load.
-    pub had_interaction: bool,
-    /// Explicit agent-native session ID to resume (if user selected one).
-    pub selected_agent_session_id: Option<String>,
-    /// Overlay notification shown on top of the terminal (message, is_error, remaining ticks).
-    /// Replaces previous notification; auto-dismissed after countdown reaches 0.
-    pub notification: Option<(String, bool, u8)>,
 }
 
 impl AgentPanel {
     /// Create a new agent panel with the given name.
     pub fn new(agent_name: &str) -> Self {
         Self {
-            agent_name: agent_name.to_string(),
-            display_name: None,
+            state: PanelState::new(agent_name),
             sandbox: None,
             chat_history: Vec::new(),
             input: TextInput::new(),
-            sandbox_id_short: String::new(),
-            env: HashMap::new(),
-            runtime_env_keys: HashSet::new(),
-            mode: PanelMode::Loading,
             last_input_width: 40,
             terminal: None,
             terminal_handle: None,
@@ -377,30 +311,25 @@ impl AgentPanel {
             opened_urls: HashSet::new(),
             pending_urls: HashMap::new(),
             project_mount: None,
-            last_known_head: None,
-            base_commit: None,
-            sync_override: None,
-            ssh_host_port: None,
-            ssh_host: None,
-            ssh_key_path: None,
             forwarded_ports: HashSet::new(),
             port_forward_children: Vec::new(),
             loading_tick: 0,
-            loading_message: None,
-            loading_error: None,
-            reconnecting: false,
-            visible: true,
-            auto_mode: false,
-            permissions: sandbox::Permissions::Default,
-            agent_type: None,
-            model: None,
             headless_state: None,
-            original_config: None,
-            is_resumed: false,
-            had_interaction: false,
-            selected_agent_session_id: None,
-            notification: None,
         }
+    }
+}
+
+impl std::ops::Deref for AgentPanel {
+    type Target = PanelState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for AgentPanel {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
     }
 }
 

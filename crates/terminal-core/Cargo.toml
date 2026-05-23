@@ -1,0 +1,19 @@
+[package]
+name = "terminal-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
+[dependencies]
+sandbox = { path = "../../../sandbox/crates/sandbox" }
+tokio = { version = "1", features = ["fs", "io-util", "sync", "time", "rt", "rt-multi-thread", "macros"] }
+anyhow = "1"
+russh = "0.60"
+vt100 = "0.15"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"], optional = true }

@@ -131,6 +131,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Check core crate dependency purity
+        shell: bash
+        run: |
+          cd cli
+          bash scripts/check-core-purity.sh
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -215,6 +221,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+
+      - name: Check core crate dependency purity
+        shell: bash
+        run: |
+          cd cli
+          bash scripts/check-core-purity.sh
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -311,6 +323,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Check core crate dependency purity
+        shell: bash
+        run: |
+          cd cli
+          bash scripts/check-core-purity.sh
 
       - name: Cache cargo
         uses: actions/cache@v4

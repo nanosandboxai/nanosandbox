@@ -1,0 +1,16 @@
+[package]
+name = "upload-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+tokio = { version = "1", features = ["fs"] }
+russh = "0.60"
+png = "0.17"
