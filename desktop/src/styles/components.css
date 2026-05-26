@@ -217,6 +217,15 @@
   padding: var(--space-1) 0;
 }
 
+.nsb-palette__section-label {
+  padding: 8px 12px 4px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  letter-spacing: var(--letter-spacing-label);
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+
 .nsb-palette__item {
   display: flex;
   align-items: center;
@@ -278,7 +287,6 @@
   align-items: center;
   justify-content: center;
   z-index: 200;
-  animation: scrim-in var(--dur-base) var(--ease-out) both;
 }
 
 .nsb-popup {
@@ -288,7 +296,6 @@
   border-radius: var(--radius-lg);
   box-shadow: var(--glow-accent), 0 16px 48px rgba(0, 0, 0, 0.4);
   overflow: hidden;
-  animation: palette-in var(--dur-base) var(--ease-out) both;
 }
 
 .nsb-popup__header {

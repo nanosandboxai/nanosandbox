@@ -37,7 +37,7 @@ and in-app auth browser.
 
 ## Visual baseline
 
-- **Color family**: dd-code deep navy + cyan/emerald accents (adapted for terminal-first density).
+- **Color family**: warm near-black surfaces with nanosb coral-red accents (`#F05454`).
 - **Typography**: JetBrains Mono for terminal/monospace; Inter for chrome/UI.
 - **Layout cues**: Warp-style 28 px command-block pane headers; dense 22 px status bar; centred palette overlay.
 - **Behavior**: all panel grid, slash-command, history, popup, upload, and auth-URL behavior mirrors the existing nanosb TUI exactly (`cli/src/tui/`).

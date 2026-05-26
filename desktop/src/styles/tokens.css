@@ -9,62 +9,62 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* Backgrounds — warm dark navy with slight red undertone */
-  --bg-app:         #0d0808;
-  --bg-surface:     #130c0c;
-  --bg-elevated:    #1c1010;
-  --bg-pane-header: #170d0d;
-  --bg-input:       #130c0c;
+  /* Backgrounds — aligned with NanoTerm default scheme */
+  --bg-app:         #08070d;
+  --bg-surface:     #14121a;
+  --bg-elevated:    #1a1722;
+  --bg-pane-header: #16131c;
+  --bg-input:       #1e1c26;
 
   /* Accent — nanosb coral red from logo */
-  --accent:          #F05454;
-  --accent-2:        #FF8080;
-  --accent-gradient: linear-gradient(135deg, #F05454, #FF8080);
-  --accent-rgb:      240, 84, 84;
-  --accent-2-rgb:    255, 128, 128;
+  --accent:          #ff6b6b;
+  --accent-2:        #8b7bff;
+  --accent-gradient: linear-gradient(135deg, #ff6b6b, #8b7bff);
+  --accent-rgb:      255, 107, 107;
+  --accent-2-rgb:    139, 123, 255;
 
   /* Text */
   --text:           #f0eded;
-  --text-subtle:    #a89898;
-  --text-muted:     #6b5858;
-  --text-on-accent: #0d0808;
+  --text-subtle:    #c9c4d4;
+  --text-muted:     #9d97a8;
+  --text-on-accent: #1a0a0c;
 
   /* Status */
-  --success: #3dba7e;
-  --warning: #e89c3a;
-  --error:   #ef4444;
-  --info:    #5b8dee;
+  --success: #6ee7b7;
+  --warning: #fcd34d;
+  --error:   #f14c4c;
+  --info:    #8b7bff;
 
   /* Status dot */
-  --dot-connected:    #3dba7e;
-  --dot-loading:      #e89c3a;
-  --dot-error:        #ef4444;
-  --dot-disconnected: #6b5858;
+  --dot-connected:    #6ee7b7;
+  --dot-loading:      #fcd34d;
+  --dot-error:        #f14c4c;
+  --dot-disconnected: #7a7388;
 
   /* Status bar */
-  --status-bar-bg:   #090505;
-  --status-bar-text: #a89898;
+  --status-bar-bg:   #0f0d12;
+  --status-bar-text: #9d97a8;
 
   /* Selection */
-  --selection-bg: rgba(240, 84, 84, 0.25);
+  --selection-bg: rgba(255, 107, 107, 0.20);
   --selection-fg: #f0eded;
 
   /* Borders */
-  --border:         rgba(240, 84, 84, 0.18);
-  --border-focused: rgba(240, 84, 84, 0.65);
-  --border-subtle:  rgba(240, 84, 84, 0.08);
+  --border:         rgba(255, 255, 255, 0.08);
+  --border-focused: rgba(255, 107, 107, 0.56);
+  --border-subtle:  rgba(255, 255, 255, 0.05);
 
   /* Glow — matches logo neon halo */
-  --glow-accent:    0 0 16px rgba(240, 84, 84, 0.35);
-  --glow-accent-sm: 0 0  8px rgba(240, 84, 84, 0.22);
-  --glow-success:   0 0 10px rgba(61, 186, 126, 0.25);
+  --glow-accent:    0 0 16px rgba(255, 107, 107, 0.25);
+  --glow-accent-sm: 0 0  8px rgba(255, 107, 107, 0.18);
+  --glow-success:   0 0 10px rgba(110, 231, 183, 0.25);
 
   /* Scrim */
-  --scrim: rgba(13, 8, 8, 0.75);
+  --scrim: rgba(8, 7, 13, 0.78);
 
   /* Scrollbar */
-  --scrollbar-thumb:       rgba(240, 84, 84, 0.30);
-  --scrollbar-thumb-hover: rgba(240, 84, 84, 0.55);
+  --scrollbar-thumb:       rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 107, 107, 0.42);
   --scrollbar-track:       transparent;
 }
 
@@ -72,62 +72,62 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  /* Backgrounds */
-  --bg-app:         #fdf5f5;
+  /* Backgrounds — aligned with NanoTerm light scheme */
+  --bg-app:         #faf9f7;
   --bg-surface:     #ffffff;
-  --bg-elevated:    #f7ecec;
-  --bg-pane-header: #eedede;
+  --bg-elevated:    #f3f0ed;
+  --bg-pane-header: #ebe4dd;
   --bg-input:       #ffffff;
 
   /* Accent — deeper red for contrast on white */
-  --accent:          #c93535;
-  --accent-2:        #e05555;
-  --accent-gradient: linear-gradient(135deg, #c93535, #e05555);
-  --accent-rgb:      201, 53, 53;
-  --accent-2-rgb:    224, 85, 85;
+  --accent:          #e85555;
+  --accent-2:        #8b7bff;
+  --accent-gradient: linear-gradient(135deg, #e85555, #8b7bff);
+  --accent-rgb:      232, 85, 85;
+  --accent-2-rgb:    139, 123, 255;
 
   /* Text */
-  --text:           #1a0f0f;
-  --text-subtle:    #6b5858;
-  --text-muted:     #a89898;
+  --text:           #1c1917;
+  --text-subtle:    #44403c;
+  --text-muted:     #78716c;
   --text-on-accent: #ffffff;
 
   /* Status */
-  --success: #1a8f5c;
-  --warning: #b87320;
-  --error:   #c93535;
-  --info:    #2d5fc4;
+  --success: #059669;
+  --warning: #d97706;
+  --error:   #dc2626;
+  --info:    #8b7bff;
 
   /* Status dot */
-  --dot-connected:    #1a8f5c;
-  --dot-loading:      #b87320;
-  --dot-error:        #c93535;
-  --dot-disconnected: #a89898;
+  --dot-connected:    #059669;
+  --dot-loading:      #d97706;
+  --dot-error:        #dc2626;
+  --dot-disconnected: #a8a29e;
 
   /* Status bar */
-  --status-bar-bg:   #eedede;
-  --status-bar-text: #6b5858;
+  --status-bar-bg:   #f3f0ed;
+  --status-bar-text: #78716c;
 
   /* Selection */
-  --selection-bg: rgba(201, 53, 53, 0.18);
-  --selection-fg: #1a0f0f;
+  --selection-bg: rgba(232, 85, 85, 0.18);
+  --selection-fg: #1c1917;
 
   /* Borders */
-  --border:         rgba(201, 53, 53, 0.20);
-  --border-focused: rgba(201, 53, 53, 0.65);
-  --border-subtle:  rgba(201, 53, 53, 0.08);
+  --border:         rgba(28, 25, 23, 0.10);
+  --border-focused: rgba(232, 85, 85, 0.55);
+  --border-subtle:  rgba(28, 25, 23, 0.06);
 
   /* Glow */
-  --glow-accent:    0 0 10px rgba(201, 53, 53, 0.15);
+  --glow-accent:    0 0 10px rgba(232, 85, 85, 0.15);
   --glow-accent-sm: none;
   --glow-success:   none;
 
   /* Scrim */
-  --scrim: rgba(253, 245, 245, 0.78);
+  --scrim: rgba(250, 249, 247, 0.80);
 
   /* Scrollbar */
-  --scrollbar-thumb:       rgba(201, 53, 53, 0.28);
-  --scrollbar-thumb-hover: rgba(201, 53, 53, 0.50);
+  --scrollbar-thumb:       rgba(28, 25, 23, 0.18);
+  --scrollbar-thumb-hover: rgba(232, 85, 85, 0.42);
   --scrollbar-track:       transparent;
 }
 
