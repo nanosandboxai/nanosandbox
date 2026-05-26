@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nanosb desktop — Slash-command Palette</title>
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/layout.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <style>
+    .nav {
+      position: fixed; top: var(--space-3); right: var(--space-3);
+      display: flex; flex-direction: column; gap: var(--space-1); z-index: 9999;
+    }
+    .nav a {
+      font-family: var(--font-mono); font-size: var(--font-size-sm);
+      color: var(--text-muted); text-decoration: none;
+      padding: 3px 8px; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--bg-elevated);
+      transition: color var(--dur-fast), border-color var(--dur-fast);
+    }
+    .nav a:hover, .nav a.active { color: var(--accent); border-color: var(--border-focused); }
+    .theme-toggle {
+      position: fixed; top: var(--space-3); left: var(--space-3); z-index: 9999;
+    }
+    .theme-toggle button {
+      font-family: var(--font-mono); font-size: var(--font-size-sm);
+      padding: 3px 10px; border: 1px solid var(--border-focused);
+      border-radius: var(--radius-sm); background: var(--bg-elevated);
+      color: var(--accent); cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+<div class="theme-toggle">
+  <button onclick="toggleTheme()">Toggle theme</button>
+</div>
+
+<nav class="nav">
+  <a href="index.html">Empty</a>
+  <a href="grid.html">2×2 Grid</a>
+  <a href="palette.html" class="active">Palette</a>
+  <a href="popup.html">Popup</a>
+  <a href="auth-browser.html">Auth</a>
+</nav>
+
+<!-- Background grid (dimmed) -->
+<div class="nsb-app" style="opacity:0.35;pointer-events:none;">
+  <div class="nsb-grid" data-layout="1x2">
+    <div class="nsb-pane is-focused">
+      <div class="nsb-pane__header">
+        <div class="nsb-dot nsb-dot--connected"></div>
+        <span class="nsb-pane__name">claude · sb-a1b2</span>
+      </div>
+      <div class="nsb-pane__terminal">
+        <div class="nsb-terminal-mock">
+          <div><span class="prompt">&gt;&gt; sb-a1b2 ~$</span></div>
+          <div class="output">Waiting for input…</div>
+        </div>
+      </div>
+    </div>
+    <div class="nsb-pane">
+      <div class="nsb-pane__header">
+        <div class="nsb-dot nsb-dot--connected"></div>
+        <span class="nsb-pane__name">codex · sb-e5f6</span>
+      </div>
+      <div class="nsb-pane__terminal">
+        <div class="nsb-terminal-mock"><div class="output">Running tests…</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="nsb-input-bar" style="opacity:0.4;">
+    <span class="nsb-input-bar__prompt">&gt;&gt;</span>
+    <input class="nsb-input-bar__input" readonly>
+  </div>
+  <div class="nsb-status-bar" style="opacity:0.4;">
+    <div class="nsb-status-bar__left">
+      <div class="nsb-status-item nsb-status-item--accent">nanosb v0.2.0</div>
+    </div>
+  </div>
+</div>
+
+<!-- Palette overlay -->
+<div class="nsb-palette-scrim">
+  <div class="nsb-palette">
+
+    <!-- Header with logo + input -->
+    <div class="nsb-palette__input-row">
+      <span style="font-family:var(--font-mono);font-size:14px;color:var(--accent);flex-shrink:0;">&gt;&gt;</span>
+      <input class="nsb-palette__input" value="/add " autofocus>
+      <kbd class="nsb-kbd">Esc</kbd>
+    </div>
+
+    <div class="nsb-palette__list">
+
+      <div class="nsb-palette__item is-selected">
+        <span class="nsb-palette__item-icon">＋</span>
+        <span class="nsb-palette__item-name">/add &lt;agent&gt;</span>
+        <span class="nsb-palette__item-desc">Add a new agent panel</span>
+      </div>
+
+      <div style="padding: 3px var(--space-3); font-size: var(--font-size-xs); color: var(--text-muted); letter-spacing: var(--letter-spacing-label); text-transform: uppercase; margin-top: 4px;">
+        Agents
+      </div>
+
+      <div class="nsb-palette__item">
+        <span class="nsb-palette__item-icon" style="color:var(--text-muted);">●</span>
+        <span class="nsb-palette__item-name">/add claude</span>
+        <span class="nsb-palette__item-desc">Claude Code · Anthropic</span>
+      </div>
+
+      <div class="nsb-palette__item">
+        <span class="nsb-palette__item-icon" style="color:var(--text-muted);">●</span>
+        <span class="nsb-palette__item-name">/add goose</span>
+        <span class="nsb-palette__item-desc">Goose · Block</span>
+      </div>
+
+      <div class="nsb-palette__item">
+        <span class="nsb-palette__item-icon" style="color:var(--text-muted);">●</span>
+        <span class="nsb-palette__item-name">/add codex</span>
+        <span class="nsb-palette__item-desc">Codex CLI · OpenAI</span>
+      </div>
+
+      <div class="nsb-palette__item">
+        <span class="nsb-palette__item-icon" style="color:var(--text-muted);">●</span>
+        <span class="nsb-palette__item-name">/add cursor</span>
+        <span class="nsb-palette__item-desc">Cursor Agent</span>
+      </div>
+
+      <div style="padding: 3px var(--space-3); font-size: var(--font-size-xs); color: var(--text-muted); letter-spacing: var(--letter-spacing-label); text-transform: uppercase; margin-top: 4px;">
+        Options
+      </div>
+
+      <div class="nsb-palette__item">
+        <span class="nsb-palette__item-icon" style="color:var(--text-muted);">⚙</span>
+        <span class="nsb-palette__item-name">/add claude --auto-mode</span>
+        <span class="nsb-palette__item-desc">Headless autonomous</span>
+      </div>
+
+      <div class="nsb-palette__item">
+        <span class="nsb-palette__item-icon" style="color:var(--text-muted);">⚙</span>
+        <span class="nsb-palette__item-name">/add claude --tag rc11</span>
+        <span class="nsb-palette__item-desc">Pin to version</span>
+      </div>
+
+    </div>
+
+    <div class="nsb-palette__footer">
+      <kbd class="nsb-kbd">↑ ↓</kbd> navigate &nbsp;
+      <kbd class="nsb-kbd">Enter</kbd> confirm &nbsp;
+      <kbd class="nsb-kbd">Esc</kbd> dismiss
+      <span style="margin-left:auto;">7 results</span>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  function toggleTheme() {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  }
+</script>
+</body>
+</html>

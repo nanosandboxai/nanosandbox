@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nanosb desktop — Empty State</title>
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/layout.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <style>
+    .nav {
+      position: fixed;
+      top: var(--space-3);
+      right: var(--space-3);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-1);
+      z-index: 9999;
+    }
+    .nav a {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-sm);
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      transition: color var(--dur-fast), border-color var(--dur-fast);
+    }
+    .nav a:hover, .nav a.active {
+      color: var(--accent);
+      border-color: var(--border-focused);
+    }
+    .theme-toggle {
+      position: fixed;
+      top: var(--space-3);
+      left: var(--space-3);
+      z-index: 9999;
+    }
+    .theme-toggle button {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-sm);
+      padding: 3px 10px;
+      border: 1px solid var(--border-focused);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      color: var(--accent);
+      cursor: pointer;
+    }
+
+    /* Welcome layout */
+    .welcome {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-6);
+      padding: var(--space-8);
+    }
+
+    .welcome__hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--space-4);
+    }
+
+    /* Logo from logo.png */
+    .welcome__logo-img {
+      width: 72px;
+      height: 72px;
+      border-radius: 16px;
+      /* Replicate the logo's red neon halo */
+      box-shadow: 0 0 28px rgba(240, 84, 84, 0.5),
+                  0 0 60px rgba(240, 84, 84, 0.18);
+    }
+
+    .welcome__wordmark {
+      font-family: var(--font-mono);
+      font-size: 30px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .welcome__tagline {
+      font-family: var(--font-sans);
+      font-size: var(--font-size-base);
+      color: var(--text-muted);
+      text-align: center;
+      max-width: 360px;
+      line-height: 1.6;
+    }
+
+    .welcome__actions {
+      display: flex;
+      gap: var(--space-3);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .welcome__shortcuts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-2) var(--space-6);
+      font-family: var(--font-mono);
+      font-size: var(--font-size-sm);
+      color: var(--text-muted);
+    }
+    .welcome__shortcut {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+  </style>
+</head>
+<body>
+
+<div class="theme-toggle">
+  <button onclick="toggleTheme()">Toggle theme</button>
+</div>
+
+<nav class="nav">
+  <a href="index.html" class="active">Empty</a>
+  <a href="grid.html">2×2 Grid</a>
+  <a href="palette.html">Palette</a>
+  <a href="popup.html">Popup</a>
+  <a href="auth-browser.html">Auth</a>
+</nav>
+
+<div class="nsb-app">
+  <div class="welcome">
+    <div class="welcome__hero">
+      <!-- nanosb logo -->
+      <img class="welcome__logo-img" src="assets/logo.png" alt="nanosb logo">
+
+      <div class="welcome__wordmark">
+        <span class="nsb-gradient-text">nanosb</span>
+      </div>
+      <div class="welcome__tagline">
+        VM-isolated AI coding agents.<br>
+        Type <code style="color:var(--accent)">/add claude</code> to start a new session.
+      </div>
+    </div>
+
+    <div class="welcome__actions">
+      <button class="nsb-btn nsb-btn--primary">/add claude</button>
+      <button class="nsb-btn nsb-btn--secondary">/add goose</button>
+      <button class="nsb-btn nsb-btn--ghost">/help</button>
+    </div>
+
+    <div class="welcome__shortcuts">
+      <div class="welcome__shortcut">
+        <kbd class="nsb-kbd">Ctrl+P</kbd>
+        <span>Open palette</span>
+      </div>
+      <div class="welcome__shortcut">
+        <kbd class="nsb-kbd">Tab</kbd>
+        <span>Next panel</span>
+      </div>
+      <div class="welcome__shortcut">
+        <kbd class="nsb-kbd">Ctrl+Z</kbd>
+        <span>Zoom panel</span>
+      </div>
+      <div class="welcome__shortcut">
+        <kbd class="nsb-kbd">Ctrl+C</kbd>
+        <span>Copy panel</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Input bar -->
+  <div class="nsb-input-bar">
+    <span class="nsb-input-bar__prompt">&gt;&gt;</span>
+    <input class="nsb-input-bar__input" placeholder="Type a command or /help …" readonly>
+    <span class="nsb-input-bar__hint">
+      <kbd class="nsb-kbd">Ctrl+P</kbd> palette
+    </span>
+  </div>
+
+  <!-- Status bar -->
+  <div class="nsb-status-bar">
+    <div class="nsb-status-bar__left">
+      <div class="nsb-status-item nsb-status-item--accent">nanosb v0.2.0</div>
+      <div class="nsb-status-bar__sep"></div>
+      <div class="nsb-status-item">0 panels</div>
+    </div>
+    <div class="nsb-status-bar__right">
+      <div class="nsb-status-item">
+        <kbd class="nsb-kbd">?</kbd> help
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function toggleTheme() {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  }
+</script>
+</body>
+</html>

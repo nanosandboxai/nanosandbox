@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nanosb desktop — In-App Auth Browser</title>
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/layout.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <style>
+    .nav {
+      position: fixed; top: var(--space-3); right: var(--space-3);
+      display: flex; flex-direction: column; gap: var(--space-1); z-index: 9999;
+    }
+    .nav a {
+      font-family: var(--font-mono); font-size: var(--font-size-sm);
+      color: var(--text-muted); text-decoration: none;
+      padding: 3px 8px; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--bg-elevated);
+      transition: color var(--dur-fast), border-color var(--dur-fast);
+    }
+    .nav a:hover, .nav a.active { color: var(--accent); border-color: var(--border-focused); }
+    .theme-toggle {
+      position: fixed; top: var(--space-3); left: var(--space-3); z-index: 9999;
+    }
+    .theme-toggle button {
+      font-family: var(--font-mono); font-size: var(--font-size-sm);
+      padding: 3px 10px; border: 1px solid var(--border-focused);
+      border-radius: var(--radius-sm); background: var(--bg-elevated);
+      color: var(--accent); cursor: pointer;
+    }
+
+    .oauth-page {
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg-surface); font-family: var(--font-sans);
+    }
+
+    .oauth-card {
+      width: 340px;
+      padding: var(--space-8);
+      display: flex; flex-direction: column;
+      align-items: center; gap: var(--space-4);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--glow-accent);
+    }
+
+    .oauth-card__logo {
+      width: 52px; height: 52px; border-radius: 12px;
+      box-shadow: 0 0 20px rgba(240, 84, 84, 0.4);
+    }
+
+    .oauth-card__title {
+      font-size: 18px; font-weight: 600; color: var(--text); text-align: center;
+    }
+
+    .oauth-card__desc {
+      font-size: var(--font-size-sm); color: var(--text-muted);
+      text-align: center; line-height: 1.6;
+    }
+
+    .oauth-card__device-code {
+      font-family: var(--font-mono);
+      font-size: 22px; font-weight: 700; letter-spacing: 0.15em;
+      color: var(--accent);
+      background: rgba(240, 84, 84, 0.1);
+      border: 1px solid var(--border-focused);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3) var(--space-6);
+      box-shadow: var(--glow-accent-sm);
+    }
+
+    .oauth-card__timer {
+      font-family: var(--font-mono); font-size: var(--font-size-sm); color: var(--text-muted);
+    }
+
+    .oauth-card__actions {
+      display: flex; flex-direction: column; gap: var(--space-2); width: 100%;
+    }
+
+    .webview-label {
+      position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
+      font-family: var(--font-mono); font-size: var(--font-size-xs);
+      color: var(--text-muted); background: var(--bg-elevated);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 2px 8px; white-space: nowrap; pointer-events: none;
+    }
+
+    .oauth-progress {
+      position: absolute; bottom: 0; left: 0; height: 2px;
+      background: var(--accent-gradient); border-radius: 0;
+      animation: countdown 120s linear forwards;
+    }
+    @keyframes countdown { from { width: 100%; } to { width: 0%; } }
+  </style>
+</head>
+<body>
+
+<div class="theme-toggle">
+  <button onclick="toggleTheme()">Toggle theme</button>
+</div>
+
+<nav class="nav">
+  <a href="index.html">Empty</a>
+  <a href="grid.html">2×2 Grid</a>
+  <a href="palette.html">Palette</a>
+  <a href="popup.html">Popup</a>
+  <a href="auth-browser.html" class="active">Auth</a>
+</nav>
+
+<div class="nsb-auth-browser" style="position:fixed;inset:0;">
+
+  <!-- Address bar with logo -->
+  <div class="nsb-auth-browser__bar">
+    <span class="nsb-auth-browser__lock" title="Secure HTTPS">🔒</span>
+    <div class="nsb-auth-browser__url">https://github.com/login/device</div>
+    <div style="display:flex;align-items:center;gap:var(--space-1);margin-left:var(--space-2);">
+      <button class="nsb-btn nsb-btn--ghost" style="padding:3px 8px;font-size:var(--font-size-sm);">←</button>
+      <button class="nsb-btn nsb-btn--ghost" style="padding:3px 8px;font-size:var(--font-size-sm);">→</button>
+      <button class="nsb-btn nsb-btn--ghost" style="padding:3px 8px;font-size:var(--font-size-sm);">↻</button>
+    </div>
+    <button class="nsb-auth-browser__close" onclick="window.location='grid.html'">✕</button>
+  </div>
+
+  <!-- Webview area -->
+  <div class="nsb-auth-browser__content" style="position:relative;">
+    <div class="webview-label">&lt;webview&gt; Tauri in-app browser — no OS browser spawned</div>
+
+    <div class="oauth-page">
+      <div class="oauth-card">
+        <!-- nanosb logo inside OAuth card -->
+        <div style="font-family:var(--font-mono);font-size:28px;color:var(--accent);font-weight:700;">&gt;&gt;_</div>
+
+        <div class="oauth-card__title">Authorize nanosb</div>
+        <div class="oauth-card__desc">
+          Enter the code below at<br>
+          <strong style="color:var(--accent)">github.com/login/device</strong>
+        </div>
+
+        <div class="oauth-card__device-code">NSBD-4F2A</div>
+
+        <div class="oauth-card__timer">Expires in <span id="timer">01:58</span></div>
+
+        <div class="oauth-card__actions">
+          <button class="nsb-btn nsb-btn--primary" style="width:100%;">
+            I've entered the code
+          </button>
+          <button class="nsb-btn nsb-btn--ghost" style="width:100%;text-align:center;">
+            Copy code
+          </button>
+        </div>
+
+        <div style="font-size:var(--font-size-sm);color:var(--text-muted);text-align:center;">
+          The OAuth callback will be received automatically.
+        </div>
+      </div>
+    </div>
+
+    <div class="oauth-progress"></div>
+  </div>
+
+</div>
+
+<script>
+  function toggleTheme() {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  }
+  let secs = 118;
+  const timerEl = document.getElementById('timer');
+  setInterval(() => {
+    if (secs <= 0) return;
+    secs--;
+    const m = String(Math.floor(secs / 60)).padStart(2, '0');
+    const s = String(secs % 60).padStart(2, '0');
+    if (timerEl) timerEl.textContent = m + ':' + s;
+  }, 1000);
+</script>
+</body>
+</html>

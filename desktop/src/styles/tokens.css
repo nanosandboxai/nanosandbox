@@ -1,0 +1,179 @@
+/* ============================================================
+   nanosb desktop — Design Tokens
+   Accent: coral red (#F05454) from the nanosb logo.
+   Structure: dark navy bg, warm red neon glow.
+   ============================================================ */
+
+/* ── Dark theme (default) ────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Backgrounds — aligned with NanoTerm default scheme */
+  --bg-app:         #08070d;
+  --bg-surface:     #14121a;
+  --bg-elevated:    #1a1722;
+  --bg-pane-header: #16131c;
+  --bg-input:       #1e1c26;
+
+  /* Accent — nanosb coral red from logo */
+  --accent:          #ff6b6b;
+  --accent-2:        #8b7bff;
+  --accent-gradient: linear-gradient(135deg, #ff6b6b, #8b7bff);
+  --accent-rgb:      255, 107, 107;
+  --accent-2-rgb:    139, 123, 255;
+
+  /* Text */
+  --text:           #f0eded;
+  --text-subtle:    #c9c4d4;
+  --text-muted:     #9d97a8;
+  --text-on-accent: #1a0a0c;
+
+  /* Status */
+  --success: #6ee7b7;
+  --warning: #fcd34d;
+  --error:   #f14c4c;
+  --info:    #8b7bff;
+
+  /* Status dot */
+  --dot-connected:    #6ee7b7;
+  --dot-loading:      #fcd34d;
+  --dot-error:        #f14c4c;
+  --dot-disconnected: #7a7388;
+
+  /* Status bar */
+  --status-bar-bg:   #0f0d12;
+  --status-bar-text: #9d97a8;
+
+  /* Selection */
+  --selection-bg: rgba(255, 107, 107, 0.20);
+  --selection-fg: #f0eded;
+
+  /* Borders */
+  --border:         rgba(255, 255, 255, 0.08);
+  --border-focused: rgba(255, 107, 107, 0.56);
+  --border-subtle:  rgba(255, 255, 255, 0.05);
+
+  /* Glow — matches logo neon halo */
+  --glow-accent:    0 0 16px rgba(255, 107, 107, 0.25);
+  --glow-accent-sm: 0 0  8px rgba(255, 107, 107, 0.18);
+  --glow-success:   0 0 10px rgba(110, 231, 183, 0.25);
+
+  /* Scrim */
+  --scrim: rgba(8, 7, 13, 0.78);
+
+  /* Scrollbar */
+  --scrollbar-thumb:       rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 107, 107, 0.42);
+  --scrollbar-track:       transparent;
+}
+
+/* ── Light theme ─────────────────────────────────────────── */
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Backgrounds — aligned with NanoTerm light scheme */
+  --bg-app:         #faf9f7;
+  --bg-surface:     #ffffff;
+  --bg-elevated:    #f3f0ed;
+  --bg-pane-header: #ebe4dd;
+  --bg-input:       #ffffff;
+
+  /* Accent — deeper red for contrast on white */
+  --accent:          #e85555;
+  --accent-2:        #8b7bff;
+  --accent-gradient: linear-gradient(135deg, #e85555, #8b7bff);
+  --accent-rgb:      232, 85, 85;
+  --accent-2-rgb:    139, 123, 255;
+
+  /* Text */
+  --text:           #1c1917;
+  --text-subtle:    #44403c;
+  --text-muted:     #78716c;
+  --text-on-accent: #ffffff;
+
+  /* Status */
+  --success: #059669;
+  --warning: #d97706;
+  --error:   #dc2626;
+  --info:    #8b7bff;
+
+  /* Status dot */
+  --dot-connected:    #059669;
+  --dot-loading:      #d97706;
+  --dot-error:        #dc2626;
+  --dot-disconnected: #a8a29e;
+
+  /* Status bar */
+  --status-bar-bg:   #f3f0ed;
+  --status-bar-text: #78716c;
+
+  /* Selection */
+  --selection-bg: rgba(232, 85, 85, 0.18);
+  --selection-fg: #1c1917;
+
+  /* Borders */
+  --border:         rgba(28, 25, 23, 0.10);
+  --border-focused: rgba(232, 85, 85, 0.55);
+  --border-subtle:  rgba(28, 25, 23, 0.06);
+
+  /* Glow */
+  --glow-accent:    0 0 10px rgba(232, 85, 85, 0.15);
+  --glow-accent-sm: none;
+  --glow-success:   none;
+
+  /* Scrim */
+  --scrim: rgba(250, 249, 247, 0.80);
+
+  /* Scrollbar */
+  --scrollbar-thumb:       rgba(28, 25, 23, 0.18);
+  --scrollbar-thumb-hover: rgba(232, 85, 85, 0.42);
+  --scrollbar-track:       transparent;
+}
+
+/* ── Shape & spacing ─────────────────────────────────────── */
+:root {
+  --radius:    6px;
+  --radius-sm: 4px;
+  --radius-lg: 10px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Chrome dimensions */
+  --pane-header-h: 28px;
+  --status-bar-h:  22px;
+  --input-bar-h:   36px;
+  --palette-w:     560px;
+  --palette-max-h: 360px;
+}
+
+/* ── Typography ──────────────────────────────────────────── */
+:root {
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+  --font-size-base: 13px;
+  --font-size-sm:   11px;
+  --font-size-xs:   10px;
+
+  --line-height-terminal: 1.4;
+  --line-height-ui:       1.5;
+
+  --letter-spacing-label: 0.05em;
+  --letter-spacing-code:  0.02em;
+}
+
+/* ── Motion ──────────────────────────────────────────────── */
+:root {
+  --dur-fast: 80ms;
+  --dur-base: 140ms;
+  --dur-slow: 260ms;
+
+  --ease-out: cubic-bezier(0.0, 0.0, 0.2, 1.0);
+  --ease-in:  cubic-bezier(0.4, 0.0, 1.0, 1.0);
+}
