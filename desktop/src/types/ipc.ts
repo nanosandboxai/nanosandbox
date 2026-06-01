@@ -37,6 +37,26 @@ export interface AppBootstrap {
   layout: LayoutSnapshot;
   panes: PaneSummary[];
   command_history_size: number;
+  workspace: WorkspaceContext;
+}
+
+export interface WorkspaceContext {
+  project_path?: string;
+  session_id?: string;
+}
+
+export interface ProjectEntry {
+  id: string;
+  name: string;
+  path: string;
+  last_opened: string;
+}
+
+export interface SessionEntry {
+  id: string;
+  updated: string;
+  panels: number;
+  summary: string;
 }
 
 export interface ApiError {

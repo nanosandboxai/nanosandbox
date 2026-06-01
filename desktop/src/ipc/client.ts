@@ -8,13 +8,16 @@ import type {
   InputSubmitResult,
   LayoutSnapshot,
   PaneEvent,
+  ProjectEntry,
   PopupEvent,
+  SessionEntry,
   StatusEvent,
   TerminalEvent,
   TerminalWriteFrame,
   ThemeSnapshot,
   UiEvent,
-  UploadEvent
+  UploadEvent,
+  WorkspaceContext
 } from "../types/ipc";
 
 function isTauriRuntime(): boolean {
@@ -38,6 +41,37 @@ function unwrap<T>(result: ApiResult<T>): T {
 export async function appBootstrap(): Promise<AppBootstrap> {
   requireTauriRuntime("app bootstrap");
   const result = await invoke<ApiResult<AppBootstrap>>("app_bootstrap");
+  return unwrap(result);
+}
+
+export async function projectsList(): Promise<ProjectEntry[]> {
+  requireTauriRuntime("projects list");
+  const result = await invoke<ApiResult<ProjectEntry[]>>("projects_list");
+  return unwrap(result);
+}
+
+export async function projectAddRecent(path: string): Promise<ProjectEntry> {
+  requireTauriRuntime("project add recent");
+  const result = await invoke<ApiResult<ProjectEntry>>("project_add_recent", {
+    path
+  });
+  return unwrap(result);
+}
+
+export async function sessionsList(projectPath: string): Promise<SessionEntry[]> {
+  requireTauriRuntime("sessions list");
+  const result = await invoke<ApiResult<SessionEntry[]>>("sessions_list", {
+    projectPath
+  });
+  return unwrap(result);
+}
+
+export async function workspaceInit(projectPath: string, sessionId?: string): Promise<WorkspaceContext> {
+  requireTauriRuntime("workspace init");
+  const result = await invoke<ApiResult<WorkspaceContext>>("workspace_init", {
+    projectPath,
+    sessionId
+  });
   return unwrap(result);
 }
 

@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "nanosb Desktop",
-        "width": 1280,
-        "height": 820,
+        "width": 920,
+        "height": 640,
         "resizable": true,
         "center": true
       }

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use command_core::{Command, ParseResult};
@@ -36,6 +37,14 @@ fn desktop_env_store_path() -> PathBuf {
         .join("env.json")
 }
 
+fn desktop_recent_projects_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".nanosandbox")
+        .join("desktop")
+        .join("recent_projects.json")
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PersistedEnvStore {
     #[serde(default)]
@@ -60,6 +69,66 @@ fn save_persisted_env_store(store: &PersistedEnvStore) -> Result<(), String> {
     let body = serde_json::to_string_pretty(store)
         .map_err(|e| format!("Failed to serialize env store: {}", e))?;
     std::fs::write(&path, body).map_err(|e| format!("Failed to write env store: {}", e))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecentProjectRecord {
+    path: String,
+    last_opened_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct RecentProjectsStore {
+    #[serde(default)]
+    projects: Vec<RecentProjectRecord>,
+}
+
+fn load_recent_projects_store() -> RecentProjectsStore {
+    let path = desktop_recent_projects_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(value) => value,
+        Err(_) => return RecentProjectsStore::default(),
+    };
+    serde_json::from_str::<RecentProjectsStore>(&content).unwrap_or_default()
+}
+
+fn save_recent_projects_store(store: &RecentProjectsStore) -> Result<(), String> {
+    let path = desktop_recent_projects_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create recent projects directory: {}", e))?;
+    }
+    let body = serde_json::to_string_pretty(store)
+        .map_err(|e| format!("Failed to serialize recent projects: {}", e))?;
+    std::fs::write(&path, body).map_err(|e| format!("Failed to write recent projects: {}", e))
+}
+
+fn current_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn humanize_age(now_ms: u64, then_ms: u64) -> String {
+    let delta = now_ms.saturating_sub(then_ms) / 1000;
+    if delta < 60 {
+        format!("{}s ago", delta)
+    } else if delta < 3_600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h ago", delta / 3_600)
+    } else {
+        format!("{}d ago", delta / 86_400)
+    }
+}
+
+fn project_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("project")
+        .to_string()
 }
 
 fn desktop_log_file_hint() -> String {
@@ -222,6 +291,29 @@ struct AppBootstrap {
     layout: LayoutSnapshot,
     panes: Vec<PaneSummary>,
     command_history_size: usize,
+    workspace: WorkspaceContext,
+}
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+struct WorkspaceContext {
+    project_path: Option<String>,
+    session_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ProjectEntry {
+    id: String,
+    name: String,
+    path: String,
+    last_opened: String,
+}
+
+#[derive(Clone, Serialize)]
+struct SessionEntry {
+    id: String,
+    updated: String,
+    panels: usize,
+    summary: String,
 }
 
 #[derive(Serialize)]
@@ -396,6 +488,8 @@ struct DesktopState {
     pane_gitsync_override: Mutex<HashMap<usize, bool>>,
     registry: Mutex<sandbox::AgentsRegistryClient>,
     persisted_env: Mutex<PersistedEnvStore>,
+    recent_projects: Mutex<RecentProjectsStore>,
+    workspace_context: Mutex<WorkspaceContext>,
     url_buffers: Mutex<HashMap<usize, Vec<u8>>>,
     opened_auth_keys: Mutex<HashSet<String>>,
     zoomed_pane: Mutex<Option<usize>>,
@@ -969,6 +1063,48 @@ fn clone_workdir_for_pane(state: &State<'_, DesktopState>, pane_id: usize) -> Re
         message: "Focused pane has no project clone directory".to_string(),
         detail: None,
     })
+}
+
+fn upsert_recent_project(state: &State<'_, DesktopState>, project_path: &Path) -> Result<(), String> {
+    let normalized = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    let path_value = normalized.display().to_string();
+    let mut store = state
+        .recent_projects
+        .lock()
+        .map_err(|_| "Failed to acquire recent projects store".to_string())?;
+    let ts = current_epoch_ms();
+    if let Some(existing) = store.projects.iter_mut().find(|entry| entry.path == path_value) {
+        existing.last_opened_ms = ts;
+    } else {
+        store.projects.push(RecentProjectRecord {
+            path: path_value,
+            last_opened_ms: ts,
+        });
+    }
+    store.projects.sort_by(|a, b| b.last_opened_ms.cmp(&a.last_opened_ms));
+    if store.projects.len() > 50 {
+        store.projects.truncate(50);
+    }
+    save_recent_projects_store(&store)
+}
+
+fn build_project_entries(store: &RecentProjectsStore) -> Vec<ProjectEntry> {
+    let now = current_epoch_ms();
+    store
+        .projects
+        .iter()
+        .map(|entry| {
+            let project_path = PathBuf::from(&entry.path);
+            ProjectEntry {
+                id: entry.path.clone(),
+                name: project_label(&project_path),
+                path: entry.path.clone(),
+                last_opened: humanize_age(now, entry.last_opened_ms),
+            }
+        })
+        .collect()
 }
 
 fn emit_upload_failed(app: &tauri::AppHandle, upload_id: &str, pane_id: usize, error: &str) {
@@ -1728,6 +1864,10 @@ fn app_bootstrap(app: tauri::AppHandle, state: State<'_, DesktopState>) -> ApiRe
         Ok(guard) => *guard,
         Err(_) => return err("INTERNAL", "Failed to acquire zoom state", None),
     };
+    let workspace = match state.workspace_context.lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return err("INTERNAL", "Failed to acquire workspace state", None),
+    };
 
     apply_registry_to_panes(&mut panes, &registry);
 
@@ -1748,6 +1888,7 @@ fn app_bootstrap(app: tauri::AppHandle, state: State<'_, DesktopState>) -> ApiRe
         layout,
         panes: panes.clone(),
         command_history_size: 0,
+        workspace,
     })
 }
 
@@ -1937,6 +2078,16 @@ fn input_submit(
                     env_file,
                     run_as_root,
                 } => {
+                    let workspace = match state.workspace_context.lock() {
+                        Ok(guard) => guard.clone(),
+                        Err(_) => return err("INTERNAL", "Failed to acquire workspace state", None),
+                    };
+                    let effective_project = project.or_else(|| workspace.project_path.clone());
+                    if let Some(path) = effective_project.as_deref() {
+                        let project_path = PathBuf::from(path);
+                        let _ = upsert_recent_project(&state, &project_path);
+                    }
+
                     let permissions = sandbox::Permissions::Default;
                     let env = match build_add_agent_env(
                         &agent,
@@ -1997,7 +2148,7 @@ fn input_submit(
                         image,
                         tag,
                         name,
-                        project,
+                        effective_project,
                         branch,
                         run_as_root,
                         auto_mode,
@@ -3236,6 +3387,123 @@ fn command_autocomplete(partial: String) -> ApiResult<Vec<String>> {
 }
 
 #[tauri::command]
+fn projects_list(state: State<'_, DesktopState>) -> ApiResult<Vec<ProjectEntry>> {
+    let mut store = match state.recent_projects.lock() {
+        Ok(guard) => guard,
+        Err(_) => return err("INTERNAL", "Failed to acquire recent projects store", None),
+    };
+
+    store.projects.retain(|entry| PathBuf::from(&entry.path).exists());
+    if let Err(save_error) = save_recent_projects_store(&store) {
+        tracing::warn!("failed to persist filtered recent projects: {}", save_error);
+    }
+
+    ok(build_project_entries(&store))
+}
+
+#[tauri::command]
+fn project_add_recent(state: State<'_, DesktopState>, path: String) -> ApiResult<ProjectEntry> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return err("BAD_REQUEST", "Project path cannot be empty", None);
+    }
+    let pb = PathBuf::from(trimmed);
+    if !pb.exists() {
+        return err("BAD_REQUEST", "Project path does not exist", None);
+    }
+    if !pb.is_dir() {
+        return err("BAD_REQUEST", "Project path must be a directory", None);
+    }
+
+    if let Err(save_error) = upsert_recent_project(&state, &pb) {
+        return err("INTERNAL", "Failed to persist recent project", Some(save_error));
+    }
+
+    let store = match state.recent_projects.lock() {
+        Ok(guard) => guard,
+        Err(_) => return err("INTERNAL", "Failed to acquire recent projects store", None),
+    };
+    let path_display = pb.canonicalize().unwrap_or(pb).display().to_string();
+    let now = current_epoch_ms();
+    let match_entry = store.projects.iter().find(|entry| entry.path == path_display);
+    ok(ProjectEntry {
+        id: path_display.clone(),
+        name: project_label(Path::new(&path_display)),
+        path: path_display,
+        last_opened: match match_entry {
+            Some(value) => humanize_age(now, value.last_opened_ms),
+            None => "0s ago".to_string(),
+        },
+    })
+}
+
+#[tauri::command]
+fn sessions_list(project_path: String) -> ApiResult<Vec<SessionEntry>> {
+    let trimmed = project_path.trim();
+    if trimmed.is_empty() {
+        return ok(Vec::new());
+    }
+    let project = PathBuf::from(trimmed);
+    let sessions = sandbox::session::Session::list(&project);
+    let now = chrono::Utc::now();
+    let mapped = sessions
+        .into_iter()
+        .map(|entry| {
+            let delta = now.signed_duration_since(entry.session.updated_at).num_seconds().max(0);
+            let updated = if delta < 60 {
+                format!("{}s ago", delta)
+            } else if delta < 3_600 {
+                format!("{}m ago", delta / 60)
+            } else if delta < 86_400 {
+                format!("{}h ago", delta / 3_600)
+            } else {
+                format!("{}d ago", delta / 86_400)
+            };
+            SessionEntry {
+                id: entry.id,
+                updated,
+                panels: entry.session.panels.len(),
+                summary: entry.session.summary(),
+            }
+        })
+        .collect();
+    ok(mapped)
+}
+
+#[tauri::command]
+fn workspace_init(
+    state: State<'_, DesktopState>,
+    project_path: String,
+    session_id: Option<String>,
+) -> ApiResult<WorkspaceContext> {
+    let trimmed = project_path.trim();
+    if trimmed.is_empty() {
+        return err("BAD_REQUEST", "Project path cannot be empty", None);
+    }
+    let pb = PathBuf::from(trimmed);
+    if !pb.exists() || !pb.is_dir() {
+        return err("BAD_REQUEST", "Project path must be an existing directory", None);
+    }
+
+    let normalized = pb.canonicalize().unwrap_or(pb);
+    if let Err(save_error) = upsert_recent_project(&state, &normalized) {
+        tracing::warn!("failed to persist workspace project: {}", save_error);
+    }
+
+    let context = WorkspaceContext {
+        project_path: Some(normalized.display().to_string()),
+        session_id: session_id.filter(|value| !value.trim().is_empty()),
+    };
+
+    let mut workspace = match state.workspace_context.lock() {
+        Ok(guard) => guard,
+        Err(_) => return err("INTERNAL", "Failed to acquire workspace state", None),
+    };
+    *workspace = context.clone();
+    ok(context)
+}
+
+#[tauri::command]
 fn pane_close(
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
@@ -3486,12 +3754,18 @@ fn main() {
             pane_gitsync_override: Mutex::new(HashMap::new()),
             registry: Mutex::new(load_agents_registry()),
             persisted_env: Mutex::new(load_persisted_env_store()),
+            recent_projects: Mutex::new(load_recent_projects_store()),
+            workspace_context: Mutex::new(WorkspaceContext::default()),
             url_buffers: Mutex::new(HashMap::new()),
             opened_auth_keys: Mutex::new(HashSet::new()),
             zoomed_pane: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             app_bootstrap,
+            projects_list,
+            project_add_recent,
+            sessions_list,
+            workspace_init,
             pane_focus,
             pane_zoom_toggle,
             pane_close,
