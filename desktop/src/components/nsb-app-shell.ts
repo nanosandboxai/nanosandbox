@@ -1,4 +1,6 @@
 import { LitElement, html } from "lit";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import {
   appBootstrap,
   commandAutocomplete,
@@ -10,22 +12,29 @@ import {
   paneKill,
   paneOpen,
   paneZoomToggle,
+  projectAddRecent,
+  projectsList,
   popupAction,
   popupDismiss,
+  sessionsList,
   subscribeDesktopEvents,
   themeSet,
+  workspaceInit,
   uploadPasteImage
 } from "../ipc/client";
 import type {
   AppBootstrap,
+  ProjectEntry,
   PaneEvent,
   EditorEntry,
   PopupAction,
   PopupEvent,
+  SessionEntry,
   StatusEvent,
   TerminalEvent,
   UiEvent,
-  UploadEvent
+  UploadEvent,
+  WorkspaceContext
 } from "../types/ipc";
 import type { PaletteItem } from "./nsb-command-palette";
 import "./nsb-pane-grid";
@@ -58,7 +67,17 @@ export class NsbAppShell extends LitElement {
     commandSuggestionIndex: { state: true },
     copyToastMessage: { state: true },
     logsPathValue: { state: true },
-    availableEditors: { state: true }
+    availableEditors: { state: true },
+    workspaceContext: { state: true },
+    startupProjects: { state: true },
+    startupSessions: { state: true },
+    startupProjectPath: { state: true },
+    startupSessionId: { state: true },
+    startupBusy: { state: true },
+    switcherOpen: { state: true },
+    switcherProjectPath: { state: true },
+    switcherSessionId: { state: true },
+    switcherSessions: { state: true }
   };
 
   protected createRenderRoot(): HTMLElement {
@@ -121,6 +140,28 @@ export class NsbAppShell extends LitElement {
   private copyToastMessage = "";
 
   private copyToastTimer: number | null = null;
+
+  private workspaceContext: WorkspaceContext | null = null;
+
+  private startupProjects: ProjectEntry[] = [];
+
+  private startupSessions: SessionEntry[] = [];
+
+  private startupProjectPath = "";
+
+  private startupSessionId = "__new__";
+
+  private startupBusy = false;
+
+  private launchAgentName: string | null = null;
+
+  private switcherOpen = false;
+
+  private switcherProjectPath = "";
+
+  private switcherSessionId = "__new__";
+
+  private switcherSessions: SessionEntry[] = [];
 
   private readonly themeOptions = [
     "nanosandbox",
@@ -219,6 +260,9 @@ export class NsbAppShell extends LitElement {
       this.bootstrap = await appBootstrap();
       this.loadCommandHistory();
       this.selectedSandboxPaneId = this.bootstrap.layout.focused_pane;
+      this.workspaceContext = this.bootstrap.workspace?.project_path ? this.bootstrap.workspace : null;
+      this.switcherProjectPath = this.bootstrap.workspace?.project_path ?? "";
+      this.switcherSessionId = this.bootstrap.workspace?.session_id ?? "__new__";
       try {
         const commands = await commandAutocomplete("");
         this.paletteItems = commands.map((command) => ({
@@ -233,6 +277,11 @@ export class NsbAppShell extends LitElement {
       document.documentElement.dataset.theme = this.bootstrap.theme.mode;
       this.logsPathValue = await logsPath();
       await this.refreshEditors();
+      await this.loadStartupProjects();
+      await this.loadSwitcherSessions();
+      if (!this.isWorkspaceReady()) {
+        await this.resizeWindow(920, 640);
+      }
 
       this.unlistenDesktopEvents = await subscribeDesktopEvents({
         onPane: (event) => this.handlePaneEvent(event),
@@ -290,6 +339,10 @@ export class NsbAppShell extends LitElement {
       }
       if (this.sandboxPanelOpen) {
         this.sandboxPanelOpen = false;
+        return;
+      }
+      if (this.switcherOpen) {
+        this.switcherOpen = false;
         return;
       }
       if (this.settingsOpen) {
@@ -533,6 +586,147 @@ export class NsbAppShell extends LitElement {
     } catch {
       this.availableEditors = [];
     }
+  }
+
+  private isWorkspaceReady(): boolean {
+    return Boolean(this.workspaceContext?.project_path);
+  }
+
+  private async resizeWindow(width: number, height: number): Promise<void> {
+    try {
+      const current = getCurrentWindow();
+      await current.setSize(new LogicalSize(width, height));
+      await current.center();
+    } catch {
+      // Ignore size failures in non-Tauri preview.
+    }
+  }
+
+  private async loadStartupProjects(): Promise<void> {
+    try {
+      const projects = await projectsList();
+      this.startupProjects = projects;
+      if (!projects.length) {
+        this.startupProjectPath = "";
+        this.startupSessions = [];
+        this.startupSessionId = "__new__";
+        return;
+      }
+
+      const selected = projects.find((item) => item.path === this.startupProjectPath) ?? projects[0];
+      this.startupProjectPath = selected.path;
+      await this.loadStartupSessions(selected.path);
+    } catch (error) {
+      this.reportUiError(error, "Failed to load projects");
+    }
+  }
+
+  private async loadStartupSessions(projectPath: string): Promise<void> {
+    try {
+      const sessions = await sessionsList(projectPath);
+      this.startupSessions = sessions;
+      this.startupSessionId = sessions[0]?.id ?? "__new__";
+    } catch (error) {
+      this.startupSessions = [];
+      this.startupSessionId = "__new__";
+      this.reportUiError(error, "Failed to load sessions");
+    }
+  }
+
+  private async onAddProjectFromPathPrompt(): Promise<void> {
+    const path = window.prompt("Enter project folder path");
+    if (!path) {
+      return;
+    }
+    try {
+      const entry = await projectAddRecent(path);
+      await this.loadStartupProjects();
+      this.startupProjectPath = entry.path;
+      await this.loadStartupSessions(entry.path);
+    } catch (error) {
+      this.reportUiError(error, "Invalid project path");
+    }
+  }
+
+  private async startWorkspace(agent: string): Promise<void> {
+    if (!this.startupProjectPath || this.startupBusy) {
+      return;
+    }
+    this.startupBusy = true;
+    try {
+      const context = await workspaceInit(
+        this.startupProjectPath,
+        this.startupSessionId === "__new__" ? undefined : this.startupSessionId
+      );
+      this.workspaceContext = context;
+      this.switcherProjectPath = context.project_path ?? "";
+      this.switcherSessionId = context.session_id ?? "__new__";
+      this.launchAgentName = agent;
+      await this.resizeWindow(1280, 820);
+      await this.loadSwitcherSessions();
+      if (this.bootstrap?.panes.length === 0) {
+        await this.quickStartAdd(agent);
+      }
+    } catch (error) {
+      this.reportUiError(error, "Failed to initialize workspace");
+    } finally {
+      this.startupBusy = false;
+    }
+  }
+
+  private async loadSwitcherSessions(): Promise<void> {
+    if (!this.switcherProjectPath) {
+      this.switcherSessions = [];
+      this.switcherSessionId = "__new__";
+      return;
+    }
+    try {
+      this.switcherSessions = await sessionsList(this.switcherProjectPath);
+      if (
+        this.switcherSessionId !== "__new__" &&
+        !this.switcherSessions.some((session) => session.id === this.switcherSessionId)
+      ) {
+        this.switcherSessionId = this.switcherSessions[0]?.id ?? "__new__";
+      }
+    } catch (error) {
+      this.switcherSessions = [];
+      this.reportUiError(error, "Failed to load workspace sessions");
+    }
+  }
+
+  private async onSwitcherProjectSelect(path: string): Promise<void> {
+    this.switcherProjectPath = path;
+    this.switcherSessionId = "__new__";
+    await this.loadSwitcherSessions();
+  }
+
+  private async applyWorkspaceSwitcher(): Promise<void> {
+    if (!this.switcherProjectPath) {
+      return;
+    }
+    try {
+      const context = await workspaceInit(
+        this.switcherProjectPath,
+        this.switcherSessionId === "__new__" ? undefined : this.switcherSessionId
+      );
+      this.workspaceContext = context;
+      this.switcherOpen = false;
+      this.lastSubmitMessage = "Workspace context updated for new panels";
+    } catch (error) {
+      this.reportUiError(error, "Failed to update workspace");
+    }
+  }
+
+  private projectNameForPath(path: string | undefined): string {
+    if (!path) {
+      return "-";
+    }
+    const match = this.startupProjects.find((project) => project.path === path);
+    if (match) {
+      return match.name;
+    }
+    const chunks = path.split("/").filter(Boolean);
+    return chunks[chunks.length - 1] ?? path;
   }
 
   private filteredPaletteItems(): PaletteItem[] {
@@ -981,7 +1175,10 @@ export class NsbAppShell extends LitElement {
     }
     try {
       const paneId = this.bootstrap.layout.focused_pane;
-      const result = await inputSubmit(paneId, `/add ${agent}`);
+      const projectArg = this.workspaceContext?.project_path
+        ? ` --project "${this.workspaceContext.project_path.replace(/"/g, '\\"')}"`
+        : "";
+      const result = await inputSubmit(paneId, `/add ${agent}${projectArg}`);
       this.lastSubmitMessage = result.message ?? `Starting ${agent}...`;
     } catch (error) {
       this.reportUiError(error, "Quick Start Failed");
@@ -1009,17 +1206,117 @@ export class NsbAppShell extends LitElement {
       return html`<div class="nsb-app"><div class="welcome"><div class="welcome__tagline">Loading desktop shell...</div></div></div>`;
     }
 
+    if (!this.isWorkspaceReady()) {
+      return html`
+        <div class="nsb-start-screen">
+          <div class="nsb-start-screen__inner">
+            <img class="nsb-start-screen__logo" src="/logo.png" alt="NSB logo" />
+            <div class="nsb-start-screen__pickers">
+              <div class="nsb-picker-panel">
+                <div class="nsb-picker-panel__header">
+                  <span>Projects</span>
+                  <span class="nsb-picker-badge nsb-picker-badge--muted">${this.startupProjects.length} recent</span>
+                </div>
+                <div class="nsb-picker-panel__list">
+                  ${this.startupProjects.map(
+                    (project) => html`
+                      <button
+                        type="button"
+                        class="nsb-picker-item ${this.startupProjectPath === project.path ? "is-selected" : ""}"
+                        @click=${async () => {
+                          this.startupProjectPath = project.path;
+                          await this.loadStartupSessions(project.path);
+                        }}
+                      >
+                        <div class="nsb-picker-item__title">${project.name}</div>
+                        <div class="nsb-picker-item__path">${project.path}</div>
+                        <div class="nsb-picker-item__meta">${project.last_opened}</div>
+                      </button>
+                    `
+                  )}
+                  ${this.startupProjects.length
+                    ? null
+                    : html`<div class="nsb-picker-panel__empty">No recent projects yet. Add one to continue.</div>`}
+                </div>
+                <div class="nsb-picker-panel__footer">
+                  <button type="button" class="nsb-btn nsb-btn--ghost" style="width:100%;" @click=${() => void this.onAddProjectFromPathPrompt()}>
+                    Open folder...
+                  </button>
+                </div>
+              </div>
+
+              <div class="nsb-picker-panel">
+                <div class="nsb-picker-panel__header">
+                  <span>Sessions</span>
+                  <span class="nsb-picker-badge nsb-picker-badge--muted">${this.startupSessions.length ? `${this.startupSessions.length} saved` : "fresh"}</span>
+                </div>
+                <div class="nsb-picker-panel__list">
+                  <button
+                    type="button"
+                    class="nsb-picker-item ${this.startupSessionId === "__new__" ? "is-selected" : ""}"
+                    @click=${() => {
+                      this.startupSessionId = "__new__";
+                    }}
+                  >
+                    <div class="nsb-picker-item__title">Fresh workspace</div>
+                    <div class="nsb-picker-item__meta">Start with a clean workspace</div>
+                  </button>
+                  ${this.startupSessions.map(
+                    (session) => html`
+                      <button
+                        type="button"
+                        class="nsb-picker-item ${this.startupSessionId === session.id ? "is-selected" : ""}"
+                        @click=${() => {
+                          this.startupSessionId = session.id;
+                        }}
+                      >
+                        <div class="nsb-picker-item__title">${session.id}</div>
+                        <div class="nsb-picker-item__meta">${session.panels} panels • ${session.updated}</div>
+                        <div class="nsb-picker-item__path">${session.summary}</div>
+                      </button>
+                    `
+                  )}
+                </div>
+              </div>
+            </div>
+            <div class="nsb-start-screen__agents ${this.startupProjectPath ? "" : "is-disabled"}">
+              <button type="button" class="nsb-btn nsb-btn--primary" ?disabled=${!this.startupProjectPath || this.startupBusy} @click=${() => void this.startWorkspace("claude")}>/add claude</button>
+              <button type="button" class="nsb-btn nsb-btn--primary" ?disabled=${!this.startupProjectPath || this.startupBusy} @click=${() => void this.startWorkspace("codex")}>/add codex</button>
+              <button type="button" class="nsb-btn nsb-btn--primary" ?disabled=${!this.startupProjectPath || this.startupBusy} @click=${() => void this.startWorkspace("cursor")}>/add cursor</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     const paletteItems = this.filteredPaletteItems();
     const tabs = this.bootstrap.panes;
 
     if (tabs.length === 0) {
       return html`
         <div class="nsb-shell nsb-shell--empty">
+          <header class="nsb-toolbar">
+            <div class="nsb-toolbar__tabs"></div>
+            <div class="nsb-toolbar__actions">
+              <div class="nsb-workspace-selectors">
+                <button type="button" class="nsb-workspace-select nsb-workspace-select--project" @click=${() => {
+                  this.switcherOpen = !this.switcherOpen;
+                }}>
+                  <span class="nsb-workspace-select__label">Project: ${this.projectNameForPath(this.workspaceContext?.project_path)}</span>
+                  <span class="nsb-workspace-select__chev">▾</span>
+                </button>
+                <button type="button" class="nsb-workspace-select nsb-workspace-select--session" @click=${() => {
+                  this.switcherOpen = !this.switcherOpen;
+                }}>
+                  <span class="nsb-workspace-select__label">Session: ${this.workspaceContext?.session_id ?? "fresh"}</span>
+                  <span class="nsb-workspace-select__chev">▾</span>
+                </button>
+              </div>
+            </div>
+          </header>
           <div class="nsb-app nsb-empty-state">
             <div class="nsb-launcher">
-              <img class="nsb-launcher__logo-image" src="/logo.png" alt="NSB logo" />
-              <div class="nsb-launcher__title">Sandboxes for AI Code Agents</div>
-              <div class="nsb-launcher__hint">Start a new session</div>
+              <div class="nsb-launcher__title">Choose an agent to start this workspace</div>
               <div class="nsb-launcher__actions">
                 <button type="button" class="nsb-btn nsb-btn--primary" @click=${() => void this.quickStartAdd("claude")}>/add claude</button>
                 <button type="button" class="nsb-btn nsb-btn--primary" @click=${() => void this.quickStartAdd("codex")}>/add codex</button>
@@ -1069,6 +1366,86 @@ export class NsbAppShell extends LitElement {
             )}
           </div>
           <div class="nsb-toolbar__actions">
+            <div class="nsb-workspace-selectors">
+              <button
+                type="button"
+                class="nsb-workspace-select nsb-workspace-select--project"
+                @click=${async () => {
+                  this.switcherOpen = !this.switcherOpen;
+                  if (this.switcherProjectPath) {
+                    await this.loadSwitcherSessions();
+                  }
+                }}
+              >
+                <span class="nsb-workspace-select__label">Project: ${this.projectNameForPath(this.workspaceContext?.project_path)}</span>
+                <span class="nsb-workspace-select__chev">▾</span>
+              </button>
+              <button
+                type="button"
+                class="nsb-workspace-select nsb-workspace-select--session"
+                @click=${async () => {
+                  this.switcherOpen = !this.switcherOpen;
+                  if (this.switcherProjectPath) {
+                    await this.loadSwitcherSessions();
+                  }
+                }}
+              >
+                <span class="nsb-workspace-select__label">Session: ${this.workspaceContext?.session_id ?? "fresh"}</span>
+                <span class="nsb-workspace-select__chev">▾</span>
+              </button>
+              <div class="nsb-workspace-popover ${this.switcherOpen ? "is-open" : ""}">
+                <div class="nsb-workspace-popover__header">Switch Project and Session</div>
+                <div class="nsb-workspace-popover__body">
+                  <div class="nsb-workspace-section__label">Project</div>
+                  <div class="nsb-picker-panel__list" style="padding:0;">
+                    ${this.startupProjects.map(
+                      (project) => html`
+                        <button
+                          type="button"
+                          class="nsb-picker-item ${this.switcherProjectPath === project.path ? "is-selected" : ""}"
+                          @click=${() => void this.onSwitcherProjectSelect(project.path)}
+                        >
+                          <div class="nsb-picker-item__title">${project.name}</div>
+                          <div class="nsb-picker-item__path">${project.path}</div>
+                        </button>
+                      `
+                    )}
+                  </div>
+                  <div class="nsb-workspace-section__label">Session</div>
+                  <div class="nsb-picker-panel__list" style="padding:0;">
+                    <button
+                      type="button"
+                      class="nsb-picker-item ${this.switcherSessionId === "__new__" ? "is-selected" : ""}"
+                      @click=${() => {
+                        this.switcherSessionId = "__new__";
+                      }}
+                    >
+                      <div class="nsb-picker-item__title">Fresh workspace</div>
+                    </button>
+                    ${this.switcherSessions.map(
+                      (session) => html`
+                        <button
+                          type="button"
+                          class="nsb-picker-item ${this.switcherSessionId === session.id ? "is-selected" : ""}"
+                          @click=${() => {
+                            this.switcherSessionId = session.id;
+                          }}
+                        >
+                          <div class="nsb-picker-item__title">${session.id}</div>
+                          <div class="nsb-picker-item__meta">${session.panels} panels • ${session.updated}</div>
+                        </button>
+                      `
+                    )}
+                  </div>
+                </div>
+                <div class="nsb-workspace-popover__footer">
+                  <button type="button" class="nsb-btn nsb-btn--ghost" @click=${() => {
+                    this.switcherOpen = false;
+                  }}>Cancel</button>
+                  <button type="button" class="nsb-btn nsb-btn--primary" @click=${() => void this.applyWorkspaceSwitcher()}>Apply</button>
+                </div>
+              </div>
+            </div>
             <button
               class="nsb-toolbar__panel-btn ${this.sandboxPanelOpen ? "is-active" : ""}"
               title="Sandboxes"
