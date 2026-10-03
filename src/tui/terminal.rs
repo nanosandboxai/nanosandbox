@@ -619,7 +619,7 @@ pub(super) fn agent_cli_command_with_session(
                 ];
                 match effective {
                     Permissions::AllowAll => parts.push("--yolo".to_string()),
-                    _ => parts.push("--full-auto".to_string()),
+                    _ => parts.push("--approve-for-me".to_string()),
                 }
                 if let Some(m) = model {
                     parts.extend(["--model".to_string(), m.to_string()]);
@@ -635,7 +635,7 @@ pub(super) fn agent_cli_command_with_session(
                 }
                 match effective {
                     Permissions::AllowAll => parts.push("--yolo".to_string()),
-                    Permissions::AcceptEdits => parts.push("--full-auto".to_string()),
+                    Permissions::AcceptEdits => parts.push("--approve-for-me".to_string()),
                     Permissions::Default => {}
                 }
                 if let Some(m) = model {
@@ -1246,7 +1246,7 @@ mod tests {
         assert!(cmd.contains("acceptEdits"));
 
         let cmd = agent_cli_command("codex", Permissions::AcceptEdits, false, false, None).unwrap();
-        assert!(cmd.contains("--full-auto"));
+        assert!(cmd.contains("--approve-for-me"));
 
         // --trust requires headless mode, so not present in interactive
         let cmd = agent_cli_command("cursor", Permissions::AcceptEdits, false, false, None).unwrap();
