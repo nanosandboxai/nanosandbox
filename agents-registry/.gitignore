@@ -1,0 +1,6 @@
+.nanosb/
+__pycache__/
+*.pyc
+/docs/superpowers
+
+**/testdata/**

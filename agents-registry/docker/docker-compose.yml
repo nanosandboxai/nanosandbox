@@ -1,0 +1,11 @@
+services:
+  registry:
+    image: registry:2
+    ports:
+      - "5050:5000"
+    restart: unless-stopped
+    volumes:
+      - registry-data:/var/lib/registry
+
+volumes:
+  registry-data:

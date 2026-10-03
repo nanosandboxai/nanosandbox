@@ -1,0 +1,11 @@
+FROM opensuse/tumbleweed:latest
+
+WORKDIR /build
+COPY scripts/ci/install-deps-zypper.sh /tmp/install-deps.sh
+RUN bash /tmp/install-deps.sh && rm /tmp/install-deps.sh
+
+COPY . /build
+RUN git config --global --add safe.directory /build
+
+# Build + unit tests only. No KVM needed.
+CMD ["bash", "scripts/ci/build-and-test.sh"]

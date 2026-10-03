@@ -1,0 +1,12 @@
+ARG BASE_IMAGE=agents-registry/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="Claude Code agent for nanosandbox sandboxes"
+
+RUN npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force
+
+RUN claude --version && echo "Claude Code: OK"
+RUN rm -rf /workspace/*
+
+CMD ["/usr/local/bin/nanosb-init.sh"]

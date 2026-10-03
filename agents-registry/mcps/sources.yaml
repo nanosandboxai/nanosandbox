@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: McpSources
+
+registries:
+  # Primary registries with public programmatic APIs
+  official:
+    url: https://registry.modelcontextprotocol.io
+    api: https://registry.modelcontextprotocol.io/v0/servers
+    type: mcp-registry
+    auth: none
+    description: Canonical MCP registry - community-owned under Linux Foundation, backed by Anthropic, GitHub, and Microsoft
+
+  smithery:
+    url: https://smithery.ai
+    api: https://registry.smithery.ai/servers
+    type: smithery
+    auth: bearer-token
+    description: Registry + managed hosting platform with OAuth handling and 7,300+ MCP servers
+
+  glama:
+    url: https://glama.ai/mcp/servers
+    api: https://glama.ai/api/mcp/v1/servers/
+    type: rest-api
+    auth: check-docs
+    description: Largest MCP directory with 18,000+ servers, updated daily with usage metrics
+
+  pulsemcp:
+    url: https://www.pulsemcp.com/servers
+    api: https://www.pulsemcp.com/api
+    type: rest-api
+    auth: check-docs
+    description: Enriched, quality-controlled directory with 8,500+ servers implementing the Generic MCP Registry API spec
+
+  # Hosting platforms
+  mcp-run:
+    url: https://www.mcp.run
+    type: hosted
+    auth: account
+    description: WebAssembly-based MCP server hosting with strong isolation and cross-platform portability
+
+  # CLI-based registries
+  mcp-get:
+    url: https://mcp-get.com
+    type: cli
+    auth: none
+    description: Package manager CLI for MCP servers - install via npx @michaellatman/mcp-get
+
+  # Additional directories (no confirmed public API)
+  opentools:
+    url: https://opentools.com/registry
+    type: directory
+    auth: check-docs
+    description: Curated, task-oriented MCP server discovery with high signal-to-noise ratio
+
+  github-mcp:
+    url: https://github.com/mcp
+    type: github
+    auth: none
+    description: GitHub's integrated MCP registry with one-click install for VS Code, synced from the official registry

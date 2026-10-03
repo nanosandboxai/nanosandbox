@@ -1,0 +1,42 @@
+#!/bin/sh
+# Mock Codex agent for integration testing.
+# Simulates Codex's JSON output format.
+
+SESSION_ID="codex_$(date +%s)"
+RESUME=""
+MESSAGE=""
+
+# Parse args
+while [ $# -gt 0 ]; do
+    case "$1" in
+        resume)
+            RESUME="$2"
+            SESSION_ID="$2"
+            MESSAGE="$3"
+            shift 3
+            ;;
+        exec)
+            shift
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --json|--model) shift; shift ;;  # skip flag + value for --model
+                    *) MESSAGE="$1"; shift ;;
+                esac
+            done
+            ;;
+        *) shift ;;
+    esac
+done
+
+echo "{\"session_id\":\"$SESSION_ID\"}"
+
+if [ -n "$RESUME" ]; then
+    echo "{\"output\":\"resumed session: $RESUME\"}"
+fi
+
+if echo "$MESSAGE" | grep -q "interrupted"; then
+    echo "{\"output\":\"continuing from interruption\"}"
+fi
+
+echo "{\"output\":\"working on: $MESSAGE\"}"
+echo "{\"status\":\"done\"}"

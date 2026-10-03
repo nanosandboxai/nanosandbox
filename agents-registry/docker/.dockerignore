@@ -1,0 +1,27 @@
+# Rust build artifacts
+target/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs and tests (not needed in images)
+docs/
+tests/
+*.md
+!README.Agents.md
+
+# Environment
+.env
+
+# Logs
+*.log
