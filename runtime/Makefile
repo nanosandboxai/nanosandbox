@@ -127,10 +127,12 @@ ci-fast: lint test
 REGISTRY_HOST ?= localhost:5050
 BASE_IMAGE_TAG ?= latest
 AGENTS := claude goose codex cursor
+AGENTS_DIR := ../agents-registry
+COMPOSE_FILE := $(AGENTS_DIR)/docker/docker-compose.yml
 
 # Start local Docker registry
 registry-up:
-	@docker compose -f docker/docker-compose.yml up -d
+	@docker compose -f $(COMPOSE_FILE) up -d
 	@echo "Registry running at $(REGISTRY_HOST)"
 	@echo "Waiting for registry..."
 	@until curl -sf http://$(REGISTRY_HOST)/v2/_catalog > /dev/null 2>&1; do sleep 1; done
@@ -138,12 +140,12 @@ registry-up:
 
 # Stop local Docker registry
 registry-down:
-	@docker compose -f docker/docker-compose.yml down
+	@docker compose -f $(COMPOSE_FILE) down
 
 # Build and push base image to local registry
 # --load ensures buildx loads the image into the local daemon so push works
 agents-build-base:
-	docker build --load -f docker/Dockerfile.base -t $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) .
+	docker build --load -f $(AGENTS_DIR)/docker/Dockerfile.base -t $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) $(AGENTS_DIR)
 	docker push $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG)
 	@echo "Base image pushed to $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG)"
 
@@ -152,9 +154,9 @@ agents-build-one:
 ifndef AGENT
 	$(error AGENT is required. Usage: make agents-build-one AGENT=claude)
 endif
-	docker build --load -f docker/Dockerfile.$(AGENT) \
+	docker build --load -f $(AGENTS_DIR)/docker/Dockerfile.$(AGENT) \
 		--build-arg BASE_IMAGE=$(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) \
-		-t $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG) .
+		-t $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG) $(AGENTS_DIR)
 	docker push $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG)
 	@echo "$(AGENT) image pushed to $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG)"
 
@@ -162,9 +164,9 @@ endif
 agents-build: agents-build-base
 	@for agent in $(AGENTS); do \
 		echo "Building $$agent..."; \
-		docker build --load -f docker/Dockerfile.$$agent \
+		docker build --load -f $(AGENTS_DIR)/docker/Dockerfile.$$agent \
 			--build-arg BASE_IMAGE=$(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) \
-			-t $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) . \
+			-t $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) $(AGENTS_DIR) \
 		&& docker push $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) \
 		|| exit 1; \
 	done
