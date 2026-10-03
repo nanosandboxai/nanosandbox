@@ -1,0 +1,16 @@
+defaults:
+  image: ghcr.io/nanosandboxai/agents-registry/claude:rc12
+  cpus: 2
+  memory: 4096
+  timeout: 600
+  workdir: /workspace
+
+sandboxes:
+  claude-python-hello:
+    type: claude
+    agent: claude
+    auto_mode: true
+    permissions: allow-all
+    prompt: |
+      Create a Python file named hello.py in /workspace that prints "Hello, World!"
+      when executed. Then run it with `python3 hello.py` and show the output.

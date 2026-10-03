@@ -1,0 +1,24 @@
+[package]
+name = "gateway"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Agent-gateway client for communicating with in-VM gateway processes"
+
+[dependencies]
+runtime = { git = "https://github.com/nanosandboxai/runtime.git", branch = "main" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"

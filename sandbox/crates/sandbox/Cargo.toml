@@ -1,0 +1,51 @@
+[package]
+name = "sandbox"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Agent-aware sandbox SDK built on nanosandbox runtime"
+keywords = ["sandbox", "agent", "mcp", "skills"]
+categories = ["development-tools"]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+ffi = []
+
+[dependencies]
+# Runtime (VM engine) — consumed via git; local dev overrides via workspace [patch]
+runtime = { git = "https://github.com/nanosandboxai/runtime.git", branch = "main" }
+
+# Gateway client for agent-gateway communication
+gateway = { path = "../gateway" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Utilities
+tracing = "0.1"
+dirs = "6"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+unicode-width = "0.2"
+uuid = { version = "1", features = ["v4"] }
+git2 = { version = "0.20", default-features = false }
+ureq = { version = "2", default-features = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"
