@@ -1,0 +1,5 @@
+[target.'cfg(target_os = "macos")']
+runner = "scripts/codesign-and-run.sh"
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"

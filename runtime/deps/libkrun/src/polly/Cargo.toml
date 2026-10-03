@@ -1,0 +1,11 @@
+[package]
+name = "polly"
+version = "0.0.1"
+authors = ["Amazon Firecracker team <firecracker-devel@amazon.com>"]
+edition = "2021"
+
+[dependencies]
+utils = { path="../utils" }
+
+[target.'cfg(unix)'.dependencies]
+libc = ">=0.2.39"

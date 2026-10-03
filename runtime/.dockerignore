@@ -1,0 +1,21 @@
+# Build artifacts
+target/
+build/
+deps/libkrun/target/
+deps/libkrunfw/linux-*/
+deps/gvproxy/bin/
+
+# Git internals (submodule content is still copied)
+.git/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
