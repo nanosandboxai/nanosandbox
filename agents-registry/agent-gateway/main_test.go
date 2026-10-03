@@ -262,8 +262,20 @@ func TestBuildAgentCommand_Codex_FirstMessage(t *testing.T) {
 	if bin != "codex" {
 		t.Errorf("expected bin=codex, got %q", bin)
 	}
-	if len(args) < 3 || args[0] != "exec" || args[1] != "--json" {
-		t.Errorf("expected codex exec --json, got %v", args)
+	if len(args) < 3 || args[0] != "exec" {
+		t.Errorf("expected codex exec ... --json, got %v", args)
+	}
+	hasJSON, hasSkip := false, false
+	for _, a := range args {
+		if a == "--json" {
+			hasJSON = true
+		}
+		if a == "--skip-git-repo-check" {
+			hasSkip = true
+		}
+	}
+	if !hasJSON || !hasSkip {
+		t.Errorf("expected codex exec --json --skip-git-repo-check, got %v", args)
 	}
 }
 
@@ -274,8 +286,8 @@ func TestBuildAgentCommand_Codex_Resume(t *testing.T) {
 	if bin != "codex" {
 		t.Errorf("expected bin=codex, got %q", bin)
 	}
-	if len(args) < 2 || args[0] != "resume" || args[1] != "codex-sess-1" {
-		t.Errorf("expected codex resume <id>, got %v", args)
+	if len(args) < 3 || args[0] != "exec" || args[1] != "resume" || args[2] != "codex-sess-1" {
+		t.Errorf("expected codex exec resume <id>, got %v", args)
 	}
 }
 
@@ -440,12 +452,12 @@ func TestBuildAgentCommand_AutoMode_Codex(t *testing.T) {
 
 	found := false
 	for _, arg := range args {
-		if arg == "--full-auto" {
+		if arg == "--dangerously-bypass-approvals-and-sandbox" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected --full-auto in auto mode, got %v", args)
+		t.Errorf("expected --dangerously-bypass-approvals-and-sandbox in auto mode, got %v", args)
 	}
 }
 

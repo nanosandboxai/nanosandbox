@@ -233,16 +233,11 @@ func buildAgentCommand(req *MessageRequest, sess *agentSession) (string, []strin
 		return "goose", []string{"run", "--text", message}
 
 	case "codex":
-		if sess.sessionID != "" {
-			return "codex", []string{"resume", sess.sessionID, message}
-		}
 		args := []string{"exec"}
-		switch permissions {
-		case "allow_all":
-			args = append(args, "--full-auto")
-		case "accept_edits":
-			args = append(args, "--full-auto")
+		if sess.sessionID != "" {
+			args = append(args, "resume", sess.sessionID)
 		}
+		args = append(args, codexNonInteractiveFlags(permissions)...)
 		args = append(args, "--json")
 		if req.Model != "" {
 			args = append(args, "--model", req.Model)
@@ -289,6 +284,71 @@ func normalizeAgent(agent string) string {
 	default:
 		return agent
 	}
+}
+
+// codexNonInteractiveFlags returns the flags for non-interactive `codex exec`.
+// codex >= 0.100 removed --full-auto; for externally sandboxed environments
+// (microVMs) the equivalent is the approvals/sandbox bypass.
+func codexNonInteractiveFlags(permissions string) []string {
+	flags := []string{"--skip-git-repo-check"}
+	switch permissions {
+	case "allow_all", "accept_edits":
+		flags = append(flags, "--dangerously-bypass-approvals-and-sandbox")
+	}
+	return flags
+}
+
+// isCodexInvocation reports whether a gateway command will run the codex CLI.
+// Agent panels execute shells like `sh -c `script -qfc "codex exec ..."``, so
+// matching only on a direct `codex` binary is not enough.
+func isCodexInvocation(bin string, args []string) bool {
+	base := filepath.Base(bin)
+	if base == "codex" {
+		return true
+	}
+	switch base {
+	case "sh", "bash", "env":
+		return strings.Contains(strings.Join(args, " "), "codex")
+	}
+	return false
+}
+
+// ensureCodexAuth makes the OpenAI API key available to codex. codex >= 0.100
+// no longer reads OPENAI_API_KEY directly and requires `codex login
+// --with-api-key` (stdin), which stores $HOME/.codex/auth.json for the agent
+// user. No-op when the key is absent or auth.json already exists.
+func ensureCodexAuth(su sessionUser, reqEnv map[string]string) {
+	key := ""
+	if reqEnv != nil {
+		key = reqEnv["OPENAI_API_KEY"]
+	}
+	if key == "" {
+		key = getSecretsEnv()["OPENAI_API_KEY"]
+	}
+	if key == "" {
+		return
+	}
+	authPath := su.home + "/.codex/auth.json"
+	if _, err := os.Stat(authPath); err == nil {
+		return
+	}
+	login := exec.Command("codex", "login", "--with-api-key")
+	login.Stdin = strings.NewReader(key)
+	env := os.Environ()
+	env = setEnv(env, "HOME", su.home)
+	env = setEnv(env, "USER", su.user)
+	env = setEnv(env, "OPENAI_API_KEY", key)
+	login.Env = env
+	login.SysProcAttr = su.procAttr
+	if out, err := login.CombinedOutput(); err != nil {
+		log.Printf("[agent-gateway] codex login failed: %v (%s)", err, strings.TrimSpace(string(out)))
+		return
+	}
+	if _, err := os.Stat(authPath); err != nil {
+		log.Printf("[agent-gateway] codex login succeeded but %s is missing", authPath)
+		return
+	}
+	log.Printf("[agent-gateway] codex auth.json created for user %q", su.user)
 }
 
 // extractSessionID parses agent output to capture the session identifier.
@@ -560,6 +620,9 @@ func messageHandler(w http.ResponseWriter, r *http.Request) {
 
 	agentName := normalizeAgent(req.Agent)
 	sess := getSession(agentName)
+	if agentName == "codex" {
+		ensureCodexAuth(resolveSessionUser(), req.Env)
+	}
 	bin, args := buildAgentCommand(&req, sess)
 
 	timeout := defaultTimeout
@@ -603,6 +666,10 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
 		return
+	}
+
+	if isCodexInvocation(req.Command, req.Args) {
+		ensureCodexAuth(resolveSessionUser(), req.Env)
 	}
 
 	timeout := defaultTimeout

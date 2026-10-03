@@ -1,6 +1,10 @@
 ARG BASE_IMAGE=agents-registry/base:latest
 FROM ${BASE_IMAGE}
 
+# Pinned so the agent-gateway codex integration (flags + login flow) stays
+# compatible with the CLI version baked into the image.
+ARG CODEX_VERSION=0.160.0
+
 LABEL org.opencontainers.image.description="Codex agent for nanosandbox sandboxes"
 
 # Install codex CLI plus its platform-specific native binary. The wrapper
@@ -11,8 +15,7 @@ LABEL org.opencontainers.image.description="Codex agent for nanosandbox sandboxe
 # don't match detection, leaving runtime broken with "Missing optional
 # dependency @openai/codex-linux-x64". Install it explicitly using the
 # same alias form the wrapper resolves at runtime.
-RUN npm install -g @openai/codex \
-    && CODEX_VERSION="$(npm view @openai/codex version)" \
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
     && ARCH="$(uname -m)" \
     && case "$ARCH" in \
          x86_64)  PLATFORM="linux-x64" ;; \
