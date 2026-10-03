@@ -13,7 +13,7 @@
 
 .EXAMPLE
     # Uninstall (from web):
-    irm https://github.com/nanosandboxai/install-deps/releases/latest/download/uninstall.ps1 | iex
+    irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/uninstall-deps.ps1 | iex
 
     # Uninstall from custom path:
     .\uninstall.ps1 -InstallDir C:\opt\nanosandbox

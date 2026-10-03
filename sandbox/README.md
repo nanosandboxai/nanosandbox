@@ -93,7 +93,7 @@ The SDK supports the following agent types, selectable via `sandbox.yml` or CLI 
 
 - [Runtime](https://github.com/nanosandboxai/runtime) -- Pure VM engine (libkrun FFI, OCI images, containerization)
 - [Agents Registry](https://github.com/nanosandboxai/agents-registry) -- Agent definitions, Docker images
-- [CLI](https://github.com/nanosandboxai/cli) -- Command-line interface
+- [Nanosandbox monorepo](https://github.com/nanosandboxai/nanosandbox) -- CLI, runtime, agent-gateway, registry, and releases
 
 ## License
 

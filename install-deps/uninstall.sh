@@ -6,7 +6,7 @@
 # Does NOT remove the nanosb CLI binary.
 #
 # Usage:
-#   curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/uninstall.sh | bash
+#   curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/uninstall-deps.sh | bash
 #
 # Environment variables:
 #   NANOSANDBOX_HOME - Base directory (default: ~/.nanosandbox)

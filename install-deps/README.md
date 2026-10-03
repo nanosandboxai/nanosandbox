@@ -1,6 +1,6 @@
 # nanosandbox install-deps
 
-Runtime dependency packaging and installation for [nanosandbox](https://github.com/nanosandboxai/runtime).
+Runtime dependency packaging and installation for [nanosandbox](https://github.com/nanosandboxai/nanosandbox).
 
 ## What gets installed
 
@@ -23,7 +23,7 @@ Runtime dependency packaging and installation for [nanosandbox](https://github.c
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install-deps.sh | bash
 ```
 
 After install, open a new terminal or run `source ~/.zshrc` to pick up PATH in
@@ -33,26 +33,26 @@ your current shell.
 
 ```bash
 # Install a specific version
-DEPS_VERSION=v0.2.0-rc7 curl -fsSL .../install.sh | bash
+DEPS_VERSION=v0.2.0 curl -fsSL .../install-deps.sh | bash
 
 # Custom install prefix
-NANOSANDBOX_HOME=/opt/nanosandbox curl -fsSL .../install.sh | bash
+NANOSANDBOX_HOME=/opt/nanosandbox curl -fsSL .../install-deps.sh | bash
 ```
 
 ### Windows (PowerShell as Administrator)
 
 ```powershell
-irm https://github.com/nanosandboxai/install-deps/releases/latest/download/install.ps1 | iex
+irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install-deps.ps1 | iex
 ```
 
 #### Options
 
 ```powershell
 # Install a specific version
-.\install.ps1 -Version v0.3.0
+.\install-deps.ps1 -Version v0.3.0
 
 # Custom install path
-.\install.ps1 -InstallDir C:\opt\nanosandbox
+.\install-deps.ps1 -InstallDir C:\opt\nanosandbox
 ```
 
 The installer will:
@@ -66,13 +66,13 @@ The installer will:
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/uninstall.sh | bash
+curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/uninstall-deps.sh | bash
 ```
 
 ### Windows (PowerShell as Administrator)
 
 ```powershell
-irm https://github.com/nanosandboxai/install-deps/releases/latest/download/uninstall.ps1 | iex
+irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/uninstall-deps.ps1 | iex
 ```
 
 The uninstaller will:
@@ -82,19 +82,18 @@ The uninstaller will:
 
 ## How it works
 
-1. **runtime** repo builds libkrunfw + gvproxy (Linux/macOS) or libkrunfw.dll + busybox (Windows) during release CI
-2. Runtime CI triggers `repository_dispatch` to this repo
-3. This repo packages the deps with install scripts and creates a GitHub Release
-4. Users (or the CLI installer) download and run `install.sh` / `install.ps1`
+1. The nanosandbox release pipeline (`release.yml`) builds libkrunfw + gvproxy (Linux/macOS) or libkrunfw.dll + busybox (Windows).
+2. The dependency bundles (`deps-*`) and these installer scripts are published together in the same GitHub Release as the CLI.
+3. `install-deps.sh` / `install-deps.ps1` download the bundle for the current platform from that release and install it under `~/.nanosandbox/`.
 
 ## Platform support
 
 | Platform | Architecture | Bundle | Script |
 |----------|-------------|--------|--------|
-| Linux | x86_64 | `deps-linux-amd64.tar.gz` | `install.sh` |
-| Linux | aarch64 | `deps-linux-arm64.tar.gz` | `install.sh` |
-| macOS | Apple Silicon | `deps-darwin-arm64.tar.gz` | `install.sh` |
-| Windows | x86_64 | `deps-windows-amd64.zip` | `install.ps1` |
+| Linux | x86_64 | `deps-linux-amd64.tar.gz` | `install-deps.sh` |
+| Linux | aarch64 | `deps-linux-arm64.tar.gz` | `install-deps.sh` |
+| macOS | Apple Silicon | `deps-darwin-arm64.tar.gz` | `install-deps.sh` |
+| Windows | x86_64 | `deps-windows-amd64.zip` | `install-deps.ps1` |
 
 ## Prerequisites
 

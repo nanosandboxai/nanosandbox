@@ -192,7 +192,7 @@ async fn validate_windows_detailed() -> ValidationResult {
             "libkrunfw.dll not found. Required for VM boot.",
             Some(
                 "Install runtime deps:\n\
-                 irm https://github.com/nanosandboxai/install-deps/releases/latest/download/install.ps1 | iex"
+                 irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install-deps.ps1 | iex"
                     .to_string(),
             ),
         );
@@ -207,7 +207,7 @@ async fn validate_windows_detailed() -> ValidationResult {
                 format!("{} not found. Required for Windows VM boot path.", dep),
                 Some(
                     "Install runtime deps:\n\
-                     irm https://github.com/nanosandboxai/install-deps/releases/latest/download/install.ps1 | iex"
+                     irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install-deps.ps1 | iex"
                         .to_string(),
                 ),
             );
@@ -478,7 +478,7 @@ async fn validate_linux_detailed() -> ValidationResult {
         result.add_error(
             "libkrunfw Kernel Firmware",
             "libkrunfw.so.5 not found in standard library paths",
-            Some("Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string()),
+            Some("Run: bash <(curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install.sh)".to_string()),
         );
     }
 
@@ -534,7 +534,7 @@ async fn validate_linux_detailed() -> ValidationResult {
     } else {
         result.add_warning(
             "gvproxy not found - outbound networking from VMs will be limited. \
-             Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string(),
+             Run: bash <(curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install.sh)".to_string(),
         );
     }
 
@@ -614,7 +614,7 @@ async fn validate_macos_detailed() -> ValidationResult {
         result.add_error(
             "libkrunfw Kernel Firmware",
             "libkrunfw.5.dylib not found in ~/.nanosandbox/libs/, /opt/homebrew/lib, or /usr/local/lib",
-            Some("Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string()),
+            Some("Run: bash <(curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install.sh)".to_string()),
         );
     }
 
@@ -639,7 +639,7 @@ async fn validate_macos_detailed() -> ValidationResult {
     } else {
         result.add_warning(
             "gvproxy not found - outbound networking from VMs will be limited. \
-             Run: bash <(curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh)".to_string(),
+             Run: bash <(curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install.sh)".to_string(),
         );
     }
 

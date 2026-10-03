@@ -9,7 +9,7 @@
 
 .EXAMPLE
     # Install latest (from web):
-    irm https://github.com/nanosandboxai/install-deps/releases/latest/download/install.ps1 | iex
+    irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install-deps.ps1 | iex
 
     # Install specific version:
     .\install.ps1 -Version v0.2.0
@@ -29,7 +29,7 @@ function Install-NanosandboxDeps {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 
-    $GitHubRepo = 'nanosandboxai/install-deps'
+    $GitHubRepo = 'nanosandboxai/nanosandbox'
     $Platform = 'windows-amd64'
     $targetDir = $InstallDir
 

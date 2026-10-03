@@ -1600,11 +1600,11 @@ mod cli {
             print_doctor_results(&result);
 
             #[cfg(target_os = "macos")]
-            eprintln!("\nRun './scripts/install/macos.sh' to install dependencies.");
+            eprintln!("\nRun './runtime/scripts/install/macos.sh' to install dependencies.");
             #[cfg(target_os = "linux")]
-            eprintln!("\nRun './scripts/install/linux.sh' to install dependencies.");
+            eprintln!("\nRun './runtime/scripts/install/linux.sh' to install dependencies.");
             #[cfg(target_os = "windows")]
-            eprintln!("\nRun 'powershell -ExecutionPolicy Bypass -File .\\scripts\\install\\install.ps1' to install dependencies.\nOr use: irm https://github.com/nanosandboxai/install-deps/releases/latest/download/install.ps1 | iex");
+            eprintln!("\nRun 'powershell -ExecutionPolicy Bypass -File .\\install-deps\\install.ps1' to install dependencies.\nOr use: irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install-deps.ps1 | iex");
 
             error!("Runtime prerequisites not met");
             anyhow::bail!("Runtime prerequisites not met. Run 'nanosb doctor' for details.");

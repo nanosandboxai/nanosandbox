@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
 
 - [Sandbox SDK](https://github.com/nanosandboxai/sandbox) -- Agent-aware SDK with FFI bindings for multi-language SDKs
 - [Agents Registry](https://github.com/nanosandboxai/agents-registry) -- Agent definitions, skills, Docker images
-- [CLI](https://github.com/nanosandboxai/cli) -- Command-line interface
+- [Nanosandbox monorepo](https://github.com/nanosandboxai/nanosandbox) -- CLI, runtime, sandbox SDK, registry, and releases
 
 ## Comparison with Alternatives
 

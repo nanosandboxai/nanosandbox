@@ -8,7 +8,7 @@
 #   ~/.nanosandbox/bin/   — binaries (gvproxy)
 #
 # Usage:
-#   curl -fsSL https://github.com/nanosandboxai/install-deps/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install-deps.sh | bash
 #
 # After install, open a new terminal (or run `source ~/.zshrc`) to pick up PATH.
 #
@@ -20,7 +20,7 @@ set -euo pipefail
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-GITHUB_REPO="nanosandboxai/install-deps"
+GITHUB_REPO="nanosandboxai/nanosandbox"
 NANOSANDBOX_HOME="${NANOSANDBOX_HOME:-$HOME/.nanosandbox}"
 LIB_DIR="${NANOSANDBOX_HOME}/libs"
 BIN_DIR="${NANOSANDBOX_HOME}/bin"

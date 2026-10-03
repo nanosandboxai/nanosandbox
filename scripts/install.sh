@@ -14,7 +14,7 @@
 #   3. Codesigns on macOS (Hypervisor.framework entitlement)
 #
 # Usage:
-#   curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install.sh | bash
 #
 # Environment variables:
 #   NANOSB_VERSION   - CLI version to install (default: "latest")
@@ -30,7 +30,7 @@ set -eo pipefail
 NANOSB_VERSION="${NANOSB_VERSION:-latest}"
 NANOSB_VERSION="${NANOSB_VERSION#v}"   # strip leading "v" — tags use v-prefix internally
 DEPS_VERSION="${DEPS_VERSION:-latest}"
-RELEASE_REPO="nanosandboxai/cli"
+RELEASE_REPO="nanosandboxai/nanosandbox"
 NANOSANDBOX_HOME="${NANOSANDBOX_HOME:-$HOME/.nanosandbox}"
 INSTALL_DIR="${NANOSANDBOX_HOME}/bin"
 
@@ -60,14 +60,14 @@ info "Platform: ${OS} ${ARCH}"
 
 # ─── Step 1: Runtime dependencies (libkrunfw + gvproxy) ──────────────────────
 
-# Resolve "latest" to the most recent install-deps release tag, including
-# prereleases. Required because GitHub's /releases/latest/ redirect only matches
-# stable (non-prerelease) releases — if install-deps has only prereleases, the
-# /latest/ URL returns 404.
+# Resolve "latest" to the most recent release tag, including prereleases.
+# Required because GitHub's /releases/latest/ redirect only matches stable
+# (non-prerelease) releases — if the repo has only prereleases, the /latest/
+# URL returns 404.
 resolve_deps_version() {
     curl -fsSL \
         -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/nanosandboxai/install-deps/releases" \
+        "https://api.github.com/repos/${RELEASE_REPO}/releases" \
         2>/dev/null \
         | grep -m1 '"tag_name":' \
         | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
@@ -80,34 +80,34 @@ install_deps() {
     if [[ "$DEPS_VERSION" == "latest" ]]; then
         resolved_version="$(resolve_deps_version || true)"
         if [[ -z "$resolved_version" ]]; then
-            warn "Could not resolve install-deps release tag"
-            info "Install libkrunfw + gvproxy manually from:"
-            info "  https://github.com/nanosandboxai/install-deps"
+            warn "Could not resolve latest release tag"
+            info "Install libkrunfw + gvproxy manually — see:"
+            info "  https://github.com/${RELEASE_REPO}/releases"
             return 0
         fi
-        info "Resolved install-deps latest → ${resolved_version}"
+        info "Resolved latest → ${resolved_version}"
     fi
 
-    local deps_install_url="https://github.com/nanosandboxai/install-deps/releases/download/${resolved_version}/install.sh"
+    local deps_install_url="https://github.com/${RELEASE_REPO}/releases/download/${resolved_version}/install-deps.sh"
     local tmpfile
     tmpfile="$(mktemp -t nanosb-install-deps.XXXXXX)"
 
-    info "Downloading install-deps installer..."
+    info "Downloading dependency installer..."
     if ! curl -fsSL "$deps_install_url" -o "$tmpfile"; then
-        warn "Could not download install-deps installer (release ${resolved_version})"
-        info "Install libkrunfw + gvproxy manually from:"
-        info "  https://github.com/nanosandboxai/install-deps"
+        warn "Could not download dependency installer (release ${resolved_version})"
+        info "Install libkrunfw + gvproxy manually — see:"
+        info "  https://github.com/${RELEASE_REPO}/releases"
         rm -f "$tmpfile"
         return 0
     fi
 
-    info "Running install-deps installer..."
+    info "Running dependency installer..."
     if DEPS_VERSION="$resolved_version" NANOSANDBOX_HOME="$NANOSANDBOX_HOME" bash "$tmpfile"; then
         success "Runtime dependencies installed"
     else
-        warn "install-deps installer exited with an error"
+        warn "dependency installer exited with an error"
         warn "Install libkrunfw + gvproxy manually if needed"
-        warn "See: https://github.com/nanosandboxai/install-deps"
+        warn "See: https://github.com/${RELEASE_REPO}/releases"
     fi
     rm -f "$tmpfile"
 }
@@ -138,8 +138,8 @@ download_binary() {
             warn "No pre-built binary for ${OS} ${ARCH}."
             info "Available pre-built targets: macOS arm64, Linux x86_64."
             info "For other platforms, build from source:"
-            info "  git clone https://github.com/nanosandboxai/runtime.git"
-            info "  cd runtime && cargo build --release --features cli"
+            info "  git clone https://github.com/nanosandboxai/nanosandbox.git"
+            info "  cd nanosandbox && cargo build --release -p nanosb-cli"
             return 0
             ;;
     esac

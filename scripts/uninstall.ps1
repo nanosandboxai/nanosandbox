@@ -12,7 +12,7 @@
 
 .EXAMPLE
     # Uninstall interactively (prompts for deps removal):
-    irm https://github.com/nanosandboxai/cli/releases/latest/download/uninstall.ps1 | iex
+    irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/uninstall.ps1 | iex
 #>
 
 $ErrorActionPreference = "Stop"
