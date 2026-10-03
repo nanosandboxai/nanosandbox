@@ -10,7 +10,7 @@ sandboxes:
     type: claude
     agent: claude
     auto_mode: true
-    permissions: allow-all
+    permissions: allow_all
     prompt: |
       Create a Python file named hello.py in /workspace that prints "Hello, World!"
       when executed. Then run it with `python3 hello.py` and show the output.
