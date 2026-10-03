@@ -15,8 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: feature/models-registry
 
       - uses: actions/setup-python@v5
         with:
@@ -35,6 +33,7 @@ jobs:
           echo "Fetched $MODEL_COUNT models from OpenRouter"
 
       - name: Sync models.json
+        working-directory: agents-registry
         run: python3 scripts/update-models.py
 
       - name: Read update summary
@@ -56,7 +55,7 @@ jobs:
           commit-message: "chore: sync models.json from OpenRouter"
           title: "chore: sync models.json"
           body: |
-            Automated sync of `models/models.json` from [OpenRouter](https://openrouter.ai/api/v1/models) public model catalog.
+            Automated sync of `agents-registry/models/models.json` from [OpenRouter](https://openrouter.ai/api/v1/models) public model catalog.
 
             ${{ steps.summary.outputs.body }}
 

@@ -3,9 +3,9 @@ name: Deps Build
 # Builds all external dependencies and nanosandbox across Linux distros + macOS.
 #
 # External dependencies:
-#   - libkrun:   Compiled directly into nanosandbox as rlib (checked-in source in deps/libkrun/)
-#   - libkrunfw: Kernel firmware — built from kernel.c into .so/.dylib (submodule in deps/libkrunfw/)
-#   - gvproxy:   Go networking daemon — built from source (submodule in deps/gvproxy/)
+#   - libkrun:   Compiled directly into nanosandbox as rlib (checked-in source in runtime/deps/libkrun/)
+#   - libkrunfw: Kernel firmware — built from kernel.c into .so/.dylib (submodule in runtime/deps/libkrunfw/)
+#   - gvproxy:   Go networking daemon — built from source (submodule in runtime/deps/gvproxy/)
 #
 # Architecture: Build kernel ONCE, distribute everywhere.
 #   1. build-kernels: compiles x86_64 + aarch64 kernel.c on a single Ubuntu runner
@@ -19,20 +19,20 @@ on:
   push:
     branches: [main]
     # paths:
-    #   - 'deps/libkrun/**'
-    #   - 'deps/libkrunfw/**'
-    #   - 'deps/gvproxy/**'
+    #   - 'runtime/deps/libkrun/**'
+    #   - 'runtime/deps/libkrunfw/**'
+    #   - 'runtime/deps/gvproxy/**'
     #   - 'crates/libkrun-sys/**'
     #   - 'crates/runtime/**'
-    #   - 'scripts/ci/**'
+    #   - 'runtime/scripts/ci/**'
     #   - 'scripts/build-all.sh'
     #   - '.github/workflows/deps-build.yml'
   # pull_request:
   #   branches: [main]
   #   paths:
-  #     - 'deps/libkrun/**'
-  #     - 'deps/libkrunfw/**'
-  #     - 'deps/gvproxy/**'
+  #     - 'runtime/deps/libkrun/**'
+  #     - 'runtime/deps/libkrunfw/**'
+  #     - 'runtime/deps/gvproxy/**'
   #     - 'crates/libkrun-sys/**'
   #     - 'crates/runtime/**'
   workflow_dispatch:
@@ -59,7 +59,7 @@ jobs:
           path: |
             kernel-x86_64.c
             kernel-aarch64.c
-          key: kernel-bundles-${{ hashFiles('deps/libkrunfw/**') }}
+          key: kernel-bundles-${{ hashFiles('runtime/deps/libkrunfw/**') }}
 
       - name: Install kernel build dependencies
         if: steps.kernel-cache.outputs.cache-hit != 'true'
@@ -74,21 +74,21 @@ jobs:
       - name: Build x86_64 kernel bundle
         if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
-          cd deps/libkrunfw
+          cd runtime/deps/libkrunfw
           make kernel.c -j$(nproc)
-          cp kernel.c ../../kernel-x86_64.c
+          cp kernel.c ../../../kernel-x86_64.c
           echo "=== x86_64 kernel.c ==="
-          ls -lh ../../kernel-x86_64.c
+          ls -lh ../../../kernel-x86_64.c
 
       - name: Build aarch64 kernel bundle (cross-compile)
         if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
-          cd deps/libkrunfw
+          cd runtime/deps/libkrunfw
           make clean
           make kernel.c ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
-          cp kernel.c ../../kernel-aarch64.c
+          cp kernel.c ../../../kernel-aarch64.c
           echo "=== aarch64 kernel.c ==="
-          ls -lh ../../kernel-aarch64.c
+          ls -lh ../../../kernel-aarch64.c
 
       - name: Kernel cache status
         run: |
@@ -149,7 +149,7 @@ jobs:
           submodules: recursive
 
       - name: Install build dependencies
-        run: bash scripts/ci/${{ matrix.distro.script }}
+        run: bash runtime/scripts/ci/${{ matrix.distro.script }}
 
       - name: Download kernel bundle
         uses: actions/download-artifact@v4
@@ -161,14 +161,14 @@ jobs:
       - name: Patch libkrun for musl
         if: matrix.distro.musl
         shell: bash
-        run: bash scripts/ci/patch-libkrun-musl.sh
+        run: bash runtime/scripts/ci/patch-libkrun-musl.sh
 
       # Compile kernel.c into libkrunfw shared library (no kernel build needed)
       - name: Build libkrunfw from kernel bundle
         if: ${{ !matrix.distro.musl }}
         run: |
-          cd deps/libkrunfw
-          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.so.5 ../../kernel-x86_64.c
+          cd runtime/deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.so.5 ../../../kernel-x86_64.c
           ln -sf libkrunfw.so.5 libkrunfw.so
           echo "=== libkrunfw ==="
           ls -lh libkrunfw.so*
@@ -177,8 +177,8 @@ jobs:
       - name: Build libkrunfw from kernel bundle (musl static)
         if: matrix.distro.musl
         run: |
-          cd deps/libkrunfw
-          cc -fPIC -DABI_VERSION=5 -c -o libkrunfw.o ../../kernel-x86_64.c
+          cd runtime/deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -c -o libkrunfw.o ../../../kernel-x86_64.c
           ar rcs libkrunfw.a libkrunfw.o
           echo "=== libkrunfw (static) ==="
           ls -lh libkrunfw.a
@@ -189,7 +189,7 @@ jobs:
         run: |
           [[ -f "$HOME/.bashrc" ]] && source "$HOME/.bashrc"
           export PATH="/usr/local/go/bin:$PATH"
-          cd deps/gvproxy
+          cd runtime/deps/gvproxy
           if command -v go &>/dev/null; then
             echo "Go version: $(go version)"
             CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
@@ -224,12 +224,12 @@ jobs:
       - name: Verify artifacts
         run: |
           echo "=== libkrunfw ==="
-          ls -lh deps/libkrunfw/libkrunfw.so* 2>/dev/null || ls -lh deps/libkrunfw/libkrunfw.a 2>/dev/null || echo "not found"
+          ls -lh runtime/deps/libkrunfw/libkrunfw.so* 2>/dev/null || ls -lh runtime/deps/libkrunfw/libkrunfw.a 2>/dev/null || echo "not found"
           echo "=== nanosandbox (libkrun compiled in) ==="
           ls -lh target/release/libruntime.rlib 2>/dev/null || \
             find target/release -name 'libruntime*' -not -path '*/build/*' | head -5 || echo "not found"
           echo "=== gvproxy ==="
-          ls -la deps/gvproxy/gvproxy 2>/dev/null || echo "not built"
+          ls -la runtime/deps/gvproxy/gvproxy 2>/dev/null || echo "not built"
 
       - name: Upload artifacts
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -238,8 +238,8 @@ jobs:
           name: deps-${{ matrix.distro.name }}
           path: |
             target/release/libruntime*
-            deps/libkrunfw/libkrunfw*.so*
-            deps/gvproxy/gvproxy
+            runtime/deps/libkrunfw/libkrunfw*.so*
+            runtime/deps/gvproxy/gvproxy
           retention-days: 7
 
   # ─── Job 3: Windows build (HCS microVM) ───
@@ -261,9 +261,9 @@ jobs:
         run: |
           # libkrunfw-win needs vmlinux.bin to compile; create empty stubs
           # so cargo check passes (actual kernel comes from CI artifact at runtime)
-          touch deps/libkrun/src/libkrunfw-win/vmlinux.bin
-          echo "0" > deps/libkrun/src/libkrunfw-win/guest_addr.txt
-          echo "0" > deps/libkrun/src/libkrunfw-win/entry_addr.txt
+          touch runtime/deps/libkrun/src/libkrunfw-win/vmlinux.bin
+          echo "0" > runtime/deps/libkrun/src/libkrunfw-win/guest_addr.txt
+          echo "0" > runtime/deps/libkrun/src/libkrunfw-win/entry_addr.txt
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -318,8 +318,8 @@ jobs:
       # Compile aarch64 kernel.c into macOS dylib
       - name: Build libkrunfw from kernel bundle
         run: |
-          cd deps/libkrunfw
-          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.5.dylib ../../kernel-aarch64.c
+          cd runtime/deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.5.dylib ../../../kernel-aarch64.c
           ln -sf libkrunfw.5.dylib libkrunfw.dylib
           echo "=== libkrunfw ==="
           ls -lh libkrunfw*.dylib
@@ -327,7 +327,7 @@ jobs:
       - name: Install libkrunfw
         run: |
           sudo mkdir -p /usr/local/lib
-          sudo cp deps/libkrunfw/libkrunfw*.dylib /usr/local/lib/
+          sudo cp runtime/deps/libkrunfw/libkrunfw*.dylib /usr/local/lib/
           ls -la /usr/local/lib/libkrunfw*
 
       - name: Cache cargo
@@ -343,7 +343,7 @@ jobs:
       # Build gvproxy from source
       - name: Build gvproxy
         run: |
-          cd deps/gvproxy
+          cd runtime/deps/gvproxy
           CGO_ENABLED=0 go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
           echo "gvproxy built: $(ls -la gvproxy)"
 
@@ -368,7 +368,7 @@ jobs:
           ls -lh target/release/libruntime.rlib 2>/dev/null || \
             find target/release -name 'libruntime*' -not -path '*/build/*' | head -5 || echo "not found"
           echo "=== gvproxy ==="
-          ls -la deps/gvproxy/gvproxy
+          ls -la runtime/deps/gvproxy/gvproxy
 
       - name: Upload macOS artifacts
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -377,6 +377,6 @@ jobs:
           name: deps-macOS
           path: |
             target/release/libruntime*
-            deps/libkrunfw/libkrunfw*.dylib
-            deps/gvproxy/gvproxy
+            runtime/deps/libkrunfw/libkrunfw*.dylib
+            runtime/deps/gvproxy/gvproxy
           retention-days: 7

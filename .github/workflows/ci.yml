@@ -1,313 +1,30 @@
 name: CI
 
-# Builds nanosb for macOS arm64, Linux x86_64, and Windows x86_64.
-#
-# Architecture:
-#   1. build-kernel: Linux job that builds libkrunfw kernel.c and runs
-#      extract_kernel to produce vmlinux.bin/guest_addr.txt/entry_addr.txt.
-#      Cached by libkrunfw submodule SHA.  Required only for the Windows job
-#      (libkrunfw-win embeds the kernel via include_bytes!).
-#   2. build-{linux,macos,windows}: parallel cargo builds.  Each checks out
-#      the sibling repos (sandbox, runtime) so cli's path deps resolve.
-#   3. publish: collects all binaries + scripts and creates the GitHub
-#      release.  rc/alpha/beta/dev tags are marked --prerelease.
+# Build and test checks for every push to main and every PR.
+# Releases are handled separately by release.yml on v* tags.
 
 on:
   push:
-    tags: [v*]
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_NET_GIT_FETCH_WITH_CLI: true
 
 jobs:
-  # ──────────────────────────────────────────────────────────────────────
-  # Job 1: Extract Windows kernel bundle (Linux only — needed by Windows job)
-  # ──────────────────────────────────────────────────────────────────────
-  build-kernel:
-    name: Extract Windows kernel bundle
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout runtime (for libkrunfw submodule + extract_kernel)
-        uses: actions/checkout@v4
-        with:
-          repository: nanosandboxai/runtime
-          ref: ${{ github.ref_name }}
-          token: ${{ secrets.RUNTIME_PAT }}
-          submodules: recursive
-          path: runtime
-
-      - name: Cache extracted kernel bundle
-        id: kernel-cache
-        uses: actions/cache@v4
-        with:
-          path: kernel-bundle
-          key: kernel-bundle-${{ hashFiles('runtime/deps/libkrunfw/**') }}-v2
-
-      - name: Install kernel build dependencies
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential curl ca-certificates git \
-            python3 python3-pyelftools \
-            bc flex bison libelf-dev cpio libssl-dev xz-utils
-
-      - name: Install Rust toolchain
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build kernel.c (x86_64)
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        run: |
-          cd runtime/deps/libkrunfw
-          make kernel.c -j$(nproc)
-          ls -lh kernel.c
-
-      - name: Compile libkrunfw.so from kernel.c
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        run: |
-          cd runtime/deps/libkrunfw
-          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.so.5 kernel.c
-          ln -sf libkrunfw.so.5 libkrunfw.so
-          ls -lh libkrunfw.so*
-
-      - name: Build extract_kernel tool
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        run: |
-          cd runtime
-          cargo build --release --manifest-path tools/extract_kernel/Cargo.toml
-
-      - name: Extract vmlinux.bin + addr files
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p kernel-bundle
-          ./runtime/tools/extract_kernel/target/release/extract_kernel \
-            --elf runtime/deps/libkrunfw/libkrunfw.so \
-            kernel-bundle
-          echo "=== Extracted ==="
-          ls -lh kernel-bundle/
-
-      - name: Upload kernel bundle artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-kernel-bundle
-          path: kernel-bundle/
-          retention-days: 7
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Job 2: Linux x86_64 — glibc floor 2.28 via cargo-zigbuild
-  # Runs on any distro with glibc >= 2.28 (Debian 12, Fedora 40, openSUSE 15.6+)
-  # ──────────────────────────────────────────────────────────────────────
-  build-linux:
-    name: Build CLI (Linux x86_64)
+  rust:
+    name: Rust workspace checks
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout cli
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          path: cli
-
-      - name: Checkout sandbox
-        uses: actions/checkout@v4
-        with:
-          repository: nanosandboxai/sandbox
-          ref: ${{ github.ref_name }}
-          token: ${{ secrets.SANDBOX_PAT }}
-          path: sandbox
-
-      - name: Checkout runtime (with submodules)
-        uses: actions/checkout@v4
-        with:
-          repository: nanosandboxai/runtime
-          ref: ${{ github.ref_name }}
-          token: ${{ secrets.RUNTIME_PAT }}
           submodules: recursive
-          path: runtime
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            cli/target
-          key: ${{ runner.os }}-cli-cargo-${{ hashFiles('cli/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cli-cargo-
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libclang-dev \
-            python3 python3-pyelftools bc flex bison libelf-dev cpio libssl-dev
-
-      - name: Install cargo-zigbuild
-        run: pip3 install ziglang && cargo install cargo-zigbuild
-
-      - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          sed -i "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" cli/Cargo.toml
-          grep '^version' cli/Cargo.toml
-
-      - name: Build release binary (glibc floor 2.28)
-        run: |
-          cd cli
-          cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.28
-
-      - name: Verify binary
-        run: |
-          ls -la cli/target/x86_64-unknown-linux-gnu/release/nanosb
-          file cli/target/x86_64-unknown-linux-gnu/release/nanosb
-          objdump -T cli/target/x86_64-unknown-linux-gnu/release/nanosb | \
-            grep GLIBC | grep -oP 'GLIBC_[0-9.]+' | sort -V | uniq | tail -3
-
-      - name: Stage binary as nanosb-linux-amd64
-        run: cp cli/target/x86_64-unknown-linux-gnu/release/nanosb nanosb-linux-amd64
-
-      - name: Upload Linux binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nanosb-linux-amd64
-          path: nanosb-linux-amd64
-          retention-days: 7
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Job 3: macOS arm64 build
-  # ──────────────────────────────────────────────────────────────────────
-  build-macos:
-    name: Build CLI (macOS arm64)
-    runs-on: macos-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout cli
-        uses: actions/checkout@v4
-        with:
-          path: cli
-
-      - name: Checkout sandbox
-        uses: actions/checkout@v4
-        with:
-          repository: nanosandboxai/sandbox
-          ref: ${{ github.ref_name }}
-          token: ${{ secrets.SANDBOX_PAT }}
-          path: sandbox
-
-      - name: Checkout runtime (with submodules)
-        uses: actions/checkout@v4
-        with:
-          repository: nanosandboxai/runtime
-          ref: ${{ github.ref_name }}
-          token: ${{ secrets.RUNTIME_PAT }}
-          submodules: recursive
-          path: runtime
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            cli/target
-          key: ${{ runner.os }}-cli-cargo-${{ hashFiles('cli/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cli-cargo-
-
-      - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          sed -i '' "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" cli/Cargo.toml
-          grep '^version' cli/Cargo.toml
-
-      - name: Build release binary
-        run: |
-          cd cli
-          cargo build --release --target aarch64-apple-darwin
-
-      - name: Codesign binary
-        run: |
-          codesign --sign - \
-            --entitlements cli/entitlements.plist \
-            --force \
-            cli/target/aarch64-apple-darwin/release/nanosb
-
-      - name: Verify binary
-        run: |
-          ls -la cli/target/aarch64-apple-darwin/release/nanosb
-          file cli/target/aarch64-apple-darwin/release/nanosb
-          cli/target/aarch64-apple-darwin/release/nanosb --version
-
-      - name: Stage binary as nanosb (macOS naming convention)
-        run: cp cli/target/aarch64-apple-darwin/release/nanosb nanosb
-
-      - name: Upload macOS binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nanosb-darwin-arm64
-          path: nanosb
-          retention-days: 7
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Job 4: Windows x86_64 build
-  # ──────────────────────────────────────────────────────────────────────
-  build-windows:
-    name: Build CLI (Windows x86_64)
-    runs-on: windows-latest
-    needs: build-kernel
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout cli
-        uses: actions/checkout@v4
-        with:
-          path: cli
-
-      - name: Checkout sandbox
-        uses: actions/checkout@v4
-        with:
-          repository: nanosandboxai/sandbox
-          ref: ${{ github.ref_name }}
-          token: ${{ secrets.SANDBOX_PAT }}
-          path: sandbox
-
-      - name: Checkout runtime (with submodules)
-        uses: actions/checkout@v4
-        with:
-          repository: nanosandboxai/runtime
-          ref: ${{ github.ref_name }}
-          token: ${{ secrets.RUNTIME_PAT }}
-          submodules: recursive
-          path: runtime
-
-      - name: Download Windows kernel bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-kernel-bundle
-          path: kernel-bundle
-
-      - name: Stage kernel files for libkrunfw-win
-        shell: bash
-        run: |
-          dest=runtime/deps/libkrun/src/libkrunfw-win
-          cp kernel-bundle/vmlinux.bin "$dest/vmlinux.bin"
-          cp kernel-bundle/guest_addr.txt "$dest/guest_addr.txt"
-          cp kernel-bundle/entry_addr.txt "$dest/entry_addr.txt"
-          echo "=== Staged kernel ==="
-          ls -lh "$dest/vmlinux.bin" "$dest/guest_addr.txt" "$dest/entry_addr.txt"
+        run: bash runtime/scripts/ci/install-deps-apt.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -318,91 +35,35 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            cli/target
-          key: windows-cli-cargo-${{ hashFiles('cli/Cargo.lock') }}
-          restore-keys: windows-cli-cargo-
+            target
+          key: ${{ runner.os }}-mono-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-mono-cargo-
 
-      - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          sed -i "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" cli/Cargo.toml
-          grep '^version' cli/Cargo.toml
+      - name: Check CLI + sandbox SDK + runtime
+        run: cargo check -p nanosb-cli -p sandbox -p gateway -p runtime
 
-      - name: Build release binary
-        shell: bash
-        run: |
-          cd cli
-          cargo build --release
+      - name: Unit tests (sandbox SDK + gateway)
+        run: cargo test -p sandbox -p gateway
 
-      - name: Verify binary
-        shell: bash
-        run: |
-          ls -la cli/target/release/nanosb.exe
-          cli/target/release/nanosb.exe --version
+      - name: Unit tests (runtime)
+        run: cargo test -p runtime --lib
 
-      - name: Stage binary as nanosb.exe
-        shell: bash
-        run: cp cli/target/release/nanosb.exe nanosb.exe
-
-      - name: Upload Windows binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nanosb-windows-amd64
-          path: nanosb.exe
-          retention-days: 7
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Job 5: Publish release
-  # ──────────────────────────────────────────────────────────────────────
-  publish:
-    name: Publish release
-    needs: [build-linux, build-macos, build-windows]
+  go:
+    name: Agent gateway checks
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
     steps:
-      - name: Checkout cli (for scripts)
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download all binary artifacts
-        uses: actions/download-artifact@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          path: artifacts
+          go-version: '1.22'
 
-      - name: Stage release files
-        run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          mkdir -p release
-          cp artifacts/nanosb-darwin-arm64/nanosb release/nanosb
-          cp artifacts/nanosb-linux-amd64/nanosb-linux-amd64 release/nanosb-linux-amd64
-          cp artifacts/nanosb-windows-amd64/nanosb.exe release/nanosb.exe
-          cp scripts/install.sh release/install.sh
-          cp scripts/uninstall.sh release/uninstall.sh
-          cp scripts/install.ps1 release/install.ps1
-          cp scripts/uninstall.ps1 release/uninstall.ps1
-          cp config/agent_defaults.yaml release/agent_defaults.yaml
-          chmod +x release/install.sh release/uninstall.sh
-          # Stamp the release tag into installer example URLs so users always
-          # get the correct pinned raw URL for this specific release.
-          sed -i "s|raw.githubusercontent.com/nanosandboxai/cli/[^/]*/scripts/|raw.githubusercontent.com/nanosandboxai/cli/${TAG_NAME}/scripts/|g" \
-            release/install.ps1 release/install.sh
-          echo "=== Release files ==="
-          ls -la release/
+      - name: Build
+        working-directory: agents-registry/agent-gateway
+        run: go build ./...
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          PRERELEASE_FLAG=""
-          if echo "$TAG_NAME" | grep -qE '[-](rc|alpha|beta|dev)'; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
-          gh release create "$TAG_NAME" \
-            --title "nanosandbox $TAG_NAME" \
-            --generate-notes \
-            $PRERELEASE_FLAG \
-            release/*
+      - name: Test
+        working-directory: agents-registry/agent-gateway
+        run: go test ./...

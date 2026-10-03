@@ -9,7 +9,8 @@
 # the build and don't affect the submodule commit.
 set -eu
 
-LIBKRUN_DIR="${1:-deps/libkrun}"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+LIBKRUN_DIR="${1:-$REPO_ROOT/deps/libkrun}"
 
 echo "=== Patching libkrun for musl ==="
 

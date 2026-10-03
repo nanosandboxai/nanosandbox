@@ -44,8 +44,8 @@ jobs:
           echo "  - Windows (HCS):       DISABLED (microVM setup in progress)"
           echo ""
           echo "To run E2E tests locally on macOS:"
-          echo "  1. Run: ./scripts/install/macos.sh"
-          echo "  2. Run: cargo test --test agents_e2e_test"
+          echo "  1. Run: ./runtime/scripts/install/macos.sh"
+          echo "  2. Run: cargo test -p runtime --test agents_e2e_test"
           echo ""
           echo "========================================"
 
