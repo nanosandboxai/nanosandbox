@@ -1,10 +1,59 @@
+[workspace]
+members = [
+    # Nanosandbox runtime (VM engine) and libkrun bindings.
+    "runtime/crates/runtime",
+    "runtime/crates/libkrun-sys",
+    # libkrun internal crates (checked-in source from runtime/deps/libkrun/).
+    "runtime/deps/libkrun/src/libkrun",
+    "runtime/deps/libkrun/src/vmm",
+    "runtime/deps/libkrun/src/devices",
+    "runtime/deps/libkrun/src/arch",
+    "runtime/deps/libkrun/src/arch_gen",
+    "runtime/deps/libkrun/src/kernel",
+    "runtime/deps/libkrun/src/polly",
+    "runtime/deps/libkrun/src/utils",
+    "runtime/deps/libkrun/src/smbios",
+    "runtime/deps/libkrun/src/cpuid",
+    "runtime/deps/libkrun/src/vm-memory-win",
+    "runtime/deps/libkrun/src/hcs",
+    "runtime/deps/libkrun/src/libkrunfw-win",
+    # Agent-aware sandbox SDK and its gateway client.
+    "sandbox/crates/sandbox",
+    "sandbox/crates/gateway",
+]
+resolver = "2"
+
+# Exclude platform-specific crates and submodules that are only needed as
+# dependencies on their target OS. Cargo resolves them automatically via
+# [target.'cfg(...)'.dependencies] when building on the correct platform.
+exclude = [
+    "runtime/deps/libkrunfw",
+    "runtime/deps/gvproxy",
+    "runtime/deps/libkrun/tests",
+    "runtime/deps/libkrun/examples",
+    "runtime/deps/libkrun/krun-sys",
+    "runtime/deps/libkrun/src/krun_display",
+    "runtime/deps/libkrun/src/krun_input",
+    "runtime/deps/libkrun/src/aws_nitro",
+    "runtime/deps/libkrun/src/hvf",
+    "runtime/deps/libkrun/src/rutabaga_gfx",
+    "runtime/deps/libkrun/src/rutabaga_gfx/ffi",
+    "runtime/tools/extract_kernel",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/nanosandboxai/nanosandbox"
+authors = ["DevDone Labs"]
+
 [package]
 name = "nanosb-cli"
 version = "0.2.0"
 edition = "2021"
 description = "CLI and TUI for nanosandbox"
 license = "Apache-2.0"
-repository = "https://github.com/nanosandboxai/cli"
+repository = "https://github.com/nanosandboxai/nanosandbox"
 authors = ["DevDone Labs"]
 
 [[bin]]
@@ -12,10 +61,8 @@ name = "nanosb"
 path = "src/main.rs"
 
 [dependencies]
-# Sandbox SDK — wraps nanosandbox runtime with agent-aware features.
-sandbox = { path = "../sandbox/crates/sandbox" }
-# Direct runtime access for logging and low-level runtime APIs.
-runtime = { path = "../runtime/crates/runtime" }
+sandbox = { path = "sandbox/crates/sandbox" }
+runtime = { path = "runtime/crates/runtime" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -66,15 +113,11 @@ tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
 
-# On Windows, redirect vm-memory to the patched fork that compiles on non-Unix.
-# This is needed because the CLI is outside the runtime workspace which has its own patch.
+# On Windows, replace the crates.io vm-memory with our patched fork that
+# compiles on non-Unix platforms (vm-memory-win). The patched crate has the
+# same API surface and version (0.16.2) so all dependents resolve identically.
 [patch.crates-io]
-vm-memory = { path = "../runtime/deps/libkrun/src/vm-memory-win" }
-
-# Redirect runtime git URL to local path so the sandbox crate (which depends on
-# runtime via git) uses the same local version as the CLI itself.
-[patch.'https://github.com/nanosandboxai/runtime.git']
-runtime = { path = "../runtime/crates/runtime" }
+vm-memory = { path = "runtime/deps/libkrun/src/vm-memory-win" }
 
 [profile.release]
 lto = true

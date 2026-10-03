@@ -17,8 +17,8 @@ default = []
 ffi = []
 
 [dependencies]
-# Runtime (VM engine) — consumed via git; local dev overrides via workspace [patch]
-runtime = { git = "https://github.com/nanosandboxai/runtime.git", branch = "main" }
+# Runtime (VM engine) — local path inside the monorepo workspace.
+runtime = { path = "../../../runtime/crates/runtime" }
 
 # Gateway client for agent-gateway communication
 gateway = { path = "../gateway" }

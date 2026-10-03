@@ -2,3 +2,12 @@
 # Statically link the MSVC CRT so nanosb.exe has no VCRUNTIME140.dll dependency.
 # Without this, the binary fails to launch on clean Windows machines.
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.'cfg(target_os = "macos")']
+# Codesign test/run binaries with the Hypervisor.framework entitlement before
+# execution (libkrun uses Apple's HVF). The script resolves its own location,
+# so this path is always relative to the workspace root.
+runner = "runtime/scripts/codesign-and-run.sh"
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"

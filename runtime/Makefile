@@ -46,26 +46,26 @@ help:
 # =============================================================================
 
 build:
-	cargo build
+	cargo build -p runtime
 
 build-release:
-	cargo build --release
+	cargo build --release -p runtime
 
 # =============================================================================
 # Test Targets
 # =============================================================================
 
-# Run all tests (including E2E - requires network)
+# Run all tests for the runtime package
 test:
-	cargo test
+	cargo test -p runtime
 
 # Run only unit tests (lib tests)
 test-unit:
-	cargo test --lib
+	cargo test -p runtime --lib
 
 # Run all tests with verbose output
 test-verbose:
-	cargo test -- --nocapture
+	cargo test -p runtime -- --nocapture
 
 # =============================================================================
 # Setup Targets
@@ -93,7 +93,7 @@ check-prereqs-network:
 
 # Run Clippy linter
 clippy:
-	cargo clippy -- -D warnings
+	cargo clippy -p runtime -p libkrun-sys -- -D warnings
 
 # Format code
 fmt:
@@ -186,4 +186,4 @@ agents-list:
 
 # Full E2E test with nanosandbox
 agents-e2e:
-	cargo test --test agents_e2e_test -- --ignored --nocapture
+	cargo test -p runtime --test agents_e2e_test -- --ignored --nocapture
