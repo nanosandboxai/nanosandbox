@@ -200,42 +200,14 @@ pub async fn connect_ssh(
     // Connect
     let mut config = russh::client::Config::default();
 
-    // Legacy Windows localhost SSH used an HvSocket-backed path that could
-    // stall. We still detect that case and use more conservative settings.
-    let is_localhost_ssh = ssh_host == "127.0.0.1" || ssh_host.eq_ignore_ascii_case("localhost");
-
-    let aggressive_stall_detection = cfg!(target_os = "windows") && is_localhost_ssh;
-    let read_timeout = if aggressive_stall_detection {
-        std::time::Duration::from_secs(30)
-    } else {
-        std::time::Duration::from_secs(3600)
-    };
+    let read_timeout = std::time::Duration::from_secs(3600);
     tracing::info!(
         panel_idx,
         ssh_host = %ssh_host,
         ssh_port,
-        is_localhost_ssh,
-        aggressive_stall_detection,
         read_timeout_secs = read_timeout.as_secs(),
         "SSH terminal transport profile"
     );
-
-    // Windows: SSH keepalive to detect dead connections.
-    #[cfg(target_os = "windows")]
-    {
-        config.keepalive_interval = Some(std::time::Duration::from_secs(15));
-        config.keepalive_max = 3;
-    }
-
-    // Legacy localhost/HvSocket path: cap SSH window to avoid transport
-    // backpressure deadlocks. For TCP guest_ip path, keep default values.
-    #[cfg(target_os = "windows")]
-    {
-        if is_localhost_ssh {
-            config.window_size = 262144; // 256KB
-            config.maximum_packet_size = 32768;
-        }
-    }
 
     let config = std::sync::Arc::new(config);
     let sh = SshHandler;
@@ -437,13 +409,9 @@ pub async fn connect_ssh(
                         timeout_secs = read_timeout.as_secs(),
                         "SSH channel read timed out"
                     );
-                    let max_timeouts: u32 = if aggressive_stall_detection { 1 } else { 3 };
+                    let max_timeouts: u32 = 3;
                     if consecutive_timeouts >= max_timeouts {
-                        let msg = if aggressive_stall_detection {
-                            "SSH connection stalled (no data received). Use /reconnect to retry.".to_string()
-                        } else {
-                            "SSH channel timed out waiting for data.".to_string()
-                        };
+                        let msg = "SSH channel timed out waiting for data.".to_string();
                         let _ = tx_read.send(AppEvent::SshDisconnected {
                             panel_idx,
                             error: Some(msg),
@@ -1103,24 +1071,7 @@ pub fn open_url_in_browser(url: &str) {
             Err(e) => tracing::warn!(url = %url, error = %e, "Failed to spawn browser open command"),
         }
     }
-    #[cfg(target_os = "windows")]
-    {
-        // Use rundll32 to open URLs — avoids cmd.exe shell interpretation that
-        // breaks OAuth URLs containing '&' (command separator) and '%' (env var
-        // expansion).  The URL is passed as a single process argument, so all
-        // special characters are preserved.
-        match std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => tracing::debug!(url = %url, "Spawned browser open command"),
-            Err(e) => tracing::warn!(url = %url, error = %e, "Failed to spawn browser open command"),
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     {
         match std::process::Command::new("xdg-open")
             .arg(url)

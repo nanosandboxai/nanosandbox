@@ -32,21 +32,14 @@ use super::commands::{self, Command};
 use super::event::{spawn_terminal_event_reader, AppEvent};
 use super::renderer;
 
-#[cfg(target_os = "windows")]
-const WINDOWS_PASTE_SUPPRESS_INITIAL_MS: u64 = 450;
-#[cfg(target_os = "windows")]
-const WINDOWS_PASTE_SUPPRESS_SILENCE_MS: u64 = 120;
-
 /// Cross-platform stderr redirection helpers.
 ///
 /// On Unix, native C libraries (libkrun, gvproxy) write to stderr via fprintf()
 /// which bypasses Rust's logging and corrupts the ratatui alternate screen.
 /// We redirect stderr to /dev/null while the TUI is active.
-/// On Windows, this is a no-op for now.
 mod stderr_redirect {
     pub type SavedStderr = i32;
 
-    #[cfg(unix)]
     pub fn save_and_redirect() -> SavedStderr {
         use std::io;
         use std::os::fd::AsRawFd;
@@ -61,55 +54,12 @@ mod stderr_redirect {
         saved
     }
 
-    #[cfg(windows)]
-    mod win32 {
-        // MSVC CRT file descriptor functions (always available on Windows)
-        extern "C" {
-            fn _dup(fd: i32) -> i32;
-            fn _dup2(fd1: i32, fd2: i32) -> i32;
-            fn _open(filename: *const u8, oflag: i32, ...) -> i32;
-            fn _close(fd: i32) -> i32;
-        }
-        const O_WRONLY: i32 = 1;
-
-        pub fn dup(fd: i32) -> i32 { unsafe { _dup(fd) } }
-        pub fn dup2(src: i32, dst: i32) -> i32 { unsafe { _dup2(src, dst) } }
-        pub fn close(fd: i32) -> i32 { unsafe { _close(fd) } }
-        pub fn open_nul() -> i32 { unsafe { _open(b"NUL\0".as_ptr(), O_WRONLY) } }
-    }
-
-    #[cfg(windows)]
-    pub fn save_and_redirect() -> SavedStderr {
-        let saved = win32::dup(2);
-        let nul = win32::open_nul();
-        if nul >= 0 {
-            win32::dup2(nul, 2);
-            win32::close(nul);
-        }
-        saved
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    pub fn save_and_redirect() -> SavedStderr { -1 }
-
-    #[cfg(unix)]
     pub fn restore(saved: SavedStderr) {
         if saved >= 0 {
             unsafe { libc::dup2(saved, libc::STDERR_FILENO); }
         }
     }
 
-    #[cfg(windows)]
-    pub fn restore(saved: SavedStderr) {
-        if saved >= 0 {
-            win32::dup2(saved, 2);
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    pub fn restore(_saved: SavedStderr) {}
-
-    #[cfg(unix)]
     pub fn redirect_to_null() {
         let dev_null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY) };
         if dev_null >= 0 {
@@ -120,77 +70,11 @@ mod stderr_redirect {
         }
     }
 
-    #[cfg(windows)]
-    pub fn redirect_to_null() {
-        let nul = win32::open_nul();
-        if nul >= 0 {
-            win32::dup2(nul, 2);
-            win32::close(nul);
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    pub fn redirect_to_null() {}
-
-    #[cfg(unix)]
     pub fn restore_and_close(saved: SavedStderr) {
         if saved >= 0 {
             unsafe {
                 libc::dup2(saved, libc::STDERR_FILENO);
                 libc::close(saved);
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    pub fn restore_and_close(saved: SavedStderr) {
-        if saved >= 0 {
-            win32::dup2(saved, 2);
-            win32::close(saved);
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    pub fn restore_and_close(_saved: SavedStderr) {}
-}
-
-/// Fix Windows console input mode after crossterm setup.
-///
-/// crossterm's `enable_raw_mode()` and `EnableMouseCapture` both call
-/// `SetConsoleMode()` on the stdin handle, but they don't set the exact
-/// combination of flags we need for the TUI:
-///
-/// - **ENABLE_MOUSE_INPUT** — delivers mouse click/drag/scroll as input records
-/// - **ENABLE_EXTENDED_FLAGS** — required when modifying Quick-Edit mode
-/// - **~ENABLE_QUICK_EDIT_MODE** — prevents console from stealing mouse for selection
-/// - **~ENABLE_PROCESSED_INPUT** — delivers Ctrl+C as a key event, not a signal
-///
-/// This function must be called AFTER `enable_raw_mode()` + `EnableMouseCapture`
-/// so our changes aren't overwritten.
-#[cfg(target_os = "windows")]
-pub(super) fn fix_windows_console_mode() {
-    unsafe {
-        extern "system" {
-            fn GetStdHandle(nStdHandle: u32) -> isize;
-            fn GetConsoleMode(hConsoleHandle: isize, lpMode: *mut u32) -> i32;
-            fn SetConsoleMode(hConsoleHandle: isize, dwMode: u32) -> i32;
-        }
-        const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
-        const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
-        const ENABLE_MOUSE_INPUT: u32 = 0x0010;
-        const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
-        const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
-
-        let stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
-        if stdin_handle != -1_isize {
-            let mut mode: u32 = 0;
-            if GetConsoleMode(stdin_handle, &mut mode) != 0 {
-                let new_mode = (mode
-                    & !ENABLE_QUICK_EDIT_MODE
-                    & !ENABLE_PROCESSED_INPUT)
-                    | ENABLE_MOUSE_INPUT
-                    | ENABLE_EXTENDED_FLAGS;
-                SetConsoleMode(stdin_handle, new_mode);
             }
         }
     }
@@ -325,29 +209,12 @@ pub async fn run_tui(
     // terminal buffer fills up (EAGAIN / os error 35).
     let saved_stderr = stderr_redirect::save_and_redirect();
 
-    // On Windows, disable the default Ctrl+C handler so we can handle it
-    // as a key event (forwarding 0x03 to SSH or copying selected text).
-    #[cfg(target_os = "windows")]
-    unsafe {
-        extern "system" {
-            fn SetConsoleCtrlHandler(
-                handler: *const std::ffi::c_void,
-                add: i32,
-            ) -> i32;
-        }
-        SetConsoleCtrlHandler(std::ptr::null(), 1);
-    }
-
     // Set up terminal.
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, SetCursorStyle::SteadyBar)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-
-    // Fix console input flags AFTER crossterm setup (see fix_windows_console_mode doc).
-    #[cfg(target_os = "windows")]
-    fix_windows_console_mode();
 
     // Install a panic hook that restores the terminal before printing
     // the panic message. Without this, panics corrupt the alternate screen.
@@ -444,42 +311,11 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
 
     // Main event loop.
     //
-    // Windows-only: the SSH data reader can flood the channel with
-    // TerminalData events during heavy agent output.  We limit how many
-    // we handle per iteration and yield so keyboard events get through.
-    #[cfg(target_os = "windows")]
-    let mut terminal_data_budget: u32 = 64;
     while let Some(event) = rx.recv().await {
-        #[cfg(target_os = "windows")]
-        if !matches!(&event, AppEvent::TerminalData { .. }) {
-            terminal_data_budget = 64;
-        }
         match event {
             AppEvent::Terminal(crossterm_event) => {
                 match crossterm_event {
                     CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                        #[cfg(target_os = "windows")]
-                        {
-                            let now = std::time::Instant::now();
-                            if let Some(until) = app.paste_suppress_until {
-                                if now < until {
-                                    app.paste_suppress_until = Some(
-                                        now + Duration::from_millis(WINDOWS_PASTE_SUPPRESS_SILENCE_MS),
-                                    );
-                                    tracing::debug!(
-                                        key_code = ?key.code,
-                                        modifiers = ?key.modifiers,
-                                        suppress_silence_ms = WINDOWS_PASTE_SUPPRESS_SILENCE_MS,
-                                        "Suppressed key event during adaptive Ctrl+V window"
-                                    );
-                                    continue;
-                                }
-                                app.paste_suppress_until = None;
-                            }
-                        }
-
-                        // Only handle Press events — on Windows, crossterm fires
-                        // both Press and Release for each keystroke.
 
                         // Ctrl+C with active selection → copy to clipboard
                         // instead of forwarding/clearing.
@@ -518,26 +354,6 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                         handle_mouse_event(&mut app, mouse);
                     }
                     CrosstermEvent::Paste(text) => {
-                        #[cfg(target_os = "windows")]
-                        {
-                            let now = std::time::Instant::now();
-                            if let Some(until) = app.paste_suppress_until {
-                                if now < until {
-                                    app.paste_suppress_until = Some(
-                                        now + Duration::from_millis(WINDOWS_PASTE_SUPPRESS_SILENCE_MS),
-                                    );
-                                    tracing::debug!(
-                                        text_len = text.len(),
-                                        focused_panel = app.focused_panel,
-                                        suppress_silence_ms = WINDOWS_PASTE_SUPPRESS_SILENCE_MS,
-                                        "Suppressed duplicate Paste event during adaptive Ctrl+V window"
-                                    );
-                                    continue;
-                                }
-                                app.paste_suppress_until = None;
-                            }
-                        }
-
                         tracing::info!(
                             text_len = text.len(),
                             focused_panel = app.focused_panel,
@@ -551,11 +367,6 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                         // to vt100 parser + SSH PTY.
                     }
                     CrosstermEvent::FocusGained => {
-                        // Re-apply console mode fix on focus gain — Windows
-                        // Terminal may reset input flags when the window
-                        // loses and regains focus.
-                        #[cfg(target_os = "windows")]
-                        fix_windows_console_mode();
                     }
                     CrosstermEvent::FocusLost => {}
                 }
@@ -798,21 +609,6 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                     }
                 }
 
-                // Windows-only: prevent SSH data flood from starving
-                // keyboard/tick events during heavy agent output.
-                #[cfg(target_os = "windows")]
-                {
-                    terminal_data_budget = terminal_data_budget.saturating_sub(1);
-                    if terminal_data_budget == 0 {
-                        terminal_data_budget = 64;
-                        // Render so user sees progress during heavy output.
-                        terminal.draw(|frame| renderer::render(frame, &mut app))?;
-                        // Yield to let keyboard events be processed.
-                        tokio::task::yield_now().await;
-                    }
-                    // Skip the per-event render — we batch renders above.
-                    continue;
-                }
             }
             AppEvent::SshDisconnected { panel_idx, error } => {
                 // Check if this is a reconnect attempt that failed.
@@ -1080,8 +876,6 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                 // Resume TUI: enter alternate screen, enable raw mode
                 let _ = enable_raw_mode();
                 let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, SetCursorStyle::SteadyBar);
-                #[cfg(target_os = "windows")]
-                fix_windows_console_mode();
                 terminal.clear()?;
             }
             AppEvent::UploadStarted { panel_idx, filename } => {
@@ -1266,20 +1060,14 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
     // runtime drop will skip it (because blocking-pool threads are detached),
     // but belt-and-suspenders — explicitly exit so the process never lingers
     // after /quit or /destroy.
-    #[cfg(target_os = "windows")]
-    {
-        std::process::exit(0);
-    }
-
-    #[cfg(not(target_os = "windows"))]
     Ok(())
 }
 
 /// Run an agent command via the gateway exec endpoint (no SSH).
 ///
 /// Used for auto-mode: sends the agent command to the guest gateway over
-/// HvSocket (Windows) or TCP (Linux/macOS) and streams NDJSON output back
-/// to the TUI as `TerminalData` events for the headless parser.
+/// TCP and streams NDJSON output back to the TUI as `TerminalData` events
+/// for the headless parser.
 async fn spawn_gateway_exec(
     sandbox: Arc<Mutex<Sandbox>>,
     agent_name: &str,
@@ -1344,9 +1132,6 @@ async fn spawn_gateway_exec(
     let handle = super::terminal::SshTerminalHandle::noop();
     let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
 
-    // Extract what we need from the sandbox while holding the lock briefly,
-    // then release it. exec_stream_with_options does blocking I/O on Windows
-    // (HvSocket) so we must not hold the Mutex during execution.
     let exec_result = {
         let sb = sandbox.lock().await;
         // Verify sandbox is running
@@ -1357,9 +1142,7 @@ async fn spawn_gateway_exec(
             });
             return;
         }
-        // Use exec_stream_with_options — on Windows this calls blocking
-        // HvSocket I/O, but we're inside tokio::spawn so it runs on a
-        // worker thread. The on_output callback sends TerminalData events.
+        // The on_output callback sends TerminalData events.
         let tx_data = tx.clone();
         let chunk_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let chunk_counter_cb = chunk_counter.clone();
@@ -1444,16 +1227,6 @@ fn print_validation_results(validation: &sandbox::validation::ValidationResult) 
             let failed = validation.errors.iter().any(|e| e.check == *name);
             let warned = validation.warnings.iter().any(|w| w.contains(name));
             if !failed && !warned {
-                println!("  [v] {}", name);
-            }
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let checks = ["Host Compute Service", "krun.dll", "libkrunfw.dll"];
-        for name in &checks {
-            let failed = validation.errors.iter().any(|e| e.check == *name);
-            if !failed {
                 println!("  [v] {}", name);
             }
         }
@@ -1743,20 +1516,7 @@ async fn handle_key_event(
                                 || key.modifiers.contains(KeyModifiers::SUPER)))
                             // Some Windows terminals emit Ctrl+V as SYN (0x16)
                             // without reporting CONTROL in modifiers.
-                            || (cfg!(target_os = "windows") && ch == '\u{16}') => {
-                        #[cfg(target_os = "windows")]
-                        {
-                            // Windows terminal emulators can inject the clipboard
-                            // payload as raw key events after Ctrl+V. Ignore those
-                            // for a short window to prevent duplicate/interrupted paste.
-                            // While suppressed events keep arriving, we keep extending
-                            // the window until input goes quiet.
-                            app.paste_suppress_until = Some(
-                                std::time::Instant::now()
-                                    + Duration::from_millis(WINDOWS_PASTE_SUPPRESS_INITIAL_MS),
-                            );
-                        }
-
+                            => {
                         let focused_panel = app.focused_panel;
                         let panel_mode = app
                             .panels
@@ -1785,9 +1545,7 @@ async fn handle_key_event(
                                 "Handling Ctrl/Cmd+V paste"
                             );
 
-                            // Fast path for Windows: paste text immediately.
-                            // Checking for clipboard image first can add noticeable
-                            // latency before any text appears in the terminal.
+                            // Paste text immediately.
                             let text_result = tokio::task::spawn_blocking(
                                 super::upload::read_clipboard_text,
                             )
@@ -2802,31 +2560,6 @@ async fn handle_command(
                         }
                     }
 
-                    // On Windows, try common install paths for GUI editors
-                    // when the binary isn't on PATH.
-                    #[cfg(target_os = "windows")]
-                    {
-                        let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
-                        let programfiles = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".to_string());
-                        let candidates: Vec<(&str, String)> = vec![
-                            ("vscode", format!(r"{}\Microsoft VS Code\Code.exe", programfiles)),
-                            ("vscode", format!(r"{}\Programs\Microsoft VS Code\Code.exe", localappdata)),
-                            ("cursor", format!(r"{}\Programs\Cursor\Cursor.exe", localappdata)),
-                        ];
-                        for (name, exe_path) in &candidates {
-                            if (editor_pref == *name || editor_pref == "auto") && std::path::Path::new(exe_path).exists() {
-                                let _ = std::process::Command::new(exe_path)
-                                    .arg(&clone_path)
-                                    .stdin(std::process::Stdio::null())
-                                    .stdout(std::process::Stdio::null())
-                                    .stderr(std::process::Stdio::null())
-                                    .spawn();
-                                app.set_status_message(format!("Opened in {}.", name));
-                                return;
-                            }
-                        }
-                    }
-
                     app.set_status_message(format!(
                         "No tool '{}' found. Install gitui, lazygit, or VS Code.",
                         editor_pref,
@@ -3001,9 +2734,7 @@ fn handle_copy(app: &mut App) {
 /// Copy text to system clipboard without blocking the async event loop.
 ///
 /// Uses `arboard` (cross-platform Rust clipboard library) instead of
-/// spawning external processes like `clip.exe` / `pbcopy` / `xclip`.
-/// The old process-based approach called `.wait()` synchronously on the
-/// main event loop, freezing the entire TUI for 100-500ms on Windows.
+/// spawning external processes like `pbcopy` / `xclip`.
 fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
     arboard::Clipboard::new()
         .map_err(|e| format!("clipboard: {}", e))?
