@@ -21,3 +21,9 @@ Thumbs.db
 .env.local
 
 .cargo-home
+
+# libkrun upstream cache (cloned by build-libkrun.sh)
+~/.cache/nanosandbox/
+
+# libkrun static library artifact
+~/.nanosandbox/lib/libkrun.a

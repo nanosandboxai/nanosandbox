@@ -15,9 +15,8 @@ echo "==> [1/6] Building libkrunfw..."
 cd "$ROOT_DIR/deps/libkrunfw"
 make -j"$(nproc)"
 
-echo "==> [2/6] Building libkrun..."
-cd "$ROOT_DIR/deps/libkrun"
-make NET=1 BLK=1
+echo "==> [2/6] Building upstream libkrun..."
+bash "$SCRIPT_DIR/../build-libkrun.sh"
 
 echo "==> [3/6] Building gvproxy..."
 cd "$ROOT_DIR/deps/gvproxy"
@@ -39,7 +38,7 @@ echo "==> [6/6] Verifying artifacts..."
 echo "--- libkrunfw ---"
 find "$ROOT_DIR/deps/libkrunfw" -name 'libkrunfw*.so*' | head -5
 echo "--- libkrun ---"
-find "$ROOT_DIR/deps/libkrun/target/release" -name 'libkrun*.so*' 2>/dev/null | head -5 || echo "(none)"
+ls -la "$HOME/.nanosandbox/lib/libkrun.a" 2>/dev/null || echo "(not found)"
 echo "--- gvproxy ---"
 ls -la "$ROOT_DIR/deps/gvproxy/gvproxy" 2>/dev/null || echo "(not built)"
 
