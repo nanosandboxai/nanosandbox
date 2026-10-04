@@ -9,20 +9,6 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
 
-// Force the `krun` rlib to be linked into the final binary.
-//
-// libkrun-sys declares C-ABI symbols below via an `extern "C"` block, which
-// are forward declarations only. Without a Rust-level reference to an item
-// in the `krun` crate, the linker won't pull in the rlib that *defines*
-// those symbols — causing "undefined symbol _krun_*" errors when nanosandbox
-// is linked into a downstream binary (e.g. the CLI's `nanosb`).
-//
-// `krun::krun_create_ctx` is a `pub extern "C" fn` in the krun crate, so
-// holding it in a `#[used]` static forces the linker to keep the krun rlib
-// in the link line.
-#[used]
-static _FORCE_KRUN_LINK: extern "C" fn() -> c_int = krun::krun_create_ctx;
-
 // ---------------------------------------------------------------------------
 // Constants (from libkrun.h)
 // ---------------------------------------------------------------------------

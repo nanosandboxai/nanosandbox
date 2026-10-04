@@ -1,1 +1,0 @@
-../src/krun_display/libkrun_display.h

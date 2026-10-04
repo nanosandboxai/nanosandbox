@@ -3,17 +3,6 @@ members = [
     # Nanosandbox runtime (VM engine) and libkrun bindings.
     "runtime/crates/runtime",
     "runtime/crates/libkrun-sys",
-    # libkrun internal crates (checked-in source from runtime/deps/libkrun/).
-    "runtime/deps/libkrun/src/libkrun",
-    "runtime/deps/libkrun/src/vmm",
-    "runtime/deps/libkrun/src/devices",
-    "runtime/deps/libkrun/src/arch",
-    "runtime/deps/libkrun/src/arch_gen",
-    "runtime/deps/libkrun/src/kernel",
-    "runtime/deps/libkrun/src/polly",
-    "runtime/deps/libkrun/src/utils",
-    "runtime/deps/libkrun/src/smbios",
-    "runtime/deps/libkrun/src/cpuid",
     # Agent-aware sandbox SDK and its gateway client.
     "sandbox/crates/sandbox",
     "sandbox/crates/gateway",
@@ -26,15 +15,6 @@ resolver = "2"
 exclude = [
     "runtime/deps/libkrunfw",
     "runtime/deps/gvproxy",
-    "runtime/deps/libkrun/tests",
-    "runtime/deps/libkrun/examples",
-    "runtime/deps/libkrun/krun-sys",
-    "runtime/deps/libkrun/src/krun_display",
-    "runtime/deps/libkrun/src/krun_input",
-    "runtime/deps/libkrun/src/aws_nitro",
-    "runtime/deps/libkrun/src/hvf",
-    "runtime/deps/libkrun/src/rutabaga_gfx",
-    "runtime/deps/libkrun/src/rutabaga_gfx/ffi",
 ]
 
 [workspace.package]
