@@ -1,33 +1,17 @@
-//! Platform-dispatching HTTP transport for gateway communication.
-//!
-//! On Windows, routes through HvSocket (AF_HYPERV) to bypass HCN NAT.
-//! On Unix/macOS, uses TCP via gvproxy port mappings.
+//! HTTP transport for gateway communication via TCP (gvproxy port mappings).
 
 use crate::error::{Error, Result};
 
 /// Transport configuration for reaching the gateway inside a VM.
 pub struct Transport {
-    /// TCP address (host:port) for gateway HTTP — Unix/macOS.
+    /// TCP address (host:port) for gateway HTTP.
     gateway_addr: Option<String>,
-    /// HCS VM ID for HvSocket connections — Windows only.
-    #[cfg(target_os = "windows")]
-    hcs_vm_id: Option<String>,
 }
 
 impl Transport {
-    /// Create a new transport for Unix/macOS (TCP via gvproxy).
-    #[cfg(not(target_os = "windows"))]
+    /// Create a new transport (TCP via gvproxy).
     pub fn new(gateway_addr: Option<String>) -> Self {
         Self { gateway_addr }
-    }
-
-    /// Create a new transport for Windows (HvSocket + TCP fallback).
-    #[cfg(target_os = "windows")]
-    pub fn new(gateway_addr: Option<String>, hcs_vm_id: Option<String>) -> Self {
-        Self {
-            gateway_addr,
-            hcs_vm_id,
-        }
     }
 
     /// Check if the transport has a valid gateway endpoint.
@@ -38,20 +22,6 @@ impl Transport {
     /// Get the gateway TCP address.
     pub fn gateway_addr(&self) -> Option<&str> {
         self.gateway_addr.as_deref()
-    }
-
-    /// Get the HCS VM ID (Windows only).
-    #[cfg(target_os = "windows")]
-    pub fn hcs_vm_id(&self) -> Option<&str> {
-        self.hcs_vm_id.as_deref()
-    }
-
-    /// Get the gateway TCP address or error.
-    #[cfg(not(target_os = "windows"))]
-    fn require_addr(&self) -> Result<&str> {
-        self.gateway_addr
-            .as_deref()
-            .ok_or(Error::NotAvailable)
     }
 
     /// HTTP GET to the gateway.
