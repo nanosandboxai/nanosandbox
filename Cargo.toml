@@ -14,9 +14,6 @@ members = [
     "runtime/deps/libkrun/src/utils",
     "runtime/deps/libkrun/src/smbios",
     "runtime/deps/libkrun/src/cpuid",
-    "runtime/deps/libkrun/src/vm-memory-win",
-    "runtime/deps/libkrun/src/hcs",
-    "runtime/deps/libkrun/src/libkrunfw-win",
     # Agent-aware sandbox SDK and its gateway client.
     "sandbox/crates/sandbox",
     "sandbox/crates/gateway",
@@ -38,7 +35,6 @@ exclude = [
     "runtime/deps/libkrun/src/hvf",
     "runtime/deps/libkrun/src/rutabaga_gfx",
     "runtime/deps/libkrun/src/rutabaga_gfx/ffi",
-    "runtime/tools/extract_kernel",
 ]
 
 [workspace.package]
@@ -112,12 +108,6 @@ libc = "0.2"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
-
-# On Windows, replace the crates.io vm-memory with our patched fork that
-# compiles on non-Unix platforms (vm-memory-win). The patched crate has the
-# same API surface and version (0.16.2) so all dependents resolve identically.
-[patch.crates-io]
-vm-memory = { path = "runtime/deps/libkrun/src/vm-memory-win" }
 
 [profile.release]
 lto = true
