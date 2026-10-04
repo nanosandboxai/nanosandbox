@@ -42,9 +42,9 @@ curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download
 
 ## How it works
 
-1. The nanosandbox release pipeline (`release.yml`) builds libkrunfw + gvproxy (Linux/macOS) or libkrunfw.dll + busybox (Windows).
+1. The nanosandbox release pipeline (`release.yml`) builds libkrunfw + gvproxy (Linux/macOS).
 2. The dependency bundles (`deps-*`) and these installer scripts are published together in the same GitHub Release as the CLI.
-3. `install-deps.sh` / `install-deps.ps1` download the bundle for the current platform from that release and install it under `~/.nanosandbox/`.
+3. `install-deps.sh` downloads the bundle for the current platform from that release and installs it under `~/.nanosandbox/`.
 
 ## Platform support
 
