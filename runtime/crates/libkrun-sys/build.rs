@@ -22,6 +22,11 @@ fn main() {
 
     let libkrun_a = lib_dir.join("libkrun.a");
 
+    // Always register rerun triggers — including when the artifact is missing —
+    // so cargo re-runs this script once the library appears.
+    println!("cargo:rerun-if-changed={}", libkrun_a.display());
+    println!("cargo:rerun-if-env-changed=LIBKRUN_LIB_DIR");
+
     if !libkrun_a.exists() {
         // Print a helpful error and continue — cargo will fail at link time
         // if the library is truly needed (e.g., for the final binary).
@@ -39,8 +44,4 @@ fn main() {
     // On macOS, libkrun uses Hypervisor.framework
     #[cfg(target_os = "macos")]
     println!("cargo:rustc-link-lib=framework=Hypervisor");
-
-    // Rerun if the library changes
-    println!("cargo:rerun-if-changed={}", libkrun_a.display());
-    println!("cargo:rerun-if-env-changed=LIBKRUN_LIB_DIR");
 }
