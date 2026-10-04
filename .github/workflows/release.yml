@@ -147,6 +147,9 @@ jobs:
           echo "=== libkrunfw ==="
           ls -lh libkrunfw.so*
 
+      - name: Build upstream libkrun
+        run: bash runtime/scripts/build-libkrun.sh
+
       - name: Build gvproxy
         run: |
           cd runtime/deps/gvproxy
@@ -234,6 +237,9 @@ jobs:
           sudo mkdir -p /usr/local/lib
           sudo cp runtime/deps/libkrunfw/libkrunfw*.dylib /usr/local/lib/
           ls -la /usr/local/lib/libkrunfw*
+
+      - name: Build upstream libkrun
+        run: bash runtime/scripts/build-libkrun.sh
 
       - name: Build runtime
         run: cargo build --release -p runtime
