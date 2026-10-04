@@ -8,7 +8,6 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -50,7 +49,7 @@ pub struct GatewayKeyPair {
 impl GatewayKeyPair {
     /// Generate a fresh X25519 keypair backed by the OS RNG.
     pub fn generate() -> Self {
-        let secret = StaticSecret::random_from_rng(OsRng);
+        let secret = StaticSecret::random();
         let public = PublicKey::from(&secret);
         Self {
             secret_bytes: secret.to_bytes(),
@@ -103,7 +102,9 @@ impl GatewayKeyPair {
         if nonce_bytes.len() != 12 {
             return Err(format!("nonce wrong length: {}", nonce_bytes.len()));
         }
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let mut nonce_arr = [0u8; 12];
+        nonce_arr.copy_from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_arr);
 
         let ciphertext = B64
             .decode(&encrypted.ciphertext)
@@ -113,7 +114,7 @@ impl GatewayKeyPair {
             .map_err(|e| format!("AES key init failed: {e}"))?;
 
         let plaintext = cipher
-            .decrypt(nonce, ciphertext.as_ref())
+            .decrypt(&nonce, ciphertext.as_ref())
             .map_err(|_| "AES-GCM decryption failed (bad key or tampered ciphertext)")?;
 
         serde_json::from_slice(&plaintext)
@@ -144,7 +145,7 @@ pub fn encrypt_payload(
     let gateway_pk = PublicKey::from(*gateway_pubkey_bytes);
 
     // Ephemeral X25519 keypair for this encryption
-    let cli_secret = EphemeralSecret::random_from_rng(OsRng);
+    let cli_secret = EphemeralSecret::random();
     let cli_pk = PublicKey::from(&cli_secret);
 
     // ECDH shared secret → SHA-256 → AES key (must match decrypt's KDF)
@@ -155,10 +156,10 @@ pub fn encrypt_payload(
         .map_err(|e| format!("AES key init failed: {e}"))?;
 
     let nonce_bytes: [u8; 12] = rand::random();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .map_err(|e| format!("AES-GCM encryption failed: {e}"))?;
 
     Ok(EncryptedPayload {
@@ -214,7 +215,7 @@ pub fn write_secret_file(path: &std::path::Path, contents: &str) -> Result<(), S
 /// Returns `(secret_bytes, public_bytes)`, each 32 bytes.
 /// Convenience wrapper for callers that manage key material directly.
 pub fn generate_gateway_keypair() -> ([u8; 32], [u8; 32]) {
-    let secret = StaticSecret::random_from_rng(OsRng);
+    let secret = StaticSecret::random();
     let public = PublicKey::from(&secret);
     (secret.to_bytes(), *public.as_bytes())
 }
