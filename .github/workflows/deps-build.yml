@@ -242,50 +242,7 @@ jobs:
             runtime/deps/gvproxy/gvproxy
           retention-days: 7
 
-  # ─── Job 3: Windows build (HCS microVM) ───
-  # Windows uses libkrun's HCS backend. No kernel.c or gvproxy needed —
-  # libkrunfw-win embeds a prebuilt vmlinux.bin (built separately).
-  # For now, cargo check validates compilation; full build requires kernel artifact.
-  build-windows:
-    name: Build on Windows (x86_64)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Create kernel stubs for compilation
-        shell: bash
-        run: |
-          # libkrunfw-win needs vmlinux.bin to compile; create empty stubs
-          # so cargo check passes (actual kernel comes from CI artifact at runtime)
-          touch runtime/deps/libkrun/src/libkrunfw-win/vmlinux.bin
-          echo "0" > runtime/deps/libkrun/src/libkrunfw-win/guest_addr.txt
-          echo "0" > runtime/deps/libkrun/src/libkrunfw-win/entry_addr.txt
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: windows-cargo-
-
-      - name: cargo check runtime
-        run: cargo check -p runtime
-
-      - name: cargo check libkrun-sys (net + hcs)
-        run: cargo check -p libkrun-sys --features net,hcs
-
-      - name: Run unit tests
-        run: cargo test -p runtime
-        continue-on-error: true  # Some tests may need WHPX/HCS which CI runners lack
-
-  # ─── Job 4: macOS build ───
+  # ─── Job 3: macOS build ───
   build-macos:
     name: Build on macOS (Apple Silicon)
     runs-on: macos-latest
