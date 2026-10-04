@@ -418,38 +418,15 @@ impl OciBundle {
             ))
         })?;
 
-        // Create a link from bundle/rootfs -> cached rootfs so the runtime
+        // Create a symlink from bundle/rootfs -> cached rootfs so the runtime
         // can find it via the conventional bundle_path/rootfs path.
         if !rootfs_link.exists() {
-            #[cfg(target_os = "windows")]
-            {
-                // Use directory junction (no admin privileges needed, unlike symlinks)
-                let status = std::process::Command::new("cmd")
-                    .args(["/C", "mklink", "/J",
-                        &rootfs_link.to_string_lossy(),
-                        &rootfs.to_string_lossy()])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                if status.map_or(true, |s| !s.success()) {
-                    // Junction failed — fall back to using the cached rootfs directly
-                    tracing::warn!("Failed to create junction, using rootfs directly");
-                    return Ok(Self {
-                        path: bundle_path,
-                        config_path,
-                        rootfs_path: rootfs.to_path_buf(),
-                    });
-                }
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                std::os::unix::fs::symlink(rootfs, &rootfs_link).map_err(|e| {
-                    error!("create_with_rootfs(): failed to symlink rootfs {} -> {}: {}", rootfs_link.display(), rootfs.display(), e);
-                    crate::error::Error::SandboxCreationFailed(format!(
-                        "Symlink rootfs {} -> {}: {}", rootfs_link.display(), rootfs.display(), e
-                    ))
-                })?;
-            }
+            std::os::unix::fs::symlink(rootfs, &rootfs_link).map_err(|e| {
+                error!("create_with_rootfs(): failed to symlink rootfs {} -> {}: {}", rootfs_link.display(), rootfs.display(), e);
+                crate::error::Error::SandboxCreationFailed(format!(
+                    "Symlink rootfs {} -> {}: {}", rootfs_link.display(), rootfs.display(), e
+                ))
+            })?;
         }
 
         Ok(Self {

@@ -450,11 +450,6 @@ impl LibkrunRuntime {
         None
     }
 
-    pub fn hcs_vm_id(&self, _id: &str) -> Option<String> {
-        // HCS VM identity only available on Windows.
-        None
-    }
-
     pub fn is_vm_running(&self, id: &str) -> bool {
         // The VM runs in a child process (`internal-boot-vm`); check whether
         // its PID is still alive via kill(pid, 0). If vm_pid is None, the

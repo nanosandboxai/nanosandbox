@@ -110,7 +110,7 @@ impl Sandbox {
         // Extract all layers into the bundle's rootfs. The manifest
         // config_digest enables the golden-rootfs cache: subsequent
         // sandboxes for the same image clone the cached tree via
-        // APFS clonefile (macOS) or recursive copy (Linux/Windows).
+        // APFS clonefile (macOS) or recursive copy (Linux).
         progress("Preparing rootfs...");
         debug!("Creating rootfs from {} layers", pulled.layers.len());
         image_manager.create_rootfs(
@@ -270,7 +270,7 @@ impl Sandbox {
 
         // --- Create and start the VM ---
 
-        // Timeout must accommodate first-run rootfs creation (~2 min on Windows)
+        // Timeout must accommodate first-run rootfs creation
         // plus VM boot.
         let create_timeout = Duration::from_secs(300);
         let start_timeout = Duration::from_secs(600);
@@ -402,20 +402,8 @@ impl Sandbox {
         }
 
         // Remove the bundle directory.
-        // On Windows, rootfs may be an NTFS junction to the golden rootfs.
-        // We must remove the junction first (without following it) to avoid
-        // deleting the shared golden rootfs.
         if let Some(bundle) = &self.bundle {
             if bundle.path.exists() {
-                #[cfg(target_os = "windows")]
-                {
-                    let rootfs = bundle.path.join("rootfs");
-                    if rootfs.exists() {
-                        // remove_dir removes a junction point itself (not its target)
-                        // unlike remove_dir_all which follows into the target.
-                        let _ = std::fs::remove_dir(&rootfs);
-                    }
-                }
                 if let Err(e) = std::fs::remove_dir_all(&bundle.path) {
                     warn!("Failed to remove bundle directory: {}", e);
                 }

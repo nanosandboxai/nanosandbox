@@ -20,28 +20,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use tar::Archive;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, info, warn};
 
-/// Unpack a tar archive to `dest`, handling platform differences.
-///
-/// On Unix this delegates to `archive.unpack()`. On Windows, we iterate
-/// entries manually because Linux container images contain Unix symlinks,
-/// device nodes, and permissions that the default `unpack()` cannot handle
-/// on NTFS.
+/// Unpack a tar archive to `dest`.
 fn unpack_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        archive.unpack(dest)
-    }
-
-    #[cfg(windows)]
-    {
-        unpack_archive_windows(archive, dest)
-    }
+    archive.unpack(dest)
 }
 
 /// Set ownership xattrs on all files from a tar archive.
@@ -91,192 +76,9 @@ fn set_ownership_xattrs<R: Read>(archive: &mut Archive<R>, dest: &Path) {
     }
 }
 
-/// Windows-specific tar extraction that gracefully handles Unix-isms.
-///
-/// - Regular files / directories: extracted normally.
-/// - Symlinks: resolved and copied (no privileges required). A deferred
-///   pass handles forward references (target extracted after the link).
-/// - Hard links: copied.
-/// - Device nodes, FIFOs: skipped (cannot be represented on NTFS).
-/// - Permissions: not preserved (Unix mode bits are meaningless on Windows).
-#[cfg(windows)]
-fn unpack_archive_windows<R: Read>(archive: &mut Archive<R>, dest: &Path) -> std::io::Result<()> {
-    // Collect symlinks whose targets don't exist yet for a deferred pass.
-    let mut deferred_symlinks: Vec<(PathBuf, PathBuf)> = Vec::new();
-
-    for entry_result in archive.entries()? {
-        let mut entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("Skipping unreadable tar entry: {}", e);
-                continue;
-            }
-        };
-
-        let entry_type = entry.header().entry_type();
-        let raw_path = match entry.path() {
-            Ok(p) => p.into_owned(),
-            Err(e) => {
-                warn!("Skipping entry with invalid path: {}", e);
-                continue;
-            }
-        };
-
-        // Normalize Unix forward slashes to Windows backslashes and
-        // sanitize characters illegal on Windows (colons in filenames like
-        // `:etc:ssh:sshd_config` from ucf cache layers).
-        let native_path: PathBuf = raw_path
-            .components()
-            .map(|c| {
-                let s = c.as_os_str().to_string_lossy();
-                if s.contains(':') {
-                    std::ffi::OsString::from(s.replace(':', "_"))
-                } else {
-                    c.as_os_str().to_owned()
-                }
-            })
-            .collect();
-        let full_path = dest.join(&native_path);
-
-        // Handle OCI whiteout files (.wh.*) — delete the target file.
-        if let Some(name) = raw_path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with(".wh.") {
-                let target = name.strip_prefix(".wh.").unwrap();
-                let target_path = full_path.parent().unwrap().join(target);
-                if target_path.is_dir() {
-                    let _ = fs::remove_dir_all(&target_path);
-                } else {
-                    let _ = fs::remove_file(&target_path);
-                }
-                continue;
-            }
-        }
-
-        match entry_type {
-            tar::EntryType::Directory => {
-                if let Err(e) = fs::create_dir_all(&full_path) {
-                    if e.kind() != std::io::ErrorKind::AlreadyExists {
-                        warn!("Failed to create dir {:?}: {}", raw_path, e);
-                    }
-                }
-            }
-            tar::EntryType::Regular | tar::EntryType::Continuous => {
-                if let Some(parent) = full_path.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                let _ = fs::remove_file(&full_path);
-                let mut out = File::create(&full_path).map_err(|e| {
-                    std::io::Error::new(
-                        e.kind(),
-                        format!("Create file {:?}: {}", full_path, e),
-                    )
-                })?;
-                std::io::copy(&mut entry, &mut out)?;
-            }
-            tar::EntryType::Symlink => {
-                let link_target = match entry.link_name() {
-                    Ok(Some(t)) => t.into_owned(),
-                    _ => {
-                        warn!("Symlink {:?} has no target, skipping", raw_path);
-                        continue;
-                    }
-                };
-                if let Some(parent) = full_path.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                let _ = fs::remove_file(&full_path);
-                let _ = fs::remove_dir_all(&full_path);
-
-                // Resolve the target: absolute paths are relative to the
-                // rootfs root (dest), relative paths are relative to the
-                // symlink's parent directory.
-                let resolved = if link_target.has_root() {
-                    // Absolute symlink like /bin/busybox → dest/bin/busybox
-                    let stripped: PathBuf = link_target.components()
-                        .filter(|c| !matches!(c, std::path::Component::RootDir | std::path::Component::Prefix(_)))
-                        .collect();
-                    dest.join(stripped)
-                } else {
-                    full_path.parent().unwrap().join(&link_target)
-                };
-                if resolved.is_file() {
-                    let _ = fs::copy(&resolved, &full_path);
-                } else if resolved.is_dir() {
-                    let _ = copy_dir_windows(&resolved, &full_path);
-                } else {
-                    // Target not extracted yet — defer to second pass.
-                    deferred_symlinks.push((full_path, link_target));
-                }
-            }
-            tar::EntryType::Link => {
-                let link_target = match entry.link_name() {
-                    Ok(Some(t)) => t.into_owned(),
-                    _ => {
-                        warn!("Hardlink {:?} has no target, skipping", raw_path);
-                        continue;
-                    }
-                };
-                if let Some(parent) = full_path.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                let _ = fs::remove_file(&full_path);
-                let target_full = dest.join(&link_target);
-                if target_full.exists() {
-                    let _ = fs::copy(&target_full, &full_path);
-                }
-            }
-            _ => {
-                debug!("Skipping unsupported entry type {:?}: {:?}", entry_type, raw_path);
-            }
-        }
-    }
-
-    // Deferred pass: resolve symlinks whose targets were extracted after them.
-    if !deferred_symlinks.is_empty() {
-        debug!("Resolving {} deferred symlinks", deferred_symlinks.len());
-        for (full_path, link_target) in &deferred_symlinks {
-            let resolved = if link_target.has_root() {
-                let stripped: PathBuf = link_target.components()
-                    .filter(|c| !matches!(c, std::path::Component::RootDir | std::path::Component::Prefix(_)))
-                    .collect();
-                dest.join(stripped)
-            } else {
-                full_path.parent().unwrap().join(link_target)
-            };
-            if resolved.is_file() {
-                let _ = fs::copy(&resolved, full_path);
-            } else if resolved.is_dir() {
-                let _ = copy_dir_windows(&resolved, full_path);
-            } else {
-                debug!("Deferred symlink target still missing: {:?} -> {:?}", full_path, link_target);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Recursively copy a directory tree (Windows-only, used by tar extraction).
-#[cfg(windows)]
-fn copy_dir_windows(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let dest_path = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_windows(&entry.path(), &dest_path)?;
-        } else {
-            fs::copy(entry.path(), &dest_path)?;
-        }
-    }
-    Ok(())
-}
-
-
 /// Get the current platform (os/arch)
 fn current_platform() -> (&'static str, &'static str) {
-    // All platforms run Linux containers via libkrun (macOS via HVF, Windows via WHPX)
+    // All platforms run Linux containers via libkrun
     let os = "linux";
 
     let arch = if cfg!(target_arch = "x86_64") {
@@ -1044,9 +846,6 @@ impl ImageManager {
         info!("Creating rootfs at {:?} from {} layers", dest, layers.len());
 
         // Fast path: use cached golden rootfs if available.
-        // Skipped on Windows — extraction happens in-guest (see manifest path below)
-        // and the golden cache scheme (NTFS junction) is incompatible with that.
-        #[cfg(not(windows))]
         if let Some(digest) = manifest_digest {
             let digest_short = digest.strip_prefix("sha256:").unwrap_or(digest);
             let golden = self.extracted_dir().join(digest_short);
@@ -1222,43 +1021,8 @@ impl ImageManager {
             decompress_start.elapsed()
         );
 
-        // On Windows, skip host-side extraction. Layers are extracted inside the
-        // microVM by fuse_mount: it mounts the blobs dir over FUSE and runs busybox
-        // tar against the decompressed .tar files into a tmpfs rootfs. Host-side
-        // extraction can't preserve Unix symlinks/permissions on NTFS.
-        //
-        // We only need to write a manifest of layer digests (one per line) into
-        // the rootfs share so the guest knows which tars to extract.
-        #[cfg(windows)]
-        {
-            let _ = tar_paths; // ensure decompress phase ran
-            let manifest_path = dest.join(".nanosb-layers");
-            let mut content = String::new();
-            for d in layers {
-                let short = d.strip_prefix("sha256:").unwrap_or(d);
-                content.push_str(short);
-                content.push('\n');
-            }
-            fs::write(&manifest_path, &content).map_err(|e| {
-                error!("Failed to write layer manifest {}: {}", manifest_path.display(), e);
-                Error::LayerExtractionFailed(format!(
-                    "Write layer manifest {}: {}",
-                    manifest_path.display(),
-                    e
-                ))
-            })?;
-            info!(
-                "Rootfs manifest written ({} layers) in {:?} — extraction deferred to guest",
-                layers.len(),
-                start.elapsed()
-            );
-            return Ok(());
-        }
-
         // Phase 2: Extract uncompressed tars sequentially (preserves layer ordering)
-        #[cfg(not(windows))]
         let extract_start = Instant::now();
-        #[cfg(not(windows))]
         for (i, tar_path) in tar_paths.iter().enumerate() {
             debug!(
                 "Extracting layer {}/{}: {:?}",
@@ -1290,7 +1054,6 @@ impl ImageManager {
             }
         }
 
-        #[cfg(not(windows))]
         debug!(
             "Sequential extraction completed in {:?}",
             extract_start.elapsed()
@@ -1298,7 +1061,6 @@ impl ImageManager {
         info!("Rootfs extracted in {:?}", start.elapsed());
 
         // Cache this rootfs as golden image for future reuse
-        #[cfg(not(windows))]
         if let Some(digest) = manifest_digest {
             let digest_short = digest.strip_prefix("sha256:").unwrap_or(digest);
             let golden = self.extracted_dir().join(digest_short);
@@ -1364,19 +1126,6 @@ fn clone_golden_to_sandbox(src: &Path, dest: &Path) -> Result<()> {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        // Fast path: NTFS junction — instant, no data copy.
-        // Safe here because src is the golden rootfs cache and dest is per-sandbox.
-        if try_junction(src, dest) {
-            return Ok(());
-        }
-        // Medium path: multi-threaded robocopy
-        if try_robocopy(src, dest) {
-            return Ok(());
-        }
-    }
-
     copy_dir_recursive(src, dest)
 }
 
@@ -1401,115 +1150,7 @@ fn clone_dir(src: &Path, dest: &Path) -> Result<()> {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        if try_robocopy(src, dest) {
-            return Ok(());
-        }
-    }
-
     copy_dir_recursive(src, dest)
-}
-
-/// Create an NTFS junction (reparse point) from dest pointing to src.
-/// This is instant (no data copy) and makes dest appear as a
-/// directory with the same contents as src. The Plan 9 share is
-/// mounted read-only in the guest so the source stays clean.
-///
-/// Only safe when the source is a golden/cached directory that won't
-/// be deleted while the junction is live.
-#[cfg(target_os = "windows")]
-fn try_junction(src: &Path, dest: &Path) -> bool {
-    // Junction target must be an absolute path
-    let target = match std::fs::canonicalize(src) {
-        Ok(p) => {
-            let s = p.to_string_lossy();
-            // Strip \\?\ prefix that canonicalize adds
-            if let Some(stripped) = s.strip_prefix(r"\\?\") {
-                stripped.to_string()
-            } else {
-                s.to_string()
-            }
-        }
-        Err(_) => return false,
-    };
-
-    // mklink /J creates an NTFS junction (no admin rights needed)
-    let result = std::process::Command::new("cmd")
-        .args([
-            "/C",
-            "mklink",
-            "/J",
-            &dest.to_string_lossy(),
-            &target,
-        ])
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output();
-
-    match result {
-        Ok(output) => {
-            if output.status.success() {
-                debug!("NTFS junction created: {} -> {}", dest.display(), target);
-                true
-            } else {
-                debug!(
-                    "mklink /J failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                false
-            }
-        }
-        Err(e) => {
-            debug!("mklink not available: {}", e);
-            false
-        }
-    }
-}
-
-/// Use robocopy for fast multi-threaded directory copy on Windows.
-/// Returns true on success. robocopy is built into Windows and uses
-/// parallel threads (/MT) for significantly faster copies than
-/// single-threaded fs::copy.
-#[cfg(target_os = "windows")]
-fn try_robocopy(src: &Path, dest: &Path) -> bool {
-    let result = std::process::Command::new("robocopy")
-        .args([
-            src.to_string_lossy().as_ref(),
-            dest.to_string_lossy().as_ref(),
-            "/E",       // Copy subdirectories including empty
-            "/MT:16",   // 16 parallel threads
-            "/NFL",     // No file listing
-            "/NDL",     // No directory listing
-            "/NJH",     // No job header
-            "/NJS",     // No job summary
-            "/NP",      // No progress
-            "/R:1",     // 1 retry on failure
-            "/W:0",     // 0 second wait between retries
-            "/DCOPY:T", // Copy directory timestamps
-        ])
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output();
-    match result {
-        Ok(output) => {
-            // robocopy exit codes: 0-7 = success, 8+ = error
-            let code = output.status.code().unwrap_or(99);
-            if code < 8 {
-                debug!("robocopy clone succeeded (exit code {})", code);
-                true
-            } else {
-                debug!(
-                    "robocopy failed (exit code {}): {}",
-                    code,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                false
-            }
-        }
-        Err(e) => {
-            debug!("robocopy not available: {}", e);
-            false
-        }
-    }
 }
 
 /// Attempt macOS APFS clonefile(2). Returns true on success.

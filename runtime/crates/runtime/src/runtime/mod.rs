@@ -44,7 +44,7 @@ pub fn gvproxy_available() -> bool {
 use crate::config::SandboxConfig;
 use crate::error::Result;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use crate::error::Error;
 use std::path::Path;
 use tracing::info;

@@ -66,7 +66,7 @@ pub enum Error {
     InvalidState(String),
 
     /// Platform not supported
-    #[error("Platform not supported: {platform}. Supported platforms: Windows, Linux, macOS")]
+    #[error("Platform not supported: {platform}. Supported platforms: Linux, macOS")]
     UnsupportedPlatform {
         /// The unsupported platform name
         platform: String,
@@ -78,21 +78,6 @@ pub enum Error {
         /// Name of the missing binary
         binary: String,
     },
-
-    /// Windows Containers feature not enabled
-    #[cfg(target_os = "windows")]
-    #[error("Windows Containers feature is not enabled")]
-    WindowsContainersNotEnabled,
-
-    /// Hyper-V feature not enabled
-    #[cfg(target_os = "windows")]
-    #[error("Hyper-V feature is not enabled")]
-    HyperVNotEnabled,
-
-    /// HCS (Host Compute Service) not running
-    #[cfg(target_os = "windows")]
-    #[error("Host Compute Service (HCS) is not running")]
-    HcsNotRunning,
 
     /// KVM not available (Linux)
     #[error("KVM is not available")]
