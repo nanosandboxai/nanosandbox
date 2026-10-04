@@ -448,7 +448,6 @@ fn git_init_project(path: &Path) -> Result<(), String> {
         })?;
     }
 
-    // Use git2 (libgit2) so this works on Windows without git CLI installed.
     // git2::Repository::init is safe to call on an existing repo (idempotent).
     let repo = git2::Repository::init(path).map_err(|e| {
         let msg = format!("git2 init failed: {}", e);
@@ -710,32 +709,10 @@ impl ProjectMount {
             warn!("ProjectMount::detect: {}", msg);
             msg
         })?;
-        // On Windows, canonicalize() returns UNC paths like \\?\C:\... which git
-        // interprets as network paths with invalid hostnames. Strip the prefix.
-        #[cfg(target_os = "windows")]
-        let canonical = {
-            let s = canonical.to_string_lossy();
-            if let Some(stripped) = s.strip_prefix(r"\\?\") {
-                PathBuf::from(stripped)
-            } else {
-                canonical
-            }
-        };
-
         // Reject paths that are the user's home directory — scanning/cloning
-        // a home dir is almost never intended and is dangerous on Windows where
-        // it contains AppData, NTUSER.DAT, junction points, etc.
+        // a home dir is almost never intended.
         if let Some(home) = dirs::home_dir() {
             if let Ok(canon_home) = home.canonicalize() {
-                #[cfg(target_os = "windows")]
-                let canon_home = {
-                    let s = canon_home.to_string_lossy();
-                    if let Some(stripped) = s.strip_prefix(r"\\?\") {
-                        PathBuf::from(stripped)
-                    } else {
-                        canon_home
-                    }
-                };
                 if canonical == canon_home {
                     let msg = format!(
                         "Refusing to use home directory as project path: {}. \
@@ -793,20 +770,6 @@ impl ProjectMount {
 
             let child_path = entry.path();
 
-            // On Windows, skip NTFS reparse points (junctions, symlinks) which
-            // can create circular references (e.g. AppData\Local\Application Data)
-            // and return ACCESS_DENIED when enumerated.
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::fs::MetadataExt;
-                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-                if let Ok(meta) = entry.metadata() {
-                    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                        continue;
-                    }
-                }
-            }
-
             if child_path.is_dir() && child_path.join(".git").exists() {
                 let branch = git_current_branch(&child_path)?;
                 repos.push(GitRepo {
@@ -816,9 +779,7 @@ impl ProjectMount {
                 });
             } else if child_path.is_file() {
                 // Only collect loose *files* (Makefile, docker-compose.yml, etc.)
-                // — never loose directories.  Recursively copying arbitrary
-                // directories is unsafe on Windows (NTFS junctions, user profile
-                // dirs like AppData/, Documents/) and expensive everywhere.
+                // — never loose directories.
                 loose_items.push(PathBuf::from(&*name_str));
             }
         }

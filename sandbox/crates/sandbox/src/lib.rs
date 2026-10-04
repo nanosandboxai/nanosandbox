@@ -25,7 +25,7 @@ pub mod session;
 pub mod settings;
 pub mod secrets;
 
-// Re-exports from runtime (pure microVM types — no project/ssh/http/hvsocket here).
+// Re-exports from runtime (pure microVM types).
 // Note: runtime::SandboxConfig is intentionally NOT re-exported at the top level;
 // nanosandbox::SandboxConfig is the agent-layer AgentSandboxConfig (see below).
 pub use runtime::{
