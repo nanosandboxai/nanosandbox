@@ -100,26 +100,6 @@ cargo build -p nanosandbox
 | macOS Apple Silicon | HVF | Stable |
 | Linux x86_64 | KVM | In Development |
 | Linux aarch64 | KVM | In Development |
-| Windows x86_64 | HCS | In Development |
-
-### Windows HCS backend
-
-The Windows port uses the **Host Compute Service (HCS)** — Microsoft's native
-hypervisor API — instead of KVM or HVF. Key differences from Unix backends:
-
-- **hcs crate** (`deps/libkrun/src/hcs/`): Rust wrapper around the HCS C API
-  (`computecore.dll`, `computenetwork.dll`). Creates and manages Hyper-V
-  isolated containers as lightweight VMs.
-- **libkrunfw-win** (`deps/libkrun/src/libkrunfw-win/`): Embeds the Linux
-  kernel binary (`vmlinux.bin`) at compile time via `include_bytes!`. The
-  kernel is NOT checked into git — it is built by the `build-kernel.yml` CI
-  workflow or downloaded manually.
-- **vm-memory-win** (`deps/libkrun/src/vm-memory-win/`): Vendored fork of
-  `vm-memory` with Windows memory-mapping support. Activated via
-  `[patch.crates-io]` in the workspace `Cargo.toml`.
-- **Static rlib linking**: On all three platforms (Linux, macOS, Windows),
-  `libkrun-sys` links libkrun as a static Rust rlib. On Windows there is no
-  dlopen of libkrunfw — the kernel is embedded directly.
 
 ### CI matrix (validated distros)
 
@@ -153,7 +133,7 @@ export NANOSANDBOX_LIBKRUNFW_PATH=/custom/path/libkrunfw.so
 | gvproxy (gvisor-tap-vsock) | Apache-2.0 | Standalone binary |
 | agent-gateway | Apache-2.0 | — |
 
-Static linking of libkrun into nanosandbox is safe — libkrunfw (LGPL/GPL) is always loaded dynamically at runtime by libkrun on Linux/macOS. On Windows, the kernel is embedded via libkrunfw-win (no dlopen).
+Static linking of libkrun into nanosandbox is safe — libkrunfw (LGPL/GPL) is always loaded dynamically at runtime by libkrun on Linux/macOS.
 
 ## Release Pipeline
 
@@ -177,4 +157,4 @@ End user
 | `deps-darwin-arm64.tar.gz` | libkrunfw.dylib, libkrun.dylib, gvproxy |
 | `nanosandbox-{os}-{arch}.tar.gz` | nanosandbox binary |
 | `agent-gateway-linux-{arch}.tar.gz` | agent-gateway binary |
-| `deps-windows-amd64.tar.gz` | nanosandbox.exe (kernel embedded) |
+

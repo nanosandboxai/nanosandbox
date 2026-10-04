@@ -9,7 +9,7 @@ Language SDK (Python / Node / Go / ...)
     |
     | calls extern "C" functions
     v
-libnanosandbox_sdk.so / .dylib / .dll
+libnanosandbox_sdk.so / .dylib
     |
     | Rust sandbox crate (this repo)
     | wraps nanosandbox runtime as dependency
@@ -18,7 +18,7 @@ nanosandbox runtime (rlib)
     |
     | libkrun FFI (embedded as rlib)
     v
-Hardware Virtualization (KVM / HVF / WHPX)
+Hardware Virtualization (KVM / HVF)
 ```
 
 ## Building the Shared Library
@@ -30,7 +30,7 @@ cargo build --release -p sandbox --features ffi
 # Output:
 #   target/release/libsandbox.so      (Linux)
 #   target/release/libsandbox.dylib   (macOS)
-#   target/release/sandbox.dll        (Windows)
+
 ```
 
 ### Prerequisites
@@ -217,4 +217,3 @@ func main() {
 
 - **macOS**: Binary must be codesigned with `com.apple.security.hypervisor` entitlement.
 - **Linux**: Requires KVM access (`/dev/kvm`).
-- **Windows**: Requires Containers feature enabled (experimental).

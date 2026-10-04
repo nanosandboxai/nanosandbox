@@ -51,7 +51,7 @@ Layer 10: Audit             — Package installation logged
 ## Layer 1: Hardware VM Isolation (Existing — No Changes)
 
 - libkrun microVM with dedicated kernel per sandbox
-- KVM (Linux) / HVF (macOS) / WHPX (Windows) hypervisor boundary
+- KVM (Linux) / HVF (macOS) hypervisor boundary
 - Single-tenant, disposable VM
 - Any kernel exploit is contained within the VM
 
