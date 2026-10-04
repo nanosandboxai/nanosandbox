@@ -3,7 +3,7 @@ use runtime::config::SandboxConfig;
 use runtime::runtime::handle_boot_vm_subprocess;
 
 fn main() {
-    // Handle subprocess mode (Windows spawns the same exe with "internal-boot-vm" arg)
+    // Handle subprocess mode (spawns the same exe with "internal-boot-vm" arg)
     if std::env::args().nth(1).as_deref() == Some("internal-boot-vm") {
         handle_boot_vm_subprocess();
     }

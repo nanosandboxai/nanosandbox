@@ -9,7 +9,7 @@
 //! ## Platform Support
 //!
 //! - **Linux/macOS**: Uses `ghcr.io/nanosandboxai/agents-registry/<agent>:latest`
-//! - **Windows**: Uses `ghcr.io/nanosandboxai/dd-agents-windows:503e063` (legacy)
+
 //!
 //! ## Agents Tested
 //!
@@ -201,7 +201,7 @@ async fn test_agent_version(
     // Check runtime availability - skip if not met (this is expected in some environments)
     if !runtime_available().await {
         let msg =
-            "Runtime prerequisites not met. Install libkrun (macOS/Linux) or enable Windows Containers".to_string();
+            "Runtime prerequisites not met. Install libkrun (macOS/Linux)".to_string();
         println!("[SKIP] {}", msg);
         return Ok(AgentTestResult::Skipped(msg));
     }
@@ -317,7 +317,7 @@ async fn test_all_agents_version() {
     // Check runtime - skip entire test if not met
     if !runtime_available().await {
         println!("[SKIP] Runtime prerequisites not met");
-        println!("[INFO] This test requires libkrun (macOS/Linux) or Windows Containers");
+        println!("[INFO] This test requires libkrun (macOS/Linux)");
         return;
     }
     println!("[OK] Runtime available");

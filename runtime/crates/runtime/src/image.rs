@@ -1101,10 +1101,6 @@ impl ImageManager {
 
 /// Clone a golden rootfs to a per-sandbox rootfs directory.
 ///
-/// On Windows: uses NTFS junction (instant, no data copy). The Plan 9
-/// share is mounted read-only in the guest so the golden rootfs stays
-/// unmodified. Falls back to robocopy, then recursive copy.
-///
 /// On macOS: uses APFS clonefile (instant CoW), falls back to recursive copy.
 ///
 /// On Linux: recursive copy.
