@@ -48,7 +48,7 @@ impl SshTerminal {
         // Keep the view pinned to the live screen when auto-scroll is on.
         if self.auto_scroll {
             self.scroll_offset = 0;
-            self.parser.set_scrollback(0);
+            self.parser.screen_mut().set_scrollback(0);
         } else {
             // vt100 auto-increments scrollback_offset internally as new lines
             // push content into the scrollback buffer (grid.rs scroll logic),
@@ -58,7 +58,7 @@ impl SshTerminal {
             // Re-sync our tracked value from vt100 and clamp to rows_len.
             let rows = self.size.1 as usize;
             self.scroll_offset = self.parser.screen().scrollback().min(rows);
-            self.parser.set_scrollback(self.scroll_offset);
+            self.parser.screen_mut().set_scrollback(self.scroll_offset);
         }
     }
 
@@ -68,11 +68,11 @@ impl SshTerminal {
             // Reset scrollback before resize — content may not align after.
             if self.scroll_offset > 0 {
                 self.scroll_offset = 0;
-                self.parser.set_scrollback(0);
+                self.parser.screen_mut().set_scrollback(0);
                 self.auto_scroll = true;
             }
             self.size = (cols, rows);
-            self.parser.set_size(rows, cols);
+            self.parser.screen_mut().set_size(rows, cols);
         }
     }
 
@@ -83,10 +83,10 @@ impl SshTerminal {
         // so the offset must not exceed the terminal height. We also cap to the
         // actual scrollback buffer length.
         let rows = self.size.1 as usize;
-        self.parser.set_scrollback(rows);
+        self.parser.screen_mut().set_scrollback(rows);
         let max = self.parser.screen().scrollback(); // clamped to min(rows, scrollback.len())
         self.scroll_offset = (old + lines).min(max);
-        self.parser.set_scrollback(self.scroll_offset);
+        self.parser.screen_mut().set_scrollback(self.scroll_offset);
         self.auto_scroll = false;
         self.scroll_offset != old
     }
@@ -95,7 +95,7 @@ impl SshTerminal {
     pub fn scroll_down(&mut self, lines: usize) -> bool {
         let old = self.scroll_offset;
         self.scroll_offset = old.saturating_sub(lines);
-        self.parser.set_scrollback(self.scroll_offset);
+        self.parser.screen_mut().set_scrollback(self.scroll_offset);
         if self.scroll_offset == 0 {
             self.auto_scroll = true;
         }
@@ -105,7 +105,7 @@ impl SshTerminal {
     /// Jump to bottom (live screen).
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
-        self.parser.set_scrollback(0);
+        self.parser.screen_mut().set_scrollback(0);
         self.auto_scroll = true;
     }
 
@@ -123,9 +123,9 @@ impl SshTerminal {
     pub fn scrollback_max(&mut self) -> usize {
         let rows = self.size.1 as usize;
         let saved = self.scroll_offset;
-        self.parser.set_scrollback(rows);
+        self.parser.screen_mut().set_scrollback(rows);
         let max = self.parser.screen().scrollback();
-        self.parser.set_scrollback(saved);
+        self.parser.screen_mut().set_scrollback(saved);
         max
     }
 }
@@ -181,7 +181,7 @@ pub async fn connect_ssh(
     workdir: Option<&str>,
     permissions: sandbox::Permissions,
     auto_mode: bool,
-    prompt: Option<&str>,
+    _prompt: Option<&str>,
     is_resumed: bool,
     had_interaction: bool,
     selected_session_id: Option<&str>,
@@ -198,7 +198,7 @@ pub async fn connect_ssh(
     );
 
     // Connect
-    let mut config = russh::client::Config::default();
+    let config = russh::client::Config::default();
 
     let read_timeout = std::time::Duration::from_secs(3600);
     tracing::info!(

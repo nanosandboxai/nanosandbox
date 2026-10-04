@@ -61,11 +61,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"
 
 # TUI
-ratatui = "0.29"
+ratatui = "0.30"
 russh = "0.60"
 ssh-key = { version = "0.6", features = ["ed25519", "std"] }
-vt100 = "0.15"
-tui-term = "0.2"
+vt100 = "0.16"
+tui-term = "0.3"
 arboard = "3.6.1"
 png = "0.18"
 
