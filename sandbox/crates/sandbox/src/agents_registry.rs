@@ -531,16 +531,18 @@ fn skill_source_rank(source: SkillSource) -> u8 {
 
 fn fetch_text(url: &str, timeout_secs: u64) -> Result<String, String> {
     let timeout = Duration::from_secs(timeout_secs.max(1));
-    let response = ureq::AgentBuilder::new()
-        .timeout_connect(timeout)
-        .timeout_read(timeout)
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
         .build()
+        .new_agent();
+    let mut response = agent
         .get(url)
         .call()
         .map_err(|e| format!("HTTP GET failed for {}: {}", url, e))?;
 
     response
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| format!("Failed to read response body for {}: {}", url, e))
 }
 
