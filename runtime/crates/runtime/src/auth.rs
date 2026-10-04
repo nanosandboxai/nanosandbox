@@ -3,7 +3,7 @@
 //! Provides credential management for OCI registries using Docker config.json.
 
 use crate::error::{Error, Result};
-use oci_distribution::secrets::RegistryAuth;
+use oci_client::secrets::RegistryAuth;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{debug, warn};

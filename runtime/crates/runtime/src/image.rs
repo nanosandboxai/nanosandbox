@@ -7,10 +7,10 @@ use crate::auth::CredentialStore;
 use crate::config::RegistryConfig;
 use crate::error::{Error, Result};
 use flate2::read::GzDecoder;
-use oci_distribution::client::{ClientConfig, ClientProtocol};
-use oci_distribution::manifest::ImageIndexEntry;
-use oci_distribution::secrets::RegistryAuth;
-use oci_distribution::{Client, Reference};
+use oci_client::client::{ClientConfig, ClientProtocol};
+use oci_client::manifest::ImageIndexEntry;
+use oci_client::secrets::RegistryAuth;
+use oci_client::{Client, Reference};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -104,7 +104,7 @@ fn create_platform_resolver() -> PlatformResolver {
         // Find exact match only - no fallbacks
         for entry in entries {
             if let Some(ref platform) = entry.platform {
-                if platform.os == target_os && platform.architecture == target_arch {
+                if platform.os == target_os.into() && platform.architecture == target_arch.into() {
                     debug!("Found matching platform: {:?}", entry.digest);
                     return Some(entry.digest.clone());
                 }
@@ -192,7 +192,7 @@ impl ImageRef {
         }
     }
 
-    /// Convert to oci_distribution Reference
+    /// Convert to oci_client Reference
     pub fn to_reference(&self) -> Result<Reference> {
         let ref_str = self.full_ref();
         Reference::try_from(ref_str.as_str())
@@ -465,6 +465,9 @@ impl ImageManager {
                     "Using authenticated pull as {} for {}",
                     user, image_ref.registry
                 )
+            }
+            RegistryAuth::Bearer(_) => {
+                debug!("Using bearer token auth for {}", image_ref.registry)
             }
         }
 
