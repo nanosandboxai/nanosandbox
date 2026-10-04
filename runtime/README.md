@@ -3,7 +3,7 @@
 VM-based sandbox engine using libkrun FFI.
 
 > **Platform Status**: Currently, only **macOS Apple Silicon** is fully tested and stable.
-> Linux support is in development. Windows support is experimental.
+> Linux support is in development. Windows support has been archived (see `archive/windows-track` branch).
 
 ## Overview
 
@@ -18,7 +18,7 @@ This crate handles VM lifecycle, OCI image management, and containerization. It 
 - **Sub-Second Boot Times** -- Optimized VM startup using libkrun
 - **TSI Networking** -- Transparent Socket Impersonation for seamless network access
 - **Generic HTTP Gateway API** -- `gateway_http_get/post/delete/post_sse` for communicating with in-VM services
-- **Cross-Platform** -- macOS Apple Silicon (stable), Linux (in development), Windows (experimental)
+- **Cross-Platform** -- macOS Apple Silicon (stable), Linux (in development)
 
 ## Architecture
 
@@ -63,19 +63,11 @@ Additional re-exports: `SandboxConfig`, `ExecResult`, `ExecOptions`, `SandboxSta
 |----------|---------|------------|--------|
 | **macOS** | libkrun FFI | HVF (Hypervisor.framework) | **Stable** |
 | **Linux** | libkrun FFI | KVM | In Development |
-| **Windows** | Windows Containers | HCS / Hyper-V | Experimental |
 
 ### Platform Notes
 
 - **macOS Apple Silicon (M1/M2/M3/M4)**: Fully tested and stable. Use the install script for easy setup.
 - **Linux**: Not fully supported/tested yet. Requires libkrun installation.
-- **Windows**: Not fully supported/tested yet. Limited to Windows container images only (nanoserver, servercore).
-
-### Windows Limitation
-
-> **Important**: Windows containers can only run **Windows container images** (e.g., `nanoserver`, `servercore`). Linux images like Alpine or Ubuntu are **not supported** on Windows.
->
-> For Linux container workloads, use Linux or macOS.
 
 ## Build Instructions
 
@@ -151,11 +143,9 @@ async fn main() -> anyhow::Result<()> {
 | OCI Registry Support | Any | Own registry | Any | Any |
 | Linux Support | Yes (KVM) | Yes | Yes | Yes |
 | macOS Support | Apple Silicon | Apple Silicon | Yes | No |
-| Windows Support | Windows containers* | No | Yes | No |
+| Windows Support | Archived | No | Yes | No |
 | Boot Time | <1s | <1s | <0.5s | <0.5s |
 | Self-Hosted | Yes | Requires server | Yes | Yes |
-
-*Windows support is limited to Windows container images only (nanoserver, servercore). Linux images require Linux or macOS.
 
 ## License
 

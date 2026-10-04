@@ -15,7 +15,7 @@ Nanosandbox is a Rust SDK for managing VM-isolated sandboxes using libkrun via d
 ## Non-Goals
 
 1. Kubernetes integration (use DD-Code's Kubernetes runtime instead)
-2. Windows support (libkrun doesn't support Windows)
+2. Windows support (archived on `archive/windows-track` branch)
 3. Nested virtualization support
 
 ## Technical Design

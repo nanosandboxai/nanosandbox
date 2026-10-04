@@ -23,7 +23,8 @@ This installs the `nanosb` binary along with runtime dependencies (libkrun, gvpr
 ### Requirements
 
 - macOS Apple Silicon (arm64)
-- Linux and Windows are not yet supported
+- Linux is not yet supported
+- Windows support has been archived (see `archive/windows-track` branch)
 
 ### Build from Source
 
