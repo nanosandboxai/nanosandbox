@@ -54,10 +54,6 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 xattr = "1"
 
-[target.'cfg(windows)'.dependencies]
-libkrun-sys = { path = "../libkrun-sys", features = ["net", "hcs"] }
-devices = { path = "../../deps/libkrun/src/devices" }
-
 # Vendored OpenSSL for Linux: compiles OpenSSL from bundled source so the build
 # doesn't depend on system headers or a specific libssl.so version. This is
 # required when using cargo-zigbuild (zig's CC wrapper can't find system headers)
