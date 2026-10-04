@@ -53,8 +53,8 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-indicatif = "0.17"
-tabled = "0.15"
+indicatif = "0.18"
+tabled = "0.22"
 colored = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
