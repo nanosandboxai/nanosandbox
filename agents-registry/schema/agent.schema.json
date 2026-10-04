@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Definition",
+  "description": "Schema for agent definition files in the agents-registry",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "Agent"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["name", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+          "maxLength": 64,
+          "description": "Unique agent identifier (lowercase, hyphens, no leading/trailing hyphens)"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Short description of what this agent does"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tags for categorization and search"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["prompt"],
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "System prompt / persona for the agent"
+        },
+        "skills": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of skill names to load (must exist in skills/ directory)"
+        },
+        "mcps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "source"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "MCP server name"
+              },
+              "source": {
+                "type": "string",
+                "enum": ["official", "smithery", "glama", "pulsemcp", "mcp-run", "mcp-get", "opentools", "github-mcp", "custom"],
+                "description": "Which registry this MCP comes from (must match a key in mcps/sources.yaml or 'custom')"
+              },
+              "package": {
+                "type": "string",
+                "description": "npm package name (for external MCPs)"
+              },
+              "path": {
+                "type": "string",
+                "description": "Relative path in this repo (for custom MCPs)"
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": { "type": "string" },
+                "description": "Environment variables the MCP server needs"
+              }
+            }
+          },
+          "description": "MCP servers to enable for this agent"
+        }
+      }
+    }
+  }
+}

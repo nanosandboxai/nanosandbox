@@ -1,0 +1,16 @@
+[package]
+name = "libkrun-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bindings for libkrun (compiled directly as rlib)"
+license = "Apache-2.0"
+
+[features]
+default = ["net"]
+net = ["krun/net"]
+blk = ["krun/blk"]
+hcs = ["krun/hcs"]
+
+[dependencies]
+libc = "0.2"
+krun = { path = "../../deps/libkrun/src/libkrun", package = "libkrun", default-features = false }

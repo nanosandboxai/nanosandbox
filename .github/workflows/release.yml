@@ -1,0 +1,743 @@
+name: Release
+
+# Single release pipeline for the whole nanosandbox product.
+#
+# On a v* tag this builds and publishes ONE GitHub release containing:
+#   - nanosb CLI binaries (macOS arm64, Linux x86_64, Windows x86_64)
+#   - CLI install/uninstall scripts + default config
+#   - runtime dependencies (libkrunfw + gvproxy) for Linux/macOS
+#   - Windows deps bundle (libkrunfw.dll + kernel + vsock_proxy + busybox)
+#   - dependency installer scripts (install-deps.sh / install-deps.ps1)
+#   - checksums
+#
+# Architecture: build kernel bundles ONCE, share with all downstream jobs.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. v0.3.0). Publishing only happens for tag pushes.'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ─── Job 1: Build kernels once, share with all downstream jobs ───
+  build-kernels:
+    name: Build kernel bundles (x86_64 + aarch64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache kernel bundles
+        id: kernel-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            kernel-x86_64.c
+            kernel-aarch64.c
+          key: kernel-bundles-${{ hashFiles('runtime/deps/libkrunfw/**') }}
+
+      - name: Install kernel build dependencies
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates git \
+            python3 python3-pyelftools \
+            bc flex bison libelf-dev cpio libssl-dev xz-utils \
+            gcc-aarch64-linux-gnu
+
+      - name: Build x86_64 kernel bundle
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          cd runtime/deps/libkrunfw
+          make kernel.c -j$(nproc)
+          cp kernel.c ../../../kernel-x86_64.c
+          echo "=== x86_64 kernel.c ==="
+          ls -lh ../../../kernel-x86_64.c
+
+      - name: Build aarch64 kernel bundle (cross-compile)
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          cd runtime/deps/libkrunfw
+          make clean
+          make kernel.c ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+          cp kernel.c ../../../kernel-aarch64.c
+          echo "=== aarch64 kernel.c ==="
+          ls -lh ../../../kernel-aarch64.c
+
+      - name: Kernel cache status
+        run: |
+          if [ "${{ steps.kernel-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "Kernel cache HIT — skipped kernel build"
+          else
+            echo "Kernel cache MISS — built from source"
+          fi
+          ls -lh kernel-x86_64.c kernel-aarch64.c
+
+      - name: Upload kernel bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-bundles
+          path: |
+            kernel-x86_64.c
+            kernel-aarch64.c
+          retention-days: 7
+
+  # ─── Job 2: Runtime deps — Linux (amd64 + arm64) ───
+  build-runtime-linux:
+    name: Runtime deps Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: build-kernels
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            go_arch: amd64
+            kernel_arch: x86_64
+            rust_target: x86_64-unknown-linux-gnu.2.28
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            go_arch: arm64
+            kernel_arch: aarch64
+            rust_target: aarch64-unknown-linux-gnu.2.28
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: bash runtime/scripts/ci/install-deps-apt.sh
+
+      - name: Install cargo-zigbuild
+        run: pip3 install ziglang && cargo install cargo-zigbuild
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Download kernel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-bundles
+          path: .
+
+      - name: Build libkrunfw from kernel bundle
+        run: |
+          cd runtime/deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.so.5 ../../../kernel-${{ matrix.kernel_arch }}.c
+          ln -sf libkrunfw.so.5 libkrunfw.so
+          echo "=== libkrunfw ==="
+          ls -lh libkrunfw.so*
+
+      - name: Build gvproxy
+        run: |
+          cd runtime/deps/gvproxy
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.go_arch }} \
+            go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
+
+      - name: Build runtime (zigbuild)
+        run: cargo zigbuild --release -p runtime --target ${{ matrix.rust_target }}
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+
+          # nanosandbox binary — zigbuild outputs to target/{triple}/release/
+          NANOSB="target/${{ matrix.rust_target }}/release/nanosandbox"
+          if [ -f "$NANOSB" ]; then
+            tar czf "dist/nanosandbox-linux-${{ matrix.arch }}.tar.gz" \
+              -C "target/${{ matrix.rust_target }}/release" nanosandbox
+          else
+            echo "WARNING: nanosandbox binary not found at $NANOSB"
+            find target -name nanosandbox -not -path "*/deps/*" | head -5
+          fi
+
+          # gvproxy binary (standalone)
+          tar czf "dist/gvproxy-linux-${{ matrix.arch }}.tar.gz" \
+            -C runtime/deps/gvproxy gvproxy
+
+          # deps bundle: libkrunfw + gvproxy (consumed by install-deps.sh)
+          mkdir -p dist/deps-staging/lib dist/deps-staging/bin
+          cp runtime/deps/libkrunfw/libkrunfw.so.5 dist/deps-staging/lib/
+          ln -sf libkrunfw.so.5 dist/deps-staging/lib/libkrunfw.so
+          cp runtime/deps/gvproxy/gvproxy dist/deps-staging/bin/
+          tar czf "dist/deps-linux-${{ matrix.arch }}.tar.gz" -C dist/deps-staging .
+          rm -rf dist/deps-staging
+
+          # Checksums
+          cd dist && sha256sum *.tar.gz > checksums-linux-${{ matrix.arch }}.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/
+
+  # ─── Job 3: Runtime deps — macOS arm64 ───
+  build-runtime-macos:
+    name: Runtime deps macOS arm64
+    runs-on: macos-latest
+    needs: build-kernels
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install macOS build dependencies
+        run: |
+          brew install lld llvm
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+
+      - name: Download kernel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-bundles
+          path: .
+
+      - name: Build libkrunfw from kernel bundle
+        run: |
+          cd runtime/deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.5.dylib ../../../kernel-aarch64.c
+          ln -sf libkrunfw.5.dylib libkrunfw.dylib
+          echo "=== libkrunfw ==="
+          ls -lh libkrunfw*.dylib
+
+      - name: Install libkrunfw
+        run: |
+          sudo mkdir -p /usr/local/lib
+          sudo cp runtime/deps/libkrunfw/libkrunfw*.dylib /usr/local/lib/
+          ls -la /usr/local/lib/libkrunfw*
+
+      - name: Build runtime
+        run: cargo build --release -p runtime
+
+      - name: Build gvproxy
+        run: |
+          cd runtime/deps/gvproxy
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+
+          if [ -f "target/release/nanosandbox" ]; then
+            tar czf dist/nanosandbox-darwin-arm64.tar.gz \
+              -C target/release nanosandbox
+          fi
+
+          tar czf dist/gvproxy-darwin-arm64.tar.gz \
+            -C runtime/deps/gvproxy gvproxy
+
+          mkdir -p dist/deps-staging/lib dist/deps-staging/bin
+          cp runtime/deps/libkrunfw/libkrunfw.5.dylib dist/deps-staging/lib/
+          ln -sf libkrunfw.5.dylib dist/deps-staging/lib/libkrunfw.dylib
+          cp runtime/deps/gvproxy/gvproxy dist/deps-staging/bin/
+          tar czf dist/deps-darwin-arm64.tar.gz -C dist/deps-staging .
+          rm -rf dist/deps-staging
+
+          cd dist && shasum -a 256 *.tar.gz > checksums-darwin-arm64.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-arm64
+          path: dist/
+
+  # ─── Job 4a: Prepare Windows-targeted Linux artifacts ───
+  prep-windows-deps:
+    name: Prepare Windows deps (kernel + vsock_proxy + busybox)
+    runs-on: ubuntu-latest
+    needs: build-kernels
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install build dependencies
+        run: bash runtime/scripts/ci/install-deps-apt.sh
+
+      - name: Install musl tooling
+        run: |
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Download kernel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-bundles
+          path: .
+
+      - name: Compile libkrunfw.so from kernel.c (x86_64)
+        run: |
+          cd runtime/deps/libkrunfw
+          cc -fPIC -DABI_VERSION=5 -shared -o libkrunfw.so.5 ../../../kernel-x86_64.c
+          ln -sf libkrunfw.so.5 libkrunfw.so
+          ls -lh libkrunfw.so*
+
+      - name: Build extract_kernel
+        run: cargo build --release --manifest-path runtime/tools/extract_kernel/Cargo.toml
+
+      - name: Extract vmlinux.bin + addr files for libkrunfw-win
+        run: |
+          mkdir -p windows-prep/kernel-bundle
+          ./runtime/tools/extract_kernel/target/release/extract_kernel \
+            --elf runtime/deps/libkrunfw/libkrunfw.so \
+            windows-prep/kernel-bundle
+          echo "=== Kernel bundle ==="
+          ls -lh windows-prep/kernel-bundle/
+
+      - name: Cross-build vsock_proxy + fuse_mount (x86_64-unknown-linux-musl)
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          cargo build --release -p hcs --bin vsock_proxy --bin fuse_mount \
+            --target x86_64-unknown-linux-musl
+          mkdir -p windows-prep/binaries
+          cp target/x86_64-unknown-linux-musl/release/vsock_proxy \
+             windows-prep/binaries/vsock_proxy
+          cp target/x86_64-unknown-linux-musl/release/fuse_mount \
+             windows-prep/binaries/fuse_mount
+          file windows-prep/binaries/vsock_proxy windows-prep/binaries/fuse_mount
+          ls -lh windows-prep/binaries/vsock_proxy windows-prep/binaries/fuse_mount
+
+      - name: Download static busybox (from busybox:musl docker image)
+        run: |
+          docker pull busybox:musl
+          cid=$(docker create busybox:musl)
+          docker cp "$cid:/bin/busybox" windows-prep/binaries/busybox
+          docker rm "$cid"
+          chmod +x windows-prep/binaries/busybox
+          file windows-prep/binaries/busybox
+          ls -lh windows-prep/binaries/busybox
+
+      - name: Upload kernel bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-kernel-bundle
+          path: windows-prep/kernel-bundle/
+          retention-days: 7
+
+      - name: Upload guest binaries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-guest-binaries
+          path: windows-prep/binaries/
+          retention-days: 7
+
+  # ─── Job 4b: Runtime deps — Windows (HCS microVM) ───
+  build-runtime-windows:
+    name: Runtime deps Windows x86_64
+    runs-on: windows-latest
+    needs: prep-windows-deps
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download Windows kernel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-kernel-bundle
+          path: kernel-bundle
+
+      - name: Stage kernel files for libkrunfw-win
+        shell: bash
+        run: |
+          dest=runtime/deps/libkrun/src/libkrunfw-win
+          cp kernel-bundle/vmlinux.bin "$dest/vmlinux.bin"
+          cp kernel-bundle/guest_addr.txt "$dest/guest_addr.txt"
+          cp kernel-bundle/entry_addr.txt "$dest/entry_addr.txt"
+          echo "=== Staged kernel ==="
+          ls -lh "$dest/vmlinux.bin"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: Build libkrunfw-win (cdylib with kernel embedded)
+        run: cargo build --release -p libkrunfw-win
+
+      - name: Build runtime
+        run: cargo build --release -p runtime
+
+      - name: Stage Windows artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ -f "target/release/krunfw.dll" ]; then
+            cp target/release/krunfw.dll dist/libkrunfw.dll
+          elif [ -f "target/release/libkrunfw_win.dll" ]; then
+            cp target/release/libkrunfw_win.dll dist/libkrunfw.dll
+          elif [ -f "target/release/libkrunfw-win.dll" ]; then
+            cp target/release/libkrunfw-win.dll dist/libkrunfw.dll
+          else
+            echo "ERROR: libkrunfw cdylib not found in target/release"
+            ls -la target/release | head -40
+            exit 1
+          fi
+          ls -lh dist/libkrunfw.dll
+
+      - name: Upload Windows libkrunfw.dll artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-libkrunfw
+          path: dist/libkrunfw.dll
+          retention-days: 7
+
+      - name: Upload Windows runtime artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-amd64
+          path: dist/
+          retention-days: 7
+
+  # ─── Job 4c: Package deps-windows-amd64.zip ───
+  package-windows-deps:
+    name: Package deps-windows-amd64.zip
+    runs-on: ubuntu-latest
+    needs: [prep-windows-deps, build-runtime-windows]
+    steps:
+      - name: Download libkrunfw.dll
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-libkrunfw
+          path: zip-staging
+
+      - name: Download guest binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-guest-binaries
+          path: zip-staging
+
+      - name: Verify zip contents
+        run: |
+          echo "=== Staging contents ==="
+          ls -lh zip-staging/
+          chmod +x zip-staging/busybox zip-staging/vsock_proxy
+
+      - name: Create deps-windows-amd64.zip
+        run: |
+          mkdir -p dist
+          cd zip-staging
+          zip -r ../dist/deps-windows-amd64.zip libkrunfw.dll vsock_proxy fuse_mount busybox
+          cd ..
+          ls -lh dist/deps-windows-amd64.zip
+          unzip -l dist/deps-windows-amd64.zip
+
+      - name: Generate checksum
+        run: |
+          cd dist
+          sha256sum deps-windows-amd64.zip > checksums-windows-amd64.sha256
+
+      - name: Upload deps zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-windows-amd64
+          path: dist/
+
+  # ─── Job 5: CLI — Linux x86_64 (glibc floor 2.28) ───
+  build-cli-linux:
+    name: Build CLI (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cli-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cli-cargo-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libclang-dev \
+            python3 python3-pyelftools bc flex bison libelf-dev cpio libssl-dev
+
+      - name: Install cargo-zigbuild
+        run: pip3 install ziglang && cargo install cargo-zigbuild
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          sed -i "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+          grep '^version' Cargo.toml | head -1
+
+      - name: Build release binary (glibc floor 2.28)
+        run: cargo zigbuild --release -p nanosb-cli --target x86_64-unknown-linux-gnu.2.28
+
+      - name: Verify binary
+        run: |
+          ls -la target/x86_64-unknown-linux-gnu/release/nanosb
+          file target/x86_64-unknown-linux-gnu/release/nanosb
+          objdump -T target/x86_64-unknown-linux-gnu/release/nanosb | \
+            grep GLIBC | grep -oP 'GLIBC_[0-9.]+' | sort -V | uniq | tail -3
+
+      - name: Stage binary as nanosb-linux-amd64
+        run: cp target/x86_64-unknown-linux-gnu/release/nanosb nanosb-linux-amd64
+
+      - name: Upload Linux binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanosb-linux-amd64
+          path: nanosb-linux-amd64
+          retention-days: 7
+
+  # ─── Job 6: CLI — macOS arm64 ───
+  build-cli-macos:
+    name: Build CLI (macOS arm64)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cli-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cli-cargo-
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          sed -i '' "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+          grep '^version' Cargo.toml | head -1
+
+      - name: Build release binary
+        run: cargo build --release -p nanosb-cli --target aarch64-apple-darwin
+
+      - name: Codesign binary
+        run: |
+          codesign --sign - \
+            --entitlements entitlements.plist \
+            --force \
+            target/aarch64-apple-darwin/release/nanosb
+
+      - name: Verify binary
+        run: |
+          ls -la target/aarch64-apple-darwin/release/nanosb
+          file target/aarch64-apple-darwin/release/nanosb
+          target/aarch64-apple-darwin/release/nanosb --version
+
+      - name: Stage binary as nanosb (macOS naming convention)
+        run: cp target/aarch64-apple-darwin/release/nanosb nanosb
+
+      - name: Upload macOS binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanosb-darwin-arm64
+          path: nanosb
+          retention-days: 7
+
+  # ─── Job 7: CLI — Windows x86_64 ───
+  build-cli-windows:
+    name: Build CLI (Windows x86_64)
+    runs-on: windows-latest
+    needs: prep-windows-deps
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Windows kernel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-kernel-bundle
+          path: kernel-bundle
+
+      - name: Stage kernel files for libkrunfw-win
+        shell: bash
+        run: |
+          dest=runtime/deps/libkrun/src/libkrunfw-win
+          cp kernel-bundle/vmlinux.bin "$dest/vmlinux.bin"
+          cp kernel-bundle/guest_addr.txt "$dest/guest_addr.txt"
+          cp kernel-bundle/entry_addr.txt "$dest/entry_addr.txt"
+          echo "=== Staged kernel ==="
+          ls -lh "$dest/vmlinux.bin" "$dest/guest_addr.txt" "$dest/entry_addr.txt"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cli-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-cli-cargo-
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          sed -i "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+          grep '^version' Cargo.toml | head -1
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release -p nanosb-cli
+
+      - name: Verify binary
+        shell: bash
+        run: |
+          ls -la target/release/nanosb.exe
+          target/release/nanosb.exe --version
+
+      - name: Stage binary as nanosb.exe
+        shell: bash
+        run: cp target/release/nanosb.exe nanosb.exe
+
+      - name: Upload Windows binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanosb-windows-amd64
+          path: nanosb.exe
+          retention-days: 7
+
+  # ─── Job 8: Publish — one GitHub release with everything ───
+  publish:
+    name: Publish release
+    needs:
+      - build-runtime-linux
+      - build-runtime-macos
+      - package-windows-deps
+      - build-cli-linux
+      - build-cli-macos
+      - build-cli-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (for scripts and config)
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release files
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          mkdir -p release
+
+          # CLI binaries
+          cp artifacts/nanosb-darwin-arm64/nanosb release/nanosb
+          cp artifacts/nanosb-linux-amd64/nanosb-linux-amd64 release/nanosb-linux-amd64
+          cp artifacts/nanosb-windows-amd64/nanosb.exe release/nanosb.exe
+
+          # CLI install/uninstall scripts + default config
+          cp scripts/install.sh release/install.sh
+          cp scripts/uninstall.sh release/uninstall.sh
+          cp scripts/install.ps1 release/install.ps1
+          cp scripts/uninstall.ps1 release/uninstall.ps1
+          cp config/agent_defaults.yaml release/agent_defaults.yaml
+
+          # Dependency installer scripts (renamed to avoid clashing with CLI scripts)
+          cp install-deps/install.sh release/install-deps.sh
+          cp install-deps/uninstall.sh release/uninstall-deps.sh
+          cp install-deps/install.ps1 release/install-deps.ps1
+          cp install-deps/uninstall.ps1 release/uninstall-deps.ps1
+
+          # Runtime deps bundles + standalone runtime/gvproxy archives
+          find artifacts/release-linux-amd64 artifacts/release-linux-arm64 artifacts/release-darwin-arm64 \
+            -type f \( -name '*.tar.gz' -o -name 'checksums-*.sha256' \) -exec cp {} release/ \;
+
+          # Windows deps bundle
+          cp artifacts/deps-windows-amd64/deps-windows-amd64.zip release/
+
+          chmod +x release/install.sh release/uninstall.sh release/install-deps.sh release/uninstall-deps.sh
+
+          # Stamp the release tag into the PowerShell installer's raw URLs so
+          # users always get the pinned script for this specific release.
+          sed -i "s|raw.githubusercontent.com/nanosandboxai/nanosandbox/[^/]*/scripts/|raw.githubusercontent.com/nanosandboxai/nanosandbox/${TAG_NAME}/scripts/|g" \
+            release/install.ps1
+
+          # Final combined checksums
+          (cd release && sha256sum *.tar.gz *.zip *.sh *.ps1 > checksums.sha256)
+
+          echo "=== Release files ==="
+          ls -la release/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          PRERELEASE_FLAG=""
+          if echo "$TAG_NAME" | grep -qE '[-](rc|alpha|beta|dev)'; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "$TAG_NAME" \
+            --title "nanosandbox $TAG_NAME" \
+            --generate-notes \
+            $PRERELEASE_FLAG \
+            release/*

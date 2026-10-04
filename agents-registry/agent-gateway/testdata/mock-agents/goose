@@ -1,0 +1,52 @@
+#!/bin/sh
+# Mock Goose agent for integration testing.
+# Simulates Goose's session output format.
+
+SESSION_ID="goose_$(date +%s)"
+RESUME=""
+MESSAGE=""
+
+# Parse args
+while [ $# -gt 0 ]; do
+    case "$1" in
+        session)
+            if [ "$2" = "resume" ]; then
+                RESUME="$3"
+                SESSION_ID="$3"
+                shift 3
+                # remaining args
+                while [ $# -gt 0 ]; do
+                    case "$1" in
+                        --message) MESSAGE="$2"; shift 2 ;;
+                        *) shift ;;
+                    esac
+                done
+            else
+                shift
+            fi
+            ;;
+        run)
+            shift
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --text) MESSAGE="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            ;;
+        *) shift ;;
+    esac
+done
+
+echo "session: $SESSION_ID"
+
+if [ -n "$RESUME" ]; then
+    echo "resumed session: $RESUME"
+fi
+
+if echo "$MESSAGE" | grep -q "interrupted"; then
+    echo "continuing from interruption"
+fi
+
+echo "working on: $MESSAGE"
+echo "done"

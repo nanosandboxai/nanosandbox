@@ -1,0 +1,6 @@
+[submodule "runtime/deps/libkrunfw"]
+	path = runtime/deps/libkrunfw
+	url = https://github.com/containers/libkrunfw.git
+[submodule "runtime/deps/gvproxy"]
+	path = runtime/deps/gvproxy
+	url = https://github.com/containers/gvisor-tap-vsock.git

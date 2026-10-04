@@ -14,7 +14,7 @@
     # Install this release (tag is stamped by CI — use raw.githubusercontent.com,
     # not the release asset URL, because GitHub serves assets as octet-stream
     # which PowerShell's irm cannot pipe directly to iex):
-    irm https://raw.githubusercontent.com/nanosandboxai/cli/main/scripts/install.ps1 | iex
+    irm https://raw.githubusercontent.com/nanosandboxai/nanosandbox/main/scripts/install.ps1 | iex
 
     # Or download and run locally for a specific version:
     .\install.ps1 -Version v0.2.0-rc17
@@ -238,7 +238,7 @@ function Install-NanosandboxCLI {
 
         # Build the resume command: re-run this installer with the same version arg
         # from a PowerShell window that opens automatically after login.
-        $resumeUrl = 'https://raw.githubusercontent.com/nanosandboxai/cli/main/scripts/install.ps1'
+        $resumeUrl = 'https://raw.githubusercontent.com/nanosandboxai/nanosandbox/main/scripts/install.ps1'
         $resumeInner = if ($Version) {
             "& ([scriptblock]::Create((irm '$resumeUrl'))) -Version '$Version'"
         } else {
@@ -270,7 +270,7 @@ function Install-NanosandboxCLI {
     }
 
     # --- Resolve version ---
-    $releaseRepo = "nanosandboxai/cli"
+    $releaseRepo = "nanosandboxai/nanosandbox"
     $resolvedVersion = $Version
 
     if (-not $resolvedVersion -or $resolvedVersion -eq "latest") {
@@ -379,13 +379,10 @@ function Install-NanosandboxCLI {
 
     # --- Install runtime dependencies ---
     Write-Info "Installing runtime dependencies..."
-    $depsRepo = "nanosandboxai/install-deps"
-    # cli and install-deps publish coordinated rc tags, so reuse $resolvedVersion
-    # instead of re-querying the install-deps API (the default /releases ordering
-    # is by tag commit date, which can return a stale tag whose install.ps1 asset
-    # doesn't exist yet).
+    # CLI and dependency installer scripts ship in the same release, so reuse
+    # $resolvedVersion instead of re-querying the releases API.
     $depsTag = $resolvedVersion
-    $depsUrl = "https://github.com/$depsRepo/releases/download/$depsTag/install.ps1"
+    $depsUrl = "https://github.com/$releaseRepo/releases/download/$depsTag/install-deps.ps1"
     try {
         Write-Info "Fetching install-deps ($depsTag)..."
         $depsScript = Invoke-RestMethod $depsUrl
@@ -398,7 +395,7 @@ function Install-NanosandboxCLI {
         Write-Ok "Runtime dependencies installed"
     } catch {
         Write-Warn "Failed to install runtime dependencies automatically: $_"
-        Write-Warn "You may need to install them manually from: https://github.com/nanosandboxai/install-deps"
+        Write-Warn "You may need to install them manually from: https://github.com/$releaseRepo/releases"
     }
 
     # --- Install default config files ---

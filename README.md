@@ -1,11 +1,21 @@
-# Nanosandbox CLI
+# Nanosandbox
 
-Command-line interface and TUI for Nanosandbox — run AI coding agents in VM-based sandboxes.
+Monorepo for the Nanosandbox platform — run AI coding agents in isolated microVM sandboxes.
+
+## Repository layout
+
+| Path | Contents |
+|------|----------|
+| `.` (`src/`, `config/`, `scripts/`, `test/`) | `nanosb` CLI + TUI |
+| `runtime/` | MicroVM engine (libkrun), libkrunfw/gvproxy dependencies |
+| `sandbox/` | Agent-aware sandbox SDK + in-VM gateway client |
+| `agents-registry/` | Agent definitions, skills, MCP sources, agent-gateway (Go), Docker images |
+| `install-deps/` | Runtime dependency installer scripts |
 
 ## Install
 
 ```bash
-curl -fsSL https://github.com/nanosandboxai/cli/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install.sh | bash
 ```
 
 This installs the `nanosb` binary along with runtime dependencies (libkrun, gvproxy) and codesigns the binary on macOS.
@@ -18,9 +28,9 @@ This installs the `nanosb` binary along with runtime dependencies (libkrun, gvpr
 ### Build from Source
 
 ```bash
-git clone https://github.com/nanosandboxai/cli.git
-cd cli
-cargo build --release
+git clone https://github.com/nanosandboxai/nanosandbox.git
+cd nanosandbox
+cargo build --release -p nanosb-cli
 ```
 
 The binary will be at `target/release/nanosb`.

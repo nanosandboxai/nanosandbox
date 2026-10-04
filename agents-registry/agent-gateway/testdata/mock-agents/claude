@@ -1,0 +1,54 @@
+#!/bin/sh
+# Mock Claude agent for integration testing.
+# Simulates Claude's stream-json output format.
+
+SESSION_ID="sess_$(date +%s)"
+RESUME=""
+SLOW=false
+
+# Parse args
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --resume)
+            RESUME="$2"
+            SESSION_ID="$2"
+            shift 2
+            ;;
+        --continue)
+            shift
+            ;;
+        --slow)
+            SLOW=true
+            shift
+            ;;
+        --print)
+            MESSAGE="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# Emit session ID in stream-json format
+echo "{\"type\":\"system\",\"session_id\":\"$SESSION_ID\"}"
+
+if [ -n "$RESUME" ]; then
+    echo "{\"type\":\"assistant\",\"content\":\"resumed session: $RESUME\"}"
+fi
+
+if echo "$MESSAGE" | grep -q "interrupted"; then
+    echo "{\"type\":\"assistant\",\"content\":\"continuing from interruption\"}"
+fi
+
+if [ "$SLOW" = true ]; then
+    for i in 1 2 3 4 5; do
+        echo "{\"type\":\"assistant\",\"content\":\"generating line $i...\"}"
+        sleep 1
+    done
+else
+    echo "{\"type\":\"assistant\",\"content\":\"working on: $MESSAGE\"}"
+fi
+
+echo "{\"type\":\"result\",\"status\":\"done\"}"

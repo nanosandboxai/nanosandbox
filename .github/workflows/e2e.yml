@@ -1,0 +1,64 @@
+# =============================================================================
+# E2E Tests Workflow
+# =============================================================================
+#
+# NOTICE: Linux and Windows E2E tests are currently DISABLED.
+#
+# Only macOS Apple Silicon is fully tested and stable at this time.
+# - Linux: Requires libkrun stack setup (libkrunfw + libkrun)
+# - Windows: Requires containerd + runhcs shim + Windows container images
+#
+# These tests are commented out until the respective platforms are stable.
+# =============================================================================
+
+name: E2E Tests
+
+on:
+  push:
+    branches: [main, feature/**]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ==========================================================================
+  # Placeholder job (workflow requires at least one job)
+  # ==========================================================================
+  notice:
+    name: E2E Tests Status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Platform Status Notice
+        run: |
+          echo "========================================"
+          echo "  Nanosandbox E2E Tests"
+          echo "========================================"
+          echo ""
+          echo "Platform Status:"
+          echo "  - macOS Apple Silicon: STABLE (tested locally)"
+          echo "  - Linux (KVM):         DISABLED (runtime setup in progress)"
+          echo "  - Windows (HCS):       DISABLED (microVM setup in progress)"
+          echo ""
+          echo "To run E2E tests locally on macOS:"
+          echo "  1. Run: ./runtime/scripts/install/macos.sh"
+          echo "  2. Run: cargo test -p runtime --test agents_e2e_test"
+          echo ""
+          echo "========================================"
+
+  # ==========================================================================
+  # Linux E2E Tests - DISABLED
+  # ==========================================================================
+  # Requires: libkrunfw + libkrun
+  # See commented code below for implementation reference
+  # ==========================================================================
+
+  # ==========================================================================
+  # Windows E2E Tests - DISABLED
+  # ==========================================================================
+  # Requires: WHPX + HCS + libkrunfw kernel artifact
+  # Uses microVM approach (libkrun HCS backend), not Windows containers
+  # ==========================================================================

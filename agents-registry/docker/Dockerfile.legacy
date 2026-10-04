@@ -1,0 +1,132 @@
+# Minimal Docker image with agent CLIs for sandboxes
+# Base: Debian Bookworm Slim (~25MB)
+# Agents: Claude Code, Goose, Codex, Cursor CLI
+# Includes: agent-gateway HTTP server for persistent VM communication
+
+# =============================================================================
+# Stage 1: Build the agent-gateway Go binary
+# =============================================================================
+FROM golang:1.22-alpine AS gateway-builder
+WORKDIR /build
+COPY agent-gateway/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o agent-gateway .
+
+# =============================================================================
+# Stage 2: Main image
+# =============================================================================
+FROM debian:bookworm-slim
+
+LABEL org.opencontainers.image.source="https://github.com/nanosandboxai/agents-registry"
+LABEL org.opencontainers.image.description="Minimal agent CLIs image for AI coding assistants"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Base dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    unzip \
+    bzip2 \
+    libxcb1 \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js LTS (required for Claude Code, Codex)
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm cache clean --force
+
+# =============================================================================
+# Agent CLIs Installation
+# =============================================================================
+
+# Architecture argument for binary downloads
+ARG TARGETARCH
+
+# Claude Code - Anthropic's AI coding assistant
+# https://docs.anthropic.com/claude-code
+RUN npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force
+
+# Goose - AI developer agent (direct binary download)
+# https://github.com/block/goose
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) GOOSE_ARCH="x86_64-unknown-linux-gnu" ;; \
+        arm64) GOOSE_ARCH="aarch64-unknown-linux-gnu" ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/goose.tar.bz2 "https://github.com/block/goose/releases/latest/download/goose-${GOOSE_ARCH}.tar.bz2" \
+    && tar -xjf /tmp/goose.tar.bz2 -C /tmp \
+    && mv /tmp/goose /usr/local/bin/goose \
+    && chmod +x /usr/local/bin/goose \
+    && rm -rf /tmp/goose.tar.bz2
+
+# Codex - OpenAI's coding assistant
+# https://github.com/openai/codex
+RUN npm install -g @openai/codex \
+    && npm cache clean --force
+
+# Cursor CLI - Cursor's AI agent
+# https://cursor.com/cli
+RUN curl -fsSL https://cursor.com/install | bash \
+    && mv /root/.local/bin/agent /usr/local/bin/cursor-agent \
+    && chmod +x /usr/local/bin/cursor-agent
+
+# =============================================================================
+# MCP Server Dependencies (pre-installed for fast startup)
+# =============================================================================
+RUN npm install -g \
+    @modelcontextprotocol/server-github \
+    @modelcontextprotocol/server-filesystem \
+    @modelcontextprotocol/server-memory \
+    @modelcontextprotocol/server-brave-search \
+    @upstash/context7-mcp \
+    && npm cache clean --force
+# Note: MCP fetch server is Python-only (uvx mcp-server-fetch), not available via npm
+
+# =============================================================================
+# Agent Gateway (HTTP server for persistent VM communication)
+# =============================================================================
+COPY --from=gateway-builder /build/agent-gateway /usr/local/bin/agent-gateway
+
+# =============================================================================
+# Cleanup and finalization
+# =============================================================================
+
+# Create config directories for MCP config generation
+RUN mkdir -p /root/.config/goose \
+    && mkdir -p /root/.codex \
+    && mkdir -p /workspace/.cursor
+
+# Create non-root user for running agents
+RUN useradd -m -s /bin/bash agentuser \
+    && mkdir -p /workspace \
+    && chown -R agentuser:agentuser /workspace
+
+# Set working directory
+WORKDIR /workspace
+
+# Verify installations (will FAIL build if any agent is missing)
+RUN echo "=== Verifying Installed Agents ===" \
+    && claude --version \
+    && echo "Claude Code: OK" \
+    && goose --version \
+    && echo "Goose: OK" \
+    && codex --version \
+    && echo "Codex: OK" \
+    && cursor-agent --version \
+    && echo "Cursor CLI: OK" \
+    && test -x /usr/local/bin/agent-gateway \
+    && echo "Agent Gateway: OK" \
+    && echo "=== All agents verified successfully ==="
+
+# Default to non-root user (can be overrinanosandboxen)
+USER agentuser
+
+# Default command - show available agents
+CMD ["sh", "-c", "echo 'Available agents: claude, goose, codex, cursor-agent'"]
