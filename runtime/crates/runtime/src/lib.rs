@@ -27,8 +27,8 @@
 //!     let mut sandbox = Sandbox::create(config).await?;
 //!     sandbox.start().await?;
 //!
-//!     // Command execution is handled by the gateway crate
-//!     // (agent-gateway inside the VM).
+//!     // Command execution and logs are handled by the sandbox supervisor
+//!     // via the virtio-console channel.
 //!
 //!     sandbox.destroy().await?;
 //!     Ok(())

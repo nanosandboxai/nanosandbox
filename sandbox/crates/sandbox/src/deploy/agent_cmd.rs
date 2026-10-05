@@ -1,4 +1,4 @@
-//! Agent command builder — ported from `agents-registry/agent-gateway/main.go` (`buildAgentCommand`).
+//! Agent command builder — ported from the legacy in-VM Go gateway (`buildAgentCommand`).
 //!
 //! Builds the CLI invocation (binary + args) for each agent type, and resolves
 //! the environment map passed to the VM boot.

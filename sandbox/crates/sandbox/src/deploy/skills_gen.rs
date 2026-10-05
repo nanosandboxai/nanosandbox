@@ -1,4 +1,4 @@
-//! Skills config generation — ported from `agents-registry/agent-gateway/skills/config_gen.go`.
+//! Skills config generation — ported from the legacy in-VM Go gateway (skills/config_gen.go).
 //!
 //! Generates per-agent skill/prompt files that are mounted read-only into the
 //! guest VM. Each agent type uses a different format:

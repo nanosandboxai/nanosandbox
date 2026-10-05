@@ -8,8 +8,8 @@ Monorepo for the Nanosandbox platform — run AI coding agents in isolated micro
 |------|----------|
 | `.` (`src/`, `config/`, `scripts/`, `test/`) | `nanosb` CLI + TUI |
 | `runtime/` | MicroVM engine (libkrun), libkrunfw/gvproxy dependencies |
-| `sandbox/` | Agent-aware sandbox SDK + in-VM gateway client |
-| `agents-registry/` | Agent definitions, skills, MCP sources, agent-gateway (Go), Docker images |
+| `sandbox/` | Agent-aware sandbox SDK + host-side deploy module |
+| `agents-registry/` | Agent definitions, skills, MCP sources, Docker images |
 | `install-deps/` | Runtime dependency installer scripts |
 
 ## Install

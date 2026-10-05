@@ -1,4 +1,4 @@
-//! MCP config generation — ported from `agents-registry/agent-gateway/mcp/config_gen.go`.
+//! MCP config generation — ported from the legacy in-VM Go gateway (mcp/config_gen.go).
 //!
 //! Generates per-agent MCP server configuration files that are mounted
 //! read-only into the guest VM. Each agent type uses a different config format:

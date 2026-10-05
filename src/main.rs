@@ -900,19 +900,25 @@ mod cli {
         timeout_secs: u32,
     ) -> anyhow::Result<()> {
         use crate::supervisor::client::SupervisorClient;
+        use std::os::unix::fs::PermissionsExt;
         let exe = std::env::current_exe()?;
         let sandbox_dir = SupervisorClient::new(sandbox_name)
             .sandbox_dir()
             .to_path_buf();
         std::fs::create_dir_all(sandbox_dir.join("logs"))?;
-        std::fs::write(sandbox_dir.join("config.json"), config_json)?;
+        let config_path = sandbox_dir.join("config.json");
+        std::fs::write(&config_path, config_json)?;
         let deploy = serde_json::json!({
             "config_json": config_json,
             "extra_mounts_json": extra_mounts_json,
         });
-        std::fs::write(sandbox_dir.join("deploy.json"), deploy.to_string())?;
-        let supervisor_log =
-            std::fs::File::create(sandbox_dir.join("logs").join("supervisor.log"))?;
+        let deploy_path = sandbox_dir.join("deploy.json");
+        std::fs::write(&deploy_path, deploy.to_string())?;
+        let supervisor_log_path = sandbox_dir.join("logs").join("supervisor.log");
+        let supervisor_log = std::fs::File::create(&supervisor_log_path)?;
+        for path in [&config_path, &deploy_path, &supervisor_log_path] {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         let supervisor_log_err = supervisor_log.try_clone()?;
         let mut cmd = std::process::Command::new(&exe);
         cmd.arg("__supervise")

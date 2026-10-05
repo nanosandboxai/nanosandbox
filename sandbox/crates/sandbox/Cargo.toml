@@ -20,7 +20,7 @@ ffi = []
 # Runtime (VM engine) — local path inside the monorepo workspace.
 runtime = { path = "../../../runtime/crates/runtime" }
 
-# Gateway client for agent-gateway communication
+# Legacy gateway client (legacy-mode sandboxes only)
 gateway = { path = "../gateway" }
 
 # Async runtime
