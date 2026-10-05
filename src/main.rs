@@ -132,6 +132,37 @@ mod cli {
             sandbox: String,
         },
 
+        /// Apply a sandbox.yml manifest (declarative create/recreate)
+        Apply {
+            /// Path to sandbox.yml or a directory containing one
+            #[arg(short = 'f', long = "file", default_value = "sandbox.yml")]
+            file: String,
+            /// Delete sandboxes that are no longer in the manifest
+            #[arg(long)]
+            prune: bool,
+            /// Recreate sandboxes even when their config is unchanged
+            #[arg(long)]
+            force: bool,
+            /// Show what would change without applying
+            #[arg(long = "dry-run")]
+            dry_run: bool,
+            /// Apply only the named sandbox
+            #[arg(long)]
+            sandbox: Option<String>,
+        },
+
+        /// Restart a sandbox from its saved config (recreate)
+        Restart {
+            /// Sandbox name or ID
+            sandbox: String,
+        },
+
+        /// Show a sandbox's state, config, and mounts
+        Describe {
+            /// Sandbox name or ID
+            sandbox: String,
+        },
+
         /// Pull an image from a registry
         Pull {
             /// Image reference (e.g., alpine:3.19, ghcr.io/user/image:tag)
@@ -221,6 +252,7 @@ mod cli {
         },
 
         /// Remove a sandbox
+        #[command(alias = "delete")]
         Rm {
             /// Sandbox ID or name
             sandbox: String,
@@ -565,6 +597,26 @@ mod cli {
                 tail,
             }) => cmd_logs(&sandbox, follow, tail, cli.verbose).await,
             Some(Commands::Attach { sandbox }) => cmd_attach(&sandbox).await,
+            Some(Commands::Apply {
+                file,
+                prune,
+                force,
+                dry_run,
+                sandbox,
+            }) => {
+                cmd_apply(
+                    &file,
+                    prune,
+                    force,
+                    dry_run,
+                    sandbox.as_deref(),
+                    cli.format,
+                    cli.verbose,
+                )
+                .await
+            }
+            Some(Commands::Restart { sandbox }) => cmd_restart(&sandbox, cli.verbose).await,
+            Some(Commands::Describe { sandbox }) => cmd_describe(&sandbox).await,
             Some(Commands::Pull { image }) => cmd_pull(&image, cli.format, cli.verbose).await,
             Some(Commands::Images) => cmd_images(cli.format).await,
             Some(Commands::Run {
@@ -830,6 +882,447 @@ mod cli {
         Ok(vars)
     }
 
+    fn sha256_hex(data: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data.as_bytes());
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
+    }
+
+    fn spawn_supervisor(
+        sandbox_name: &str,
+        config_json: &str,
+        extra_mounts_json: &str,
+        timeout_secs: u32,
+    ) -> anyhow::Result<()> {
+        use crate::supervisor::client::SupervisorClient;
+        let exe = std::env::current_exe()?;
+        let sandbox_dir = SupervisorClient::new(sandbox_name)
+            .sandbox_dir()
+            .to_path_buf();
+        std::fs::create_dir_all(sandbox_dir.join("logs"))?;
+        std::fs::write(sandbox_dir.join("config.json"), config_json)?;
+        let deploy = serde_json::json!({
+            "config_json": config_json,
+            "extra_mounts_json": extra_mounts_json,
+        });
+        std::fs::write(sandbox_dir.join("deploy.json"), deploy.to_string())?;
+        let supervisor_log =
+            std::fs::File::create(sandbox_dir.join("logs").join("supervisor.log"))?;
+        let supervisor_log_err = supervisor_log.try_clone()?;
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("__supervise")
+            .arg(sandbox_name)
+            .arg(config_json)
+            .arg("--extra-mounts-json")
+            .arg(extra_mounts_json)
+            .arg("--timeout-secs")
+            .arg(timeout_secs.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(supervisor_log))
+            .stderr(std::process::Stdio::from(supervisor_log_err));
+        let child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to spawn supervisor: {}", e))?;
+        drop(child);
+        Ok(())
+    }
+
+    async fn wait_supervisor_running(
+        client: &crate::supervisor::client::SupervisorClient,
+        timeout_secs: u64,
+    ) -> anyhow::Result<()> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        loop {
+            if let Some(state) = client.read_state() {
+                match state.state {
+                    crate::supervisor::SandboxState::Running => return Ok(()),
+                    crate::supervisor::SandboxState::Error => {
+                        anyhow::bail!("sandbox failed to start (see supervisor.log)")
+                    }
+                    _ => {}
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                anyhow::bail!("timed out waiting for sandbox to start");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn wait_supervisor_stopped(
+        client: &crate::supervisor::client::SupervisorClient,
+        timeout_secs: u64,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        loop {
+            match client.read_state() {
+                None => return,
+                Some(state)
+                    if matches!(
+                        state.state,
+                        crate::supervisor::SandboxState::Stopped
+                            | crate::supervisor::SandboxState::Error
+                    ) =>
+                {
+                    return;
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() > deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
+    fn supervisor_sandbox_dirs() -> Vec<std::path::PathBuf> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let base = std::path::PathBuf::from(home).join(".nanosandbox/sandboxes");
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    out.push(path);
+                }
+            }
+        }
+        out
+    }
+
+    fn materialize_plan(
+        sandbox_dir: &std::path::Path,
+        plan: &sandbox::deploy::DeployPlan,
+    ) -> anyhow::Result<()> {
+        std::fs::create_dir_all(sandbox_dir)?;
+        for mount in &plan.mounts {
+            let host = &mount.host_path;
+            if host.starts_with(sandbox_dir) {
+                std::fs::create_dir_all(host)?;
+            } else if !host.exists() {
+                anyhow::bail!("mount host path does not exist: {}", host.display());
+            }
+        }
+        for file in &plan.config_files {
+            let path = sandbox_dir.join("config").join(&file.relative_path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, &file.content)?;
+        }
+        Ok(())
+    }
+
+    fn extra_mounts_from_plan(
+        plan: &sandbox::deploy::DeployPlan,
+    ) -> Vec<runtime::config::ExtraMount> {
+        plan.mounts
+            .iter()
+            .enumerate()
+            .map(|(index, mount)| runtime::config::ExtraMount {
+                tag: format!("nanosb-{}", index),
+                host_path: mount.host_path.to_string_lossy().to_string(),
+                target: mount.guest_path.clone(),
+                readonly: mount.readonly,
+            })
+            .collect()
+    }
+
+    fn deploy_plan_for(
+        config: &sandbox::AgentSandboxConfig,
+        sandbox_dir: &std::path::Path,
+    ) -> (sandbox::deploy::DeployPlan, runtime::config::SandboxConfig) {
+        let resolved = config
+            .resolved_agent
+            .clone()
+            .unwrap_or_else(|| sandbox::ResolvedAgentConfig {
+                agent_name: config.agent.clone().unwrap_or_else(|| "default".to_string()),
+                prompt: config.prompt.clone().unwrap_or_default(),
+                skills: Vec::new(),
+                mcp_servers: config.mcp_servers.clone(),
+                auto_mode: config.auto_mode,
+                permissions: config.permissions,
+                agent_type: config.agent_type,
+                claude_settings: config.claude_settings.clone(),
+            });
+        let plan = sandbox::deploy::DeployPlanner::plan(config, &resolved, sandbox_dir, None);
+        let mut rc = config.sandbox.clone();
+        rc.runtime_mode = runtime::config::RuntimeMode::Next;
+        let has_agent = config.agent_type.is_some()
+            || config.agent.is_some()
+            || config.prompt.is_some()
+            || config.auto_mode;
+        if has_agent {
+            rc.command = Some(plan.agent_command.binary.clone());
+            rc.command_args = plan.agent_command.args.clone();
+            let agent_type = config.agent_type.unwrap_or(sandbox::AgentType::Claude);
+            rc.env = sandbox::deploy::AgentCommandBuilder::build_env(
+                &agent_type,
+                config.auto_mode,
+                config.permissions,
+                &plan.env,
+            );
+        }
+        (plan, rc)
+    }
+
+    async fn cmd_apply(
+        file: &str,
+        prune: bool,
+        force: bool,
+        dry_run: bool,
+        only: Option<&str>,
+        format: OutputFormat,
+        verbose: bool,
+    ) -> anyhow::Result<()> {
+        use crate::supervisor::client::SupervisorClient;
+        use std::collections::HashSet;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(file);
+        let path = if path.is_dir() {
+            sandbox::find_sandbox_file(&path)
+                .ok_or_else(|| anyhow::anyhow!("no sandbox.yml found in {}", path.display()))?
+        } else {
+            path
+        };
+        if !path.exists() {
+            anyhow::bail!("manifest not found: {}", path.display());
+        }
+
+        let configs =
+            sandbox::load_sandbox_files(&[path]).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let mut results: Vec<(String, String, String)> = Vec::new();
+        let mut any_error = false;
+
+        for (_key, config) in &configs {
+            let name = config.sandbox.name.clone();
+            if let Some(only) = only {
+                if name != only {
+                    continue;
+                }
+            }
+
+            let sandbox_dir = SupervisorClient::new(&name).sandbox_dir().to_path_buf();
+            let (plan, rc) = deploy_plan_for(config, &sandbox_dir);
+            let config_json = serde_json::to_string(&rc)?;
+            let desired_hash = sha256_hex(&config_json);
+            let extra_mounts_json = serde_json::to_string(&extra_mounts_from_plan(&plan))?;
+
+            let client = SupervisorClient::new(&name);
+            let state = client.read_state();
+            let running = client.is_running();
+
+            let action = if state.is_none() {
+                "created"
+            } else if force {
+                "recreated"
+            } else if state.as_ref().map(|s| s.config_hash.as_str())
+                != Some(desired_hash.as_str())
+            {
+                "recreated"
+            } else if running {
+                "unchanged"
+            } else {
+                "started"
+            };
+
+            if verbose {
+                eprintln!("apply: {} -> {}", name, action);
+            }
+
+            if dry_run {
+                results.push((name, action.to_string(), "dry-run".to_string()));
+                continue;
+            }
+
+            let outcome: anyhow::Result<()> = if action == "unchanged" {
+                Ok(())
+            } else {
+                let mut outcome: anyhow::Result<()> = Ok(());
+                if running {
+                    if let Err(e) = client.stop(true) {
+                        outcome = Err(anyhow::anyhow!("{}", e));
+                    }
+                    wait_supervisor_stopped(&client, 20).await;
+                }
+                if outcome.is_ok() && action != "started" {
+                    outcome = materialize_plan(&sandbox_dir, &plan);
+                }
+                if outcome.is_ok() {
+                    outcome =
+                        spawn_supervisor(&name, &config_json, &extra_mounts_json, rc.timeout_secs);
+                }
+                if outcome.is_ok() {
+                    outcome = wait_supervisor_running(&client, 60).await;
+                }
+                outcome
+            };
+
+            match outcome {
+                Ok(()) => results.push((name, action.to_string(), rc.image.clone())),
+                Err(e) => {
+                    any_error = true;
+                    results.push((name, "error".to_string(), e.to_string()));
+                }
+            }
+        }
+
+        if prune {
+            let declared: HashSet<String> = configs
+                .iter()
+                .map(|(_, c)| c.sandbox.name.clone())
+                .collect();
+            for dir in supervisor_sandbox_dirs() {
+                let Some(name) = dir.file_name().map(|n| n.to_string_lossy().to_string()) else {
+                    continue;
+                };
+                if declared.contains(&name) || !dir.join("config.json").exists() {
+                    continue;
+                }
+                if dry_run {
+                    results.push((name, "deleted".to_string(), "dry-run".to_string()));
+                    continue;
+                }
+                let client = SupervisorClient::new(&name);
+                if client.is_running() {
+                    let _ = client.stop(true);
+                    wait_supervisor_stopped(&client, 20).await;
+                }
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => results.push((name, "deleted".to_string(), String::new())),
+                    Err(e) => {
+                        any_error = true;
+                        results.push((name, "error".to_string(), e.to_string()));
+                    }
+                }
+            }
+        }
+
+        match format {
+            OutputFormat::Text => {
+                for (name, action, detail) in &results {
+                    println!("{:<10} {:<24} {}", action, name, detail);
+                }
+            }
+            OutputFormat::Json => {
+                let json: Vec<_> = results
+                    .iter()
+                    .map(|(name, action, detail)| {
+                        serde_json::json!({ "name": name, "action": action, "detail": detail })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+        }
+
+        if any_error {
+            anyhow::bail!("one or more sandboxes failed to apply");
+        }
+        Ok(())
+    }
+
+    async fn cmd_restart(sandbox_id: &str, verbose: bool) -> anyhow::Result<()> {
+        use crate::supervisor::client::SupervisorClient;
+
+        let client = SupervisorClient::new(sandbox_id);
+        let dir = client.sandbox_dir().to_path_buf();
+        if !dir.exists() {
+            anyhow::bail!("sandbox not found: {}", sandbox_id);
+        }
+        let deploy_raw = std::fs::read_to_string(dir.join("deploy.json")).map_err(|_| {
+            anyhow::anyhow!(
+                "sandbox '{}' has no deploy.json (not supervisor-managed)",
+                sandbox_id
+            )
+        })?;
+        let deploy: serde_json::Value = serde_json::from_str(&deploy_raw)?;
+        let config_json = deploy["config_json"].as_str().unwrap_or_default().to_string();
+        let extra_mounts_json = deploy["extra_mounts_json"]
+            .as_str()
+            .unwrap_or("[]")
+            .to_string();
+        let timeout_secs = serde_json::from_str::<runtime::config::SandboxConfig>(&config_json)
+            .map(|c| c.timeout_secs)
+            .unwrap_or(600);
+
+        if verbose {
+            eprintln!("Restarting sandbox '{}'", sandbox_id);
+        }
+        if client.is_running() {
+            let _ = client.stop(true);
+            wait_supervisor_stopped(&client, 20).await;
+        }
+        let _ = std::fs::remove_file(dir.join("state.json"));
+        let _ = std::fs::remove_file(dir.join("config.json"));
+        let _ = std::fs::remove_dir_all(dir.join("logs"));
+
+        spawn_supervisor(sandbox_id, &config_json, &extra_mounts_json, timeout_secs)?;
+        wait_supervisor_running(&client, 60).await?;
+        println!("{} Restarted {}", "✓".green(), sandbox_id.bold());
+        Ok(())
+    }
+
+    async fn cmd_describe(sandbox_id: &str) -> anyhow::Result<()> {
+        use crate::supervisor::client::SupervisorClient;
+
+        let client = SupervisorClient::new(sandbox_id);
+        let dir = client.sandbox_dir().to_path_buf();
+        if !dir.exists() {
+            anyhow::bail!("sandbox not found: {}", sandbox_id);
+        }
+
+        println!("Name:      {}", sandbox_id);
+        if let Some(state) = client.read_state() {
+            println!("State:     {:?}", state.state);
+            println!("PID:       {:?}", state.pid);
+            println!("Exit code: {:?}", state.exit_code);
+            println!("Started:   {}", state.started_at);
+            println!("Config:    {}", state.config_hash);
+        }
+
+        if let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) {
+            if let Ok(rc) = serde_json::from_str::<runtime::config::SandboxConfig>(&raw) {
+                println!("Image:     {}", rc.image);
+                println!("CPUs:      {}", rc.cpus);
+                println!("Memory:    {} MB", rc.memory_mb);
+                println!("Mode:      {:?}", rc.runtime_mode);
+                if let Some(cmd) = &rc.command {
+                    println!("Command:   {} {}", cmd, rc.command_args.join(" "));
+                }
+            }
+        }
+
+        if let Ok(raw) = std::fs::read_to_string(dir.join("deploy.json")) {
+            if let Ok(deploy) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(mounts_json) = deploy["extra_mounts_json"].as_str() {
+                    if let Ok(mounts) =
+                        serde_json::from_str::<Vec<runtime::config::ExtraMount>>(mounts_json)
+                    {
+                        for mount in mounts {
+                            println!(
+                                "Mount:     {} -> {} (ro={})",
+                                mount.host_path, mount.target, mount.readonly
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let console_log = dir.join("logs").join("console.log");
+        if console_log.exists() {
+            println!("Logs:      {}", console_log.display());
+        }
+        Ok(())
+    }
+
     async fn cmd_run_next(
         sandbox_name: &str,
         image: &str,
@@ -862,46 +1355,9 @@ mod cli {
         }
         let config_json = serde_json::to_string(&config)?;
 
-        let exe = std::env::current_exe()?;
-        let sandbox_dir = SupervisorClient::new(sandbox_name).sandbox_dir().to_path_buf();
-        std::fs::create_dir_all(sandbox_dir.join("logs"))?;
-        std::fs::write(sandbox_dir.join("config.json"), &config_json)?;
-        let supervisor_log =
-            std::fs::File::create(sandbox_dir.join("logs").join("supervisor.log"))?;
-        let supervisor_log_err = supervisor_log.try_clone()?;
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.arg("__supervise")
-            .arg(sandbox_name)
-            .arg(&config_json)
-            .arg("--extra-mounts-json")
-            .arg("[]")
-            .arg("--timeout-secs")
-            .arg(timeout.to_string())
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::from(supervisor_log))
-            .stderr(std::process::Stdio::from(supervisor_log_err));
-        let child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to spawn supervisor: {}", e))?;
-        drop(child);
-
+        spawn_supervisor(sandbox_name, &config_json, "[]", timeout)?;
         let client = SupervisorClient::new(sandbox_name);
-        let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        loop {
-            if let Some(state) = client.read_state() {
-                match state.state {
-                    crate::supervisor::SandboxState::Running => break,
-                    crate::supervisor::SandboxState::Error => {
-                        anyhow::bail!("sandbox '{}' failed to start", sandbox_name)
-                    }
-                    _ => {}
-                }
-            }
-            if std::time::Instant::now() > ready_deadline {
-                anyhow::bail!("timed out waiting for sandbox '{}' to start", sandbox_name);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
+        wait_supervisor_running(&client, 60).await?;
         println!("{} Sandbox {} started", "✓".green(), sandbox_name.bold());
 
         let log_path = client.console_log_path();
