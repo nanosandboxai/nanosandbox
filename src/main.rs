@@ -324,6 +324,14 @@ mod cli {
         created: String,
     }
 
+    /// Supervised (next-mode) sandbox info for table display.
+    struct SupervisedSandboxRow {
+        name: String,
+        image: String,
+        status: String,
+        created: String,
+    }
+
     /// Saved session info for table display
     #[derive(Tabled)]
     struct SessionRow {
@@ -1771,18 +1779,68 @@ mod cli {
                 .collect()
         };
 
-        match format {
-            OutputFormat::Text => {
-                if filtered.is_empty() {
+        let mut supervised: Vec<SupervisedSandboxRow> = Vec::new();
+        for dir in supervisor_sandbox_dirs() {
+            let Some(name) = dir.file_name().map(|n| n.to_string_lossy().to_string()) else {
+                continue;
+            };
+            if !dir.join("config.json").exists() {
+                continue;
+            }
+            let client = crate::supervisor::client::SupervisorClient::new(&name);
+            let state = client.read_state();
+            let running = client.is_running();
+            let status = match state.as_ref().map(|s| &s.state) {
+                Some(crate::supervisor::SandboxState::Running) => "Running",
+                Some(crate::supervisor::SandboxState::Starting) => "Starting",
+                Some(crate::supervisor::SandboxState::Stopped) => "Stopped",
+                Some(crate::supervisor::SandboxState::Error) => "Error",
+                None if running => "Running",
+                None => "Stopped",
+            }
+            .to_string();
+            if !all && status != "Running" {
+                continue;
+            }
+            let image = std::fs::read_to_string(dir.join("config.json"))
+                .ok()
+                .and_then(|raw| serde_json::from_str::<runtime::config::SandboxConfig>(&raw).ok())
+                .map(|c| c.image)
+                .unwrap_or_default();
+            let started_at = state
+                .as_ref()
+                .map(|s| s.started_at.clone())
+                .unwrap_or_default();
+            let created = chrono::DateTime::parse_from_rfc3339(&started_at)
+                .map(|dt| format_duration(chrono::Utc::now() - dt.with_timezone(&chrono::Utc)))
+                .unwrap_or_else(|_| "-".to_string());
+            supervised.push(SupervisedSandboxRow {
+                name,
+                image,
+                status,
+                created,
+            });
+        }
+
+        if filtered.is_empty() && supervised.is_empty() {
+            match format {
+                OutputFormat::Text => {
                     if all {
                         println!("No sandboxes found.");
                     } else {
                         println!("No running sandboxes. Use 'nanosb ps -a' to show all.");
                     }
-                    return Ok(());
                 }
+                OutputFormat::Json => {
+                    println!("[]");
+                }
+            }
+            return Ok(());
+        }
 
-                let rows: Vec<SandboxRow> = filtered
+        match format {
+            OutputFormat::Text => {
+                let mut rows: Vec<SandboxRow> = filtered
                     .iter()
                     .map(|s| {
                         let duration = chrono::Utc::now() - s.created_at;
@@ -1802,11 +1860,40 @@ mod cli {
                     })
                     .collect();
 
+                for row in supervised {
+                    let status_str = match row.status.as_str() {
+                        "Running" => format!("{}", row.status.green()),
+                        "Starting" => format!("{}", row.status.yellow()),
+                        "Error" => format!("{}", row.status.red()),
+                        _ => format!("{}", row.status.yellow()),
+                    };
+                    rows.push(SandboxRow {
+                        id: "-".to_string(),
+                        name: row.name,
+                        image: row.image,
+                        status: status_str,
+                        created: row.created,
+                    });
+                }
+
                 let table = Table::new(rows).to_string();
                 println!("{}", table);
             }
             OutputFormat::Json => {
-                println!("{}", serde_json::to_string_pretty(&filtered)?);
+                let mut json: Vec<serde_json::Value> = Vec::new();
+                for s in &filtered {
+                    json.push(serde_json::to_value(s)?);
+                }
+                for row in &supervised {
+                    json.push(serde_json::json!({
+                        "name": row.name,
+                        "image": row.image,
+                        "status": row.status,
+                        "started": row.created,
+                        "mode": "supervised",
+                    }));
+                }
+                println!("{}", serde_json::to_string_pretty(&json)?);
             }
         }
 
