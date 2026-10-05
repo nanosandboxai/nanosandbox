@@ -2,6 +2,8 @@
 //!
 //! A command-line interface for managing VM-based sandboxes.
 
+mod supervisor;
+
 mod cli {
     use clap::{Parser, Subcommand, ValueEnum};
     use colored::Colorize;
@@ -16,6 +18,8 @@ mod cli {
     use tabled::{Table, Tabled};
     use tokio::sync::Mutex;
     use tracing::{error, warn};
+
+    use crate::supervisor::client::SupervisorClient;
 
     /// Output format for commands
     #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -94,6 +98,49 @@ mod cli {
 
     #[derive(Subcommand)]
     pub enum Commands {
+        /// Hidden supervisor subcommand (spawned by the CLI).
+        #[command(hide = true)]
+        #[clap(name = "__supervise")]
+        Supervise {
+            /// Sandbox name
+            sandbox_name: String,
+            /// JSON-serialized SandboxConfig
+            config_json: String,
+            /// Console stdin fd number
+            console_stdin_fd: String,
+            /// Console stdout fd number
+            console_stdout_fd: String,
+            /// Console stderr fd number
+            console_stderr_fd: String,
+            /// Whether to use TTY mode
+            #[arg(long, default_value = "false")]
+            console_tty: bool,
+            /// JSON-serialized extra mounts
+            #[arg(long, default_value = "[]")]
+            extra_mounts_json: String,
+            /// Timeout in seconds
+            #[arg(long, default_value = "3600")]
+            timeout_secs: u64,
+        },
+
+        /// View sandbox console logs
+        Logs {
+            /// Sandbox name or ID
+            sandbox: String,
+            /// Follow log output (like tail -f)
+            #[arg(short, long)]
+            follow: bool,
+            /// Number of bytes to show from the end
+            #[arg(long)]
+            tail: Option<usize>,
+        },
+
+        /// Attach to a sandbox console
+        Attach {
+            /// Sandbox name or ID
+            sandbox: String,
+        },
+
         /// Pull an image from a registry
         Pull {
             /// Image reference (e.g., alpine:3.19, ghcr.io/user/image:tag)
@@ -512,6 +559,38 @@ mod cli {
                 )
                 .await
             }
+            Some(Commands::Supervise {
+                sandbox_name,
+                config_json,
+                console_stdin_fd,
+                console_stdout_fd,
+                console_stderr_fd,
+                console_tty,
+                extra_mounts_json,
+                timeout_secs,
+            }) => {
+                let parse_fd = |raw: &str, which: &str| -> anyhow::Result<i32> {
+                    raw.parse::<i32>()
+                        .map_err(|e| anyhow::anyhow!("invalid {} fd '{}': {}", which, raw, e))
+                };
+                let args = crate::supervisor::SuperviseArgs {
+                    sandbox_name,
+                    config_json,
+                    console_stdin_fd: parse_fd(&console_stdin_fd, "console stdin")?,
+                    console_stdout_fd: parse_fd(&console_stdout_fd, "console stdout")?,
+                    console_stderr_fd: parse_fd(&console_stderr_fd, "console stderr")?,
+                    console_tty,
+                    extra_mounts_json,
+                    timeout_secs,
+                };
+                crate::supervisor::run_supervisor(args)
+            }
+            Some(Commands::Logs {
+                sandbox,
+                follow,
+                tail,
+            }) => cmd_logs(&sandbox, follow, tail, cli.verbose).await,
+            Some(Commands::Attach { sandbox }) => cmd_attach(&sandbox).await,
             Some(Commands::Pull { image }) => cmd_pull(&image, cli.format, cli.verbose).await,
             Some(Commands::Images) => cmd_images(cli.format).await,
             Some(Commands::Run {
@@ -565,6 +644,96 @@ mod cli {
     }
 
     /// Pull an image from a registry
+    /// View sandbox console logs (works for running and stopped sandboxes).
+    async fn cmd_logs(
+        sandbox_name: &str,
+        follow: bool,
+        tail: Option<usize>,
+        verbose: bool,
+    ) -> anyhow::Result<()> {
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        let client = SupervisorClient::new(sandbox_name);
+        let log_path = client.console_log_path();
+
+        if !log_path.exists() {
+            anyhow::bail!(
+                "no console log for '{}' (expected {})",
+                sandbox_name,
+                log_path.display()
+            );
+        }
+
+        let initial = match (follow, tail) {
+            (_, Some(n)) => client.read_log_tail(n),
+            (true, None) => client.read_log_tail(64 * 1024),
+            (false, None) => client.read_log_file(),
+        }
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        print!("{}", initial);
+        std::io::stdout().flush().ok();
+
+        if !follow {
+            return Ok(());
+        }
+        if verbose {
+            eprintln!("(following {} — Ctrl-C to stop)", log_path.display());
+        }
+
+        let mut offset = std::fs::metadata(&log_path)?.len();
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let len = match std::fs::metadata(&log_path) {
+                Ok(m) => m.len(),
+                Err(_) => continue,
+            };
+            if len < offset {
+                // Rotated or truncated: restart from the beginning of the new file.
+                offset = 0;
+            }
+            if len > offset {
+                let mut file = std::fs::File::open(&log_path)?;
+                file.seek(SeekFrom::Start(offset))?;
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                offset = len;
+                print!("{}", String::from_utf8_lossy(&buf));
+                std::io::stdout().flush().ok();
+            }
+        }
+    }
+
+    /// Attach to a sandbox console (replay + follow until exit).
+    async fn cmd_attach(sandbox_name: &str) -> anyhow::Result<()> {
+        use std::io::Write;
+
+        let client = SupervisorClient::new(sandbox_name);
+        if !client.is_running() {
+            anyhow::bail!(
+                "sandbox '{}' is not running (no control socket at {})",
+                sandbox_name,
+                client.control_socket_path().display()
+            );
+        }
+
+        let frames = client.attach().map_err(|e| anyhow::anyhow!("{}", e))?;
+        for frame in frames {
+            match frame {
+                crate::supervisor::AttachFrame::Output { data } => {
+                    print!("{}", data);
+                }
+                crate::supervisor::AttachFrame::Exit { code } => {
+                    if code != 0 {
+                        eprintln!("\n[console exited with code {}]", code);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        std::io::stdout().flush().ok();
+        Ok(())
+    }
+
     async fn cmd_pull(image: &str, format: OutputFormat, verbose: bool) -> anyhow::Result<()> {
         let image = normalize_image(image);
         let pb = create_pull_progress();
