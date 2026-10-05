@@ -141,8 +141,6 @@ impl Sandbox {
     }
 
     /// SSH host for connecting to the sandbox.
-    /// On Windows with HCN NAT, this is the guest's IP address.
-    /// On other platforms (or HvSocket fallback), this is None (use 127.0.0.1).
     pub fn ssh_host(&self) -> Option<String> {
         self.ssh_host.clone()
     }
@@ -282,85 +280,30 @@ impl Sandbox {
             // Determine gateway address and SSH port from port mappings.
             let mut gateway_addr: Option<String> = None;
 
-            #[cfg(target_os = "windows")]
-            {
-                if let Some(ref rt) = self.inner.runtime_ref() {
-                    let guest_ip = rt.guest_ip(self.inner.id());
+            let port_mappings = &self.inner.config().network.port_mappings;
+            let find_host_port = |container: u16| {
+                port_mappings
+                    .iter()
+                    .find(|p| p.container_port == container)
+                    .map(|p| p.host_port)
+            };
 
-                    if let Some(ref ip) = guest_ip {
-                        // TCP path via HCN NAT: connect directly to the guest IP.
-                        // This uses the standard Windows TCP/IP stack which is
-                        // reliable — no HvSocket ring buffer deadlocks.
-                        gateway_addr = Some(format!("{}:8080", ip));
-                        self.ssh_port = Some(22);
-                        self.ssh_host = Some(ip.clone());
-                        info!("Gateway: TCP via {}, SSH: TCP via {}:22", ip, ip);
-                    } else {
-                        return Err(runtime::Error::SandboxCreationFailed(
-                            "Guest IP not available — HCN NAT networking required".to_string()
-                        ));
-                    }
-
-                    // DNS + TCP outbound proxies are still needed for guest→internet.
-                    if let Some(vm_id) = rt.hcs_vm_id(self.inner.id()) {
-                        gateway::hvsocket::start_dns_proxy(&vm_id)
-                            .map_err(|e| runtime::Error::SandboxCreationFailed(
-                                format!("Failed to start DNS proxy: {}", e)
-                            ))?;
-
-                        gateway::hvsocket::start_tcp_proxy(&vm_id)
-                            .map_err(|e| runtime::Error::SandboxCreationFailed(
-                                format!("Failed to start TCP proxy: {}", e)
-                            ))?;
-
-                        for mapping in &self.inner.config().network.port_mappings {
-                            if mapping.container_port == 8080 || mapping.container_port == 22 {
-                                continue;
-                            }
-                            match gateway::hvsocket::start_inbound_port_forwarder(
-                                &vm_id, mapping.host_port, mapping.container_port,
-                            ) {
-                                Ok(p) => info!(
-                                    "Port forward: 127.0.0.1:{} -> guest:{}",
-                                    p, mapping.container_port
-                                ),
-                                Err(e) => warn!(
-                                    "Port forward host:{} -> guest:{} failed: {}",
-                                    mapping.host_port, mapping.container_port, e
-                                ),
-                            }
-                        }
-                    }
-                }
+            if let Some(host_port) = find_host_port(8080) {
+                gateway_addr = Some(format!("127.0.0.1:{}", host_port));
+            }
+            if let Some(host_port) = find_host_port(22) {
+                self.ssh_port = Some(host_port);
             }
 
-            #[cfg(not(target_os = "windows"))]
-            {
-                let port_mappings = &self.inner.config().network.port_mappings;
-                let find_host_port = |container: u16| {
-                    port_mappings
-                        .iter()
-                        .find(|p| p.container_port == container)
-                        .map(|p| p.host_port)
-                };
-
-                if let Some(host_port) = find_host_port(8080) {
-                    gateway_addr = Some(format!("127.0.0.1:{}", host_port));
-                }
-                if let Some(host_port) = find_host_port(22) {
-                    self.ssh_port = Some(host_port);
-                }
-
-                // Fallback to guest_ip for non-gvproxy backends (e.g. TSI).
-                if gateway_addr.is_none() {
-                    if let Some(ref rt) = self.inner.runtime_ref() {
-                        if let Some(ip) = rt.guest_ip(self.inner.id()) {
-                            gateway_addr = Some(format!("{}:8080", ip));
-                            if self.ssh_port.is_none() {
-                                self.ssh_port = Some(22);
-                            }
-                            info!("Gateway: {}:8080 (guest_ip path)", ip);
+            // Fallback to guest_ip for non-gvproxy backends (e.g. TSI).
+            if gateway_addr.is_none() {
+                if let Some(ref rt) = self.inner.runtime_ref() {
+                    if let Some(ip) = rt.guest_ip(self.inner.id()) {
+                        gateway_addr = Some(format!("{}:8080", ip));
+                        if self.ssh_port.is_none() {
+                            self.ssh_port = Some(22);
                         }
+                        info!("Gateway: {}:8080 (guest_ip path)", ip);
                     }
                 }
             }
@@ -373,28 +316,12 @@ impl Sandbox {
             }
 
             // Create the GatewayClient.
-            #[cfg(not(target_os = "windows"))]
             let mut client = gateway::GatewayClient::new(
                 gateway_addr,
                 sandbox_id.clone(),
                 300, // default timeout
                 config_env,
             );
-
-            #[cfg(target_os = "windows")]
-            let mut client = {
-                let hcs_vm_id = self
-                    .inner
-                    .runtime_ref()
-                    .and_then(|rt| rt.hcs_vm_id(self.inner.id()));
-                gateway::GatewayClient::new(
-                    gateway_addr,
-                    hcs_vm_id,
-                    sandbox_id.clone(),
-                    300,
-                    config_env,
-                )
-            };
 
             // Wait for the gateway to become healthy.
             // The closure checks if the VM process is still alive via the runtime.

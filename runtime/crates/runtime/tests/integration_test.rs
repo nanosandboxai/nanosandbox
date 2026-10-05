@@ -619,7 +619,7 @@ fn test_output_chunk() {
 #[test]
 fn test_credential_store_empty() {
     use runtime::CredentialStore;
-    use oci_distribution::secrets::RegistryAuth;
+    use oci_client::secrets::RegistryAuth;
 
     let store = CredentialStore::empty();
 
@@ -632,7 +632,7 @@ fn test_credential_store_empty() {
 #[test]
 fn test_credential_store_add() {
     use runtime::CredentialStore;
-    use oci_distribution::secrets::RegistryAuth;
+    use oci_client::secrets::RegistryAuth;
 
     let mut store = CredentialStore::empty();
     store.add_credentials("ghcr.io", "user".to_string(), "token123".to_string());
@@ -1597,7 +1597,7 @@ async fn test_mcp_skills_agent_e2e() {
 /// Test running echo command on a FUSE-backed rootfs (the only mode).
 ///
 /// This exercises the full FUSE path:
-/// 1. HCS shares rootfs dir via built-in FUSE server
+/// 1. Shares rootfs dir via built-in FUSE server
 /// 2. Guest boots initrd, mounts fuse, chroots, execs command
 /// 3. Verifies output matches expected
 #[tokio::test]

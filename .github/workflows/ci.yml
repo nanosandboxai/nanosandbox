@@ -39,6 +39,9 @@ jobs:
           key: ${{ runner.os }}-mono-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-mono-cargo-
 
+      - name: Build upstream libkrun
+        run: bash runtime/scripts/build-libkrun.sh
+
       - name: Check CLI + sandbox SDK + runtime
         run: cargo check -p nanosb-cli -p sandbox -p gateway -p runtime
 
@@ -58,7 +61,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.27'
 
       - name: Build
         working-directory: agents-registry/agent-gateway

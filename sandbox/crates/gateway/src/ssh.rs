@@ -1,8 +1,6 @@
 //! SSH key generation utilities for sandbox access.
 //!
 //! Generates ephemeral ed25519 key pairs for SSH access into VMs.
-//! The sandbox layer decides how to inject the public key (rootfs on Unix,
-//! kernel cmdline on Windows).
 
 use std::path::PathBuf;
 use tracing::info;
@@ -10,8 +8,7 @@ use tracing::info;
 /// Generate an ephemeral SSH key pair for a sandbox.
 ///
 /// Returns `(private_key_path, public_key_content)`.
-/// The caller is responsible for injecting the public key into the VM
-/// (e.g. writing to authorized_keys on Unix, or passing via initrd on Windows).
+/// The caller is responsible for injecting the public key into the VM.
 pub fn generate_ssh_keys(sandbox_id: &str) -> Result<(PathBuf, String), String> {
     let key_dir = std::env::temp_dir().join(format!("nanosb-{}-ssh", sandbox_id));
     std::fs::create_dir_all(&key_dir).map_err(|e| format!("mkdir ssh key dir: {}", e))?;
@@ -28,13 +25,6 @@ pub fn generate_ssh_keys(sandbox_id: &str) -> Result<(PathBuf, String), String> 
         "-N", "",
         "-q",
     ]);
-
-    // On Windows, hide the console window
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
 
     let status = cmd.status().map_err(|e| format!("ssh-keygen spawn: {}", e))?;
     if !status.success() {
@@ -58,8 +48,6 @@ pub fn generate_ssh_keys(sandbox_id: &str) -> Result<(PathBuf, String), String> 
 /// Inject an SSH public key into a rootfs directory.
 ///
 /// Writes the key to both root and developer user authorized_keys files.
-/// Works on all platforms where the rootfs directory is host-writable
-/// (native rootfs on Unix, Plan9 share on Windows).
 pub fn inject_pubkey_into_rootfs(
     rootfs_path: &std::path::Path,
     pub_key: &str,

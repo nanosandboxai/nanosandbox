@@ -1,11 +1,14 @@
 name: Upstream Sync
 
-# Detects new commits in all upstream dependencies and creates PRs to sync them.
+# Detects new commits in upstream dependencies and creates PRs to sync them.
 #
 # Dependencies tracked:
-#   - libkrun (checked-in source in runtime/deps/libkrun/) → upstream: containers/libkrun
 #   - libkrunfw (git submodule in runtime/deps/libkrunfw/)  → upstream: containers/libkrunfw
 #   - gvproxy (git submodule in runtime/deps/gvproxy/)      → upstream: containers/gvisor-tap-vsock
+#
+# Note: libkrun is no longer vendored — it is consumed as a pinned upstream
+# build via runtime/scripts/build-libkrun.sh. Update the tag/SHA in that
+# script to upgrade.
 #
 # Runs weekly (Monday 6am UTC) or can be triggered manually.
 
@@ -25,111 +28,6 @@ permissions:
   pull-requests: write
 
 jobs:
-  # ─── libkrun: checked-in source, synced via rsync + patch ───
-  sync-libkrun:
-    name: Sync libkrun
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check upstream libkrun
-        id: check
-        run: |
-          git clone --depth=100 https://github.com/containers/libkrun.git /tmp/upstream-libkrun
-          UPSTREAM_SHA=$(git -C /tmp/upstream-libkrun rev-parse HEAD)
-          OUR_SHA=$(cat runtime/deps/libkrun/.upstream-sha 2>/dev/null || echo "none")
-
-          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
-          echo "our_sha=$OUR_SHA" >> "$GITHUB_OUTPUT"
-
-          if [ "$UPSTREAM_SHA" != "$OUR_SHA" ] || [ "${{ inputs.force_sync }}" = "true" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-
-            # Generate commit summary
-            if [ "$OUR_SHA" != "none" ]; then
-              git -C /tmp/upstream-libkrun log --oneline "${OUR_SHA}..HEAD" 2>/dev/null > /tmp/upstream-commits.txt || \
-                echo "Could not generate diff (our SHA may not exist upstream)" > /tmp/upstream-commits.txt
-            else
-              git -C /tmp/upstream-libkrun log --oneline -20 > /tmp/upstream-commits.txt
-            fi
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No upstream changes detected"
-          fi
-
-      - name: Create sync branch and PR
-        if: steps.check.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          UPSTREAM_SHA="${{ steps.check.outputs.upstream_sha }}"
-          SHORT_SHA="${UPSTREAM_SHA:0:8}"
-          BRANCH="upstream-sync/libkrun-${SHORT_SHA}"
-
-          # Check if branch already exists
-          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
-            echo "Branch $BRANCH already exists, skipping"
-            exit 0
-          fi
-
-          git checkout -b "$BRANCH"
-
-          # Copy upstream source (preserving our tracking file)
-          rsync -a --delete \
-            --exclude='.git' \
-            --exclude='.upstream-sha' \
-            --exclude='init/prebuilt' \
-            /tmp/upstream-libkrun/ runtime/deps/libkrun/
-
-          # Re-apply our structural patches
-          bash runtime/scripts/ci/patch-libkrun-workspace.sh
-
-          # Update tracking SHA
-          echo "$UPSTREAM_SHA" > runtime/deps/libkrun/.upstream-sha
-
-          # Check if init.c changed (prebuilt binaries may need rebuild)
-          if git diff --name-only | grep -q "init/init.c"; then
-            echo "init.c changed — prebuilt binaries may need rebuilding"
-            echo "::warning::init.c has upstream changes. Prebuilt init binaries may need to be rebuilt."
-          fi
-
-          git add runtime/deps/libkrun/
-          git commit -m "chore: sync libkrun upstream (${SHORT_SHA})"
-          git push origin "$BRANCH"
-
-          COMMITS=$(cat /tmp/upstream-commits.txt)
-          gh pr create \
-            --title "Upstream sync: libkrun $(date +%Y-%m-%d)" \
-            --body "$(cat <<EOF
-          ## Upstream libkrun sync
-
-          Syncing from [containers/libkrun](https://github.com/containers/libkrun) commit \`${UPSTREAM_SHA}\`.
-
-          ### Upstream commits since last sync
-          \`\`\`
-          ${COMMITS}
-          \`\`\`
-
-          ### Patches re-applied
-          - Removed \`[workspace]\` block from \`runtime/deps/libkrun/Cargo.toml\`
-          - Changed crate-type from \`cdylib\` to \`rlib\`
-          - Cleaned up build.rs soname/install_name directives
-          - Pinned vm-memory to =0.16.2
-
-          ### Review checklist
-          - [ ] \`cargo build -p runtime\` compiles
-          - [ ] \`cargo test -p runtime\` passes
-          - [ ] No new breaking API changes in libkrun
-          - [ ] Check if init.c changed (may need prebuilt binary rebuild)
-          EOF
-          )" \
-            --label "upstream-sync" 2>/dev/null || \
-          gh pr create \
-            --title "Upstream sync: libkrun $(date +%Y-%m-%d)" \
-            --body "Syncing libkrun upstream commit ${UPSTREAM_SHA}"
-
   # ─── libkrunfw: git submodule, synced via submodule update ───
   sync-libkrunfw:
     name: Sync libkrunfw

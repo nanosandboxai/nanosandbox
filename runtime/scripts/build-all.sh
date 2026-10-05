@@ -4,7 +4,7 @@
 # Usage:
 #   ./scripts/build-all.sh              # build everything
 #   ./scripts/build-all.sh libkrunfw    # build only libkrunfw
-#   ./scripts/build-all.sh libkrun      # build only libkrun
+#   ./scripts/build-all.sh libkrun      # build only libkrun (upstream)
 #   ./scripts/build-all.sh gvproxy      # build only gvproxy
 #   ./scripts/build-all.sh runtime      # build only runtime crate
 set -euo pipefail
@@ -33,19 +33,14 @@ build_libkrunfw() {
 }
 
 build_libkrun() {
-    echo "==> Building libkrun..."
-    if [ ! -f "$ROOT_DIR/deps/libkrun/Cargo.toml" ]; then
-        echo "ERROR: libkrun submodule not initialized. Run: git submodule update --init --recursive"
-        exit 1
-    fi
-    cd "$ROOT_DIR/deps/libkrun"
-    PKG_CONFIG_PATH="$BUILD_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
-        make NET=1 BLK=1
+    echo "==> Building libkrun (upstream v1.19.5)..."
+    bash "$SCRIPT_DIR/build-libkrun.sh"
     # Copy built library to build/lib/
-    find target/release -name 'libkrun*.so*' -o -name 'libkrun*.dylib' | head -5 | while read -r f; do
-        cp "$f" "$BUILD_DIR/lib/"
-    done
-    echo "==> libkrun built → $BUILD_DIR/lib/"
+    LIBKRUN_OUTPUT_DIR="${LIBKRUN_OUTPUT_DIR:-$HOME/.nanosandbox/lib}"
+    if [ -f "$LIBKRUN_OUTPUT_DIR/libkrun.a" ]; then
+        cp "$LIBKRUN_OUTPUT_DIR/libkrun.a" "$BUILD_DIR/lib/"
+        echo "==> libkrun built → $BUILD_DIR/lib/libkrun.a"
+    fi
 }
 
 build_gvproxy() {
@@ -62,6 +57,11 @@ build_gvproxy() {
 build_runtime() {
     echo "==> Building runtime..."
     cd "$ROOT_DIR"
+    # Ensure libkrun is built first
+    if [ ! -f "${LIBKRUN_LIB_DIR:-$HOME/.nanosandbox/lib}/libkrun.a" ]; then
+        echo "WARNING: libkrun.a not found. Run './scripts/build-all.sh libkrun' first."
+        echo "         Or set LIBKRUN_LIB_DIR to the directory containing libkrun.a."
+    fi
     cargo build --release -p runtime
     echo "==> runtime built"
 }

@@ -1,8 +1,3 @@
-[target.x86_64-pc-windows-msvc]
-# Statically link the MSVC CRT so nanosb.exe has no VCRUNTIME140.dll dependency.
-# Without this, the binary fails to launch on clean Windows machines.
-rustflags = ["-C", "target-feature=+crt-static"]
-
 [target.'cfg(target_os = "macos")']
 # Codesign test/run binaries with the Hypervisor.framework entitlement before
 # execution (libkrun uses Apple's HVF). The script resolves its own location,

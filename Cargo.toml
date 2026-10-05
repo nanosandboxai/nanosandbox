@@ -3,20 +3,6 @@ members = [
     # Nanosandbox runtime (VM engine) and libkrun bindings.
     "runtime/crates/runtime",
     "runtime/crates/libkrun-sys",
-    # libkrun internal crates (checked-in source from runtime/deps/libkrun/).
-    "runtime/deps/libkrun/src/libkrun",
-    "runtime/deps/libkrun/src/vmm",
-    "runtime/deps/libkrun/src/devices",
-    "runtime/deps/libkrun/src/arch",
-    "runtime/deps/libkrun/src/arch_gen",
-    "runtime/deps/libkrun/src/kernel",
-    "runtime/deps/libkrun/src/polly",
-    "runtime/deps/libkrun/src/utils",
-    "runtime/deps/libkrun/src/smbios",
-    "runtime/deps/libkrun/src/cpuid",
-    "runtime/deps/libkrun/src/vm-memory-win",
-    "runtime/deps/libkrun/src/hcs",
-    "runtime/deps/libkrun/src/libkrunfw-win",
     # Agent-aware sandbox SDK and its gateway client.
     "sandbox/crates/sandbox",
     "sandbox/crates/gateway",
@@ -29,16 +15,6 @@ resolver = "2"
 exclude = [
     "runtime/deps/libkrunfw",
     "runtime/deps/gvproxy",
-    "runtime/deps/libkrun/tests",
-    "runtime/deps/libkrun/examples",
-    "runtime/deps/libkrun/krun-sys",
-    "runtime/deps/libkrun/src/krun_display",
-    "runtime/deps/libkrun/src/krun_input",
-    "runtime/deps/libkrun/src/aws_nitro",
-    "runtime/deps/libkrun/src/hvf",
-    "runtime/deps/libkrun/src/rutabaga_gfx",
-    "runtime/deps/libkrun/src/rutabaga_gfx/ffi",
-    "runtime/tools/extract_kernel",
 ]
 
 [workspace.package]
@@ -77,32 +53,32 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-indicatif = "0.17"
-tabled = "0.15"
-colored = "2"
+indicatif = "0.18"
+tabled = "0.22"
+colored = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"
 
 # TUI
-ratatui = "0.29"
-russh = "0.60"
+ratatui = "0.30"
+russh = "0.64"
 ssh-key = { version = "0.6", features = ["ed25519", "std"] }
-vt100 = "0.15"
-tui-term = "0.2"
-arboard = "3.6"
-png = "0.17"
+vt100 = "0.16"
+tui-term = "0.3"
+arboard = "3.6.1"
+png = "0.18"
 
 # Utilities
-base64 = "0.22"
+base64 = "0.23"
 uuid = { version = "1", features = ["v4"] }
-dirs = "6"
+dirs = "7"
 unicode-width = "0.2"
 async-trait = "0.1"
-sha2 = "0.10"
+sha2 = "0.11"
 env_logger = "0.11"
 log = "0.4"
-rusqlite = { version = "0.33", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Platform-specific (TUI terminal handling)
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
@@ -112,12 +88,6 @@ libc = "0.2"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
-
-# On Windows, replace the crates.io vm-memory with our patched fork that
-# compiles on non-Unix platforms (vm-memory-win). The patched crate has the
-# same API surface and version (0.16.2) so all dependents resolve identically.
-[patch.crates-io]
-vm-memory = { path = "runtime/deps/libkrun/src/vm-memory-win" }
 
 [profile.release]
 lto = true

@@ -86,7 +86,6 @@ pub struct GatewayClient {
 }
 
 impl GatewayClient {
-    #[cfg(not(target_os = "windows"))]
     pub fn new(
         gateway_addr: Option<String>,
         sandbox_id: String,
@@ -95,24 +94,6 @@ impl GatewayClient {
     ) -> Self {
         Self {
             transport: Transport::new(gateway_addr),
-            secrets_keypair: None,
-            secrets_store: HashMap::new(),
-            default_timeout_secs,
-            config_env,
-            sandbox_id,
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    pub fn new(
-        gateway_addr: Option<String>,
-        hcs_vm_id: Option<String>,
-        sandbox_id: String,
-        default_timeout_secs: u32,
-        config_env: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            transport: Transport::new(gateway_addr, hcs_vm_id),
             secrets_keypair: None,
             secrets_store: HashMap::new(),
             default_timeout_secs,
@@ -415,7 +396,7 @@ impl GatewayClient {
                 let hash = {
                     let input = format!("{session_id}:{key}");
                     let digest = Sha256::digest(input.as_bytes());
-                    format!("{digest:x}")
+                    digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
                 };
                 let path = format!("/run/secrets/files/{}", hash);
                 let escaped = sq_escape(value);
@@ -456,16 +437,6 @@ impl GatewayClient {
 
     /// Clone transport for use in spawn_blocking.
     fn clone_transport(&self) -> Transport {
-        #[cfg(not(target_os = "windows"))]
-        {
-            Transport::new(self.transport.gateway_addr().map(|s| s.to_string()))
-        }
-        #[cfg(target_os = "windows")]
-        {
-            Transport::new(
-                self.transport.gateway_addr().map(|s| s.to_string()),
-                self.transport.hcs_vm_id().map(|s| s.to_string()),
-            )
-        }
+        Transport::new(self.transport.gateway_addr().map(|s| s.to_string()))
     }
 }

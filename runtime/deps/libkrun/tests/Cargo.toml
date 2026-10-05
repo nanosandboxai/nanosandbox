@@ -1,3 +1,0 @@
-[workspace]
-members = ["runner", "guest-agent", "macros", "test_cases"]
-resolver = "2"

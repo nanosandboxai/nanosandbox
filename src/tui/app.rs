@@ -478,10 +478,6 @@ pub struct App {
     /// Startup runtime env pool (`.env`, `--env-file`, `--env`).
     /// This is in-memory only for the current process.
     pub runtime_env_pool: HashMap<String, String>,
-    /// Windows-only key suppression window after Ctrl+V to ignore
-    /// terminal-emulator key injection and avoid duplicate/interrupted paste.
-    #[cfg(target_os = "windows")]
-    pub paste_suppress_until: Option<std::time::Instant>,
 }
 
 impl Default for App {
@@ -530,8 +526,6 @@ impl App {
             command_history: CommandHistory::new(),
             pending_reconnect: None,
             runtime_env_pool: HashMap::new(),
-            #[cfg(target_os = "windows")]
-            paste_suppress_until: None,
         }
     }
 

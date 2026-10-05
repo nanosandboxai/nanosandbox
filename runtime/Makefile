@@ -12,6 +12,7 @@ help:
 	@echo "Nanosandbox Build System"
 	@echo ""
 	@echo "Build targets:"
+	@echo "  build-libkrun   Build upstream libkrun v1.19.5 as static library"
 	@echo "  build           Build in debug mode"
 	@echo "  build-release   Build in release mode"
 	@echo ""
@@ -44,6 +45,9 @@ help:
 # =============================================================================
 # Build Targets
 # =============================================================================
+
+build-libkrun:
+	./scripts/build-libkrun.sh
 
 build:
 	cargo build -p runtime

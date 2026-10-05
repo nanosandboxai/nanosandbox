@@ -6,7 +6,6 @@
 //! |----------|---------|------------|
 //! | Linux | libkrun FFI | KVM |
 //! | macOS | libkrun FFI | HVF (Hypervisor.framework) |
-//! | Windows | libkrun FFI (WHPX) | WHPX (Windows Hypervisor Platform) |
 //!
 //! The runtime is a pure VM engine. Gateway communication, SSH setup, and
 //! orchestration logic belong in the sandbox layer.
@@ -20,19 +19,10 @@ pub use validation::{
 // libkrun FFI bindings — libkrun-sys rlib on all platforms
 mod ffi;
 
-// libkrun runtime backend — Unix uses fork-based subprocess, Windows uses thread-based
-#[cfg(not(target_os = "windows"))]
-mod libkrun;
-#[cfg(target_os = "windows")]
-#[path = "libkrun_windows.rs"]
+// libkrun runtime backend
 mod libkrun;
 
 // gvproxy networking (Unix only — uses Unix sockets)
-#[cfg(not(target_os = "windows"))]
-pub(crate) mod gvproxy;
-// gvproxy stub for Windows (always returns "not available", uses TSI fallback)
-#[cfg(target_os = "windows")]
-#[path = "gvproxy_stub.rs"]
 pub(crate) mod gvproxy;
 
 pub use self::libkrun::LibkrunRuntime;
@@ -54,7 +44,7 @@ pub fn gvproxy_available() -> bool {
 use crate::config::SandboxConfig;
 use crate::error::Result;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use crate::error::Error;
 use std::path::Path;
 use tracing::info;
@@ -62,7 +52,7 @@ use tracing::info;
 /// Runtime backend enum — pure VM engine.
 ///
 /// All platforms use the same backend:
-/// - Linux/macOS/Windows: `Libkrun` (direct FFI via libkrun C API)
+/// - Linux/macOS: `Libkrun` (direct FFI via libkrun C API)
 pub enum RuntimeBackend {
     Libkrun(LibkrunRuntime),
 }
@@ -108,13 +98,6 @@ impl RuntimeBackend {
     pub fn is_vm_running(&self, id: &str) -> bool {
         match self {
             RuntimeBackend::Libkrun(r) => r.is_vm_running(id),
-        }
-    }
-
-    /// Get the HCS VM identity for HvSocket connections (Windows only).
-    pub fn hcs_vm_id(&self, id: &str) -> Option<String> {
-        match self {
-            RuntimeBackend::Libkrun(r) => r.hcs_vm_id(id),
         }
     }
 
@@ -187,11 +170,6 @@ impl Runtime {
     /// Check if the VM process is still running.
     pub fn is_vm_running(&self, id: &str) -> bool {
         self.backend.is_vm_running(id)
-    }
-
-    /// Get the HCS VM identity for HvSocket connections (Windows only).
-    pub fn hcs_vm_id(&self, id: &str) -> Option<String> {
-        self.backend.hcs_vm_id(id)
     }
 
     /// Stop a VM (force kill).

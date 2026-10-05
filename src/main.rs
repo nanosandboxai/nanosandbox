@@ -358,7 +358,7 @@ mod cli {
                     .unwrap_or_else(|| default_level.to_string());
                 // Use a global default level so that ALL crates (including
                 // nanosb_cli) are captured.  Previous per-crate filters
-                // silently missed the TUI module on Windows.
+
                 let file_filter = file_level.clone();
                 let file_layer = fmt::layer()
                     .with_writer(file_writer)
@@ -1269,58 +1269,7 @@ mod cli {
             ]
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            vec![
-                PlatformCheck {
-                    name: "HCS Service",
-                    keyword: "vmcompute",
-                    ok_message: "running (vmcompute)",
-                },
-                PlatformCheck {
-                    name: "Hyper-V Access",
-                    keyword: "Hyper-V Administrators",
-                    ok_message: "user has Hyper-V access (admin or Hyper-V Administrators)",
-                },
-                PlatformCheck {
-                    name: "WSL Kernel",
-                    keyword: "WSL kernel",
-                    ok_message: "found",
-                },
-                PlatformCheck {
-                    name: "libkrunfw.dll",
-                    keyword: "libkrunfw.dll not found",
-                    ok_message: "found",
-                },
-                PlatformCheck {
-                    name: "busybox",
-                    keyword: "busybox not found",
-                    ok_message: "found",
-                },
-                PlatformCheck {
-                    name: "vsock_proxy",
-                    keyword: "vsock_proxy not found",
-                    ok_message: "found",
-                },
-                PlatformCheck {
-                    name: "fuse_mount",
-                    keyword: "fuse_mount not found",
-                    ok_message: "found",
-                },
-                PlatformCheck {
-                    name: "Disk",
-                    keyword: "No SSD detected",
-                    ok_message: "SSD detected",
-                },
-                PlatformCheck {
-                    name: "Memory",
-                    keyword: "Low available memory",
-                    ok_message: "sufficient RAM available",
-                },
-            ]
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             vec![PlatformCheck {
                 name: "Platform",
@@ -1603,8 +1552,7 @@ mod cli {
             eprintln!("\nRun './runtime/scripts/install/macos.sh' to install dependencies.");
             #[cfg(target_os = "linux")]
             eprintln!("\nRun './runtime/scripts/install/linux.sh' to install dependencies.");
-            #[cfg(target_os = "windows")]
-            eprintln!("\nRun 'powershell -ExecutionPolicy Bypass -File .\\install-deps\\install.ps1' to install dependencies.\nOr use: irm https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install-deps.ps1 | iex");
+
 
             error!("Runtime prerequisites not met");
             anyhow::bail!("Runtime prerequisites not met. Run 'nanosb doctor' for details.");
@@ -1638,11 +1586,6 @@ mod cli {
     fn logs_dir() -> std::path::PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| {
-                #[cfg(target_os = "windows")]
-                {
-                    std::path::PathBuf::from(".")
-                }
-                #[cfg(not(target_os = "windows"))]
                 {
                     std::path::PathBuf::from("/tmp")
                 }

@@ -1,14 +1,12 @@
 //! Gateway crate — agent-gateway client for communicating with in-VM gateway processes.
 //!
 //! This crate encapsulates all communication with the agent-gateway HTTP server
-//! running inside VMs: transport (TCP/HvSocket), command execution, health checks,
+//! running inside VMs: transport (TCP), command execution, health checks,
 //! secrets injection, and SSH key management.
 
 pub mod client;
 pub mod error;
 pub mod http;
-#[cfg(target_os = "windows")]
-pub mod hvsocket;
 pub mod secrets;
 pub mod ssh;
 pub mod transport;

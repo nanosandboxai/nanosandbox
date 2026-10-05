@@ -3,7 +3,7 @@
 VM-based sandbox engine using libkrun FFI.
 
 > **Platform Status**: Currently, only **macOS Apple Silicon** is fully tested and stable.
-> Linux support is in development. Windows support is experimental.
+> Linux support is in development. Windows support has been archived (see `archive/windows-track` branch).
 
 ## Overview
 
@@ -18,7 +18,7 @@ This crate handles VM lifecycle, OCI image management, and containerization. It 
 - **Sub-Second Boot Times** -- Optimized VM startup using libkrun
 - **TSI Networking** -- Transparent Socket Impersonation for seamless network access
 - **Generic HTTP Gateway API** -- `gateway_http_get/post/delete/post_sse` for communicating with in-VM services
-- **Cross-Platform** -- macOS Apple Silicon (stable), Linux (in development), Windows (experimental)
+- **Cross-Platform** -- macOS Apple Silicon (stable), Linux (in development)
 
 ## Architecture
 
@@ -63,28 +63,31 @@ Additional re-exports: `SandboxConfig`, `ExecResult`, `ExecOptions`, `SandboxSta
 |----------|---------|------------|--------|
 | **macOS** | libkrun FFI | HVF (Hypervisor.framework) | **Stable** |
 | **Linux** | libkrun FFI | KVM | In Development |
-| **Windows** | Windows Containers | HCS / Hyper-V | Experimental |
 
 ### Platform Notes
 
 - **macOS Apple Silicon (M1/M2/M3/M4)**: Fully tested and stable. Use the install script for easy setup.
 - **Linux**: Not fully supported/tested yet. Requires libkrun installation.
-- **Windows**: Not fully supported/tested yet. Limited to Windows container images only (nanoserver, servercore).
-
-### Windows Limitation
-
-> **Important**: Windows containers can only run **Windows container images** (e.g., `nanoserver`, `servercore`). Linux images like Alpine or Ubuntu are **not supported** on Windows.
->
-> For Linux container workloads, use Linux or macOS.
 
 ## Build Instructions
 
 ### Prerequisites
 
 - Rust 1.70+
-- libkrunfw (guest firmware)
-- macOS: Run `./scripts/install/macos.sh` to install dependencies automatically, or install manually with `brew tap slp/krun && brew install libkrun`
-- Linux: [libkrun](https://github.com/containers/libkrun) shared library + KVM enabled (`/dev/kvm` accessible)
+- libkrunfw (guest firmware) — built from submodule
+- macOS: `brew install lld llvm` (for cross-compiling libkrun's init blob)
+- Linux: KVM enabled (`/dev/kvm` accessible)
+
+### Build libkrun (first time only)
+
+libkrun is consumed as a prebuilt static library from upstream. Build it once:
+
+```bash
+./scripts/build-libkrun.sh
+```
+
+This clones [containers/libkrun](https://github.com/containers/libkrun) at v1.19.5,
+builds it as `libkrun.a`, and places it in `~/.nanosandbox/lib/`.
 
 ### Build
 
@@ -96,6 +99,13 @@ cargo build -p nanosandbox
 
 ```bash
 cargo test -p nanosandbox
+```
+
+### Custom libkrun path
+
+```bash
+export LIBKRUN_LIB_DIR=/path/to/libkrun.a/dir
+cargo build -p nanosandbox
 ```
 
 ## SDK Usage
@@ -151,11 +161,9 @@ async fn main() -> anyhow::Result<()> {
 | OCI Registry Support | Any | Own registry | Any | Any |
 | Linux Support | Yes (KVM) | Yes | Yes | Yes |
 | macOS Support | Apple Silicon | Apple Silicon | Yes | No |
-| Windows Support | Windows containers* | No | Yes | No |
+| Windows Support | Archived | No | Yes | No |
 | Boot Time | <1s | <1s | <0.5s | <0.5s |
 | Self-Hosted | Yes | Requires server | Yes | Yes |
-
-*Windows support is limited to Windows container images only (nanoserver, servercore). Linux images require Linux or macOS.
 
 ## License
 

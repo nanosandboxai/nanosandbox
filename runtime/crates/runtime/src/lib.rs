@@ -42,8 +42,6 @@
 pub mod auth;
 pub mod config;
 pub mod error;
-#[cfg(target_os = "windows")]
-pub mod hvsocket;
 pub mod image;
 pub mod oci;
 pub mod registry;

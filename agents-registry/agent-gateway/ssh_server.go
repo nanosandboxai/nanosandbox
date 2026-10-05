@@ -16,7 +16,7 @@ import (
 	"github.com/creack/pty"
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/gliderlabs/ssh"
+	"charm.land/ssh"
 )
 
 // ---------------------------------------------------------------------------

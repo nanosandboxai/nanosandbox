@@ -49,9 +49,8 @@
 runtime/
 ├── crates/
 │   ├── nanosandbox/        Rust SDK — VM sandbox management, OCI image pulling
-│   └── libkrun-sys/        Rust FFI bindings for libkrun C API
+│   └── libkrun-sys/        Rust FFI bindings for libkrun C API (links prebuilt libkrun.a)
 ├── deps/
-│   ├── libkrun/            Git submodule → containers/libkrun (Apache-2.0)
 │   ├── libkrunfw/          Git submodule → containers/libkrunfw (LGPL-2.1)
 │   └── gvproxy/            Git submodule → containers/gvisor-tap-vsock (Apache-2.0)
 ├── agent-gateway/          Go HTTP server — runs as PID 1 inside VMs
@@ -63,13 +62,19 @@ runtime/
 ### Component relationships
 
 - **nanosandbox** depends on **libkrun-sys** for FFI bindings
-- **libkrun-sys** finds libkrun via: submodule build → pkg-config → known paths → env var
-- **libkrun** (submodule) depends on **libkrunfw** at runtime (dlopen)
+- **libkrun-sys** links against a prebuilt `libkrun.a` (built from upstream v1.19.5 via `scripts/build-libkrun.sh`)
+- **libkrun** (upstream) depends on **libkrunfw** at runtime (dlopen)
 - **gvproxy** provides user-mode networking (virtio-net); optional, TSI fallback when absent
 - **agent-gateway** is independent (Go binary, built separately)
 - **Docker images** bundle agent-gateway + agent CLIs on Debian slim
 
 ## Building
+
+### Prerequisites
+- Rust 1.70+
+- libkrunfw (guest firmware) — built from submodule
+- macOS: `brew install lld llvm` (for cross-compiling libkrun's init blob)
+- Linux: standard build tools
 
 ### Full build (all components)
 ```bash
@@ -80,14 +85,24 @@ git submodule update --init --recursive
 ### Individual components
 ```bash
 ./scripts/build-all.sh libkrunfw    # kernel library
-./scripts/build-all.sh libkrun      # VMM
+./scripts/build-all.sh libkrun      # VMM (builds upstream libkrun v1.19.5)
 ./scripts/build-all.sh gvproxy      # networking sidecar
 ./scripts/build-all.sh nanosandbox  # Rust SDK
 ./scripts/build-all.sh gateway      # Go server
 ```
 
-### Just the Rust workspace (uses system libkrun)
+### Just the Rust workspace (requires prebuilt libkrun)
 ```bash
+# First build libkrun:
+./scripts/build-libkrun.sh
+
+# Then build Rust workspace:
+cargo build -p nanosandbox
+```
+
+### Custom libkrun path
+```bash
+export LIBKRUN_LIB_DIR=/path/to/libkrun.a/dir
 cargo build -p nanosandbox
 ```
 
@@ -100,26 +115,6 @@ cargo build -p nanosandbox
 | macOS Apple Silicon | HVF | Stable |
 | Linux x86_64 | KVM | In Development |
 | Linux aarch64 | KVM | In Development |
-| Windows x86_64 | HCS | In Development |
-
-### Windows HCS backend
-
-The Windows port uses the **Host Compute Service (HCS)** — Microsoft's native
-hypervisor API — instead of KVM or HVF. Key differences from Unix backends:
-
-- **hcs crate** (`deps/libkrun/src/hcs/`): Rust wrapper around the HCS C API
-  (`computecore.dll`, `computenetwork.dll`). Creates and manages Hyper-V
-  isolated containers as lightweight VMs.
-- **libkrunfw-win** (`deps/libkrun/src/libkrunfw-win/`): Embeds the Linux
-  kernel binary (`vmlinux.bin`) at compile time via `include_bytes!`. The
-  kernel is NOT checked into git — it is built by the `build-kernel.yml` CI
-  workflow or downloaded manually.
-- **vm-memory-win** (`deps/libkrun/src/vm-memory-win/`): Vendored fork of
-  `vm-memory` with Windows memory-mapping support. Activated via
-  `[patch.crates-io]` in the workspace `Cargo.toml`.
-- **Static rlib linking**: On all three platforms (Linux, macOS, Windows),
-  `libkrun-sys` links libkrun as a static Rust rlib. On Windows there is no
-  dlopen of libkrunfw — the kernel is embedded directly.
 
 ### CI matrix (validated distros)
 
@@ -153,7 +148,7 @@ export NANOSANDBOX_LIBKRUNFW_PATH=/custom/path/libkrunfw.so
 | gvproxy (gvisor-tap-vsock) | Apache-2.0 | Standalone binary |
 | agent-gateway | Apache-2.0 | — |
 
-Static linking of libkrun into nanosandbox is safe — libkrunfw (LGPL/GPL) is always loaded dynamically at runtime by libkrun on Linux/macOS. On Windows, the kernel is embedded via libkrunfw-win (no dlopen).
+Static linking of libkrun into nanosandbox is safe — libkrunfw (LGPL/GPL) is always loaded dynamically at runtime by libkrun on Linux/macOS.
 
 ## Release Pipeline
 
@@ -177,4 +172,4 @@ End user
 | `deps-darwin-arm64.tar.gz` | libkrunfw.dylib, libkrun.dylib, gvproxy |
 | `nanosandbox-{os}-{arch}.tar.gz` | nanosandbox binary |
 | `agent-gateway-linux-{arch}.tar.gz` | agent-gateway binary |
-| `deps-windows-amd64.tar.gz` | nanosandbox.exe (kernel embedded) |
+
