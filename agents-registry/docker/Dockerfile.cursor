@@ -28,4 +28,4 @@ RUN test -x /usr/local/bin/cursor-agent \
     && echo "Cursor CLI: OK"
 RUN rm -rf /workspace/*
 
-CMD ["/usr/local/bin/nanosb-init.sh"]
+CMD ["cursor-agent"]

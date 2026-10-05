@@ -9,4 +9,4 @@ RUN npm install -g @anthropic-ai/claude-code \
 RUN claude --version && echo "Claude Code: OK"
 RUN rm -rf /workspace/*
 
-CMD ["/usr/local/bin/nanosb-init.sh"]
+CMD ["claude"]

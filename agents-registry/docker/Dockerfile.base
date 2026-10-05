@@ -1,13 +1,9 @@
 # =============================================================================
-# Stage 1: Build agent-gateway as a static Go binary
-# =============================================================================
-FROM golang:1.22-alpine AS gateway-builder
-WORKDIR /build
-COPY agent-gateway/ .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o agent-gateway .
-
-# =============================================================================
-# Stage 2: Debian slim base with Node.js, MCP packages, and agent-gateway
+# Shared base image for nanosandbox agent containers.
+#
+# Intentionally vanilla: no nanosb runtime code is baked in. Sandbox setup
+# (mounts, network, console) happens at the microVM layer, and agent config
+# is delivered via virtiofs mounts at boot.
 # =============================================================================
 FROM node:22-slim
 
@@ -31,18 +27,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create non-root user for running code agents.
 # Agents like Claude Code refuse --dangerously-skip-permissions as root.
-# No sudo — package installation goes through agent-gateway's /api/v1/pkg/install
-# endpoint which runs as root. Thin wrappers at /usr/local/bin/apt-get and /apt
-# forward to the gateway. The microVM is the security boundary.
+# The microVM is the security boundary; no sudo is provided.
 RUN usermod -l developer -d /home/developer -m node \
     && groupmod -n developer node \
     && mkdir -p /home/developer/.ssh \
     && chmod 700 /home/developer/.ssh \
     && chown -R developer:developer /home/developer \
     && find / -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
-
-# Copy agent-gateway binary from builder
-COPY --from=gateway-builder /build/agent-gateway /usr/local/bin/agent-gateway
 
 # Python 3 + uv/uvx (runtime for Python-based MCP servers like mcp-server-fetch)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -60,17 +51,3 @@ RUN mkdir -p /home/developer/.config/goose \
     && chown -R developer:developer /home/developer
 
 WORKDIR /workspace
-
-# Copy init script (sets up mounts, SSH keys, execs agent-gateway)
-COPY docker/nanosb-init.sh /usr/local/bin/nanosb-init.sh
-RUN chmod +x /usr/local/bin/nanosb-init.sh
-
-# Install apt-get/apt wrappers that forward to agent-gateway's pkg endpoint.
-# Must be LAST — after all build-time apt-get calls (wrappers need the gateway running).
-COPY docker/rootless-apt-wrapper.sh /usr/local/bin/apt-get
-COPY docker/rootless-apt-wrapper.sh /usr/local/bin/apt
-RUN chmod +x /usr/local/bin/apt-get /usr/local/bin/apt
-
-# Verify binaries
-RUN test -x /usr/local/bin/agent-gateway && echo "agent-gateway: OK" \
-    && test -x /usr/local/bin/nanosb-init.sh && echo "nanosb-init.sh: OK"
