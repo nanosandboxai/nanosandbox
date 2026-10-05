@@ -2,7 +2,7 @@
 //!
 //! High-level API for creating and managing sandboxed execution environments.
 
-use crate::config::{ConsoleSpec, ExtraMount, SandboxConfig};
+use crate::config::{ConsoleSpec, ExtraMount, RuntimeMode, SandboxConfig};
 use crate::error::{Error, Result};
 use crate::image::{ImageManager, PulledImage};
 use crate::oci;
@@ -315,6 +315,12 @@ impl Sandbox {
                 "Cannot start sandbox in {:?} state",
                 self.status
             )));
+        }
+
+        if self.config.runtime_mode == RuntimeMode::Next {
+            let console = self.config.console.clone();
+            let extra_mounts = self.config.extra_mounts.clone();
+            return self.start_next(console, extra_mounts).await;
         }
 
         info!("Starting sandbox {}", self.id);

@@ -990,6 +990,21 @@ impl LibkrunRuntime {
     /// Boot a persistent VM subprocess (next mode).
     /// Returns the child PID on success.
     ///
+    fn dup_console_fd(fd: i32) -> std::result::Result<i32, String> {
+        if fd < 0 {
+            return Ok(fd);
+        }
+        let new_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD, 3) };
+        if new_fd < 0 {
+            return Err(format!(
+                "Failed to duplicate console fd {}: {}",
+                fd,
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(new_fd)
+    }
+
     /// Like `boot_persistent_vm` but accepts console fds and extra mounts
     /// for the next-mode (zero-image-customization) path. The console fds
     /// are inherited by the subprocess via `Stdio::from_raw_fd`.
@@ -1010,7 +1025,7 @@ impl LibkrunRuntime {
         console: Option<ConsoleSpec>,
         extra_mounts: Vec<ExtraMount>,
     ) -> std::result::Result<i32, String> {
-        let request = BootVmRequest {
+        let mut request = BootVmRequest {
             sandbox_id: sandbox_id.to_string(),
             rootfs_path: rootfs_path.to_string(),
             cpus,
@@ -1027,6 +1042,18 @@ impl LibkrunRuntime {
             console,
             extra_mounts,
         };
+
+        let mut console_dups: Vec<i32> = Vec::new();
+        if let Some(cons) = request.console.as_mut() {
+            cons.stdin_fd = Self::dup_console_fd(cons.stdin_fd)?;
+            cons.stdout_fd = Self::dup_console_fd(cons.stdout_fd)?;
+            cons.stderr_fd = Self::dup_console_fd(cons.stderr_fd)?;
+            for fd in [cons.stdin_fd, cons.stdout_fd, cons.stderr_fd] {
+                if fd >= 0 {
+                    console_dups.push(fd);
+                }
+            }
+        }
 
         let config_json = serde_json::to_string(&request)
             .map_err(|e| format!("Failed to serialize boot config: {}", e))?;
@@ -1068,6 +1095,12 @@ impl LibkrunRuntime {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn boot-vm subprocess: {}", e))?;
+
+        for fd in console_dups {
+            unsafe {
+                libc::close(fd);
+            }
+        }
 
         // Write config JSON to child's stdin, then close it
         {

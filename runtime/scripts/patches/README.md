@@ -18,15 +18,13 @@ customization:
 Both features are gated behind `KRUN_NEXT_MODE=1`. When that env var is absent
 (legacy mode), the init behavior is completely unchanged.
 
-## Patch order
+## Patch
 
-Apply in order:
+A single canonical patch is maintained:
 
-| # | File | What it adds |
-|---|------|-------------|
-| 1 | `0001-init-add-extra-virtiofs-mounts-for-next-mode.patch` | `mount_extra_virtiofs()` — parses `KRUN_EXTRA_MOUNTS` JSON array, creates target dirs, mounts with `-o tag=<tag>` via virtiofs, respects readonly |
-| 2 | `0002-init-add-static-network-bring-up-for-next-mode.patch` | `configure_static_network()` — parses `KRUN_NET_CONFIG` JSON, sets IP/netmask/gateway via `ioctl(SIOCSIFADDR)` + `SIOCSIFNETMASK` + `SIOCADDRT`, writes `/etc/resolv.conf` |
-| 3 | `0003-combined-next-mode-init-changes.patch` | Combined patch (1+2) for convenience |
+| File | What it adds |
+|------|-------------|
+| `0003-combined-next-mode-init-changes.patch` | `mount_extra_virtiofs()` (parses `KRUN_EXTRA_MOUNTS`, mounts virtiofs with the tag as source, respects readonly) and `configure_static_network()` (parses `KRUN_NET_CONFIG`, sets IP/netmask/gateway via `ioctl`, writes `/etc/resolv.conf`) |
 
 ## Integration with `runtime/scripts/build-libkrun.sh`
 
@@ -39,7 +37,7 @@ To apply manually (e.g., for testing):
 ```bash
 cd ~/.cache/nanosandbox/libkrun
 git checkout v1.19.5
-git am runtime/scripts/patches/0003-combined-next-mode-init-changes.patch
+git apply /path/to/nanosandbox/runtime/scripts/patches/0003-combined-next-mode-init-changes.patch
 ```
 
 To build with the patches to a custom output directory:
@@ -73,7 +71,8 @@ Set these in the VM's kernel cmdline (via `krun_set_exec` → `KRUN_INIT` env):
   gvproxy is not running (TSI fallback).
 - **virtiofs mount via `mount -t virtiofs`**: Requires the kernel to have
   virtiofs support (CONFIG_FUSE_VIRTIO_FS). libkrunfw kernels include this.
-  The tag is passed via `-o tag=<tag>`.
+  The mount syscall passes the tag as the source and `virtiofs` as the
+  filesystem type: `mount(tag, target, "virtiofs", flags, NULL)`.
 
 ## What cannot be done via patch
 
