@@ -33,13 +33,13 @@ Language SDKs (Python, Node, Go)
 
 All agent configuration is delivered at deploy time via the `deploy` module:
 
-1. **Mount planner** (`deploy::MountPlanner`) -- Computes virtiofs mounts: workspace RW, per-agent state dirs RW, config/skills dirs RO.
+1. **Mount planner** (`deploy::MountPlanner`) -- Computes virtiofs mounts: workspace RW and one merged per-agent RW mount per guest path (generated config files are written into the state dirs so each path has a single mount).
 2. **MCP config generation** (`deploy::ConfigGenerator`) -- Generates per-agent MCP server config files (Claude JSON, Goose YAML, Codex TOML, Cursor JSON).
 3. **Skills generation** (`deploy::SkillsGenerator`) -- Generates skill/prompt files per agent format (SKILL.md, .goosehints, .mdc rules).
 4. **Agent command builder** (`deploy::AgentCommandBuilder`) -- Builds the CLI invocation (binary + args) for each agent type.
 5. **Secrets** -- Passed via in-memory boot env (`krun_set_env`); never written to disk.
 
-No in-VM CRUD APIs remain. All config is boot-immutable and delivered as read-only virtiofs mounts.
+No in-VM CRUD APIs remain. Config is regenerated host-side on every deploy and merged into the agent state mounts.
 
 ## FFI Bindings
 

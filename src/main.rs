@@ -1039,7 +1039,10 @@ mod cli {
             }
         }
         for file in &plan.config_files {
-            let path = sandbox_dir.join("config").join(&file.relative_path);
+            let path = match sandbox::deploy::merged_config_path(&file.relative_path) {
+                Some(merged) => sandbox_dir.join("state").join(merged),
+                None => sandbox_dir.join("config").join(&file.relative_path),
+            };
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }

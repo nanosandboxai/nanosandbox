@@ -35,7 +35,7 @@ mod config_gen;
 mod skills_gen;
 mod agent_cmd;
 
-pub use mount_planner::{MountPlanner, PlannedMount};
+pub use mount_planner::{merged_config_path, MountPlanner, PlannedMount};
 pub use config_gen::{ConfigGenerator, ConfigFile, McpConfigFormat};
 pub use skills_gen::SkillsGenerator;
 pub use agent_cmd::{AgentCommandBuilder, AgentCommand};

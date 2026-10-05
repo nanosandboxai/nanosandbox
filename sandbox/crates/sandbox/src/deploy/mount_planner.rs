@@ -98,6 +98,21 @@ fn agent_config_guest_paths(agent_type: AgentType) -> Vec<(&'static str, &'stati
     }
 }
 
+/// Map a config file's relative path (e.g. "claude/settings.json") to its
+/// location under the sandbox state dir (e.g. ".claude/settings.json").
+pub fn merged_config_path(relative_path: &str) -> Option<String> {
+    let (subdir, rest) = relative_path.split_once('/')?;
+    let state_dir = match subdir {
+        "claude" => ".claude",
+        "codex" => ".codex",
+        "agents" => ".agents",
+        "goose" => ".config_goose",
+        "cursor" => ".cursor",
+        _ => return None,
+    };
+    Some(format!("{}/{}", state_dir, rest))
+}
+
 /// Mount planner: computes the full set of virtiofs mounts for a sandbox.
 pub struct MountPlanner;
 
@@ -147,9 +162,14 @@ impl MountPlanner {
             });
         }
 
-        // 3. Config directories (RO)
+        // 3. Config directories. Generated config files are merged into the
+        //    state mounts above (see `merged_config_path`), so config mounts
+        //    are only added for guest paths that are not already mounted.
         let config_base = sandbox_dir.join("config");
         for (guest_path, subdir) in agent_config_guest_paths(*agent_type) {
+            if mounts.iter().any(|m| m.guest_path == guest_path) {
+                continue;
+            }
             let host_config_dir = config_base.join(subdir);
             mounts.push(PlannedMount {
                 host_path: host_config_dir,
@@ -192,22 +212,16 @@ mod tests {
         let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
         let mounts = MountPlanner::plan(&config, &AgentType::Claude, sandbox_dir, None);
 
-        // Should have: state dirs (1 for claude) + config dirs (1 for claude) + nanosandbox shared
-        assert!(mounts.len() >= 3, "claude should have at least 3 mounts, got {}", mounts.len());
+        // Claude: merged state+config mount + shared nanosandbox
+        assert!(mounts.len() >= 2, "claude should have at least 2 mounts, got {}", mounts.len());
 
-        // Check state mount for ~/.claude
-        let claude_state = mounts.iter().find(|m| m.guest_path == "/home/developer/.claude");
-        assert!(claude_state.is_some(), "should have ~/.claude state mount");
-        assert!(!claude_state.unwrap().readonly, "state mount should be RW");
+        let claude_mounts: Vec<_> = mounts
+            .iter()
+            .filter(|m| m.guest_path == "/home/developer/.claude")
+            .collect();
+        assert_eq!(claude_mounts.len(), 1, "exactly one ~/.claude mount");
+        assert!(!claude_mounts[0].readonly, "merged ~/.claude mount should be RW");
 
-        // Check config mount for ~/.claude
-        let claude_config = mounts.iter().filter(|m| m.guest_path == "/home/developer/.claude" && m.readonly).count();
-        // Actually there's only one ~/.claude mount — the state one. Config is separate.
-        // Let's check the config mount paths:
-        let config_mounts: Vec<_> = mounts.iter().filter(|m| m.readonly).collect();
-        assert!(!config_mounts.is_empty(), "should have RO config mounts");
-
-        // Check nanosandbox shared state
         let ns_mount = mounts.iter().find(|m| m.guest_path == "/home/developer/.nanosandbox");
         assert!(ns_mount.is_some(), "should have nanosandbox state mount");
         assert!(!ns_mount.unwrap().readonly, "nanosandbox mount should be RW");
@@ -219,15 +233,59 @@ mod tests {
         let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
         let mounts = MountPlanner::plan(&config, &AgentType::Goose, sandbox_dir, None);
 
-        // Goose has 2 state dirs + 1 config dir + nanosandbox shared
-        assert!(mounts.len() >= 4, "goose should have at least 4 mounts, got {}", mounts.len());
+        // Goose: 2 merged state mounts + nanosandbox shared
+        assert!(mounts.len() >= 3, "goose should have at least 3 mounts, got {}", mounts.len());
 
-        let goose_config = mounts.iter().find(|m| m.guest_path == "/home/developer/.config/goose" && m.readonly);
-        assert!(goose_config.is_some(), "goose config mount should exist and be RO");
+        let goose_config: Vec<_> = mounts
+            .iter()
+            .filter(|m| m.guest_path == "/home/developer/.config/goose")
+            .collect();
+        assert_eq!(goose_config.len(), 1, "exactly one .config/goose mount");
+        assert!(!goose_config[0].readonly, "merged goose mount should be RW");
 
         let goose_state = mounts.iter().find(|m| m.guest_path == "/home/developer/.local/share/goose");
         assert!(goose_state.is_some(), "goose local/share state mount should exist");
         assert!(!goose_state.unwrap().readonly, "state mount should be RW");
+    }
+
+    #[test]
+    fn test_plan_has_no_duplicate_guest_paths() {
+        for agent_type in [
+            AgentType::Claude,
+            AgentType::Codex,
+            AgentType::Goose,
+            AgentType::Cursor,
+        ] {
+            let config = make_config(Some(agent_type));
+            let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+            let mounts = MountPlanner::plan(&config, &agent_type, sandbox_dir, None);
+            let mut seen = std::collections::HashSet::new();
+            for mount in &mounts {
+                assert!(
+                    seen.insert(mount.guest_path.clone()),
+                    "duplicate guest path {} for {:?}",
+                    mount.guest_path,
+                    agent_type
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_merged_config_path_mapping() {
+        assert_eq!(
+            merged_config_path("claude/settings.json").as_deref(),
+            Some(".claude/settings.json")
+        );
+        assert_eq!(
+            merged_config_path("goose/config.yaml").as_deref(),
+            Some(".config_goose/config.yaml")
+        );
+        assert_eq!(
+            merged_config_path("agents/skills/tdd/SKILL.md").as_deref(),
+            Some(".agents/skills/tdd/SKILL.md")
+        );
+        assert_eq!(merged_config_path("unknown/file"), None);
     }
 
     #[test]
@@ -249,8 +307,8 @@ mod tests {
         let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
         let mounts = MountPlanner::plan(&config, &AgentType::Codex, sandbox_dir, None);
 
-        // Codex: 2 state dirs + 2 config dirs + nanosandbox shared
-        assert!(mounts.len() >= 5, "codex should have at least 5 mounts, got {}", mounts.len());
+        // Codex: 2 merged state mounts + nanosandbox shared
+        assert!(mounts.len() >= 3, "codex should have at least 3 mounts, got {}", mounts.len());
 
         assert!(
             mounts.iter().any(|m| m.guest_path == "/home/developer/.codex"),
@@ -268,8 +326,8 @@ mod tests {
         let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
         let mounts = MountPlanner::plan(&config, &AgentType::Cursor, sandbox_dir, None);
 
-        // Cursor: 1 state dir + 1 config dir + nanosandbox shared
-        assert!(mounts.len() >= 3, "cursor should have at least 3 mounts, got {}", mounts.len());
+        // Cursor: 1 merged state mount + nanosandbox shared
+        assert!(mounts.len() >= 2, "cursor should have at least 2 mounts, got {}", mounts.len());
 
         assert!(
             mounts.iter().any(|m| m.guest_path == "/home/developer/.cursor"),
