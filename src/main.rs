@@ -106,15 +106,6 @@ mod cli {
             sandbox_name: String,
             /// JSON-serialized SandboxConfig
             config_json: String,
-            /// Console stdin fd number
-            console_stdin_fd: String,
-            /// Console stdout fd number
-            console_stdout_fd: String,
-            /// Console stderr fd number
-            console_stderr_fd: String,
-            /// Whether to use TTY mode
-            #[arg(long, default_value = "false")]
-            console_tty: bool,
             /// JSON-serialized extra mounts
             #[arg(long, default_value = "[]")]
             extra_mounts_json: String,
@@ -187,6 +178,10 @@ mod cli {
             /// Run agent commands as root inside the sandbox VM
             #[arg(long)]
             run_as_root: bool,
+
+            /// Boot via the zero-image-customization supervisor (next runtime mode)
+            #[arg(long)]
+            next: bool,
 
             /// Buffer output instead of streaming in real-time
             /// (only useful with --format json)
@@ -559,31 +554,10 @@ mod cli {
                 )
                 .await
             }
-            Some(Commands::Supervise {
-                sandbox_name,
-                config_json,
-                console_stdin_fd,
-                console_stdout_fd,
-                console_stderr_fd,
-                console_tty,
-                extra_mounts_json,
-                timeout_secs,
-            }) => {
-                let parse_fd = |raw: &str, which: &str| -> anyhow::Result<i32> {
-                    raw.parse::<i32>()
-                        .map_err(|e| anyhow::anyhow!("invalid {} fd '{}': {}", which, raw, e))
-                };
-                let args = crate::supervisor::SuperviseArgs {
-                    sandbox_name,
-                    config_json,
-                    console_stdin_fd: parse_fd(&console_stdin_fd, "console stdin")?,
-                    console_stdout_fd: parse_fd(&console_stdout_fd, "console stdout")?,
-                    console_stderr_fd: parse_fd(&console_stderr_fd, "console stderr")?,
-                    console_tty,
-                    extra_mounts_json,
-                    timeout_secs,
-                };
-                crate::supervisor::run_supervisor(args)
+            Some(Commands::Supervise { .. }) => {
+                anyhow::bail!(
+                    "__supervise must be invoked directly (handled before runtime startup)"
+                )
             }
             Some(Commands::Logs {
                 sandbox,
@@ -603,6 +577,7 @@ mod cli {
                 ports,
                 timeout,
                 run_as_root,
+                next,
                 buffered,
                 command,
             }) => {
@@ -617,6 +592,7 @@ mod cli {
                     &port_pairs,
                     timeout,
                     run_as_root,
+                    next,
                     buffered,
                     &command,
                     cli.format,
@@ -854,6 +830,122 @@ mod cli {
         Ok(vars)
     }
 
+    async fn cmd_run_next(
+        sandbox_name: &str,
+        image: &str,
+        cpus: u32,
+        memory: u32,
+        env_vars: &[(String, String)],
+        timeout: u32,
+        run_as_root: bool,
+        command: &[String],
+        verbose: bool,
+    ) -> anyhow::Result<()> {
+        use crate::supervisor::client::SupervisorClient;
+
+        let image = normalize_image(image);
+        let mut builder = runtime::config::SandboxConfig::builder()
+            .name(sandbox_name)
+            .image(&image)
+            .cpus(cpus)
+            .memory_mb(memory)
+            .timeout_secs(timeout)
+            .run_as_root(run_as_root)
+            .runtime_mode(runtime::config::RuntimeMode::Next);
+        for (key, value) in env_vars {
+            builder = builder.env(key, value);
+        }
+        let mut config = builder.build();
+        if !command.is_empty() {
+            config.command = Some(command[0].clone());
+            config.command_args = command[1..].to_vec();
+        }
+        let config_json = serde_json::to_string(&config)?;
+
+        let exe = std::env::current_exe()?;
+        let sandbox_dir = SupervisorClient::new(sandbox_name).sandbox_dir().to_path_buf();
+        std::fs::create_dir_all(sandbox_dir.join("logs"))?;
+        std::fs::write(sandbox_dir.join("config.json"), &config_json)?;
+        let supervisor_log =
+            std::fs::File::create(sandbox_dir.join("logs").join("supervisor.log"))?;
+        let supervisor_log_err = supervisor_log.try_clone()?;
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("__supervise")
+            .arg(sandbox_name)
+            .arg(&config_json)
+            .arg("--extra-mounts-json")
+            .arg("[]")
+            .arg("--timeout-secs")
+            .arg(timeout.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(supervisor_log))
+            .stderr(std::process::Stdio::from(supervisor_log_err));
+        let child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to spawn supervisor: {}", e))?;
+        drop(child);
+
+        let client = SupervisorClient::new(sandbox_name);
+        let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if let Some(state) = client.read_state() {
+                match state.state {
+                    crate::supervisor::SandboxState::Running => break,
+                    crate::supervisor::SandboxState::Error => {
+                        anyhow::bail!("sandbox '{}' failed to start", sandbox_name)
+                    }
+                    _ => {}
+                }
+            }
+            if std::time::Instant::now() > ready_deadline {
+                anyhow::bail!("timed out waiting for sandbox '{}' to start", sandbox_name);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        println!("{} Sandbox {} started", "✓".green(), sandbox_name.bold());
+
+        let log_path = client.console_log_path();
+        let mut offset = 0u64;
+        loop {
+            if let Ok(meta) = std::fs::metadata(&log_path) {
+                let len = meta.len();
+                if len < offset {
+                    offset = 0;
+                }
+                if len > offset {
+                    use std::io::{Read, Seek, SeekFrom, Write};
+                    if let Ok(mut f) = std::fs::File::open(&log_path) {
+                        let _ = f.seek(SeekFrom::Start(offset));
+                        let mut buf = Vec::new();
+                        let _ = f.read_to_end(&mut buf);
+                        offset = len;
+                        print!("{}", String::from_utf8_lossy(&buf));
+                        std::io::stdout().flush().ok();
+                    }
+                }
+            }
+            if let Some(state) = client.read_state() {
+                if matches!(
+                    state.state,
+                    crate::supervisor::SandboxState::Stopped
+                        | crate::supervisor::SandboxState::Error
+                ) {
+                    if let Some(code) = state.exit_code {
+                        if code != 0 {
+                            std::process::exit(code);
+                        }
+                    }
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        if verbose {
+            eprintln!("sandbox '{}' finished", sandbox_name);
+        }
+        Ok(())
+    }
+
     /// Run a command in a new sandbox
     ///
     /// By default, output is streamed in real-time (like `docker run`).
@@ -896,6 +988,7 @@ mod cli {
         ports: &[(u16, u16)],
         timeout: u32,
         run_as_root: bool,
+        next: bool,
         buffered: bool,
         command: &[String],
         format: OutputFormat,
@@ -909,6 +1002,21 @@ mod cli {
         // Parse environment variables
         let env_files: Vec<String> = env_file.iter().map(|s| s.to_string()).collect();
         let env_vars = parse_env_vars(env_args, &env_files)?;
+
+        if next {
+            return cmd_run_next(
+                &sandbox_name,
+                image,
+                cpus,
+                memory,
+                &env_vars,
+                timeout,
+                run_as_root,
+                command,
+                verbose,
+            )
+            .await;
+        }
 
         if verbose {
             eprintln!("Creating sandbox '{}' with image '{}'", sandbox_name, image);
@@ -1218,6 +1326,35 @@ mod cli {
 
     /// Stop a running sandbox
     async fn cmd_stop(sandbox_id: &str, verbose: bool) -> anyhow::Result<()> {
+        {
+            use crate::supervisor::client::SupervisorClient;
+            let client = SupervisorClient::new(sandbox_id);
+            if client.sandbox_dir().exists() && client.is_running() {
+                if verbose {
+                    eprintln!("Stopping supervisor sandbox '{}'", sandbox_id);
+                }
+                client.stop(false).map_err(|e| anyhow::anyhow!("{}", e))?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                loop {
+                    if let Some(state) = client.read_state() {
+                        if matches!(
+                            state.state,
+                            crate::supervisor::SandboxState::Stopped
+                                | crate::supervisor::SandboxState::Error
+                        ) {
+                            break;
+                        }
+                    }
+                    if std::time::Instant::now() > deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                println!("{} Stopped {}", "✓".green(), sandbox_id.bold());
+                return Ok(());
+            }
+        }
+
         let registry = SandboxRegistry::new()?;
 
         // Find sandbox by ID or name prefix
@@ -1251,6 +1388,42 @@ mod cli {
 
     /// Remove a sandbox
     async fn cmd_rm(sandbox_id: &str, force: bool, verbose: bool) -> anyhow::Result<()> {
+        {
+            use crate::supervisor::client::SupervisorClient;
+            let client = SupervisorClient::new(sandbox_id);
+            if client.sandbox_dir().exists() {
+                if client.is_running() {
+                    if !force {
+                        anyhow::bail!(
+                            "Sandbox {} is running. Use -f to force removal.",
+                            sandbox_id
+                        );
+                    }
+                    let _ = client.stop(true);
+                    let deadline =
+                        std::time::Instant::now() + std::time::Duration::from_secs(20);
+                    loop {
+                        if let Some(state) = client.read_state() {
+                            if matches!(
+                                state.state,
+                                crate::supervisor::SandboxState::Stopped
+                                    | crate::supervisor::SandboxState::Error
+                            ) {
+                                break;
+                            }
+                        }
+                        if std::time::Instant::now() > deadline {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                }
+                std::fs::remove_dir_all(client.sandbox_dir())?;
+                println!("{} Removed {}", "✓".green(), sandbox_id.bold());
+                return Ok(());
+            }
+        }
+
         let registry = SandboxRegistry::new()?;
 
         // Find sandbox by ID or name prefix
@@ -1803,6 +1976,26 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("internal-boot-vm") {
         sandbox::handle_boot_vm_subprocess();
         // ^ never returns
+    }
+
+    if std::env::args().nth(1).as_deref() == Some("__supervise") {
+        use clap::Parser;
+        let parsed = cli::Cli::parse();
+        if let Some(cli::Commands::Supervise {
+            sandbox_name,
+            config_json,
+            extra_mounts_json,
+            timeout_secs,
+        }) = parsed.command
+        {
+            crate::supervisor::run_supervisor(crate::supervisor::SuperviseArgs {
+                sandbox_name,
+                config_json,
+                extra_mounts_json,
+                timeout_secs,
+            });
+        }
+        anyhow::bail!("__supervise requires sandbox_name and config_json arguments");
     }
 
     tokio::runtime::Builder::new_multi_thread()

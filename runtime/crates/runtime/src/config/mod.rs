@@ -126,11 +126,11 @@ pub struct SandboxConfig {
     /// PID 1 command to run inside the VM.
     /// Set by the sandbox layer before calling start().
     /// If None, the runtime falls back to a sleep hold command.
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub command: Option<String>,
 
     /// Arguments for the PID 1 command.
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub command_args: Vec<String>,
 
     /// Runtime mode: Legacy (default) or Next (zero-image-customization).

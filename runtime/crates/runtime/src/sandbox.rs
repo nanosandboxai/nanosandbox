@@ -232,6 +232,11 @@ impl Sandbox {
         self.runtime.as_ref()
     }
 
+    /// Get the VM process id (if the VM has been spawned).
+    pub fn vm_pid(&self) -> Option<i32> {
+        self.runtime.as_ref().and_then(|rt| rt.vm_pid(&self.id))
+    }
+
     /// Get the creation timestamp
     pub fn created_at(&self) -> DateTime<Utc> {
         self.created_at

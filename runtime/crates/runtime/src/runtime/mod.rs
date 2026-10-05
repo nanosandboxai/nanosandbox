@@ -113,6 +113,12 @@ impl RuntimeBackend {
         }
     }
 
+    pub fn vm_pid(&self, id: &str) -> Option<i32> {
+        match self {
+            RuntimeBackend::Libkrun(r) => r.vm_pid(id),
+        }
+    }
+
     pub async fn stop(&self, id: &str) -> Result<()> {
         match self {
             RuntimeBackend::Libkrun(r) => r.stop(id).await,
@@ -192,6 +198,11 @@ impl Runtime {
     /// Check if the VM process is still running.
     pub fn is_vm_running(&self, id: &str) -> bool {
         self.backend.is_vm_running(id)
+    }
+
+    /// Get the VM process id (if spawned).
+    pub fn vm_pid(&self, id: &str) -> Option<i32> {
+        self.backend.vm_pid(id)
     }
 
     /// Stop a VM (force kill).

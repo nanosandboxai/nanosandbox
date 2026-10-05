@@ -666,6 +666,10 @@ impl LibkrunRuntime {
         }
     }
 
+    pub fn vm_pid(&self, id: &str) -> Option<i32> {
+        self.lock_sandboxes().get(id).and_then(|s| s.vm_pid)
+    }
+
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
         let sandboxes = self.lock_sandboxes();
         let state = sandboxes

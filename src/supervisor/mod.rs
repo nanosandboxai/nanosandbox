@@ -24,11 +24,11 @@
 pub mod client;
 
 use runtime::config::{ConsoleSpec, ExtraMount};
-use runtime::runtime::{BootVmRequest, GvproxyManager};
+use runtime::Sandbox as RuntimeSandbox;
 use runtime::SandboxConfig;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::process::CommandExt;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -253,10 +253,6 @@ fn rotate_logs(log_dir: &Path) {
 pub struct SuperviseArgs {
     pub sandbox_name: String,
     pub config_json: String,
-    pub console_stdin_fd: i32,
-    pub console_stdout_fd: i32,
-    pub console_stderr_fd: i32,
-    pub console_tty: bool,
     pub extra_mounts_json: String,
     pub timeout_secs: u64,
 }
@@ -271,6 +267,10 @@ pub struct SuperviseArgs {
 /// 7. Enforces timeout
 /// 8. Cleans up on exit
 pub fn run_supervisor(args: SuperviseArgs) -> ! {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init();
+
     // Detach from parent process group
     unsafe {
         libc::setsid();
@@ -304,12 +304,35 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     let extra_mounts: Vec<ExtraMount> =
         serde_json::from_str(&args.extra_mounts_json).unwrap_or_default();
 
-    // Build console spec
+    // Console pipes (supervisor-owned): guest reads stdin_read and writes
+    // stdout_write/stderr_write; the supervisor keeps the other ends.
+    let (stdin_read, stdin_write) = match std::io::pipe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to create console pipes: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let (stdout_read, stdout_write) = match std::io::pipe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to create console pipes: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let (stderr_read, stderr_write) = match std::io::pipe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to create console pipes: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     let console = Some(ConsoleSpec {
-        stdin_fd: args.console_stdin_fd,
-        stdout_fd: args.console_stdout_fd,
-        stderr_fd: args.console_stderr_fd,
-        tty: args.console_tty,
+        stdin_fd: stdin_read.as_raw_fd(),
+        stdout_fd: stdout_write.as_raw_fd(),
+        stderr_fd: stderr_write.as_raw_fd(),
+        tty: false,
     });
 
     // Compute config hash (simple SHA256 of the serialized config)
@@ -337,92 +360,45 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     };
     write_state(&sandbox_dir, &state);
 
-    // Start gvproxy
-    let gvproxy = match GvproxyManager::start(&args.sandbox_name) {
-        Ok(instance) => {
-            info!("gvproxy started for sandbox '{}'", args.sandbox_name);
-            Some(instance)
-        }
+    // Boot the VM through the runtime SDK (image pull, gvproxy, VM subprocess).
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
         Err(e) => {
-            warn!("Failed to start gvproxy: {} (TSI fallback)", e);
-            None
-        }
-    };
-
-    // Build the VM boot request
-    let request = BootVmRequest {
-        sandbox_id: args.sandbox_name.clone(),
-        rootfs_path: config.image.clone(), // Will be resolved by the runtime
-        cpus: config.cpus,
-        memory_mb: config.memory_mb,
-        command: config.command.clone().unwrap_or_else(|| "/bin/sleep".to_string()),
-        command_args: if config.command.is_some() {
-            config.command_args.clone()
-        } else {
-            vec!["infinity".to_string()]
-        },
-        network_scope: config.network.scope,
-        port_mappings: config
-            .network
-            .port_mappings
-            .iter()
-            .map(|p| (p.host_port, p.container_port, p.protocol.clone()))
-            .collect(),
-        mounts: Vec::new(), // Will be populated by the runtime
-        dns: config.network.dns.clone(),
-        gvproxy_socket: gvproxy.as_ref().map(|g| g.socket_path().to_string_lossy().to_string()),
-        run_as_root: config.run_as_root,
-        runtime_mode: "next".to_string(),
-        console,
-        extra_mounts,
-    };
-
-    let config_json = serde_json::to_string(&request).unwrap_or_default();
-
-    // Spawn the VM subprocess
-    let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("nanosb"));
-    let mut cmd = std::process::Command::new(&exe_path);
-    cmd.arg("internal-boot-vm")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to spawn VM subprocess: {}", e);
-            let state = SupervisorState {
-                sandbox_name: args.sandbox_name,
-                state: SandboxState::Error,
-                pid: None,
-                exit_code: Some(-1),
-                started_at,
-                config_hash,
-            };
-            write_state(&sandbox_dir, &state);
+            error!("Failed to create tokio runtime: {}", e);
+            write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
             std::process::exit(1);
         }
     };
 
-    // Write config to child's stdin
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(config_json.as_bytes());
+    let mut sandbox = match rt.block_on(RuntimeSandbox::create(config)) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to create sandbox: {}", e);
+            write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = rt.block_on(sandbox.start_next(console, extra_mounts)) {
+        error!("Failed to start sandbox (next mode): {}", e);
+        let _ = rt.block_on(sandbox.destroy());
+        write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
+        std::process::exit(1);
     }
 
-    let vm_pid = child.id() as i32;
+    // The VM child has duplicated copies of the console fds; drop the
+    // supervisor's guest-side ends so EOF propagates when the VM exits.
+    drop(stdin_read);
+    drop(stdout_write);
+    drop(stderr_write);
+
+    let vm_pid = sandbox.vm_pid();
 
     // Update state with PID
     let state = SupervisorState {
         sandbox_name: args.sandbox_name.clone(),
         state: SandboxState::Running,
-        pid: Some(vm_pid),
+        pid: vm_pid,
         exit_code: None,
         started_at: started_at.clone(),
         config_hash: config_hash.clone(),
@@ -445,8 +421,11 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     // Shared state between threads
     let scrollback = Arc::new(Mutex::new(ScrollbackRing::new(SCROLLBACK_CAPACITY)));
     let running = Arc::new(AtomicBool::new(true));
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let force_stop = Arc::new(AtomicBool::new(false));
     let log_file = Arc::new(Mutex::new(log_file));
     let current_log_size = Arc::new(Mutex::new(0u64));
+    let stdin_writer = Arc::new(Mutex::new(stdin_write));
 
     // Start control socket listener
     let control_sock_path = sandbox_dir.join("control.sock");
@@ -468,70 +447,92 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         }
     };
 
-    let mut vm_threads = Vec::new();
-    if let Some(out) = child.stdout.take() {
-        vm_threads.push(spawn_output_reader(
-            out,
+    let mut vm_threads = vec![
+        spawn_output_reader(
+            stdout_read,
             running.clone(),
             scrollback.clone(),
             log_file.clone(),
             current_log_size.clone(),
             logs_dir.clone(),
-        ));
-    }
-    if let Some(err) = child.stderr.take() {
-        vm_threads.push(spawn_output_reader(
-            err,
+        ),
+        spawn_output_reader(
+            stderr_read,
             running.clone(),
             scrollback.clone(),
             log_file.clone(),
             current_log_size.clone(),
             logs_dir.clone(),
-        ));
-    }
+        ),
+    ];
 
     let _accept_thread = listener.map(|listener| {
         let running = running.clone();
+        let stop_requested = stop_requested.clone();
+        let force_stop = force_stop.clone();
         let scrollback = scrollback.clone();
         let sandbox_dir = sandbox_dir.clone();
         let sandbox_name = args.sandbox_name.clone();
         let started_at = started_at.clone();
         let config_hash = config_hash.clone();
+        let stdin_writer = stdin_writer.clone();
         std::thread::spawn(move || {
             accept_connections(
                 &listener,
                 running,
+                stop_requested,
+                force_stop,
                 &scrollback,
                 &sandbox_dir,
                 &sandbox_name,
                 &started_at,
                 &config_hash,
+                stdin_writer,
             );
         })
     });
 
-    // Wait for VM to exit or timeout
-    wait_for_vm(
-        &mut child,
-        &running,
-        args.timeout_secs,
-        &args.sandbox_name,
-        &sandbox_dir,
-    );
+    // Wait for VM exit (console EOF), a stop request, or timeout.
+    let deadline = Instant::now() + Duration::from_secs(args.timeout_secs);
+    loop {
+        if stop_requested.load(Ordering::SeqCst) {
+            info!("Stop requested for sandbox '{}'", args.sandbox_name);
+            break;
+        }
+        if vm_threads.iter().all(|t| t.is_finished()) {
+            info!("VM exited for sandbox '{}'", args.sandbox_name);
+            break;
+        }
+        if Instant::now() > deadline {
+            warn!(
+                "Sandbox '{}' timed out after {}s, stopping VM",
+                args.sandbox_name, args.timeout_secs
+            );
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 
     // Cleanup
     running.store(false, Ordering::SeqCst);
+    let _ = rt.block_on(sandbox.stop());
     for t in vm_threads {
         let _ = t.join();
     }
-
-    // Stop gvproxy
-    if let Some(mut g) = gvproxy {
-        g.stop();
-    }
+    let _ = rt.block_on(sandbox.destroy());
 
     // Clean up control socket
     let _ = std::fs::remove_file(&control_sock_path);
+
+    let final_state = SupervisorState {
+        sandbox_name: args.sandbox_name.clone(),
+        state: SandboxState::Stopped,
+        pid: None,
+        exit_code: None,
+        started_at,
+        config_hash,
+    };
+    write_state(&sandbox_dir, &final_state);
 
     std::process::exit(0);
 }
@@ -546,6 +547,18 @@ fn write_state(sandbox_dir: &Path, state: &SupervisorState) {
         let _ = std::fs::write(&state_path, &json);
         let _ = std::fs::set_permissions(&state_path, std::fs::Permissions::from_mode(0o600));
     }
+}
+
+fn write_error_state(sandbox_dir: &Path, name: &str, started_at: &str, config_hash: &str) {
+    let state = SupervisorState {
+        sandbox_name: name.to_string(),
+        state: SandboxState::Error,
+        pid: None,
+        exit_code: Some(-1),
+        started_at: started_at.to_string(),
+        config_hash: config_hash.to_string(),
+    };
+    write_state(sandbox_dir, &state);
 }
 
 fn spawn_output_reader<R: Read + Send + 'static>(
@@ -618,77 +631,17 @@ fn spawn_output_reader<R: Read + Send + 'static>(
     })
 }
 
-fn wait_for_vm(
-    child: &mut std::process::Child,
-    running: &AtomicBool,
-    timeout_secs: u64,
-    sandbox_name: &str,
-    sandbox_dir: &Path,
-) {
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    let poll_interval = Duration::from_millis(100);
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let exit_code = status.code().unwrap_or(-1);
-                info!("VM exited with code {} for sandbox '{}'", exit_code, sandbox_name);
-                running.store(false, Ordering::SeqCst);
-
-                let state = SupervisorState {
-                    sandbox_name: sandbox_name.to_string(),
-                    state: SandboxState::Stopped,
-                    pid: None,
-                    exit_code: Some(exit_code),
-                    started_at: String::new(),
-                    config_hash: String::new(),
-                };
-                write_state(sandbox_dir, &state);
-                return;
-            }
-            Ok(None) => {
-                if Instant::now() > deadline {
-                    warn!("Sandbox '{}' timed out after {}s, killing VM", sandbox_name, timeout_secs);
-                    let pid = child.id() as i32;
-                    unsafe {
-                        libc::kill(-pid, libc::SIGTERM);
-                    }
-                    std::thread::sleep(Duration::from_secs(5));
-                    // Force kill
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    running.store(false, Ordering::SeqCst);
-
-                    let state = SupervisorState {
-                        sandbox_name: sandbox_name.to_string(),
-                        state: SandboxState::Stopped,
-                        pid: None,
-                        exit_code: Some(-1),
-                        started_at: String::new(),
-                        config_hash: String::new(),
-                    };
-                    write_state(sandbox_dir, &state);
-                    return;
-                }
-                std::thread::sleep(poll_interval);
-            }
-            Err(e) => {
-                error!("Error waiting for VM: {}", e);
-                running.store(false, Ordering::SeqCst);
-                return;
-            }
-        }
-    }
-}
-
 fn accept_connections(
     listener: &UnixListener,
     running: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
+    force_stop: Arc<AtomicBool>,
     scrollback: &Arc<Mutex<ScrollbackRing>>,
     sandbox_dir: &Path,
     sandbox_name: &str,
     started_at: &str,
     config_hash: &str,
+    stdin_writer: Arc<Mutex<std::io::PipeWriter>>,
 ) {
     listener.set_nonblocking(true).ok();
 
@@ -707,20 +660,26 @@ fn accept_connections(
                 debug!("Control connection from {:?}", addr);
                 let scrollback = scrollback.clone();
                 let running = running.clone();
+                let stop_requested = stop_requested.clone();
+                let force_stop = force_stop.clone();
                 let sandbox_dir = sandbox_dir.clone();
                 let sandbox_name = sandbox_name.clone();
                 let started_at = started_at.clone();
                 let config_hash = config_hash.clone();
+                let stdin_writer = stdin_writer.clone();
 
                 std::thread::spawn(move || {
                     handle_connection(
                         stream,
                         &running,
+                        &stop_requested,
+                        &force_stop,
                         &scrollback,
                         &sandbox_dir,
                         &sandbox_name,
                         &started_at,
                         &config_hash,
+                        stdin_writer,
                     );
                 });
             }
@@ -739,12 +698,15 @@ fn accept_connections(
 
 fn handle_connection(
     mut stream: UnixStream,
-    running: &AtomicBool,
+    _running: &AtomicBool,
+    stop_requested: &AtomicBool,
+    force_stop: &AtomicBool,
     scrollback: &Arc<Mutex<ScrollbackRing>>,
     sandbox_dir: &Path,
     _sandbox_name: &str,
     _started_at: &str,
     _config_hash: &str,
+    _stdin_writer: Arc<Mutex<std::io::PipeWriter>>,
 ) {
     // Check peer credentials (same UID only)
     #[cfg(target_os = "macos")]
@@ -827,15 +789,10 @@ fn handle_connection(
                         let _ = stream.write_all(b"\n");
                     }
                     ControlRequest::Stop { force } => {
-                        // Signal the VM to stop
-                        let pid = read_current_state(sandbox_dir).pid;
-                        if let Some(pid) = pid {
-                            if force.unwrap_or(false) {
-                                unsafe { libc::kill(-pid, libc::SIGKILL) };
-                            } else {
-                                unsafe { libc::kill(-pid, libc::SIGTERM) };
-                            }
+                        if force.unwrap_or(false) {
+                            force_stop.store(true, Ordering::SeqCst);
                         }
+                        stop_requested.store(true, Ordering::SeqCst);
                         let resp = serde_json::to_string(&ControlResponse::Ok {
                             version: PROTOCOL_VERSION.to_string(),
                         })
