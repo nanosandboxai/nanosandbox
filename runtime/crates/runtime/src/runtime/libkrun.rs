@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read as IoRead, Write as IoWrite};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::sync::MutexGuard;
+use std::sync::{Arc, Mutex, MutexGuard};
 use tracing::{debug, info, warn};
 
 /// Configuration passed to the `internal-boot-vm` subprocess.
@@ -312,6 +312,8 @@ struct SandboxState {
     command_args: Vec<String>,
     /// Run agent processes as root inside guest.
     run_as_root: bool,
+    /// VM subprocess exit code (set when the VM exits).
+    exit_code: Arc<Mutex<Option<i32>>>,
 }
 
 /// Direct libkrun FFI runtime for macOS and Linux
@@ -670,6 +672,11 @@ impl LibkrunRuntime {
         self.lock_sandboxes().get(id).and_then(|s| s.vm_pid)
     }
 
+    pub fn vm_exit_code(&self, id: &str) -> Option<i32> {
+        let slot = self.lock_sandboxes().get(id).map(|s| s.exit_code.clone())?;
+        slot.lock().ok().and_then(|v| *v)
+    }
+
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
         let sandboxes = self.lock_sandboxes();
         let state = sandboxes
@@ -828,6 +835,7 @@ impl LibkrunRuntime {
             command: config.command.clone(),
             command_args: config.command_args.clone(),
             run_as_root: config.run_as_root,
+            exit_code: Arc::new(Mutex::new(None)),
         };
 
         info!(
@@ -1028,6 +1036,7 @@ impl LibkrunRuntime {
         run_as_root: bool,
         console: Option<ConsoleSpec>,
         extra_mounts: Vec<ExtraMount>,
+        exit_code_slot: Arc<Mutex<Option<i32>>>,
     ) -> std::result::Result<i32, String> {
         let mut request = BootVmRequest {
             sandbox_id: sandbox_id.to_string(),
@@ -1150,7 +1159,13 @@ impl LibkrunRuntime {
                 let _ = t.join();
             }
 
-            drop(child);
+            if let Ok(status) = child.wait() {
+                if let Some(code) = status.code() {
+                    if let Ok(mut slot) = exit_code_slot.lock() {
+                        *slot = Some(code);
+                    }
+                }
+            }
         });
 
         Ok(pid)
@@ -1350,6 +1365,7 @@ impl LibkrunRuntime {
             dns,
             gvproxy_socket,
             run_as_root,
+            exit_code_slot,
         ) = {
             let sandboxes = self.lock_sandboxes();
             let state = sandboxes
@@ -1368,6 +1384,7 @@ impl LibkrunRuntime {
                     .as_ref()
                     .map(|g| g.socket_path().to_string_lossy().to_string()),
                 state.run_as_root,
+                state.exit_code.clone(),
             )
         };
 
@@ -1390,6 +1407,7 @@ impl LibkrunRuntime {
                 run_as_root,
                 console,
                 extra_mounts,
+                exit_code_slot,
             )
         })
         .await

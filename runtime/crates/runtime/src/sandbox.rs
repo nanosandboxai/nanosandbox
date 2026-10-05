@@ -237,6 +237,11 @@ impl Sandbox {
         self.runtime.as_ref().and_then(|rt| rt.vm_pid(&self.id))
     }
 
+    /// Get the VM exit code (if the VM has exited).
+    pub fn vm_exit_code(&self) -> Option<i32> {
+        self.runtime.as_ref().and_then(|rt| rt.vm_exit_code(&self.id))
+    }
+
     /// Get the creation timestamp
     pub fn created_at(&self) -> DateTime<Utc> {
         self.created_at

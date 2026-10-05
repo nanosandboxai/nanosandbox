@@ -530,6 +530,17 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     for t in vm_threads {
         let _ = t.join();
     }
+
+    // Give the boot thread a moment to record the VM exit code, then read it.
+    let mut vm_exit_code = None;
+    for _ in 0..20 {
+        if let Some(code) = sandbox.vm_exit_code() {
+            vm_exit_code = Some(code);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
     let _ = rt.block_on(sandbox.destroy());
 
     broadcast_exit(&subscribers, 0);
@@ -541,7 +552,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         sandbox_name: args.sandbox_name.clone(),
         state: SandboxState::Stopped,
         pid: None,
-        exit_code: None,
+        exit_code: vm_exit_code,
         started_at,
         config_hash,
     };
