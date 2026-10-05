@@ -32,7 +32,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
@@ -158,6 +158,9 @@ pub enum AttachInput {
         rows: u16,
     },
 }
+
+/// Attached console clients: (subscriber id, stream).
+pub type Subscribers = Arc<Mutex<Vec<(u64, Arc<Mutex<UnixStream>>)>>>;
 
 // ---------------------------------------------------------------------------
 // Ring buffer for scrollback
@@ -426,6 +429,8 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     let log_file = Arc::new(Mutex::new(log_file));
     let current_log_size = Arc::new(Mutex::new(0u64));
     let stdin_writer = Arc::new(Mutex::new(stdin_write));
+    let subscribers: Subscribers = Arc::new(Mutex::new(Vec::new()));
+    let next_subscriber_id = Arc::new(AtomicU64::new(1));
 
     // Start control socket listener
     let control_sock_path = sandbox_dir.join("control.sock");
@@ -455,6 +460,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
             log_file.clone(),
             current_log_size.clone(),
             logs_dir.clone(),
+            subscribers.clone(),
         ),
         spawn_output_reader(
             stderr_read,
@@ -463,6 +469,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
             log_file.clone(),
             current_log_size.clone(),
             logs_dir.clone(),
+            subscribers.clone(),
         ),
     ];
 
@@ -476,6 +483,8 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         let started_at = started_at.clone();
         let config_hash = config_hash.clone();
         let stdin_writer = stdin_writer.clone();
+        let subscribers = subscribers.clone();
+        let next_subscriber_id = next_subscriber_id.clone();
         std::thread::spawn(move || {
             accept_connections(
                 &listener,
@@ -488,6 +497,8 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
                 &started_at,
                 &config_hash,
                 stdin_writer,
+                subscribers,
+                next_subscriber_id,
             );
         })
     });
@@ -520,6 +531,8 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         let _ = t.join();
     }
     let _ = rt.block_on(sandbox.destroy());
+
+    broadcast_exit(&subscribers, 0);
 
     // Clean up control socket
     let _ = std::fs::remove_file(&control_sock_path);
@@ -561,6 +574,42 @@ fn write_error_state(sandbox_dir: &Path, name: &str, started_at: &str, config_ha
     write_state(sandbox_dir, &state);
 }
 
+fn broadcast_output(subscribers: &Subscribers, data: &[u8]) {
+    if let Ok(frame) = serde_json::to_string(&AttachFrame::Output {
+        data: String::from_utf8_lossy(data).to_string(),
+    }) {
+        broadcast_line(subscribers, &frame);
+    }
+}
+
+fn broadcast_exit(subscribers: &Subscribers, code: i32) {
+    if let Ok(frame) = serde_json::to_string(&AttachFrame::Exit { code }) {
+        broadcast_line(subscribers, &frame);
+    }
+}
+
+fn broadcast_line(subscribers: &Subscribers, line: &str) {
+    let mut payload = line.as_bytes().to_vec();
+    payload.push(b'\n');
+    let mut dead: Vec<u64> = Vec::new();
+    if let Ok(subs) = subscribers.lock() {
+        debug!("broadcast: {} subscriber(s)", subs.len());
+        for (id, stream) in subs.iter() {
+            if let Ok(mut s) = stream.lock() {
+                if let Err(e) = s.write_all(&payload) {
+                    warn!("broadcast: write failed for subscriber {}: {}", id, e);
+                    dead.push(*id);
+                }
+            }
+        }
+    }
+    if !dead.is_empty() {
+        if let Ok(mut subs) = subscribers.lock() {
+            subs.retain(|(id, _)| !dead.contains(id));
+        }
+    }
+}
+
 fn spawn_output_reader<R: Read + Send + 'static>(
     mut reader: R,
     running: Arc<AtomicBool>,
@@ -568,6 +617,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
     log_file: Arc<Mutex<std::fs::File>>,
     current_log_size: Arc<Mutex<u64>>,
     logs_dir: PathBuf,
+    subscribers: Subscribers,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
@@ -623,6 +673,8 @@ fn spawn_output_reader<R: Read + Send + 'static>(
                             }
                         }
                     }
+
+                    broadcast_output(&subscribers, data);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
@@ -642,6 +694,8 @@ fn accept_connections(
     started_at: &str,
     config_hash: &str,
     stdin_writer: Arc<Mutex<std::io::PipeWriter>>,
+    subscribers: Subscribers,
+    next_subscriber_id: Arc<AtomicU64>,
 ) {
     listener.set_nonblocking(true).ok();
 
@@ -667,6 +721,8 @@ fn accept_connections(
                 let started_at = started_at.clone();
                 let config_hash = config_hash.clone();
                 let stdin_writer = stdin_writer.clone();
+                let subscribers = subscribers.clone();
+                let next_subscriber_id = next_subscriber_id.clone();
 
                 std::thread::spawn(move || {
                     handle_connection(
@@ -680,6 +736,8 @@ fn accept_connections(
                         &started_at,
                         &config_hash,
                         stdin_writer,
+                        subscribers,
+                        next_subscriber_id,
                     );
                 });
             }
@@ -706,8 +764,12 @@ fn handle_connection(
     _sandbox_name: &str,
     _started_at: &str,
     _config_hash: &str,
-    _stdin_writer: Arc<Mutex<std::io::PipeWriter>>,
+    stdin_writer: Arc<Mutex<std::io::PipeWriter>>,
+    subscribers: Subscribers,
+    next_subscriber_id: Arc<AtomicU64>,
 ) {
+    let _ = stream.set_nonblocking(false);
+
     // Check peer credentials (same UID only)
     #[cfg(target_os = "macos")]
     {
@@ -801,7 +863,6 @@ fn handle_connection(
                         let _ = stream.write_all(b"\n");
                     }
                     ControlRequest::Attach {} => {
-                        // Send scrollback replay
                         if let Ok(sb) = scrollback.lock() {
                             let data = sb.read_all();
                             if !data.is_empty() {
@@ -814,13 +875,46 @@ fn handle_connection(
                             }
                         }
 
-                        // In a real implementation, we'd set up a channel to
-                        // forward live output and accept input/resize frames.
-                        // For now, send a placeholder and close.
-                        let frame = serde_json::to_string(&AttachFrame::Exit { code: 0 })
-                            .unwrap_or_default();
-                        let _ = stream.write_all(frame.as_bytes());
-                        let _ = stream.write_all(b"\n");
+                        let subscriber_id = next_subscriber_id.fetch_add(1, Ordering::SeqCst);
+                        let mut registered = false;
+                        if let Ok(clone) = stream.try_clone() {
+                            let _ = clone.set_write_timeout(Some(Duration::from_secs(5)));
+                            if let Ok(mut subs) = subscribers.lock() {
+                                subs.push((subscriber_id, Arc::new(Mutex::new(clone))));
+                                registered = true;
+                                info!(
+                                    "attach: subscriber {} registered (total {})",
+                                    subscriber_id,
+                                    subs.len()
+                                );
+                            }
+                        }
+
+                        let mut input_line = String::new();
+                        loop {
+                            input_line.clear();
+                            match reader.read_line(&mut input_line) {
+                                Ok(0) => break,
+                                Ok(_) => {
+                                    if let Ok(AttachInput::Input { data }) =
+                                        serde_json::from_str::<AttachInput>(input_line.trim())
+                                    {
+                                        if let Ok(mut w) = stdin_writer.lock() {
+                                            let _ = w.write_all(data.as_bytes());
+                                            let _ = w.flush();
+                                        }
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+
+                        if registered {
+                            if let Ok(mut subs) = subscribers.lock() {
+                                subs.retain(|(id, _)| *id != subscriber_id);
+                            }
+                            info!("attach: subscriber {} unregistered", subscriber_id);
+                        }
                     }
                     ControlRequest::LogsFollow { tail } => {
                         // Send scrollback replay (tail N bytes)

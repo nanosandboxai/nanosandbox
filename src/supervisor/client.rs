@@ -218,3 +218,66 @@ impl SupervisorClient {
         Ok(String::from_utf8_lossy(&content[start..]).to_string())
     }
 }
+
+/// A live console attach connection: replay + streamed output + input forwarding.
+pub struct AttachConnection {
+    writer: UnixStream,
+    reader: BufReader<UnixStream>,
+}
+
+impl AttachConnection {
+    pub fn open(client: &SupervisorClient) -> ClientResult<Self> {
+        let stream = client.connect()?;
+        stream.set_read_timeout(None).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+        let mut writer = stream.try_clone()?;
+        let json = serde_json::to_string(&ControlRequest::Attach {})
+            .map_err(|e| ClientError::ProtocolError(format!("serialize: {}", e)))?;
+        writer
+            .write_all(json.as_bytes())
+            .map_err(|e| ClientError::RequestFailed(format!("write: {}", e)))?;
+        writer
+            .write_all(b"\n")
+            .map_err(|e| ClientError::RequestFailed(format!("write newline: {}", e)))?;
+        Ok(Self {
+            writer,
+            reader: BufReader::new(stream),
+        })
+    }
+
+    pub fn writer_clone(&self) -> ClientResult<UnixStream> {
+        self.writer
+            .try_clone()
+            .map_err(|e| ClientError::ConnectionFailed(format!("clone: {}", e)))
+    }
+
+    pub fn next_frame(&mut self) -> ClientResult<Option<AttachFrame>> {
+        loop {
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => return Ok(None),
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if let Ok(frame) = serde_json::from_str::<AttachFrame>(trimmed) {
+                        return Ok(Some(frame));
+                    }
+                }
+                Err(e) => return Err(ClientError::RequestFailed(format!("read: {}", e))),
+            }
+        }
+    }
+
+    pub fn send_input(&mut self, data: &str) -> ClientResult<()> {
+        let frame = serde_json::json!({ "type": "input", "data": data }).to_string();
+        self.writer
+            .write_all(frame.as_bytes())
+            .map_err(|e| ClientError::RequestFailed(format!("write: {}", e)))?;
+        self.writer
+            .write_all(b"\n")
+            .map_err(|e| ClientError::RequestFailed(format!("write newline: {}", e)))?;
+        Ok(())
+    }
+}

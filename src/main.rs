@@ -733,7 +733,8 @@ mod cli {
 
     /// Attach to a sandbox console (replay + follow until exit).
     async fn cmd_attach(sandbox_name: &str) -> anyhow::Result<()> {
-        use std::io::Write;
+        use crate::supervisor::client::AttachConnection;
+        use std::io::{Read, Write};
 
         let client = SupervisorClient::new(sandbox_name);
         if !client.is_running() {
@@ -744,11 +745,35 @@ mod cli {
             );
         }
 
-        let frames = client.attach().map_err(|e| anyhow::anyhow!("{}", e))?;
-        for frame in frames {
+        let mut conn = AttachConnection::open(&client).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let mut writer = conn.writer_clone().map_err(|e| anyhow::anyhow!("{}", e))?;
+        std::thread::spawn(move || {
+            let mut stdin = std::io::stdin();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stdin.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let frame =
+                            serde_json::json!({ "type": "input", "data": data }).to_string();
+                        let mut payload = frame.into_bytes();
+                        payload.push(b'\n');
+                        if writer.write_all(&payload).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        while let Some(frame) = conn.next_frame().map_err(|e| anyhow::anyhow!("{}", e))? {
             match frame {
                 crate::supervisor::AttachFrame::Output { data } => {
                     print!("{}", data);
+                    std::io::stdout().flush().ok();
                 }
                 crate::supervisor::AttachFrame::Exit { code } => {
                     if code != 0 {
@@ -758,7 +783,6 @@ mod cli {
                 }
             }
         }
-        std::io::stdout().flush().ok();
         Ok(())
     }
 
