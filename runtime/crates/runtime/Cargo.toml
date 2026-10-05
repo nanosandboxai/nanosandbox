@@ -15,7 +15,6 @@ path = "src/lib.rs"
 
 [features]
 default = []
-server = ["axum", "tower"]
 integration-tests = []  # Enable integration/e2e test compilation (requires runtime + KVM/HVF)
 
 [dependencies]
@@ -61,10 +60,6 @@ xattr = "1"
 # and also ensures the binary is self-contained w.r.t. TLS on all Linux distros.
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
-
-# Server (optional)
-axum = { version = "0.7", optional = true }
-tower = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

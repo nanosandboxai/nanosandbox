@@ -62,7 +62,7 @@ tracing-appender = "0.2"
 
 # TUI
 ratatui = "0.30"
-russh = "0.60"
+russh = "0.64"
 ssh-key = { version = "0.6", features = ["ed25519", "std"] }
 vt100 = "0.16"
 tui-term = "0.3"
@@ -70,15 +70,15 @@ arboard = "3.6.1"
 png = "0.18"
 
 # Utilities
-base64 = "0.22"
+base64 = "0.23"
 uuid = { version = "1", features = ["v4"] }
-dirs = "6"
+dirs = "7"
 unicode-width = "0.2"
 async-trait = "0.1"
-sha2 = "0.10"
+sha2 = "0.11"
 env_logger = "0.11"
 log = "0.4"
-rusqlite = { version = "0.33", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Platform-specific (TUI terminal handling)
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
