@@ -178,9 +178,9 @@ const ALL_COMMANDS: &[&str] = &[
     "/sandboxes",
     "/theme", "/theme nanosandbox", "/theme nanosandbox-light",
     "/theme dracula", "/theme catppuccin", "/theme tokyo-night", "/theme nord",
-    "/mcp", "/mcp list", "/mcp add", "/mcp remove", "/mcp enable", "/mcp disable",
-    "/skills", "/skills list", "/skills add", "/skills remove", "/skills show",
-    "/agent", "/agent set", "/agent list", "/agent show",
+    "/mcp", "/mcp list",
+    "/skills", "/skills list", "/skills show",
+    "/agent list", "/agent show",
     "/upload", "/paste-image",
 ];
 
@@ -481,93 +481,14 @@ fn parse_focus(parts: &[&str]) -> ParseResult {
     }
 }
 
-/// Extract --all or --sandbox <name> from args. Returns (target, remaining_positional_args).
-/// target: None = focused panel, Some("all") = all panels, Some(name) = specific sandbox.
-fn parse_mcp_target<'a>(args: &[&'a str]) -> (Option<String>, Vec<&'a str>) {
-    let mut target = None;
-    let mut positional = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i] {
-            "--all" => { target = Some("all".to_string()); i += 1; }
-            "--sandbox" | "-s" => {
-                if let Some(name) = args.get(i + 1) {
-                    target = Some(name.to_string());
-                    i += 2;
-                } else {
-                    i += 1; // skip dangling --sandbox
-                }
-            }
-            other => { positional.push(other); i += 1; }
-        }
-    }
-    (target, positional)
-}
-
 fn parse_mcp(parts: &[&str]) -> ParseResult {
     match parts.get(1).copied() {
         None => ParseResult::Ok(Command::McpToggle),
         Some("list") => ParseResult::Ok(Command::McpList),
-        Some("add") => {
-            // Parse --all / --sandbox <name> and filter from positional args
-            let (target, positional) = parse_mcp_target(&parts[2..]);
-            let name = match positional.first() {
-                Some(n) => n.to_string(),
-                None => {
-                    return ParseResult::Err(
-                        "Usage: /mcp add [--all | --sandbox <name>] <name> <command> [args...]\n\
-                         Example: /mcp add github npx @github/mcp-server\n\
-                         --all: all sandboxes  --sandbox <name>: specific sandbox"
-                            .to_string(),
-                    );
-                }
-            };
-            let command = match positional.get(1) {
-                Some(c) => c.to_string(),
-                None => {
-                    return ParseResult::Err(format!(
-                        "Missing command for MCP server '{}'.\n\
-                         Usage: /mcp add [--all | --sandbox <name>] <name> <command> [args...]",
-                        name,
-                    ));
-                }
-            };
-            let args: Vec<String> = positional[2..].iter().map(|s| s.to_string()).collect();
-            ParseResult::Ok(Command::McpAdd { name, command, args, target })
-        }
-        Some("remove") => {
-            let (target, positional) = parse_mcp_target(&parts[2..]);
-            match positional.first() {
-                Some(name) => ParseResult::Ok(Command::McpRemove { name: name.to_string(), target }),
-                None => ParseResult::Err(
-                    "Usage: /mcp remove [--all | --sandbox <name>] <server>\n\
-                     Use /mcp list to see configured servers.".to_string(),
-                ),
-            }
-        }
-        Some("enable") => {
-            let (target, positional) = parse_mcp_target(&parts[2..]);
-            match positional.first() {
-                Some(name) => ParseResult::Ok(Command::McpEnable { name: name.to_string(), target }),
-                None => ParseResult::Err(
-                    "Usage: /mcp enable [--all | --sandbox <name>] <server>\n\
-                     Use /mcp list to see configured servers.".to_string(),
-                ),
-            }
-        }
-        Some("disable") => {
-            let (target, positional) = parse_mcp_target(&parts[2..]);
-            match positional.first() {
-                Some(name) => ParseResult::Ok(Command::McpDisable { name: name.to_string(), target }),
-                None => ParseResult::Err(
-                    "Usage: /mcp disable [--all | --sandbox <name>] <server>\n\
-                     Use /mcp list to see configured servers.".to_string(),
-                ),
-            }
-        }
         Some(sub) => ParseResult::Err(format!(
             "Unknown MCP subcommand: '{}'\n\
-             Available: /mcp list, /mcp add, /mcp remove, /mcp enable, /mcp disable",
+             Available: /mcp list\n\
+             Note: MCP hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
@@ -653,7 +574,7 @@ fn parse_skills(parts: &[&str]) -> ParseResult {
             }),
             None => ParseResult::Err(
                 "Usage: /skills add <name>\n\
-                 Example: /skills add tdd"
+                 Note: Skill hot-reload was removed — add skills to sandbox.yml and redeploy (nanosb apply)."
                     .to_string(),
             ),
         },
@@ -663,7 +584,7 @@ fn parse_skills(parts: &[&str]) -> ParseResult {
             }),
             None => ParseResult::Err(
                 "Usage: /skills remove <name>\n\
-                 Use /skills list to see active skills."
+                 Note: Skill hot-reload was removed — remove skills from sandbox.yml and redeploy (nanosb apply)."
                     .to_string(),
             ),
         },
@@ -679,7 +600,8 @@ fn parse_skills(parts: &[&str]) -> ParseResult {
         },
         Some(sub) => ParseResult::Err(format!(
             "Unknown skills subcommand: '{}'\n\
-             Available: /skills [list], /skills add, /skills remove, /skills show",
+             Available: /skills [list], /skills show\n\
+             Note: Skill hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
@@ -688,16 +610,6 @@ fn parse_skills(parts: &[&str]) -> ParseResult {
 fn parse_agent(parts: &[&str]) -> ParseResult {
     match parts.get(1).copied() {
         None => ParseResult::Ok(Command::AgentShow),
-        Some("set") => match parts.get(2) {
-            Some(name) => ParseResult::Ok(Command::AgentSet {
-                name: name.to_string(),
-            }),
-            None => ParseResult::Err(
-                "Usage: /agent set <name>\n\
-                 Example: /agent set python-developer"
-                    .to_string(),
-            ),
-        },
         Some("list") => ParseResult::Ok(Command::AgentList),
         Some("show") => match parts.get(2) {
             Some(name) => ParseResult::Ok(Command::AgentInfo {
@@ -711,7 +623,8 @@ fn parse_agent(parts: &[&str]) -> ParseResult {
         },
         Some(sub) => ParseResult::Err(format!(
             "Unknown agent subcommand: '{}'\n\
-             Available: /agent, /agent set, /agent list, /agent show",
+             Available: /agent, /agent list, /agent show\n\
+             Note: Agent hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
@@ -831,26 +744,26 @@ mod tests {
 
     #[test]
     fn test_parse_mcp_add() {
-        assert_eq!(
-            parse_command("/mcp add github npx @github/mcp-server"),
-            Some(Command::McpAdd {
-                name: "github".to_string(),
-                command: "npx".to_string(),
-                args: vec!["@github/mcp-server".to_string()],
-                target: None,
-            })
-        );
+        let result = parse_command_verbose("/mcp add github npx @github/mcp-server");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown MCP subcommand"));
+                assert!(msg.contains("hot-reload was removed"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
     }
 
     #[test]
     fn test_parse_mcp_remove() {
-        assert_eq!(
-            parse_command("/mcp remove github"),
-            Some(Command::McpRemove {
-                name: "github".to_string(),
-                target: None,
-            })
-        );
+        let result = parse_command_verbose("/mcp remove github");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown MCP subcommand"));
+                assert!(msg.contains("hot-reload was removed"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
     }
 
     #[test]
@@ -954,7 +867,10 @@ mod tests {
     fn test_mcp_add_missing_args_shows_help() {
         let result = parse_command_verbose("/mcp add");
         match result {
-            ParseResult::Err(msg) => assert!(msg.contains("Usage:")),
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown MCP subcommand"));
+                assert!(msg.contains("Available: /mcp list"));
+            }
             other => panic!("expected Err, got {:?}", other),
         }
     }
@@ -964,8 +880,8 @@ mod tests {
         let result = parse_command_verbose("/mcp add github");
         match result {
             ParseResult::Err(msg) => {
-                assert!(msg.contains("Missing command"));
-                assert!(msg.contains("github"));
+                assert!(msg.contains("Unknown MCP subcommand"));
+                assert!(msg.contains("add"));
             }
             other => panic!("expected Err, got {:?}", other),
         }
@@ -975,7 +891,10 @@ mod tests {
     fn test_mcp_remove_missing_name_shows_help() {
         let result = parse_command_verbose("/mcp remove");
         match result {
-            ParseResult::Err(msg) => assert!(msg.contains("Usage:")),
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown MCP subcommand"));
+                assert!(msg.contains("hot-reload was removed"));
+            }
             other => panic!("expected Err, got {:?}", other),
         }
     }
@@ -984,7 +903,10 @@ mod tests {
     fn test_mcp_enable_missing_name_shows_help() {
         let result = parse_command_verbose("/mcp enable");
         match result {
-            ParseResult::Err(msg) => assert!(msg.contains("Usage:")),
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown MCP subcommand"));
+                assert!(msg.contains("hot-reload was removed"));
+            }
             other => panic!("expected Err, got {:?}", other),
         }
     }
@@ -993,7 +915,10 @@ mod tests {
     fn test_mcp_disable_missing_name_shows_help() {
         let result = parse_command_verbose("/mcp disable");
         match result {
-            ParseResult::Err(msg) => assert!(msg.contains("Usage:")),
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown MCP subcommand"));
+                assert!(msg.contains("hot-reload was removed"));
+            }
             other => panic!("expected Err, got {:?}", other),
         }
     }
@@ -1430,10 +1355,14 @@ mod tests {
 
     #[test]
     fn test_parse_agent_set() {
-        assert_eq!(
-            parse_command("/agent set python-developer"),
-            Some(Command::AgentSet { name: "python-developer".to_string() })
-        );
+        let result = parse_command_verbose("/agent set python-developer");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("Unknown agent subcommand"));
+                assert!(msg.contains("hot-reload was removed"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
     }
 
     #[test]

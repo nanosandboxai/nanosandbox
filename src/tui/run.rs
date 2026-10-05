@@ -21,7 +21,7 @@ use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::{mpsc, Mutex};
 
-use sandbox::{AgentSandboxConfig, McpServerConfig, SandboxConfig};
+use sandbox::{AgentSandboxConfig, SandboxConfig};
 use sandbox::Sandbox;
 
 use super::app::{
@@ -1943,17 +1943,9 @@ async fn handle_command(
                     "  /reconnect                    Reconnect SSH terminal\n",
                     "  /branches                     List nanosb branches in project\n",
                     "  /mcp                          Toggle MCP sidebar\n",
-                    "  /mcp list                     List MCP servers\n",
-                    "  /mcp add <name> <cmd> [args]  Add MCP server\n",
-                    "  /mcp remove <name>            Remove MCP server\n",
-                    "  /mcp enable <name>            Enable MCP server\n",
-                    "  /mcp disable <name>           Disable MCP server\n",
-                    "  /skills [list]                List active skills\n",
-                    "  /skills add <name>            Add skill from registry\n",
-                    "  /skills remove <name>         Remove a skill\n",
+                    "  /mcp list                     List MCP servers (from sandbox.yml)\n",
+                    "  /skills [list]                List skills (from sandbox.yml)\n",
                     "  /skills show <name>           Show skill details\n",
-                    "  /agent                        Show current agent definition\n",
-                    "  /agent set <name>             Set agent from registry\n",
                     "  /agent list                   List available agents\n",
                     "  /agent show <name>            Show agent details\n",
                     "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
@@ -2191,140 +2183,19 @@ async fn handle_command(
                         .to_string(),
                 });
             } else {
-                // Determine target panels from --all / --sandbox <name> / default (focused).
-                let target_ref = match &cmd {
-                    Command::McpAdd { target, .. } |
-                    Command::McpRemove { target, .. } |
-                    Command::McpEnable { target, .. } |
-                    Command::McpDisable { target, .. } => target.clone(),
-                    _ => None,
-                };
-                let (target_panels, scope): (Vec<(usize, _)>, String) = match target_ref.as_deref() {
-                    Some("all") => {
-                        let panels: Vec<_> = app.panels.iter().enumerate()
-                            .filter_map(|(i, p)| p.sandbox.as_ref().cloned().map(|sb| (i, sb)))
-                            .collect();
-                        let count = panels.len();
-                        (panels, format!("all {} sandboxes", count))
-                    }
-                    Some(name) => {
-                        match app.resolve_panel_target(Some(name)) {
-                            Some(idx) => {
-                                let label = app.panels[idx].display_name.clone()
-                                    .unwrap_or_else(|| app.panels[idx].agent_name.clone());
-                                match app.panels[idx].sandbox.as_ref().cloned() {
-                                    Some(sb) => (vec![(idx, sb)], label),
-                                    None => {
-                                        app.set_system_message(ChatMessage {
-                                            role: MessageRole::System,
-                                            content: format!("Sandbox '{}' has no running VM.", name),
-                                        });
-                                        return;
-                                    }
-                                }
-                            }
-                            None => {
-                                app.set_system_message(ChatMessage {
-                                    role: MessageRole::System,
-                                    content: format!("No sandbox matching '{}'.", name),
-                                });
-                                return;
-                            }
-                        }
-                    }
-                    None => {
-                        match app.panels.get(app.focused_panel)
-                            .and_then(|p| p.sandbox.as_ref().cloned().map(|sb| (app.focused_panel, sb)))
-                        {
-                            Some(pair) => (vec![pair], "focused sandbox".to_string()),
-                            None => {
-                                app.set_system_message(ChatMessage {
-                                    role: MessageRole::System,
-                                    content: "No sandbox attached to focused panel.".to_string(),
-                                });
-                                return;
-                            }
-                        }
-                    }
-                };
-
-                let mut affected_panels = Vec::new();
-
                 match cmd {
                     Command::McpList => { handle_mcp_list(app).await; },
-                    Command::McpAdd { name, command, args, .. } => {
-                        for (idx, sb_arc) in &target_panels {
-                            let sb = sb_arc.lock().await;
-                            let cfg = McpServerConfig {
-                                command: command.clone(),
-                                args: args.clone(),
-                                env: HashMap::new(),
-                                enabled: true,
-                            };
-                            if sb.add_mcp_server(&name, cfg).await.is_ok() {
-                                affected_panels.push(*idx);
-                            }
-                        }
-                        if !affected_panels.is_empty() {
-                            app.set_system_message(ChatMessage {
-                                role: MessageRole::System,
-                                content: format!("MCP server '{}' added to {} ({}).", name, affected_panels.len(), scope),
-                            });
-                        }
-                    }
-                    Command::McpRemove { name, .. } => {
-                        for (idx, sb_arc) in &target_panels {
-                            let sb = sb_arc.lock().await;
-                            if sb.remove_mcp_server(&name).await.is_ok() {
-                                affected_panels.push(*idx);
-                            }
-                        }
-                        if !affected_panels.is_empty() {
-                            app.set_system_message(ChatMessage {
-                                role: MessageRole::System,
-                                content: format!("MCP server '{}' removed from {} ({}).", name, affected_panels.len(), scope),
-                            });
-                        }
-                    }
-                    Command::McpEnable { name, .. } => {
-                        for (idx, sb_arc) in &target_panels {
-                            let sb = sb_arc.lock().await;
-                            if sb.enable_mcp_server(&name).await.is_ok() {
-                                affected_panels.push(*idx);
-                            }
-                        }
-                        if !affected_panels.is_empty() {
-                            app.set_system_message(ChatMessage {
-                                role: MessageRole::System,
-                                content: format!("MCP server '{}' enabled in {} ({}).", name, affected_panels.len(), scope),
-                            });
-                        }
-                    }
-                    Command::McpDisable { name, .. } => {
-                        for (idx, sb_arc) in &target_panels {
-                            let sb = sb_arc.lock().await;
-                            if sb.disable_mcp_server(&name).await.is_ok() {
-                                affected_panels.push(*idx);
-                            }
-                        }
-                        if !affected_panels.is_empty() {
-                            app.set_system_message(ChatMessage {
-                                role: MessageRole::System,
-                                content: format!("MCP server '{}' disabled in {} ({}).", name, affected_panels.len(), scope),
-                            });
-                        }
+                    Command::McpAdd { .. }
+                    | Command::McpRemove { .. }
+                    | Command::McpEnable { .. }
+                    | Command::McpDisable { .. } => {
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: "MCP hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).".to_string(),
+                        });
                     }
                     _ => unreachable!(),
                 };
-                // After MCP mutation, ask the user to confirm reload.
-                if !affected_panels.is_empty() {
-                    let count = affected_panels.len();
-                    app.pending_reconnect = Some(affected_panels);
-                    app.set_system_message_persistent(ChatMessage {
-                        role: MessageRole::System,
-                        content: format!("Reload {} agent session(s) to apply changes? (y/n)", count),
-                    });
-                }
             }
         }
         Command::Copy => {
@@ -2630,7 +2501,7 @@ async fn handle_command(
         }
 
         // ===== Agent commands =====
-        Command::AgentShow | Command::AgentSet { .. } => {
+        Command::AgentShow => {
             if app.panels.is_empty() {
                 app.set_system_message(ChatMessage {
                     role: MessageRole::System,
@@ -2638,12 +2509,15 @@ async fn handle_command(
                         .to_string(),
                 });
             } else {
-                match cmd {
-                    Command::AgentShow => handle_agent_show(app).await,
-                    Command::AgentSet { name } => handle_agent_set(app, &name).await,
-                    _ => unreachable!(),
-                }
+                handle_agent_show(app).await;
             }
+        }
+        Command::AgentSet { .. } => {
+            app.set_system_message(ChatMessage {
+                role: MessageRole::System,
+                content: "Agent hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply)."
+                    .to_string(),
+            });
         }
         Command::AgentList => handle_agent_list(app),
         Command::AgentInfo { name } => handle_agent_info(app, &name),
@@ -4218,7 +4092,6 @@ fn add_agent(
     let tx = tx.clone();
     let image_manager = app.image_manager.clone();
     tokio::spawn(async move {
-        let resolved_agent = config.resolved_agent.clone();
         let _ = tx.send(AppEvent::SandboxCreating {
             panel_idx,
             message: "Pulling image...".into(),
@@ -4244,10 +4117,6 @@ fn add_agent(
 
                 match sandbox.start().await {
                     Ok(()) => {
-                        if let Some(resolved) = &resolved_agent {
-                            let _ = sandbox.bootstrap_agent(resolved).await;
-                        }
-
                         // Insert panel env vars (API keys, etc.) and agent-specific vars
                         // into the runtime config.env so they're delivered via gateway POST.
                         // Deref: AgentSandbox -> SandboxInner -> runtime::Sandbox
@@ -4399,7 +4268,6 @@ fn add_agent_from_config(
     let tx = tx.clone();
     let image_manager = app.image_manager.clone();
     tokio::spawn(async move {
-        let resolved_agent = config.resolved_agent.clone();
         let _ = tx.send(AppEvent::SandboxCreating {
             panel_idx,
             message: "Pulling image...".into(),
@@ -4424,10 +4292,6 @@ fn add_agent_from_config(
 
                 match sandbox.start().await {
                     Ok(()) => {
-                        if let Some(resolved) = &resolved_agent {
-                            let _ = sandbox.bootstrap_agent(resolved).await;
-                        }
-
                         // Insert panel env vars (config env + runtime-selected/startup fallback)
                         // into runtime config.env so they're delivered via gateway POST.
                         for (key, val) in &panel_env {
@@ -4811,7 +4675,6 @@ fn resume_session(
         let tx = tx.clone();
         let image_manager = app.image_manager.clone();
         tokio::spawn(async move {
-            let resolved_agent = config.resolved_agent.clone();
             let _ = tx.send(AppEvent::SandboxCreating {
                 panel_idx,
                 message: "Pulling image...".into(),
@@ -4836,10 +4699,6 @@ fn resume_session(
 
                     match sandbox.start().await {
                         Ok(()) => {
-                            if let Some(resolved) = &resolved_agent {
-                                let _ = sandbox.bootstrap_agent(resolved).await;
-                            }
-
                             // Insert panel env vars (config + resumed runtime values)
                             // into runtime config.env so they're delivered via gateway POST.
                             for (key, val) in &panel_env {
@@ -4963,234 +4822,56 @@ fn handle_env(app: &mut App, assignment: Option<(String, String)>) {
     }
 }
 
-/// Handle `/mcp list` — list MCP servers in the focused panel's sandbox.
+/// Handle `/mcp list` — show MCP servers from sandbox.yml config.
 async fn handle_mcp_list(app: &mut App) {
-    let sandbox = match app
-        .focused_panel_ref()
-        .and_then(|p| p.sandbox.as_ref())
-        .cloned()
-    {
-        Some(sb) => sb,
+    let panel = match app.focused_panel_ref() {
+        Some(p) => p,
         None => {
             app.set_system_message_persistent(ChatMessage {
                 role: MessageRole::System,
-                content: "No sandbox attached to this panel.".to_string(),
+                content: "No panel focused.".to_string(),
             });
             return;
         }
     };
 
-    let sb = sandbox.lock().await;
-    match sb.list_mcp_servers().await {
-        Ok(servers) => {
-            let content = if servers.is_empty() {
-                "No MCP servers configured.".to_string()
-            } else {
-                let mut lines = vec!["MCP Servers:".to_string()];
-                let mut sorted: Vec<_> = servers.iter().collect();
-                sorted.sort_by_key(|(n, _)| n.as_str());
-                for (name, cfg) in sorted {
-                    let status = if cfg.enabled { "enabled" } else { "disabled" };
-                    lines.push(format!(
-                        "  {} [{}]  {} {}",
-                        name, status, cfg.command, cfg.args.join(" "),
-                    ));
-                }
-                lines.join("\n")
-            };
+    let config = match panel.original_config.as_ref() {
+        Some(c) => c,
+        None => {
             app.set_system_message_persistent(ChatMessage {
                 role: MessageRole::System,
-                content,
-            });
-        }
-        Err(e) => {
-            app.set_system_message_persistent(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to list MCP servers: {}", e),
-            });
-        }
-    }
-}
-
-/// Handle `/mcp add <name> <command> [args]`.
-#[allow(dead_code)]
-async fn handle_mcp_add(app: &mut App, name: &str, command: &str, args: &[String]) {
-    let panel = match app.focused_panel_mut() {
-        Some(p) => p,
-        None => return,
-    };
-
-    let sandbox = match panel.sandbox.as_ref() {
-        Some(sb) => Arc::clone(sb),
-        None => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: "No sandbox attached to this panel.".to_string(),
+                content: "No sandbox config available.".to_string(),
             });
             return;
         }
     };
 
-    let config = McpServerConfig {
-        command: command.to_string(),
-        args: args.to_vec(),
-        env: HashMap::new(),
-        enabled: true,
+    let servers = &config.mcp_servers;
+    let content = if servers.is_empty() {
+        "No MCP servers configured in sandbox.yml.\n\
+         Add them to sandbox.yml and redeploy (nanosb apply).".to_string()
+    } else {
+        let mut lines = vec!["MCP Servers (from sandbox.yml):".to_string()];
+        let mut sorted: Vec<_> = servers.iter().collect();
+        sorted.sort_by_key(|(n, _)| n.as_str());
+        for (name, cfg) in sorted {
+            let status = if cfg.enabled { "enabled" } else { "disabled" };
+            lines.push(format!(
+                "  {} [{}]  {} {}",
+                name, status, cfg.command, cfg.args.join(" "),
+            ));
+        }
+        lines.push(String::new());
+        lines.push("Changes require redeploy: edit sandbox.yml and run nanosb apply.".to_string());
+        lines.join("\n")
     };
-
-    let body = serde_json::json!({ "name": name, "config": config }).to_string();
-    let sb = sandbox.lock().await;
-    let result = sb.gateway().and_then(|gw| gw.http_post("/api/v1/mcp/servers", &body));
-    match result {
-        Ok((status, _)) if status < 400 => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("MCP server '{}' added.", name),
-            });
-        }
-        Ok((status, resp)) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to add MCP server '{}' ({}): {}", name, status, resp),
-            });
-        }
-        Err(e) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to add MCP server '{}': {}", name, e),
-            });
-        }
-    }
+    app.set_system_message_persistent(ChatMessage {
+        role: MessageRole::System,
+        content,
+    });
 }
 
-/// Handle `/mcp remove <name>`.
-async fn handle_mcp_remove(app: &mut App, name: &str) {
-    let panel = match app.focused_panel_mut() {
-        Some(p) => p,
-        None => return,
-    };
 
-    let sandbox = match panel.sandbox.as_ref() {
-        Some(sb) => Arc::clone(sb),
-        None => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: "No sandbox attached to this panel.".to_string(),
-            });
-            return;
-        }
-    };
-
-    let path = format!("/api/v1/mcp/servers/{}", name);
-    let sb = sandbox.lock().await;
-    let result = sb.gateway().and_then(|gw| gw.http_delete(&path));
-    match result {
-        Ok((status, _)) if status < 400 => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("MCP server '{}' removed.", name),
-            });
-        }
-        Ok((status, resp)) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to remove MCP server '{}' ({}): {}", name, status, resp),
-            });
-        }
-        Err(e) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to remove MCP server '{}': {}", name, e),
-            });
-        }
-    }
-}
-
-/// Handle `/mcp enable <name>`.
-async fn handle_mcp_enable(app: &mut App, name: &str) {
-    let panel = match app.focused_panel_mut() {
-        Some(p) => p,
-        None => return,
-    };
-
-    let sandbox = match panel.sandbox.as_ref() {
-        Some(sb) => Arc::clone(sb),
-        None => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: "No sandbox attached to this panel.".to_string(),
-            });
-            return;
-        }
-    };
-
-    let path = format!("/api/v1/mcp/servers/{}/enable", name);
-    let sb = sandbox.lock().await;
-    let result = sb.gateway().and_then(|gw| gw.http_post(&path, "{}"));
-    match result {
-        Ok((status, _)) if status < 400 => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("MCP server '{}' enabled.", name),
-            });
-        }
-        Ok((status, resp)) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to enable MCP server '{}' ({}): {}", name, status, resp),
-            });
-        }
-        Err(e) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to enable MCP server '{}': {}", name, e),
-            });
-        }
-    }
-}
-
-/// Handle `/mcp disable <name>`.
-async fn handle_mcp_disable(app: &mut App, name: &str) {
-    let panel = match app.focused_panel_mut() {
-        Some(p) => p,
-        None => return,
-    };
-
-    let sandbox = match panel.sandbox.as_ref() {
-        Some(sb) => Arc::clone(sb),
-        None => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: "No sandbox attached to this panel.".to_string(),
-            });
-            return;
-        }
-    };
-
-    let path = format!("/api/v1/mcp/servers/{}/disable", name);
-    let sb = sandbox.lock().await;
-    let result = sb.gateway().and_then(|gw| gw.http_post(&path, "{}"));
-    match result {
-        Ok((status, _)) if status < 400 => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("MCP server '{}' disabled.", name),
-            });
-        }
-        Ok((status, resp)) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to disable MCP server '{}' ({}): {}", name, status, resp),
-            });
-        }
-        Err(e) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to disable MCP server '{}': {}", name, e),
-            });
-        }
-    }
-}
 
 // ========== Agents Registry Loader ==========
 
@@ -5346,151 +5027,58 @@ fn push_skills_feedback(app: &mut App, content: String, persistent: bool) {
     }
 }
 
-/// Handle `/skills list` — list skills installed in the gateway.
+/// Handle `/skills list` — show skills from sandbox.yml config.
 async fn handle_skills_list(app: &mut App) {
-    let sandbox = match app
-        .panels
-        .get(app.focused_panel)
-        .and_then(|p| p.sandbox.as_ref())
-        .cloned()
-    {
-        Some(sb) => sb,
+    let panel = match app.focused_panel_ref() {
+        Some(p) => p,
         None => {
-            push_skills_feedback(app, "No sandbox attached to this panel.".to_string(), true);
+            push_skills_feedback(app, "No panel focused.".to_string(), true);
             return;
         }
     };
 
-    let sb = sandbox.lock().await;
-    match sb.list_skills().await {
-        Ok(skills) => {
-            let content = if skills.is_empty() {
-                "No skills configured. Use /skills add <name> to add from the registry.".to_string()
-            } else {
-                let mut lines = vec!["Skills:".to_string()];
-                let mut sorted: Vec<_> = skills.iter().collect();
-                sorted.sort_by_key(|(n, _)| n.as_str());
-                for (name, skill) in sorted {
-                    let desc = if skill.description.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" - {}", skill.description)
-                    };
-                    lines.push(format!("  {}{}", name, desc));
-                }
-                lines.join("\n")
-            };
-            push_skills_feedback(app, content, true);
+    let config = match panel.original_config.as_ref() {
+        Some(c) => c,
+        None => {
+            push_skills_feedback(app, "No sandbox config available.".to_string(), true);
+            return;
         }
-        Err(e) => {
-            push_skills_feedback(app, format!("Failed to list skills: {}", e), true);
+    };
+
+    let skills = &config.skills;
+    let content = if skills.is_empty() {
+        "No skills configured in sandbox.yml.\n\
+         Add them to sandbox.yml and redeploy (nanosb apply).".to_string()
+    } else {
+        let mut lines = vec!["Skills (from sandbox.yml):".to_string()];
+        let mut sorted: Vec<_> = skills.iter().collect();
+        sorted.sort();
+        for name in sorted {
+            lines.push(format!("  {}", name));
         }
-    }
+        lines.push(String::new());
+        lines.push("Changes require redeploy: edit sandbox.yml and run nanosb apply.".to_string());
+        lines.join("\n")
+    };
+    push_skills_feedback(app, content, true);
 }
 
-/// Handle `/skills add <name>` — resolve from registry and push to gateway.
-async fn handle_skills_add(app: &mut App, name: &str) {
-    app.set_status_message(format!("Adding skill '{}'...", name));
-    // First resolve the skill from the registry (host-side).
-    let skill = match &app.registry {
-        Some(registry) => match registry.resolve_skill(name) {
-            Ok(s) => s,
-            Err(e) => {
-                push_skills_feedback(
-                    app,
-                    format!("Failed to resolve skill '{}': {}", name, e),
-                    true,
-                );
-                return;
-            }
-        },
-        None => {
-            push_skills_feedback(
-                app,
-                "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
-                true,
-            );
-            return;
-        }
-    };
-
-    let sandbox = match app
-        .panels
-        .get(app.focused_panel)
-        .and_then(|p| p.sandbox.as_ref())
-        .cloned()
-    {
-        Some(sb) => sb,
-        None => {
-            push_skills_feedback(
-                app,
-                "No sandbox attached to this panel.".to_string(),
-                true,
-            );
-            return;
-        }
-    };
-
-    let sb = sandbox.lock().await;
-    match sb.add_skill(&skill).await {
-        Ok(()) => {
-            let restart_result = sb.restart_agent("skills_update").await;
-            let content = match restart_result {
-                Ok(_) => format!("Skill '{}' added and agent reloaded.", name),
-                Err(e) => format!(
-                    "Skill '{}' added, but failed to reload agent: {}. Run /agent set claude.",
-                    name, e
-                ),
-            };
-            push_skills_feedback(app, content, false);
-        }
-        Err(e) => {
-            push_skills_feedback(
-                app,
-                format!("Failed to add skill '{}': {}", name, e),
-                true,
-            );
-        }
-    }
+/// Handle `/skills add <name>` — show redeploy message.
+async fn handle_skills_add(app: &mut App, _name: &str) {
+    push_skills_feedback(
+        app,
+        "Skill hot-reload was removed — add skills to sandbox.yml and redeploy (nanosb apply).".to_string(),
+        true,
+    );
 }
 
-/// Handle `/skills remove <name>`.
-async fn handle_skills_remove(app: &mut App, name: &str) {
-    app.set_status_message(format!("Removing skill '{}'...", name));
-    let sandbox = match app
-        .panels
-        .get(app.focused_panel)
-        .and_then(|p| p.sandbox.as_ref())
-        .cloned()
-    {
-        Some(sb) => sb,
-        None => {
-            push_skills_feedback(app, "No sandbox attached to this panel.".to_string(), true);
-            return;
-        }
-    };
-
-    let sb = sandbox.lock().await;
-    match sb.remove_skill(name).await {
-        Ok(()) => {
-            let restart_result = sb.restart_agent("skills_update").await;
-            let content = match restart_result {
-                Ok(_) => format!("Skill '{}' removed and agent reloaded.", name),
-                Err(e) => format!(
-                    "Skill '{}' removed, but failed to reload agent: {}. Run /agent set claude.",
-                    name, e
-                ),
-            };
-            push_skills_feedback(app, content, false);
-        }
-        Err(e) => {
-            push_skills_feedback(
-                app,
-                format!("Failed to remove skill '{}': {}", name, e),
-                true,
-            );
-        }
-    }
+/// Handle `/skills remove <name>` — show redeploy message.
+async fn handle_skills_remove(app: &mut App, _name: &str) {
+    push_skills_feedback(
+        app,
+        "Skill hot-reload was removed — remove skills from sandbox.yml and redeploy (nanosb apply).".to_string(),
+        true,
+    );
 }
 
 /// Handle `/skills show <name>` — show skill content from the registry.
@@ -5532,10 +5120,11 @@ async fn handle_agent_show(app: &mut App) {
     };
 
     let mut lines = vec![
-        "Agent definition commands:".to_string(),
-        "  /agent set <name>  - set agent definition from registry".to_string(),
+        "Agent commands:".to_string(),
         "  /agent list        - list available agents".to_string(),
         "  /agent show <name> - show agent details".to_string(),
+        "".to_string(),
+        "Note: Agent config is declarative in sandbox.yml and only changes via redeploy (nanosb apply).".to_string(),
     ];
 
     // Show current sandbox config agent if set
@@ -5566,75 +5155,7 @@ async fn handle_agent_show(app: &mut App) {
     });
 }
 
-/// Handle `/agent set <name>` — resolve from registry, bootstrap, and restart.
-async fn handle_agent_set(app: &mut App, name: &str) {
-    // First resolve full agent config from registry.
-    let mut resolved = match &app.registry {
-        Some(registry) => match registry.resolve_full(name, &[]) {
-            Ok(r) => r,
-            Err(e) => {
-                if let Some(panel) = app.focused_panel_mut() {
-                    panel.chat_history.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: format!("Failed to resolve agent '{}': {}", name, e),
-                    });
-                }
-                return;
-            }
-        },
-        None => {
-            if let Some(panel) = app.focused_panel_mut() {
-                panel.chat_history.push(ChatMessage {
-                    role: MessageRole::System,
-                    content: "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
-                });
-            }
-            return;
-        }
-    };
 
-    let panel = match app.focused_panel_mut() {
-        Some(p) => p,
-        None => return,
-    };
-
-    let sandbox = match panel.sandbox.as_ref() {
-        Some(sb) => Arc::clone(sb),
-        None => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: "No sandbox attached to this panel.".to_string(),
-            });
-            return;
-        }
-    };
-
-    // Inherit auto_mode, permissions, agent_type, and claude_settings from sandbox config
-    let sb = sandbox.lock().await;
-    resolved.auto_mode = sb.config().auto_mode;
-    resolved.permissions = sb.config().permissions;
-    resolved.agent_type = sb.config().agent_type;
-    resolved.claude_settings = sb.config().claude_settings.clone();
-    match sb.bootstrap_agent(&resolved).await {
-        Ok(()) => {
-            let skill_count = resolved.skills.len();
-            let mcp_count = resolved.mcp_servers.len();
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!(
-                    "Agent '{}' configured ({} skills, {} MCPs).",
-                    name, skill_count, mcp_count,
-                ),
-            });
-        }
-        Err(e) => {
-            panel.chat_history.push(ChatMessage {
-                role: MessageRole::System,
-                content: format!("Failed to set agent '{}': {}", name, e),
-            });
-        }
-    }
-}
 
 /// Handle `/agent list` — list agents from the registry (no sandbox needed).
 fn handle_agent_list(app: &mut App) {

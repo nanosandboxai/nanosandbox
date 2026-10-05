@@ -6,7 +6,7 @@
 //! project-mount lifecycle (git clone + auto-commit on teardown).
 
 use crate::project::{BranchStrategy, ProjectMount};
-use runtime::{ProgressFn, Result, SandboxConfig};
+use runtime::{ProgressFn, Result, RuntimeMode, SandboxConfig};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -166,7 +166,20 @@ impl Sandbox {
     /// Before booting the VM, detects gateway mode from the rootfs, sets up
     /// port mappings and SSH keys, boots the VM, creates a `GatewayClient`,
     /// performs health checks, and generates the secrets keypair.
+    ///
+    /// In "next" runtime mode, gateway detection and SSH setup are skipped
+    /// entirely — the VM boots a vanilla image with console I/O.
     pub async fn start(&mut self) -> Result<()> {
+        // In next mode, skip gateway detection/SSH/port-mapping entirely.
+        if self.inner.config().runtime_mode == RuntimeMode::Next {
+            info!(
+                "Next runtime mode: skipping gateway setup for sandbox '{}'",
+                self.inner.id()
+            );
+            self.inner.start().await?;
+            return Ok(());
+        }
+
         // Detect gateway mode from the bundle rootfs.
         let has_gateway = if let Some(bundle_path) = self.inner.bundle_path() {
             let rootfs = bundle_path.join("rootfs");

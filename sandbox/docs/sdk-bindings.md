@@ -217,3 +217,15 @@ func main() {
 
 - **macOS**: Binary must be codesigned with `com.apple.security.hypervisor` entitlement.
 - **Linux**: Requires KVM access (`/dev/kvm`).
+
+## Removed APIs (Phase 4 — Zero-Image-Customization)
+
+The following in-VM CRUD APIs have been removed as part of the zero-image-customization redesign:
+
+- `bootstrap_agent` — replaced by host-side config generation (`deploy::DeployPlanner`)
+- `set_agent` — replaced by deploy-time config materialization
+- `restart_agent` — no longer needed; config is boot-immutable
+- MCP CRUD (`add_mcp_server`, `remove_mcp_server`, `list_mcp_servers`, `enable_mcp_server`, `disable_mcp_server`) — replaced by host-side MCP config generation (`deploy::ConfigGenerator`)
+- Skills CRUD (`add_skill`, `remove_skill`, `list_skills`) — replaced by host-side skills generation (`deploy::SkillsGenerator`)
+
+All agent configuration is now delivered as read-only virtiofs mounts + boot-time environment variables. See the `deploy` module for the new API.
