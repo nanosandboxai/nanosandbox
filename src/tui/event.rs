@@ -60,6 +60,15 @@ pub enum AppEvent {
         /// Error description (None for clean disconnect).
         error: Option<String>,
     },
+    /// A supervised sandbox with this name is already running; attach via console.
+    SupervisorReady {
+        /// Panel index.
+        panel_idx: usize,
+        /// Supervisor sandbox name.
+        name: String,
+        /// Short identifier for display.
+        short_id: String,
+    },
     /// Open a TUI tool (suspend terminal, launch tool, resume on exit).
     OpenTuiTool {
         /// Binary name of the tool to launch.

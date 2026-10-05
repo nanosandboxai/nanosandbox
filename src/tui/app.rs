@@ -319,6 +319,8 @@ pub struct AgentPanel {
     pub ssh_host: Option<String>,
     /// SSH private key path for port forwarding (stored from SandboxReady).
     pub ssh_key_path: Option<PathBuf>,
+    /// Name of the supervised sandbox this panel is attached to (console mode).
+    pub supervisor_name: Option<String>,
     /// Guest ports with active SSH local-port-forwards (`ssh -L`).
     pub forwarded_ports: HashSet<u16>,
     /// SSH port-forward child processes (killed on panel close).
@@ -383,6 +385,7 @@ impl AgentPanel {
             ssh_host_port: None,
             ssh_host: None,
             ssh_key_path: None,
+            supervisor_name: None,
             forwarded_ports: HashSet::new(),
             port_forward_children: Vec::new(),
             loading_tick: 0,

@@ -495,6 +495,61 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                     }
                 }
             }
+            AppEvent::SupervisorReady { panel_idx, name, short_id } => {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.sandbox = None;
+                    panel.supervisor_name = Some(name.clone());
+                    panel.sandbox_id_short = short_id;
+                    panel.loading_message = Some("Attaching to supervised sandbox...".into());
+                    panel.mode = PanelMode::Loading;
+                }
+
+                let (pty_cols, pty_rows) = {
+                    let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
+                    let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
+                    super::grid::estimate_panel_inner_size(
+                        term_size.0,
+                        term_size.1,
+                        app.visible_panel_count(),
+                        has_sidebar,
+                        app.zoomed,
+                    )
+                };
+
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let max_attempts = 10;
+                    let mut last_err = String::new();
+                    for attempt in 1..=max_attempts {
+                        let delay = if attempt == 1 { 300 } else { 1000 };
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        match super::terminal::connect_console(
+                            name.clone(),
+                            pty_cols,
+                            pty_rows,
+                            panel_idx,
+                            tx.clone(),
+                        )
+                        .await
+                        {
+                            Ok(handle) => {
+                                let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
+                                return;
+                            }
+                            Err(e) => {
+                                last_err = e;
+                            }
+                        }
+                    }
+                    let _ = tx.send(AppEvent::SshDisconnected {
+                        panel_idx,
+                        error: Some(format!(
+                            "Console attach failed after {} attempts: {}",
+                            max_attempts, last_err
+                        )),
+                    });
+                });
+            }
             AppEvent::SandboxFailed { panel_idx, error } => {
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
                     panel.loading_error = Some(error);
@@ -1278,6 +1333,29 @@ fn kill_panel_at(app: &mut App, idx: usize) -> Option<(String, Option<Arc<Mutex<
 }
 
 /// Spawn a background task to destroy a sandbox.
+/// If a supervised sandbox with this name is already running, ask the panel to
+/// attach to its console instead of starting a duplicate VM.
+fn try_attach_supervisor(
+    sandbox_name: &str,
+    panel_idx: usize,
+    tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+) -> bool {
+    if sandbox_name.is_empty() {
+        return false;
+    }
+    if crate::supervisor::client::SupervisorClient::new(sandbox_name).is_running() {
+        let short_id = sandbox_name.chars().take(8).collect::<String>();
+        let _ = tx.send(AppEvent::SupervisorReady {
+            panel_idx,
+            name: sandbox_name.to_string(),
+            short_id,
+        });
+        true
+    } else {
+        false
+    }
+}
+
 fn spawn_sandbox_destroy(sandbox_arc: Arc<Mutex<Sandbox>>) {
     tokio::spawn(async move {
         match Arc::try_unwrap(sandbox_arc) {
@@ -4092,6 +4170,9 @@ fn add_agent(
     let tx = tx.clone();
     let image_manager = app.image_manager.clone();
     tokio::spawn(async move {
+        if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
+            return;
+        }
         let _ = tx.send(AppEvent::SandboxCreating {
             panel_idx,
             message: "Pulling image...".into(),
@@ -4268,6 +4349,9 @@ fn add_agent_from_config(
     let tx = tx.clone();
     let image_manager = app.image_manager.clone();
     tokio::spawn(async move {
+        if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
+            return;
+        }
         let _ = tx.send(AppEvent::SandboxCreating {
             panel_idx,
             message: "Pulling image...".into(),
@@ -4675,6 +4759,9 @@ fn resume_session(
         let tx = tx.clone();
         let image_manager = app.image_manager.clone();
         tokio::spawn(async move {
+            if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
+                return;
+            }
             let _ = tx.send(AppEvent::SandboxCreating {
                 panel_idx,
                 message: "Pulling image...".into(),

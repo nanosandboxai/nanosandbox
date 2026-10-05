@@ -438,6 +438,100 @@ impl SshTerminalHandle {
     }
 }
 
+/// Attach to a supervisor-managed sandbox console.
+///
+/// Mirrors [`connect_ssh`] for supervised (next-mode) sandboxes: console output
+/// is forwarded as `AppEvent::TerminalData`, and the returned handle's channels
+/// are translated into attach-protocol input/resize frames.
+pub async fn connect_console(
+    sandbox_name: String,
+    cols: u16,
+    rows: u16,
+    panel_idx: usize,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<SshTerminalHandle, String> {
+    use crate::supervisor::client::{AttachConnection, SupervisorClient};
+    use crate::supervisor::AttachFrame;
+    use std::io::Write;
+
+    let client = SupervisorClient::new(&sandbox_name);
+    if !client.is_running() {
+        return Err(format!(
+            "supervised sandbox '{}' is not running",
+            sandbox_name
+        ));
+    }
+
+    let mut conn = AttachConnection::open(&client).map_err(|e| e.to_string())?;
+    let mut writer = conn.writer_clone().map_err(|e| e.to_string())?;
+
+    let mut initial = serde_json::json!({ "type": "resize", "cols": cols, "rows": rows })
+        .to_string()
+        .into_bytes();
+    initial.push(b'\n');
+    let _ = writer.write_all(&initial);
+
+    let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (resize_tx, mut resize_rx) = mpsc::unbounded_channel::<(u16, u16)>();
+
+    tokio::spawn(async move {
+        loop {
+            let payload = tokio::select! {
+                Some(bytes) = write_rx.recv() => {
+                    let data = String::from_utf8_lossy(&bytes).to_string();
+                    serde_json::json!({ "type": "input", "data": data }).to_string()
+                }
+                Some((cols, rows)) = resize_rx.recv() => {
+                    serde_json::json!({ "type": "resize", "cols": cols, "rows": rows }).to_string()
+                }
+                else => break,
+            };
+            let mut frame = payload.into_bytes();
+            frame.push(b'\n');
+            if writer.write_all(&frame).is_err() {
+                break;
+            }
+        }
+    });
+
+    let tx_read = tx.clone();
+    tokio::task::spawn_blocking(move || loop {
+        match conn.next_frame() {
+            Ok(Some(AttachFrame::Output { data })) => {
+                let _ = tx_read.send(AppEvent::TerminalData {
+                    panel_idx,
+                    data: data.into_bytes(),
+                });
+            }
+            Ok(Some(AttachFrame::Exit { code })) => {
+                let error = if code != 0 {
+                    Some(format!("console exited with code {}", code))
+                } else {
+                    None
+                };
+                let _ = tx_read.send(AppEvent::SshDisconnected { panel_idx, error });
+                break;
+            }
+            Ok(None) => {
+                let _ = tx_read.send(AppEvent::SshDisconnected {
+                    panel_idx,
+                    error: None,
+                });
+                break;
+            }
+            Err(e) => {
+                let _ = tx_read.send(AppEvent::SshDisconnected {
+                    panel_idx,
+                    error: Some(e.to_string()),
+                });
+                break;
+            }
+        }
+    });
+
+    Ok(SshTerminalHandle { write_tx, resize_tx })
+}
+
 /// Build agent-specific environment variables (e.g. Goose mode, prompt).
 ///
 /// Returns a map of extra env vars that both the SSH and gateway exec paths
