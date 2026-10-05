@@ -2168,6 +2168,37 @@ async fn handle_command(
                 panel.port_forward_children.clear();
                 panel.forwarded_ports.clear();
 
+                let console_name = if panel.sandbox.is_none() {
+                    panel.supervisor_name.clone()
+                } else {
+                    None
+                };
+
+                if let Some(name) = console_name.clone() {
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        match super::terminal::connect_console(
+                            name,
+                            pty_cols,
+                            pty_rows,
+                            panel_idx,
+                            tx.clone(),
+                        )
+                        .await
+                        {
+                            Ok(handle) => {
+                                let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::SshDisconnected {
+                                    panel_idx,
+                                    error: Some(format!("Console reconnect failed: {}", e)),
+                                });
+                            }
+                        }
+                    });
+                }
+
                 let ssh_info = if let Some(ref sb_arc) = panel.sandbox {
                     let sb = sb_arc.lock().await;
                     sb.ssh_port().zip(sb.ssh_key_path())
@@ -2211,7 +2242,7 @@ async fn handle_command(
                             }
                         }
                     });
-                } else {
+                } else if console_name.is_none() {
                     panel.loading_error = Some("No sandbox running. Cannot reconnect SSH.".to_string());
                     panel.reconnecting = false;
                 }
