@@ -18,7 +18,7 @@
 
 use super::ffi;
 use super::gvproxy::{GvproxyInstance, GvproxyManager};
-use crate::config::{MountType, NetworkScope, SandboxConfig};
+use crate::config::{ConsoleSpec, ExtraMount, MountType, NetworkScope, RuntimeMode, SandboxConfig};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -58,6 +58,19 @@ pub struct BootVmRequest {
     /// Run agent processes as root inside guest.
     #[serde(default)]
     pub run_as_root: bool,
+    /// Runtime mode: "legacy" or "next".
+    #[serde(default = "default_runtime_mode")]
+    pub runtime_mode: String,
+    /// Console specification for next mode (stdin_fd, stdout_fd, stderr_fd, tty).
+    #[serde(default)]
+    pub console: Option<ConsoleSpec>,
+    /// Extra virtiofs mounts for next mode (tag, target, readonly).
+    #[serde(default)]
+    pub extra_mounts: Vec<ExtraMount>,
+}
+
+fn default_runtime_mode() -> String {
+    "legacy".to_string()
 }
 
 /// Entry point for the `internal-boot-vm` subprocess.
@@ -111,20 +124,38 @@ pub fn handle_boot_vm_subprocess() -> ! {
 
     let args_refs: Vec<&str> = config.command_args.iter().map(|s| s.as_str()).collect();
 
-    let result = LibkrunRuntime::configure_and_start_vm(
-        &config.rootfs_path,
-        config.cpus,
-        config.memory_mb,
-        &config.command,
-        &args_refs,
-        None,
-        &env,
-        &config.network_scope,
-        &config.port_mappings,
-        &config.mounts,
-        &config.dns,
-        config.gvproxy_socket.as_deref(),
-    );
+    let result = match config.runtime_mode.as_str() {
+        "next" => LibkrunRuntime::configure_and_start_vm_next(
+            &config.rootfs_path,
+            config.cpus,
+            config.memory_mb,
+            &config.command,
+            &args_refs,
+            None,
+            &env,
+            &config.network_scope,
+            &config.port_mappings,
+            &config.mounts,
+            &config.dns,
+            config.gvproxy_socket.as_deref(),
+            config.console.as_ref(),
+            &config.extra_mounts,
+        ),
+        _ => LibkrunRuntime::configure_and_start_vm(
+            &config.rootfs_path,
+            config.cpus,
+            config.memory_mb,
+            &config.command,
+            &args_refs,
+            None,
+            &env,
+            &config.network_scope,
+            &config.port_mappings,
+            &config.mounts,
+            &config.dns,
+            config.gvproxy_socket.as_deref(),
+        ),
+    };
 
     if let Err(e) = result {
         eprintln!("internal-boot-vm: configure_and_start_vm failed: {}", e);
@@ -440,6 +471,174 @@ impl LibkrunRuntime {
         // print the reason for any -EINVAL failure to stderr.
         ffi::start_enter(ctx)
     }
+
+    /// Next-mode VM configuration: console I/O, extra virtiofs mounts, vanilla entrypoint.
+    ///
+    /// This is the zero-image-customization path. It:
+    /// 1. Disables the implicit console (so we can wire our own)
+    /// 2. Adds a virtio-console with the provided host fds
+    /// 3. Registers extra virtiofs mounts (guest-side mounting via init patch)
+    /// 4. Sets the exec command from the image entrypoint (no wrapper)
+    /// 5. Starts the VM (never returns on success)
+    #[allow(clippy::too_many_arguments)]
+    fn configure_and_start_vm_next(
+        rootfs_path: &str,
+        cpus: u32,
+        memory_mb: u32,
+        command: &str,
+        args: &[&str],
+        workdir: Option<&str>,
+        env: &HashMap<String, String>,
+        _network_scope: &NetworkScope,
+        port_mappings: &[(u16, u16, String)],
+        mounts: &[(String, String)],
+        dns: &[String],
+        gvproxy_socket: Option<&str>,
+        console: Option<&ConsoleSpec>,
+        extra_mounts: &[ExtraMount],
+    ) -> std::result::Result<(), String> {
+        // Create VM context
+        let ctx = ffi::create_ctx()?;
+
+        // Configure VM resources
+        let max_vcpus = ffi::get_max_vcpus().unwrap_or(8);
+        let vcpus = cpus.min(max_vcpus).max(1) as u8;
+        ffi::set_vm_config(ctx, vcpus, memory_mb)?;
+
+        // Set rootfs
+        ffi::set_root(ctx, rootfs_path)?;
+
+        // Configure networking
+        if let Some(socket_path) = gvproxy_socket {
+            ffi::add_net_unixgram(
+                ctx,
+                socket_path,
+                &ffi::GVPROXY_GUEST_MAC,
+                ffi::COMPAT_NET_FEATURES,
+                ffi::NET_FLAG_VFKIT,
+            )?;
+        }
+        if gvproxy_socket.is_none() && !port_mappings.is_empty() {
+            let mapping_strings: Vec<String> = port_mappings
+                .iter()
+                .map(|(hp, gp, _proto)| format!("{}:{}", hp, gp))
+                .collect();
+            ffi::set_port_map(ctx, Some(&mapping_strings))?;
+        }
+
+        // Add standard virtiofs mounts (host-side registration)
+        for (tag, path) in mounts {
+            ffi::add_virtiofs(ctx, tag, path)?;
+        }
+
+        // Add extra virtiofs mounts (next mode: tag-based, guest-side mounting via init patch)
+        for em in extra_mounts {
+            // Register the tag with the host path so libkrun shares the correct
+            // host directory. The init patch mounts it at `em.target` inside the guest.
+            ffi::add_virtiofs(ctx, &em.tag, &em.host_path)?;
+        }
+
+        // Set working directory
+        if let Some(wd) = workdir {
+            ffi::set_workdir(ctx, wd)?;
+        }
+
+        // Build environment variables
+        let mut env_vars: Vec<String> = env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        if !dns.is_empty() && !env.contains_key("NANOSANDBOX_DNS") {
+            env_vars.push(format!("NANOSANDBOX_DNS={}", dns.join(",")));
+        }
+        if !env.contains_key("PATH") {
+            env_vars.push(
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+            );
+        }
+        if !env.contains_key("HOME") {
+            env_vars.push("HOME=/root".to_string());
+        }
+        if !env.contains_key("TERM") {
+            env_vars.push("TERM=xterm-256color".to_string());
+        }
+
+        // Next-mode env vars for the patched init (see runtime/scripts/patches/README.md)
+        env_vars.push("KRUN_NEXT_MODE=1".to_string());
+
+        // Serialize extra mounts for the init patch
+        if !extra_mounts.is_empty() {
+            let mounts_json: Vec<serde_json::Value> = extra_mounts
+                .iter()
+                .map(|em| {
+                    serde_json::json!({
+                        "tag": em.tag,
+                        "target": em.target,
+                        "readonly": em.readonly,
+                    })
+                })
+                .collect();
+            env_vars.push(format!(
+                "KRUN_EXTRA_MOUNTS={}",
+                serde_json::to_string(&mounts_json).unwrap_or_default()
+            ));
+        }
+
+        // Serialize network config for the init patch
+        let dns_list: Vec<&str> = if !dns.is_empty() {
+            dns.iter().map(|s| s.as_str()).collect()
+        } else {
+            vec!["8.8.8.8", "1.1.1.1"]
+        };
+        let net_config = serde_json::json!({
+            "ip": "192.168.127.2/24",
+            "gateway": "192.168.127.1",
+            "dns": dns_list,
+        });
+        env_vars.push(format!(
+            "KRUN_NET_CONFIG={}",
+            serde_json::to_string(&net_config).unwrap_or_default()
+        ));
+
+        // Set up console I/O (next mode)
+        // Disable the implicit console first, then wire our own virtio-console.
+        ffi::disable_implicit_console(ctx)?;
+
+        if let Some(cons) = console {
+            if cons.tty {
+                // TTY mode: use multiport console with a TTY port.
+                // This enables raw-mode TUI, SIGWINCH resize, etc.
+                let console_id = ffi::add_virtio_console_multiport(ctx)?;
+                ffi::add_console_port_tty(ctx, console_id, "krun-console", cons.stdin_fd)?;
+                // In TTY mode, stdout/stderr go through the TTY port.
+                // We still set up the default console for output as a fallback.
+                ffi::add_virtio_console_default(ctx, -1, cons.stdout_fd, cons.stderr_fd)?;
+            } else {
+                // Raw fd mode: wire stdin/stdout/stderr directly.
+                ffi::add_virtio_console_default(ctx, cons.stdin_fd, cons.stdout_fd, cons.stderr_fd)?;
+            }
+        } else {
+            // No console spec: use default console with inherited fds.
+            ffi::add_virtio_console_default(ctx, 0, 1, 2)?;
+        }
+
+        // Build exec argv (vanilla entrypoint — no wrapper)
+        let exec_argv: Vec<&str> = args.iter().copied().collect();
+
+        // Set exec with explicit environment
+        ffi::set_exec(ctx, command, &exec_argv, Some(&env_vars))?;
+
+        // Remove config.json to prevent libkrun from reading stale commands
+        {
+            let bundle_dir = std::path::Path::new(rootfs_path).parent();
+            if let Some(dir) = bundle_dir {
+                let config_path = dir.join("config.json");
+                if config_path.exists() {
+                    let _ = std::fs::remove_file(&config_path);
+                }
+            }
+        }
+
+        // Start the VM — never returns on success
+        ffi::start_enter(ctx)
+    }
 }
 
 // Public API matching the RuntimeBackend interface
@@ -587,9 +786,9 @@ impl LibkrunRuntime {
             "TSI (fallback)"
         };
 
-        // Write virtiofs mount config for the guest init script.
-        // The tags must match the "mount{i}" convention used in krun_add_virtiofs above.
-        {
+        // Write virtiofs mount config for the guest init script (legacy mode only).
+        // In next mode, the libkrun init patch handles guest-side mounting.
+        if config.runtime_mode != RuntimeMode::Next {
             let mut mount_lines = Vec::new();
             for (i, m) in config
                 .mounts
@@ -788,6 +987,138 @@ impl LibkrunRuntime {
         Ok(())
     }
 
+    /// Boot a persistent VM subprocess (next mode).
+    /// Returns the child PID on success.
+    ///
+    /// Like `boot_persistent_vm` but accepts console fds and extra mounts
+    /// for the next-mode (zero-image-customization) path. The console fds
+    /// are inherited by the subprocess via `Stdio::from_raw_fd`.
+    #[allow(clippy::too_many_arguments)]
+    fn boot_persistent_vm_next(
+        sandbox_id: &str,
+        rootfs_path: &str,
+        cpus: u32,
+        memory_mb: u32,
+        command: &str,
+        command_args: &[&str],
+        network_scope: &NetworkScope,
+        port_mappings: &[(u16, u16, String)],
+        mounts: &[(String, String)],
+        dns: &[String],
+        gvproxy_socket: Option<&str>,
+        run_as_root: bool,
+        console: Option<ConsoleSpec>,
+        extra_mounts: Vec<ExtraMount>,
+    ) -> std::result::Result<i32, String> {
+        let request = BootVmRequest {
+            sandbox_id: sandbox_id.to_string(),
+            rootfs_path: rootfs_path.to_string(),
+            cpus,
+            memory_mb,
+            command: command.to_string(),
+            command_args: command_args.iter().map(|s| s.to_string()).collect(),
+            network_scope: *network_scope,
+            port_mappings: port_mappings.to_vec(),
+            mounts: mounts.to_vec(),
+            dns: dns.to_vec(),
+            gvproxy_socket: gvproxy_socket.map(|s| s.to_string()),
+            run_as_root,
+            runtime_mode: "next".to_string(),
+            console,
+            extra_mounts,
+        };
+
+        let config_json = serde_json::to_string(&request)
+            .map_err(|e| format!("Failed to serialize boot config: {}", e))?;
+
+        let exe_path = if let Ok(path_str) = std::env::var("NANOSB_BINARY_PATH") {
+            PathBuf::from(path_str)
+        } else {
+            std::env::current_exe().map_err(|e| format!("Failed to get current exe path: {}", e))?
+        };
+
+        #[cfg(target_os = "macos")]
+        ensure_hypervisor_entitlement(&exe_path)?;
+
+        let mut cmd = std::process::Command::new(&exe_path);
+        cmd.arg("internal-boot-vm")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        #[cfg(target_os = "linux")]
+        if let Ok(home) = std::env::var("HOME") {
+            let nanosandbox_libs = format!("{}/.nanosandbox/libs", home);
+            let new_path = match std::env::var("LD_LIBRARY_PATH") {
+                Ok(existing) if !existing.is_empty() => {
+                    format!("{}:{}", nanosandbox_libs, existing)
+                }
+                _ => nanosandbox_libs,
+            };
+            cmd.env("LD_LIBRARY_PATH", new_path);
+        }
+
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setpgid(0, 0);
+                Ok(())
+            });
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn boot-vm subprocess: {}", e))?;
+
+        // Write config JSON to child's stdin, then close it
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| "Failed to open subprocess stdin".to_string())?;
+            stdin
+                .write_all(config_json.as_bytes())
+                .map_err(|e| format!("Failed to write config to subprocess: {}", e))?;
+        }
+
+        let pid = child.id() as i32;
+
+        // Take stdout/stderr handles for background tracing forwarding.
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let prefix = sandbox_id.chars().take(8).collect::<String>();
+
+        std::thread::spawn(move || {
+            let stdout_prefix = prefix.clone();
+            let stdout_thread = stdout.map(|out| {
+                std::thread::spawn(move || {
+                    for line in BufReader::new(out).lines().flatten() {
+                        info!("[vm-{}-stdout] {}", stdout_prefix, line);
+                    }
+                })
+            });
+
+            let stderr_prefix = prefix;
+            let stderr_thread = stderr.map(|err| {
+                std::thread::spawn(move || {
+                    for line in BufReader::new(err).lines().flatten() {
+                        info!("[vm-{}] {}", stderr_prefix, line);
+                    }
+                })
+            });
+
+            if let Some(t) = stdout_thread {
+                let _ = t.join();
+            }
+            if let Some(t) = stderr_thread {
+                let _ = t.join();
+            }
+
+            drop(child);
+        });
+
+        Ok(pid)
+    }
+
     /// Boot a persistent VM subprocess.
     /// Returns the child PID on success.
     ///
@@ -812,6 +1143,10 @@ impl LibkrunRuntime {
         run_as_root: bool,
     ) -> std::result::Result<i32, String> {
         // Serialize VM configuration for the subprocess
+        // Determine runtime mode from environment (set by the supervisor).
+        // Default is "legacy" for backward compatibility.
+        let runtime_mode = std::env::var("NANOSB_RUNTIME").unwrap_or_else(|_| "legacy".to_string());
+
         let request = BootVmRequest {
             sandbox_id: sandbox_id.to_string(),
             rootfs_path: rootfs_path.to_string(),
@@ -825,6 +1160,9 @@ impl LibkrunRuntime {
             dns: dns.to_vec(),
             gvproxy_socket: gvproxy_socket.map(|s| s.to_string()),
             run_as_root,
+            runtime_mode,
+            console: None,   // Set by the supervisor via env or config
+            extra_mounts: Vec::new(), // Set by the supervisor via config
         };
 
         let config_json = serde_json::to_string(&request)
@@ -938,6 +1276,157 @@ impl LibkrunRuntime {
         Ok(pid)
     }
 
+
+    /// Start the sandbox in next mode with console fds and extra mounts.
+    ///
+    /// This is the zero-image-customization path. The caller (supervisor) provides
+    /// the console fds and extra mount specs. The VM subprocess inherits the fds.
+    pub async fn start_next(
+        &self,
+        id: &str,
+        console: Option<ConsoleSpec>,
+        extra_mounts: Vec<ExtraMount>,
+    ) -> Result<()> {
+        let (pid1_command, pid1_args): (String, Vec<String>) = {
+            let sandboxes = self.lock_sandboxes();
+            let state = sandboxes
+                .get(id)
+                .ok_or_else(|| Error::SandboxNotFound(id.to_string()))?;
+            if let Some(ref cmd) = state.command {
+                info!("VM (next): PID 1 = {}", cmd);
+                (cmd.clone(), state.command_args.clone())
+            } else {
+                info!("VM (next): no command set, using sleep hold");
+                ("/bin/sleep".to_string(), vec!["infinity".to_string()])
+            }
+        };
+
+        info!("Starting VM (next mode) for sandbox '{}'", id);
+
+        let (
+            rootfs_path,
+            cpus,
+            memory_mb,
+            network_scope,
+            port_mappings,
+            mounts,
+            dns,
+            gvproxy_socket,
+            run_as_root,
+        ) = {
+            let sandboxes = self.lock_sandboxes();
+            let state = sandboxes
+                .get(id)
+                .ok_or_else(|| Error::SandboxNotFound(id.to_string()))?;
+            (
+                state.rootfs_path.to_string_lossy().to_string(),
+                state.cpus,
+                state.memory_mb,
+                state.network_scope,
+                state.port_mappings.clone(),
+                state.mounts.clone(),
+                state.dns.clone(),
+                state
+                    .gvproxy
+                    .as_ref()
+                    .map(|g| g.socket_path().to_string_lossy().to_string()),
+                state.run_as_root,
+            )
+        };
+
+        let id_owned = id.to_string();
+        let pid1_args_refs: Vec<String> = pid1_args;
+        let vm_pid = tokio::task::spawn_blocking(move || {
+            let args_refs: Vec<&str> = pid1_args_refs.iter().map(|s| s.as_str()).collect();
+            Self::boot_persistent_vm_next(
+                &id_owned,
+                &rootfs_path,
+                cpus,
+                memory_mb,
+                &pid1_command,
+                &args_refs,
+                &network_scope,
+                &port_mappings,
+                &mounts,
+                &dns,
+                gvproxy_socket.as_deref(),
+                run_as_root,
+                console,
+                extra_mounts,
+            )
+        })
+        .await
+        .map_err(|e| Error::ExecFailed(format!("Task join error: {}", e)))?
+        .map_err(|e| Error::SandboxCreationFailed(format!("VM boot failed: {}", e)))?;
+
+        {
+            let mut sandboxes = self.lock_sandboxes();
+            if let Some(state) = sandboxes.get_mut(id) {
+                state.vm_pid = Some(vm_pid);
+            }
+        }
+
+        // Verify gvproxy is still alive after boot
+        let gvproxy_dead = {
+            let mut sandboxes = self.lock_sandboxes();
+            if let Some(state) = sandboxes.get_mut(id) {
+                state.gvproxy.as_mut().is_some_and(|g| !g.is_alive())
+            } else {
+                false
+            }
+        };
+        if gvproxy_dead {
+            let _ = self.destroy(id).await;
+            return Err(Error::SandboxCreationFailed(
+                "gvproxy died during VM boot".to_string(),
+            ));
+        }
+
+        // Expose user-configured port mappings and DNS zones via gvproxy
+        {
+            let sandboxes = self.lock_sandboxes();
+            if let Some(state) = sandboxes.get(id) {
+                if let Some(ref gvproxy) = state.gvproxy {
+                    for (hp, gp, proto) in &state.port_mappings {
+                        match gvproxy.expose_port(*hp, *gp, proto) {
+                            Ok(()) => {
+                                info!(
+                                    "Exposed user port via gvproxy: host:{} -> guest:{} ({})",
+                                    hp, gp, proto
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to expose user port via gvproxy: host:{} -> guest:{} ({}): {}",
+                                    hp, gp, proto, e
+                                );
+                            }
+                        }
+                    }
+
+                    for (name, ip) in &state.dns_zones {
+                        match gvproxy.add_dns_zone(name, ip) {
+                            Ok(()) => {
+                                info!(
+                                    "Configured DNS zone via gvproxy: {} -> {}",
+                                    name, ip
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to configure DNS zone via gvproxy: {} -> {}: {}",
+                                    name, ip, e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("VM (next mode) started for sandbox '{}' (pid: {})", id, vm_pid);
+        Ok(())
+    }
 
     /// Stop the VM by killing the VM process.
     pub async fn stop(&self, id: &str) -> Result<()> {

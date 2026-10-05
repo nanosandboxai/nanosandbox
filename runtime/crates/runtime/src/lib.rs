@@ -51,8 +51,8 @@ pub mod sandbox;
 // Re-exports
 pub use auth::CredentialStore;
 pub use config::{
-    Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping, ProjectConfig,
-    RegistryConfig, SandboxConfig,
+    ConsoleSpec, ExtraMount, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope,
+    PortMapping, ProjectConfig, RegistryConfig, RuntimeMode, SandboxConfig,
 };
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PruneResult, PulledImage};

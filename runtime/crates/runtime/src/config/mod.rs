@@ -3,6 +3,73 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Runtime mode selection.
+///
+/// - `Legacy` (default): Current behavior — boots with nanosb-init.sh wrapper,
+///   gateway agent, SSH keys, etc.
+/// - `Next`: New zero-image-customization mode — boots a vanilla image with
+///   console I/O, extra virtiofs mounts, and network bring-up at the microVM
+///   layer. No nanosb artifacts in the image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMode {
+    /// Legacy gateway-based mode (default)
+    #[default]
+    Legacy,
+    /// Next-gen mode: vanilla images, console I/O, microVM-layer setup
+    Next,
+}
+
+/// Console I/O specification for the "next" runtime mode.
+///
+/// Describes how host-side file descriptors are wired to the VM's virtio-console.
+/// In next mode, the `internal-boot-vm` subprocess receives these fds via
+/// inheritance from the parent process (the supervisor).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsoleSpec {
+    /// Host-side fd number for stdin input to the VM (0 = inherit parent stdin).
+    /// The subprocess reads from this fd and writes to the virtio-console input.
+    pub stdin_fd: i32,
+    /// Host-side fd number for stdout output from the VM (1 = inherit parent stdout).
+    /// The subprocess reads from virtio-console output and writes to this fd.
+    pub stdout_fd: i32,
+    /// Host-side fd number for stderr output from the VM (2 = inherit parent stderr).
+    pub stderr_fd: i32,
+    /// Whether to set up a TTY on the console (enables raw mode, SIGWINCH resize).
+    #[serde(default)]
+    pub tty: bool,
+}
+
+impl Default for ConsoleSpec {
+    fn default() -> Self {
+        Self {
+            stdin_fd: 0,
+            stdout_fd: 1,
+            stderr_fd: 2,
+            tty: false,
+        }
+    }
+}
+
+/// An extra virtiofs mount to be set up at the microVM layer (next mode only).
+///
+/// The host registers the tag via `krun_add_virtiofs`; the guest-side mount
+/// is performed by the libkrun init patch (see `runtime/scripts/patches/`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtraMount {
+    /// virtiofs tag (must match the tag registered via `krun_add_virtiofs`)
+    pub tag: String,
+    /// Host-side source path for the virtiofs share.
+    /// This is the path on the host filesystem that will be shared.
+    pub host_path: String,
+    /// Target mount point inside the guest (e.g., "/mnt/config")
+    pub target: String,
+    /// Whether the mount is read-only
+    #[serde(default)]
+    pub readonly: bool,
+}
+
 /// Configuration for creating a sandbox
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxConfig {
@@ -66,6 +133,22 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing)]
     pub command_args: Vec<String>,
 
+    /// Runtime mode: Legacy (default) or Next (zero-image-customization).
+    #[serde(default)]
+    pub runtime_mode: RuntimeMode,
+
+    /// Console I/O specification for next mode.
+    /// Ignored in legacy mode.
+    #[serde(default, skip_serializing)]
+    pub console: Option<ConsoleSpec>,
+
+    /// Extra virtiofs mounts for next mode (tag, target, readonly).
+    /// These are registered via `krun_add_virtiofs` on the host side;
+    /// guest-side mounting is handled by the libkrun init patch.
+    /// Ignored in legacy mode.
+    #[serde(default, skip_serializing)]
+    pub extra_mounts: Vec<ExtraMount>,
+
 }
 
 fn default_cpus() -> u32 {
@@ -101,6 +184,9 @@ impl Default for SandboxConfig {
             ssh_pubkey: None,
             command: None,
             command_args: Vec::new(),
+            runtime_mode: RuntimeMode::default(),
+            console: None,
+            extra_mounts: Vec::new(),
         }
     }
 }
@@ -264,6 +350,29 @@ impl SandboxConfigBuilder {
             branch: Some(branch.to_string()),
             mount_point: "/workspace".to_string(),
             auto_sync: false,
+        });
+        self
+    }
+
+    /// Set the runtime mode (Legacy or Next).
+    pub fn runtime_mode(mut self, mode: RuntimeMode) -> Self {
+        self.config.runtime_mode = mode;
+        self
+    }
+
+    /// Set the console specification for next mode.
+    pub fn console(mut self, console: ConsoleSpec) -> Self {
+        self.config.console = Some(console);
+        self
+    }
+
+    /// Add an extra virtiofs mount for next mode.
+    pub fn extra_mount(mut self, tag: impl Into<String>, host_path: impl Into<String>, target: impl Into<String>, readonly: bool) -> Self {
+        self.config.extra_mounts.push(ExtraMount {
+            tag: tag.into(),
+            host_path: host_path.into(),
+            target: target.into(),
+            readonly,
         });
         self
     }
@@ -605,4 +714,187 @@ mod tests {
         assert!(config.project.is_none());
     }
 
+    // ── RuntimeMode tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_runtime_mode_default_is_legacy() {
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("alpine")
+            .build();
+        assert_eq!(config.runtime_mode, RuntimeMode::Legacy);
+    }
+
+    #[test]
+    fn test_runtime_mode_next() {
+        let config = SandboxConfig::builder()
+            .name("test")
+            .image("alpine")
+            .runtime_mode(RuntimeMode::Next)
+            .build();
+        assert_eq!(config.runtime_mode, RuntimeMode::Next);
+    }
+
+    #[test]
+    fn test_runtime_mode_serde_snake_case() {
+        let json = r#"{"name": "test", "image": "alpine", "runtime_mode": "next"}"#;
+        let config: SandboxConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.runtime_mode, RuntimeMode::Next);
+
+        let json = r#"{"name": "test", "image": "alpine", "runtime_mode": "legacy"}"#;
+        let config: SandboxConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.runtime_mode, RuntimeMode::Legacy);
+    }
+
+    // ── ConsoleSpec tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_console_spec_default() {
+        let spec = ConsoleSpec::default();
+        assert_eq!(spec.stdin_fd, 0);
+        assert_eq!(spec.stdout_fd, 1);
+        assert_eq!(spec.stderr_fd, 2);
+        assert!(!spec.tty);
+    }
+
+    #[test]
+    fn test_console_spec_custom() {
+        let spec = ConsoleSpec {
+            stdin_fd: 10,
+            stdout_fd: 11,
+            stderr_fd: 12,
+            tty: true,
+        };
+        assert_eq!(spec.stdin_fd, 10);
+        assert_eq!(spec.stdout_fd, 11);
+        assert_eq!(spec.stderr_fd, 12);
+        assert!(spec.tty);
+    }
+
+    #[test]
+    fn test_console_spec_serde_roundtrip() {
+        let spec = ConsoleSpec {
+            stdin_fd: 3,
+            stdout_fd: 4,
+            stderr_fd: 5,
+            tty: true,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let deserialized: ConsoleSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.stdin_fd, 3);
+        assert_eq!(deserialized.stdout_fd, 4);
+        assert_eq!(deserialized.stderr_fd, 5);
+        assert!(deserialized.tty);
+    }
+
+    #[test]
+    fn test_console_spec_serde_default_tty() {
+        let json = r#"{"stdin_fd": 0, "stdout_fd": 1, "stderr_fd": 2}"#;
+        let spec: ConsoleSpec = serde_json::from_str(json).unwrap();
+        assert!(!spec.tty); // tty defaults to false
+    }
+
+    // ── ExtraMount tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_extra_mount_default_readonly() {
+        let mount = ExtraMount {
+            tag: "test".to_string(),
+            host_path: "/host/test".to_string(),
+            target: "/mnt/test".to_string(),
+            readonly: false,
+        };
+        assert!(!mount.readonly);
+    }
+
+    #[test]
+    fn test_extra_mount_readonly() {
+        let mount = ExtraMount {
+            tag: "config".to_string(),
+            host_path: "/host/config".to_string(),
+            target: "/mnt/config".to_string(),
+            readonly: true,
+        };
+        assert!(mount.readonly);
+    }
+
+    #[test]
+    fn test_extra_mount_serde_roundtrip() {
+        let mount = ExtraMount {
+            tag: "workspace".to_string(),
+            host_path: "/host/workspace".to_string(),
+            target: "/mnt/workspace".to_string(),
+            readonly: false,
+        };
+        let json = serde_json::to_string(&mount).unwrap();
+        let deserialized: ExtraMount = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.tag, "workspace");
+        assert_eq!(deserialized.host_path, "/host/workspace");
+        assert_eq!(deserialized.target, "/mnt/workspace");
+        assert!(!deserialized.readonly);
+    }
+
+    #[test]
+    fn test_extra_mount_serde_readonly_default() {
+        let json = r#"{"tag": "data", "host_path": "/host/data", "target": "/mnt/data"}"#;
+        let mount: ExtraMount = serde_json::from_str(json).unwrap();
+        assert_eq!(mount.host_path, "/host/data");
+        assert!(!mount.readonly); // readonly defaults to false
+    }
+
+    // ── SandboxConfig next-mode builder tests ───────────────────────────
+
+    #[test]
+    fn test_sandbox_config_next_mode_with_console() {
+        let console = ConsoleSpec {
+            stdin_fd: 10,
+            stdout_fd: 11,
+            stderr_fd: 12,
+            tty: true,
+        };
+        let config = SandboxConfig::builder()
+            .name("next-test")
+            .image("alpine")
+            .runtime_mode(RuntimeMode::Next)
+            .console(console)
+            .build();
+
+        assert_eq!(config.runtime_mode, RuntimeMode::Next);
+        assert!(config.console.is_some());
+        let c = config.console.unwrap();
+        assert_eq!(c.stdin_fd, 10);
+        assert!(c.tty);
+    }
+
+    #[test]
+    fn test_sandbox_config_next_mode_with_extra_mounts() {
+        let config = SandboxConfig::builder()
+            .name("mount-test")
+            .image("alpine")
+            .runtime_mode(RuntimeMode::Next)
+            .extra_mount("config", "/host/config", "/mnt/config", true)
+            .extra_mount("workspace", "/host/workspace", "/mnt/workspace", false)
+            .build();
+
+        assert_eq!(config.extra_mounts.len(), 2);
+        assert_eq!(config.extra_mounts[0].tag, "config");
+        assert_eq!(config.extra_mounts[0].host_path, "/host/config");
+        assert!(config.extra_mounts[0].readonly);
+        assert_eq!(config.extra_mounts[1].tag, "workspace");
+        assert_eq!(config.extra_mounts[1].host_path, "/host/workspace");
+        assert!(!config.extra_mounts[1].readonly);
+    }
+
+    #[test]
+    fn test_sandbox_config_legacy_ignores_next_fields() {
+        // Legacy mode should not set console or extra_mounts by default
+        let config = SandboxConfig::builder()
+            .name("legacy-test")
+            .image("alpine")
+            .build();
+
+        assert_eq!(config.runtime_mode, RuntimeMode::Legacy);
+        assert!(config.console.is_none());
+        assert!(config.extra_mounts.is_empty());
+    }
 }

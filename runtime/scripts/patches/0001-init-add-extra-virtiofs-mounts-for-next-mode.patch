@@ -1,0 +1,171 @@
+From 069f57e93c1c44dd84768376255e6912aed40ba3 Mon Sep 17 00:00:00 2001
+From: Jan Vaca <janvaca@Jan--MacBook-Pro.local>
+Date: Mon, 5 Oct 2026 10:50:15 +0200
+Subject: [PATCH 1/2] init: add extra virtiofs mounts for next-mode
+
+Add mount_extra_virtiofs() function that parses the KRUN_EXTRA_MOUNTS
+environment variable (JSON array of {tag, target, readonly}) and mounts
+each virtiofs tag at the specified target path. Gated behind
+KRUN_NEXT_MODE=1 so legacy behavior is unchanged.
+
+Signed-off-by: Nanosandbox Runtime <dev@nanosandbox.dev>
+---
+ src/init_blob/init/init.c | 135 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 135 insertions(+)
+
+diff --git a/src/init_blob/init/init.c b/src/init_blob/init/init.c
+index 1d61ae8..4370c62 100644
+--- a/src/init_blob/init/init.c
++++ b/src/init_blob/init/init.c
+@@ -1347,6 +1347,127 @@ close_socket:
+ }
+ #endif
+ 
++
++/* ── Next-mode: extra virtiofs mounts ──────────────────────────────────── */
++
++/*
++ * Parse KRUN_EXTRA_MOUNTS JSON array and mount each entry.
++ * Each entry: {"tag":"<tag>","target":"<path>","readonly":true|false}
++ * Returns 0 on success, -1 on error.
++ */
++static int mount_extra_virtiofs(void)
++{
++    const char *extra_mounts_env = getenv("KRUN_EXTRA_MOUNTS");
++    if (!extra_mounts_env) {
++        return 0; /* nothing to do */
++    }
++
++    jsmn_parser parser;
++    jsmntok_t tokens[256];
++    char *data;
++    int num_tokens;
++    int ret = -1;
++
++    data = strdup(extra_mounts_env);
++    if (!data) {
++        printf("mount_extra_virtiofs: strdup failed
++");
++        return -1;
++    }
++
++    jsmn_init(&parser);
++    num_tokens = jsmn_parse(&parser, data, strlen(data), tokens, 256);
++    if (num_tokens < 1 || tokens[0].type != JSMN_ARRAY) {
++        printf("mount_extra_virtiofs: KRUN_EXTRA_MOUNTS must be a JSON array
++");
++        goto cleanup;
++    }
++
++    int tok_idx = 1;
++    for (int elem = 0; elem < tokens[0].size; elem++) {
++        if (tok_idx >= num_tokens || tokens[tok_idx].type != JSMN_OBJECT) {
++            printf("mount_extra_virtiofs: expected object at element %d
++", elem);
++            goto cleanup;
++        }
++
++        char *tag = NULL;
++        char *target = NULL;
++        int readonly = 0;
++        int n_obj_tokens = tokens[tok_idx].size;
++
++        tok_idx++;
++        for (int prop = 0; prop < n_obj_tokens * 2 && tok_idx < num_tokens; prop++) {
++            if (jsoneq(data, &tokens[tok_idx], "tag") == 0) {
++                tok_idx++;
++                int len = tokens[tok_idx].end - tokens[tok_idx].start;
++                tag = strndup(data + tokens[tok_idx].start, len);
++                tok_idx++;
++            } else if (jsoneq(data, &tokens[tok_idx], "target") == 0) {
++                tok_idx++;
++                int len = tokens[tok_idx].end - tokens[tok_idx].start;
++                target = strndup(data + tokens[tok_idx].start, len);
++                tok_idx++;
++            } else if (jsoneq(data, &tokens[tok_idx], "readonly") == 0) {
++                tok_idx++;
++                int len = tokens[tok_idx].end - tokens[tok_idx].start;
++                if (len == 4 && strncmp(data + tokens[tok_idx].start, "true", 4) == 0) {
++                    readonly = 1;
++                }
++                tok_idx++;
++            } else {
++                tok_idx += 2;
++            }
++        }
++
++        if (!tag || !target) {
++            printf("mount_extra_virtiofs: mount %d missing 'tag' or 'target'
++", elem);
++            free(tag);
++            free(target);
++            goto cleanup;
++        }
++
++        if (mkdir(target, 0755) < 0 && errno != EEXIST) {
++            printf("mount_extra_virtiofs: mkdir(%s) failed: %s
++", target, strerror(errno));
++            free(tag);
++            free(target);
++            goto cleanup;
++        }
++
++        char mount_opts[4096];
++        snprintf(mount_opts, sizeof(mount_opts), "tag=%s", tag);
++
++        unsigned long mountflags = 0;
++        if (readonly) {
++            mountflags |= MS_RDONLY;
++        }
++
++        printf("Mounting virtiofs tag='%s' at '%s' (readonly=%d)
++", tag, target, readonly);
++        if (mount("virtiofs", target, "virtiofs", mountflags, mount_opts) < 0) {
++            printf("mount_extra_virtiofs: mount(%s at %s) failed: %s
++",
++                   tag, target, strerror(errno));
++            free(tag);
++            free(target);
++            goto cleanup;
++        }
++
++        printf("Mounted virtiofs '%s' at '%s'
++", tag, target);
++        free(tag);
++        free(target);
++    }
++
++    ret = 0;
++
++cleanup:
++    free(data);
++    return ret;
++}
++
+ int main(int argc, char **argv)
+ {
+     struct ifreq ifr;
+@@ -1452,6 +1573,20 @@ int main(int argc, char **argv)
+     }
+ #endif
+ 
++
++    /* ── Next-mode: extra virtiofs mounts ────────────────────────────── */
++#if __linux__
++    {
++        char *next_mode = getenv("KRUN_NEXT_MODE");
++        if (next_mode && strcmp(next_mode, "1") == 0) {
++            if (mount_extra_virtiofs() < 0) {
++                printf("Warning: extra virtiofs mounts failed (continuing)
++");
++            }
++        }
++    }
++#endif
++
+     setsid();
+     ioctl(0, TIOCSCTTY, 1);
+ 
+-- 
+2.50.1 (Apple Git-155)
+

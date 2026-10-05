@@ -2,7 +2,7 @@
 //!
 //! High-level API for creating and managing sandboxed execution environments.
 
-use crate::config::SandboxConfig;
+use crate::config::{ConsoleSpec, ExtraMount, SandboxConfig};
 use crate::error::{Error, Result};
 use crate::image::{ImageManager, PulledImage};
 use crate::oci;
@@ -235,6 +235,73 @@ impl Sandbox {
     /// Get the creation timestamp
     pub fn created_at(&self) -> DateTime<Utc> {
         self.created_at
+    }
+
+    /// Start the sandbox in next mode with console fds and extra mounts.
+    ///
+    /// This is the zero-image-customization path. The supervisor provides
+    /// console fds and extra mount specs. The VM subprocess inherits the fds.
+    pub async fn start_next(
+        &mut self,
+        console: Option<ConsoleSpec>,
+        extra_mounts: Vec<ExtraMount>,
+    ) -> Result<()> {
+        if self.status != SandboxStatus::Ready && self.status != SandboxStatus::Stopped {
+            error!(sandbox_id = %self.id, "Cannot start sandbox in {:?} state", self.status);
+            return Err(Error::InvalidState(format!(
+                "Cannot start sandbox in {:?} state",
+                self.status
+            )));
+        }
+
+        info!("Starting sandbox {} (next mode)", self.id);
+
+        let runtime = if let Some(ref rt) = self.runtime {
+            rt
+        } else {
+            self.runtime = Some(Runtime::new().await?);
+            self.runtime.as_ref().expect("runtime was just assigned")
+        };
+
+        let bundle = self
+            .bundle
+            .as_ref()
+            .ok_or_else(|| {
+                error!(sandbox_id = %self.id, "No bundle available for sandbox start");
+                Error::SandboxCreationFailed("No bundle available".to_string())
+            })?;
+
+        let create_timeout = Duration::from_secs(300);
+        let start_timeout = Duration::from_secs(600);
+
+        debug!("Creating VM via runtime");
+        timeout(
+            create_timeout,
+            runtime.create(&self.id, &self.config, Some(&bundle.path)),
+        )
+        .await
+        .map_err(|_| {
+            error!(sandbox_id = %self.id, "Sandbox VM creation timed out after 300s");
+            Error::Timeout(300)
+        })?
+        .inspect_err(|_| {
+            self.status = SandboxStatus::Error;
+        })?;
+
+        debug!("Starting VM (next mode) via runtime");
+        timeout(start_timeout, runtime.start_next(&self.id, console, extra_mounts))
+            .await
+            .map_err(|_| {
+                error!(sandbox_id = %self.id, "Sandbox VM start timed out after 600s");
+                Error::Timeout(600)
+            })?
+            .inspect_err(|_| {
+                self.status = SandboxStatus::Error;
+            })?;
+
+        self.status = SandboxStatus::Running;
+        info!("Sandbox {} is now running (next mode)", self.id);
+        Ok(())
     }
 
     /// Start the sandbox
