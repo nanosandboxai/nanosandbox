@@ -34,7 +34,7 @@ oci-client = "0.18"         # ORAS-maintained OCI distribution client
 oci-spec = "0.10"           # OCI spec types (ImageIndexEntry, Platform, etc.)
 tar = "0.4"                 # For layer extraction
 flate2 = "1"                # For gzip decompression
-sha2 = "0.10"               # For blob integrity verification
+sha2 = "0.11"               # For blob integrity verification
 docker_credential = "1.4"   # For Docker config.json parsing
 
 # Utilities

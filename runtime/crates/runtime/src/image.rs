@@ -404,12 +404,23 @@ impl ImageManager {
         })?;
 
         let mut hasher = Sha256::new();
-        std::io::copy(&mut file, &mut hasher).map_err(|e| {
-            error!("Failed to hash blob {:?}: {}", path, e);
-            Error::ImagePullFailed(format!("Hash blob: {}", e))
-        })?;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf).map_err(|e| {
+                error!("Failed to hash blob {:?}: {}", path, e);
+                Error::ImagePullFailed(format!("Hash blob: {}", e))
+            })?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
 
-        let actual_hex = format!("{:x}", hasher.finalize());
+        let actual_hex: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
         if actual_hex != expected_hex {
             error!(
                 "Blob integrity check failed: expected sha256:{}, got sha256:{}",

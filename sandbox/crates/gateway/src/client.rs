@@ -396,7 +396,7 @@ impl GatewayClient {
                 let hash = {
                     let input = format!("{session_id}:{key}");
                     let digest = Sha256::digest(input.as_bytes());
-                    format!("{digest:x}")
+                    digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
                 };
                 let path = format!("/run/secrets/files/{}", hash);
                 let escaped = sq_escape(value);

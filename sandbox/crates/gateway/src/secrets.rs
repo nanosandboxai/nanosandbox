@@ -192,7 +192,7 @@ pub struct SecretManifest {
 pub fn hash_name(session_id: &str, key_name: &str) -> String {
     let input = format!("{session_id}:{key_name}");
     let digest = Sha256::digest(input.as_bytes());
-    format!("{digest:x}")
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Write `contents` to `path` with 0400 permissions (Unix) or plain write (other).
