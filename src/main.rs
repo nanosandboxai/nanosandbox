@@ -2,7 +2,7 @@
 //!
 //! A command-line interface for managing VM-based sandboxes.
 
-mod supervisor;
+pub use nanosb_cli::supervisor;
 
 mod cli {
     use clap::{Parser, Subcommand, ValueEnum};
