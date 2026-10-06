@@ -42,6 +42,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod exec;
 pub mod image;
 pub mod oci;
 pub mod registry;

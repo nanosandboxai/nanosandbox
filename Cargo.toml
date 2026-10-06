@@ -15,6 +15,9 @@ resolver = "2"
 exclude = [
     "runtime/deps/libkrunfw",
     "runtime/deps/gvproxy",
+    # Guest-only exec agent: linux/aarch64, cross-compiled separately (its
+    # sources are gated to linux, so it must not build for the host).
+    "guest/crates/exec-agent",
 ]
 
 [workspace.package]
@@ -62,8 +65,6 @@ tracing-appender = "0.2"
 
 # TUI
 ratatui = "0.30"
-russh = "0.64"
-ssh-key = { version = "0.6", features = ["ed25519", "std"] }
 vt100 = "0.16"
 tui-term = "0.3"
 arboard = "3.6.1"

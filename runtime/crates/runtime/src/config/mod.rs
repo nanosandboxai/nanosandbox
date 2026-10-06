@@ -107,12 +107,27 @@ pub struct SandboxConfig {
     #[serde(default = "default_timeout")]
     pub timeout_secs: u32,
 
-    /// Run agent commands as root user inside the guest.
+    /// Deprecated alias for `user = "0"`; use [`SandboxConfig::user`].
+    ///
+    /// Kept for `sandbox.yml` / ABI back-compat; emits a deprecation warning.
     ///
     /// Accepts both snake_case (`run_as_root`) and camelCase (`runAsRoot`)
     /// in serialized config formats.
     #[serde(default, alias = "runAsRoot")]
     pub run_as_root: bool,
+
+    /// User to run the PID 1 command as inside the guest.
+    ///
+    /// Accepts `"UID"`, `"UID:GID"`, or a username (resolved in the guest).
+    /// When unset, the command runs as root.
+    #[serde(default)]
+    pub user: Option<String>,
+
+    /// Home directory to set for the guest command (`HOME`).
+    ///
+    /// When unset and `user` is a name, defaults to `/home/<user>`.
+    #[serde(default)]
+    pub home: Option<String>,
 
     /// Optional project mount configuration.
     #[serde(default)]
@@ -149,6 +164,16 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing)]
     pub extra_mounts: Vec<ExtraMount>,
 
+    /// Host-side unix socket path bridged to a guest vsock port (next mode).
+    ///
+    /// When set, libkrun listens on this host socket and forwards connections to
+    /// `vsock_port` inside the guest — the dedicated host↔guest exec channel.
+    #[serde(default)]
+    pub vsock_socket: Option<String>,
+
+    /// Guest vsock port the host socket is bridged to.
+    #[serde(default)]
+    pub vsock_port: Option<u32>,
 }
 
 fn default_cpus() -> u32 {
@@ -180,6 +205,8 @@ impl Default for SandboxConfig {
             workdir: default_workdir(),
             timeout_secs: default_timeout(),
             run_as_root: false,
+            user: None,
+            home: None,
             project: None,
             ssh_pubkey: None,
             command: None,
@@ -187,6 +214,8 @@ impl Default for SandboxConfig {
             runtime_mode: RuntimeMode::default(),
             console: None,
             extra_mounts: Vec::new(),
+            vsock_socket: None,
+            vsock_port: None,
         }
     }
 }
@@ -320,6 +349,18 @@ impl SandboxConfigBuilder {
         self
     }
 
+    /// Set the guest user to run the command as (`UID`, `UID:GID`, or username).
+    pub fn user(mut self, user: impl Into<String>) -> Self {
+        self.config.user = Some(user.into());
+        self
+    }
+
+    /// Set the guest home directory (`HOME`) for the command.
+    pub fn home(mut self, home: impl Into<String>) -> Self {
+        self.config.home = Some(home.into());
+        self
+    }
+
     /// Enable network access
     pub fn network_enabled(mut self, enabled: bool) -> Self {
         self.config.network.enabled = enabled;
@@ -374,6 +415,17 @@ impl SandboxConfigBuilder {
             target: target.into(),
             readonly,
         });
+        self
+    }
+
+    /// Bridge a host unix socket to a guest vsock port (next mode).
+    pub fn vsock_bridge(
+        mut self,
+        socket_path: impl Into<String>,
+        guest_port: u32,
+    ) -> Self {
+        self.config.vsock_socket = Some(socket_path.into());
+        self.config.vsock_port = Some(guest_port);
         self
     }
 

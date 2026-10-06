@@ -104,6 +104,25 @@ impl Sandbox {
         &self.inner
     }
 
+    /// Id of the underlying runtime sandbox.
+    pub fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    /// Host-side exec client for this sandbox's vsock exec channel.
+    pub fn exec_client(&self) -> runtime::exec::ExecClient {
+        let cfg = self.inner.config();
+        match cfg.vsock_socket.clone() {
+            Some(sock) => runtime::exec::ExecClient::new(sock),
+            None => runtime::exec::ExecClient::new(String::new()),
+        }
+    }
+
+    /// True when this sandbox runs in next (console/vsock) mode.
+    pub fn is_next_mode(&self) -> bool {
+        self.inner.config().runtime_mode == RuntimeMode::Next
+    }
+
     /// Get a reference to the active project mount, if any.
     pub fn project_mount(&self) -> Option<&ProjectMount> {
         self.project_mount.as_ref()

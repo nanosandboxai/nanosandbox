@@ -248,3 +248,87 @@ async fn test_next_mode_network() {
         output_str
     );
 }
+
+/// Boot a next-mode sandbox running `cmd`, with `user` set, and return console output.
+async fn run_next_with_user(name: &str, user: &str, cmd: &str) -> String {
+    use runtime::config::{ConsoleSpec, RuntimeMode};
+    use runtime::runtime::handle_boot_vm_subprocess;
+
+    if std::env::args().nth(1).as_deref() == Some("internal-boot-vm") {
+        handle_boot_vm_subprocess();
+    }
+
+    let (output_rx, output_tx) = std::os::unix::net::UnixStream::pair().unwrap();
+    let (_stderr_rx, stderr_tx) = std::os::unix::net::UnixStream::pair().unwrap();
+
+    let console = ConsoleSpec {
+        stdin_fd: 0,
+        stdout_fd: output_tx.as_raw_fd(),
+        stderr_fd: stderr_tx.as_raw_fd(),
+        tty: false,
+    };
+
+    let mut config = SandboxConfig::builder()
+        .name(name)
+        .image("alpine:latest")
+        .cpus(1)
+        .memory_mb(256)
+        .runtime_mode(RuntimeMode::Next)
+        .console(console)
+        .timeout_secs(120)
+        .user(user)
+        .build();
+
+    config.command = Some("/bin/sh".to_string());
+    config.command_args = vec!["-c".to_string(), cmd.to_string()];
+
+    let mut sandbox = runtime::Sandbox::create(config).await.unwrap();
+
+    let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let output_clone = output.clone();
+    let _handle = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut reader = std::io::BufReader::new(output_rx);
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            output_clone
+                .lock()
+                .unwrap()
+                .push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+    });
+
+    sandbox.start().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    let _ = sandbox.stop().await;
+    let _ = sandbox.destroy().await;
+
+    let out = output.lock().unwrap().clone();
+    out
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_next_mode_user_drop_numeric() {
+    let out = run_next_with_user("test-next-user-numeric", "1000", "id").await;
+    println!("console: {:?}", out);
+    assert!(
+        out.contains("uid=1000"),
+        "expected dropped uid 1000 in: {:?}",
+        out
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_next_mode_user_home_set() {
+    let out = run_next_with_user("test-next-user-home", "developer", "echo HOME=$HOME").await;
+    println!("console: {:?}", out);
+    assert!(
+        out.contains("HOME=/home/developer"),
+        "expected /home/developer in: {:?}",
+        out
+    );
+}

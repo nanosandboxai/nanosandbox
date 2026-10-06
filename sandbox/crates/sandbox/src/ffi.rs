@@ -254,6 +254,28 @@ pub extern "C" fn sandbox_exec(
     };
 
     let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    // Next mode: exec over the vsock channel (host unix socket). Legacy mode
+    // still uses the in-VM gateway.
+    if sb.inner.lock().unwrap().is_next_mode() {
+        let client = sb.inner.lock().unwrap().exec_client();
+        return match client.exec(&command, &args_refs) {
+            Ok(result) => {
+                let json = serde_json::json!({
+                    "exit_code": result.exit_code,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "duration_ms": result.duration_ms,
+                });
+                to_cstring(&json.to_string())
+            }
+            Err(e) => {
+                set_error(format!("sandbox_exec failed: {e}"));
+                ptr::null_mut()
+            }
+        };
+    }
+
     let guard = sb.inner.lock().unwrap();
 
     let gw = match guard.gateway() {
@@ -330,10 +352,35 @@ pub extern "C" fn sandbox_exec_stream(
     };
 
     let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let guard = sb.inner.lock().unwrap();
 
     // Safety: user_data is an opaque pointer managed by the caller.
     let ud = user_data as usize;
+
+    // Next mode: stream over the vsock channel. Legacy mode: the gateway.
+    if sb.inner.lock().unwrap().is_next_mode() {
+        let client = sb.inner.lock().unwrap().exec_client();
+        let mut emit = |chunk: runtime::exec::OutputChunk| {
+            let is_stderr = chunk.stream == runtime::exec::Stream::Stderr;
+            if let Ok(cstr) = CString::new(chunk.data) {
+                callback(cstr.as_ptr(), is_stderr, ud as *mut std::ffi::c_void);
+            }
+        };
+        return match client.exec_stream(
+            &command,
+            &args_refs,
+            runtime::exec::ExecOptions::default(),
+            &mut emit,
+        ) {
+            Ok(code) => code,
+            Err(e) => {
+                set_error(format!("sandbox_exec_stream failed: {e}"));
+                -1
+            }
+        };
+    }
+
+    let guard = sb.inner.lock().unwrap();
+
     let on_output = move |chunk: gateway::OutputChunk| {
         let is_stderr = chunk.stream == gateway::Stream::Stderr;
         if let Ok(cstr) = CString::new(chunk.data) {

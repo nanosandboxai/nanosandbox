@@ -65,6 +65,49 @@ impl AgentSandbox {
         &self.agent_config
     }
 
+    /// Return a host-side exec client for this sandbox (next mode).
+    ///
+    /// The sandbox must have been started with a vsock bridge
+    /// (`SandboxConfig::vsock_bridge`); otherwise the returned client reports
+    /// `NotAvailable` on use.
+    pub fn exec_client(&self) -> runtime::exec::ExecClient {
+        self.sandbox.exec_client()
+    }
+
+    /// Run a command in the sandbox, returning buffered output.
+    pub fn exec(
+        &self,
+        command: &str,
+        args: &[&str],
+    ) -> Result<runtime::exec::ExecResult> {
+        self.exec_client()
+            .exec(command, args)
+            .map_err(|e| Error::Runtime(runtime::Error::ExecFailed(e.to_string())))
+    }
+
+    /// Run a command in the sandbox with streaming output.
+    pub fn exec_stream<F>(
+        &self,
+        command: &str,
+        args: &[&str],
+        options: runtime::exec::ExecOptions,
+        on_chunk: F,
+    ) -> Result<i32>
+    where
+        F: FnMut(runtime::exec::OutputChunk),
+    {
+        self.exec_client()
+            .exec_stream(command, args, options, on_chunk)
+            .map_err(|e| Error::Runtime(runtime::Error::ExecFailed(e.to_string())))
+    }
+
+    /// Run a shell command (`/bin/sh -c`) in the sandbox.
+    pub fn shell(&self, script: &str) -> Result<runtime::exec::ExecResult> {
+        self.exec_client()
+            .exec_with(script, &[], runtime::exec::ExecOptions::new().shell(true))
+            .map_err(|e| Error::Runtime(runtime::Error::ExecFailed(e.to_string())))
+    }
+
     /// Destroy the sandbox, consuming it.
     pub async fn destroy(self) -> runtime::Result<()> {
         self.sandbox.destroy().await
