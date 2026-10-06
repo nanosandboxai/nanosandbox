@@ -1,12 +1,9 @@
 //! Event system for the TUI.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event as CrosstermEvent};
-use tokio::sync::{mpsc, Mutex};
-
-use sandbox::Sandbox;
+use tokio::sync::mpsc;
 
 /// Events that the TUI application can handle.
 pub enum AppEvent {
@@ -20,17 +17,6 @@ pub enum AppEvent {
         panel_idx: usize,
         /// Human-readable status message.
         message: String,
-    },
-    /// Sandbox successfully created and started.
-    SandboxReady {
-        /// Panel index.
-        panel_idx: usize,
-        /// Shared sandbox handle.
-        sandbox: Arc<Mutex<Sandbox>>,
-        /// Short sandbox identifier for display.
-        short_id: String,
-        /// Project mount transferred from the sandbox (if any).
-        project_mount: Option<sandbox::ProjectMount>,
     },
     /// Sandbox creation or startup failed.
     SandboxFailed {
@@ -68,6 +54,8 @@ pub enum AppEvent {
         name: String,
         /// Short identifier for display.
         short_id: String,
+        /// Host-side project mount for gitsync / edit, if a project is set.
+        project_mount: Option<sandbox::ProjectMount>,
     },
     /// Open a TUI tool (suspend terminal, launch tool, resume on exit).
     OpenTuiTool {
@@ -111,7 +99,10 @@ pub fn spawn_terminal_event_reader(tx: mpsc::UnboundedSender<AppEvent>) {
                 let mut batch: Vec<CrosstermEvent> = Vec::new();
 
                 let has_first = match event::read() {
-                    Ok(evt) => { batch.push(evt); true }
+                    Ok(evt) => {
+                        batch.push(evt);
+                        true
+                    }
                     Err(_) => false,
                 };
 
@@ -143,4 +134,3 @@ pub fn spawn_terminal_event_reader(tx: mpsc::UnboundedSender<AppEvent>) {
         }
     });
 }
-

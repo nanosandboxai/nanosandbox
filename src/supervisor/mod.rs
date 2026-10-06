@@ -53,9 +53,6 @@ const LOG_ROTATION_COUNT: u32 = 3;
 /// In-memory scrollback ring buffer capacity (in bytes).
 const SCROLLBACK_CAPACITY: usize = 256 * 1024; // 256 KB
 
-/// Default sandbox timeout (seconds).
-const DEFAULT_TIMEOUT_SECS: u64 = 3600;
-
 /// Control socket protocol version.
 const PROTOCOL_VERSION: &str = "0.1.0";
 
@@ -303,6 +300,19 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         }
     };
 
+    // Merge the boot env delivered out-of-band via the process environment
+    // (secrets are never written to config.json/deploy.json or the argv), then
+    // clear it so it is not inherited by the VM subprocess.
+    let mut config = config;
+    if let Ok(boot_env_json) = std::env::var("NANOSB_BOOT_ENV") {
+        if let Ok(extra) = serde_json::from_str::<std::collections::HashMap<String, String>>(
+            &boot_env_json,
+        ) {
+            config.env.extend(extra);
+        }
+        std::env::remove_var("NANOSB_BOOT_ENV");
+    }
+
     // Parse extra mounts
     let extra_mounts: Vec<ExtraMount> =
         serde_json::from_str(&args.extra_mounts_json).unwrap_or_default();
@@ -452,7 +462,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         }
     };
 
-    let mut vm_threads = vec![
+    let vm_threads = vec![
         spawn_output_reader(
             stdout_read,
             running.clone(),

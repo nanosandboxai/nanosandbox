@@ -51,3 +51,4 @@ RUN mkdir -p /home/developer/.config/goose \
     && chown -R developer:developer /home/developer
 
 WORKDIR /workspace
+RUN chown -R developer:developer /workspace

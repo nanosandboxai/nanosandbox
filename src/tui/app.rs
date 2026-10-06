@@ -1,7 +1,6 @@
 //! Application state for the TUI.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -267,15 +266,25 @@ pub enum SubmitResult {
     NoPanel,
 }
 
+/// Which runtime backend is backing a panel.
+///
+/// During the supervisor migration both variants exist: `Supervisor` is the
+/// zero-image-customization path (detached supervisor + console stream), and
+/// `Legacy` is the old in-VM gateway/SSH path kept only while the TUI is
+/// migrated. `Legacy` is removed once all spawn sites route through
+/// `spawn_supervisor_panel` (plan Phase T2/T5).
+pub enum PanelBackend {
+    Supervisor { name: String },
+    Legacy { sandbox: Arc<Mutex<Sandbox>> },
+}
+
 /// State for a single agent panel.
 pub struct AgentPanel {
     /// Agent type key (e.g. "claude", "codex") — used for CLI command resolution.
     pub agent_name: String,
     /// Display name shown in panel title. Falls back to agent_name if not set.
     pub display_name: Option<String>,
-    /// The sandbox instance backing this agent, wrapped in Arc<Mutex<>> for
-    /// shared access between the event loop and background streaming tasks.
-    pub sandbox: Option<Arc<Mutex<Sandbox>>>,
+    pub backend: Option<PanelBackend>,
     /// Chat history for this panel (kept for /copy, but not rendered in panels).
     pub chat_history: Vec<ChatMessage>,
     /// Current input buffer with cursor tracking and multiline support.
@@ -313,18 +322,6 @@ pub struct AgentPanel {
     /// Per-panel sync override. Takes priority over global settings.
     /// None = use global, Some(true) = force on, Some(false) = force off.
     pub sync_override: Option<bool>,
-    /// SSH host port for port forwarding (stored from SandboxReady).
-    pub ssh_host_port: Option<u16>,
-    /// SSH host/IP used to reach the guest (e.g. 127.0.0.1 or HCN guest IP).
-    pub ssh_host: Option<String>,
-    /// SSH private key path for port forwarding (stored from SandboxReady).
-    pub ssh_key_path: Option<PathBuf>,
-    /// Name of the supervised sandbox this panel is attached to (console mode).
-    pub supervisor_name: Option<String>,
-    /// Guest ports with active SSH local-port-forwards (`ssh -L`).
-    pub forwarded_ports: HashSet<u16>,
-    /// SSH port-forward child processes (killed on panel close).
-    pub port_forward_children: Vec<std::process::Child>,
     /// Animation tick counter for the loading border sweep.
     pub loading_tick: u16,
     /// Human-readable progress message shown below the logo during loading.
@@ -365,7 +362,7 @@ impl AgentPanel {
         Self {
             agent_name: agent_name.to_string(),
             display_name: None,
-            sandbox: None,
+            backend: None,
             chat_history: Vec::new(),
             input: TextInput::new(),
             sandbox_id_short: String::new(),
@@ -382,12 +379,6 @@ impl AgentPanel {
             last_known_head: None,
             base_commit: None,
             sync_override: None,
-            ssh_host_port: None,
-            ssh_host: None,
-            ssh_key_path: None,
-            supervisor_name: None,
-            forwarded_ports: HashSet::new(),
-            port_forward_children: Vec::new(),
             loading_tick: 0,
             loading_message: None,
             loading_error: None,
@@ -404,6 +395,45 @@ impl AgentPanel {
             selected_agent_session_id: None,
             notification: None,
         }
+    }
+
+    pub fn sandbox(&self) -> Option<&Arc<Mutex<Sandbox>>> {
+        match &self.backend {
+            Some(PanelBackend::Legacy { sandbox }) => Some(sandbox),
+            _ => None,
+        }
+    }
+
+    pub fn sandbox_mut(&mut self) -> Option<&mut Arc<Mutex<Sandbox>>> {
+        match &mut self.backend {
+            Some(PanelBackend::Legacy { sandbox }) => Some(sandbox),
+            _ => None,
+        }
+    }
+
+    pub fn take_sandbox(&mut self) -> Option<Arc<Mutex<Sandbox>>> {
+        match self.backend.take() {
+            Some(PanelBackend::Legacy { sandbox }) => Some(sandbox),
+            other => {
+                self.backend = other;
+                None
+            }
+        }
+    }
+
+    pub fn set_sandbox(&mut self, sandbox: Arc<Mutex<Sandbox>>) {
+        self.backend = Some(PanelBackend::Legacy { sandbox });
+    }
+
+    pub fn supervisor_name(&self) -> Option<&str> {
+        match &self.backend {
+            Some(PanelBackend::Supervisor { name }) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn set_supervisor(&mut self, name: String) {
+        self.backend = Some(PanelBackend::Supervisor { name });
     }
 }
 

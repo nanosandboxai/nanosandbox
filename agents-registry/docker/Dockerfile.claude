@@ -9,4 +9,7 @@ RUN npm install -g @anthropic-ai/claude-code \
 RUN claude --version && echo "Claude Code: OK"
 RUN rm -rf /workspace/*
 
+# Agents refuse --dangerously-skip-permissions as root; the microVM is the boundary.
+USER developer
+
 CMD ["claude"]

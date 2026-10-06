@@ -1,17 +1,15 @@
 //! Main event loop for the TUI.
 
 use std::collections::HashMap;
-use base64::Engine;
 use std::io::{self, IsTerminal};
 use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
-    Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-    MouseButton, MouseEvent, MouseEventKind,
-    EnableMouseCapture, DisableMouseCapture,
-    EnableBracketedPaste, DisableBracketedPaste,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -21,8 +19,8 @@ use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::{mpsc, Mutex};
 
-use sandbox::{AgentSandboxConfig, SandboxConfig};
 use sandbox::Sandbox;
+use sandbox::{AgentSandboxConfig, SandboxConfig};
 
 use super::app::{
     AgentPanel, App, ChatMessage, InputFocus, MessageRole, MouseSelection, PanelMode,
@@ -56,7 +54,9 @@ mod stderr_redirect {
 
     pub fn restore(saved: SavedStderr) {
         if saved >= 0 {
-            unsafe { libc::dup2(saved, libc::STDERR_FILENO); }
+            unsafe {
+                libc::dup2(saved, libc::STDERR_FILENO);
+            }
         }
     }
 
@@ -165,7 +165,10 @@ pub async fn run_tui(
                 if let Some(session) = sandbox::session::Session::load_by_id(pp, session_id) {
                     let issues = session.validate();
                     if issues.iter().any(|i| !i.recoverable) {
-                        eprintln!("Session '{}' has unrecoverable issues. Starting fresh.", session_id);
+                        eprintln!(
+                            "Session '{}' has unrecoverable issues. Starting fresh.",
+                            session_id
+                        );
                         for issue in issues {
                             eprintln!("  - {}", issue);
                         }
@@ -182,7 +185,10 @@ pub async fn run_tui(
                         (Some(session), Some(session_id.clone()))
                     }
                 } else {
-                    eprintln!("Session '{}' not found for this project. Starting fresh.", session_id);
+                    eprintln!(
+                        "Session '{}' not found for this project. Starting fresh.",
+                        session_id
+                    );
                     let available: Vec<String> = sandbox::session::Session::list(pp)
                         .into_iter()
                         .map(|entry| entry.id)
@@ -212,7 +218,13 @@ pub async fn run_tui(
     // Set up terminal.
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, SetCursorStyle::SteadyBar)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        SetCursorStyle::SteadyBar
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -222,7 +234,13 @@ pub async fn run_tui(
     let saved_stderr_for_hook = saved_stderr;
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), SetCursorStyle::DefaultUserShape, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            SetCursorStyle::DefaultUserShape,
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         // Restore stderr so the panic message is visible.
         stderr_redirect::restore(saved_stderr_for_hook);
         original_hook(info);
@@ -316,20 +334,22 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
             AppEvent::Terminal(crossterm_event) => {
                 match crossterm_event {
                     CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-
                         // Ctrl+C with active selection → copy to clipboard
                         // instead of forwarding/clearing.
                         if key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL)
-                            && app.mouse_selection.as_ref().is_some_and(|s| !s.dragging && s.start != s.end)
+                            && app
+                                .mouse_selection
+                                .as_ref()
+                                .is_some_and(|s| !s.dragging && s.start != s.end)
                         {
                             if let Some(sel) = app.mouse_selection.as_ref() {
                                 let (start, end) = sel.normalized();
                                 if let Some(panel) = app.panels.get(sel.panel_idx) {
                                     if let Some(ref term) = panel.terminal {
-                                        let text = term.screen().contents_between(
-                                            start.0, start.1, end.0, end.1,
-                                        );
+                                        let text = term
+                                            .screen()
+                                            .contents_between(start.0, start.1, end.0, end.1);
                                         if !text.is_empty() {
                                             let _ = copy_to_clipboard(&text);
                                             app.set_status_message(format!(
@@ -366,8 +386,7 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                         // render_panel() detects the delta and propagates
                         // to vt100 parser + SSH PTY.
                     }
-                    CrosstermEvent::FocusGained => {
-                    }
+                    CrosstermEvent::FocusGained => {}
                     CrosstermEvent::FocusLost => {}
                 }
             }
@@ -376,130 +395,19 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                     panel.loading_message = Some(message);
                 }
             }
-            AppEvent::SandboxReady { panel_idx, sandbox, short_id, project_mount } => {
-                // Get SSH info before storing sandbox
-                let (ssh_info, ssh_host_override) = {
-                    let sb = sandbox.lock().await;
-                    (sb.ssh_port().zip(sb.ssh_key_path()), sb.ssh_host())
-                };
-
+            AppEvent::SupervisorReady {
+                panel_idx,
+                name,
+                short_id,
+                project_mount,
+            } => {
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.sandbox = Some(sandbox.clone());
-                    panel.sandbox_id_short = short_id.clone();
-                    panel.loading_message = Some("Connecting...".into());
-                    // Only set project_mount from sandbox if the panel doesn't
-                    // already have one (resumed sessions set it up front).
+                    panel.backend = None;
+                    panel.set_supervisor(name.clone());
+                    panel.sandbox_id_short = short_id;
                     if project_mount.is_some() {
                         panel.project_mount = project_mount;
                     }
-                    // Store SSH info for later port forwarding (ssh -L).
-                    if let Some((port, ref key)) = ssh_info {
-                        panel.ssh_host_port = Some(port);
-                        panel.ssh_host = Some(
-                            ssh_host_override.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
-                        );
-                        panel.ssh_key_path = Some(key.clone());
-                    }
-                }
-
-                let is_auto_mode = app.panels.get(panel_idx)
-                    .map(|p| p.auto_mode)
-                    .unwrap_or(false);
-
-                if is_auto_mode {
-                    // Auto-mode: use gateway exec (same as `nanosb exec`).
-                    // No SSH needed — runs command via the gateway transport.
-                    if let Some(panel) = app.panels.get(panel_idx) {
-                        let agent_name = panel.agent_name.clone();
-                        // Gateway merges secrets automatically — just pass panel env.
-                        let env = panel.env.clone();
-                        let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
-                        let permissions = panel.permissions;
-                        let prompt = panel.headless_state.as_ref().map(|h| h.task.clone());
-                        let is_resumed = panel.is_resumed;
-                        let selected_agent_session_id = panel.selected_agent_session_id.clone();
-                        let model = panel.model.clone();
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            spawn_gateway_exec(
-                                sandbox, &agent_name, &env,
-                                workdir.as_deref(), permissions,
-                                prompt.as_deref(), is_resumed,
-                                selected_agent_session_id.as_deref(), model.as_deref(), panel_idx, tx,
-                            ).await;
-                        });
-                    }
-                } else if let Some((ssh_port, key_path)) = ssh_info {
-                    // Interactive mode: SSH with PTY for terminal access.
-                    let (pty_cols, pty_rows) = {
-                        let term_size = ratatui::crossterm::terminal::size()
-                            .unwrap_or((160, 40));
-                        let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
-                        super::grid::estimate_panel_inner_size(
-                            term_size.0,
-                            term_size.1,
-                            app.visible_panel_count(),
-                            has_sidebar,
-                            app.zoomed,
-                        )
-                    };
-                    if let Some(panel) = app.panels.get(panel_idx) {
-                        let agent_name = panel.agent_name.clone();
-                        // Gateway merges secrets automatically — just pass panel env.
-                        let env = panel.env.clone();
-                        let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
-                        let permissions = panel.permissions;
-                        let prompt = panel.headless_state.as_ref().map(|h| h.task.clone());
-                        let is_resumed = panel.is_resumed;
-                        let had_interaction = panel.had_interaction;
-                        let selected_agent_session_id = panel.selected_agent_session_id.clone();
-                        let model = panel.model.clone();
-                        let ssh_host = ssh_host_override.clone().unwrap_or_else(|| "127.0.0.1".to_string());
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            // Retry SSH connection — on Windows the network path can
-                            // take time to be ready after VM boot.
-                            let max_attempts = 10;
-                            let mut last_err = String::new();
-                            for attempt in 1..=max_attempts {
-                                let delay = if attempt == 1 { 500 } else { 1000 };
-                                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                                match super::terminal::connect_ssh(
-                                    ssh_host.clone(), ssh_port, key_path.clone(),
-                                    pty_cols, pty_rows,
-                                    &agent_name, &env, workdir.as_deref(),
-                                    permissions, false, prompt.as_deref(),
-                                    is_resumed, had_interaction,
-                                    selected_agent_session_id.as_deref(), model.as_deref(), panel_idx, tx.clone(),
-                                ).await {
-                                    Ok(handle) => {
-                                        let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
-                                        return;
-                                    }
-                                    Err(e) => {
-                                        last_err = e.to_string();
-                                        if attempt < max_attempts {
-                                            tracing::debug!(
-                                                "SSH connect attempt {}/{} failed: {}, retrying...",
-                                                attempt, max_attempts, last_err
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            let _ = tx.send(AppEvent::SshDisconnected {
-                                panel_idx,
-                                error: Some(format!("SSH connect failed after {} attempts: {}", max_attempts, last_err)),
-                            });
-                        });
-                    }
-                }
-            }
-            AppEvent::SupervisorReady { panel_idx, name, short_id } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.sandbox = None;
-                    panel.supervisor_name = Some(name.clone());
-                    panel.sandbox_id_short = short_id;
                     panel.loading_message = Some("Attaching to supervised sandbox...".into());
                     panel.mode = PanelMode::Loading;
                 }
@@ -582,7 +490,11 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
             AppEvent::TerminalData { panel_idx, data } => {
                 // Clear selection if terminal content changes in the selected panel
                 // (but not while user is actively dragging).
-                if app.mouse_selection.as_ref().is_some_and(|s| s.panel_idx == panel_idx && !s.dragging) {
+                if app
+                    .mouse_selection
+                    .as_ref()
+                    .is_some_and(|s| s.panel_idx == panel_idx && !s.dragging)
+                {
                     app.mouse_selection = None;
                 }
                 if let Some(panel) = app.panels.get_mut(panel_idx) {
@@ -595,21 +507,22 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                         if let Some(ref mut term) = panel.terminal {
                             term.process_bytes(&data);
 
-                            let urls =
-                                super::terminal::extract_urls_from_screen(term.screen());
+                            let urls = super::terminal::extract_urls_from_screen(term.screen());
                             let now = std::time::Instant::now();
                             for url in urls {
                                 if !super::terminal::is_auth_url(&url) {
                                     continue;
                                 }
-                                if !url.contains('?') && !super::terminal::is_device_code_url(&url) {
+                                if !url.contains('?') && !super::terminal::is_device_code_url(&url)
+                                {
                                     continue;
                                 }
                                 let key = super::terminal::url_dedup_key(&url);
                                 if panel.opened_urls.contains(&key) {
                                     continue;
                                 }
-                                panel.pending_urls
+                                panel
+                                    .pending_urls
                                     .entry(key)
                                     .and_modify(|(existing_url, ts)| {
                                         if url.len() > existing_url.len() {
@@ -629,8 +542,7 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                         // rejects those broken URLs.  The first clean read is
                         // buffered for 2s (keeping the longest per host+path),
                         // then opened once.
-                        let urls =
-                            super::terminal::extract_urls_from_screen(term.screen());
+                        let urls = super::terminal::extract_urls_from_screen(term.screen());
                         let now = std::time::Instant::now();
                         for url in urls {
                             if !super::terminal::is_auth_url(&url) {
@@ -651,7 +563,8 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                             // Keep the longest valid URL seen for each dedup key.
                             // Reset the debounce timer when the URL grows so we
                             // wait for the screen to stabilise after a re-render.
-                            panel.pending_urls
+                            panel
+                                .pending_urls
                                 .entry(key)
                                 .and_modify(|(existing_url, ts)| {
                                     if url.len() > existing_url.len() {
@@ -663,13 +576,13 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                         }
                     }
                 }
-
             }
             AppEvent::SshDisconnected { panel_idx, error } => {
                 // Check if this is a reconnect attempt that failed.
-                let is_reconnecting = app.panels.get(panel_idx)
-                    .is_some_and(|p| p.reconnecting);
-                let is_headless = app.panels.get(panel_idx)
+                let is_reconnecting = app.panels.get(panel_idx).is_some_and(|p| p.reconnecting);
+                let is_headless = app
+                    .panels
+                    .get(panel_idx)
                     .is_some_and(|p| p.mode == PanelMode::Headless);
 
                 if is_reconnecting {
@@ -711,9 +624,14 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                     }
                 } else {
                     // Genuine disconnect: kill sandbox and close panel.
-                    if let Some((name, sandbox_arc)) = kill_panel_at(&mut app, panel_idx) {
+                    if let Some((name, sandbox_arc, supervisor_name)) =
+                        kill_panel_at(&mut app, panel_idx)
+                    {
                         if let Some(sb) = sandbox_arc {
                             spawn_sandbox_destroy(sb);
+                        }
+                        if let Some(sname) = supervisor_name {
+                            spawn_supervisor_stop(sname);
                         }
 
                         let msg = if let Some(err) = error {
@@ -757,108 +675,8 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                                 panel = %panel.agent_name,
                                 dedup_key = %key,
                                 url = %url,
-                                ssh_host = ?panel.ssh_host,
-                                ssh_port = ?panel.ssh_host_port,
-                                "Auth URL debounce elapsed; preparing open/forward"
+                                "Auth URL debounce elapsed; opening in host browser"
                             );
-                            // Forward OAuth callback port via SSH local-port-forward.
-                            // The agent's callback server listens on 127.0.0.1 inside
-                            // the VM. gvproxy expose_port sends traffic to the VM's
-                            // network interface (192.168.127.2), which the server
-                            // doesn't bind to. SSH -L tunnels to guest localhost.
-                            if let Some(port) =
-                                super::terminal::extract_oauth_callback_port(&url)
-                            {
-                                if !panel.forwarded_ports.contains(&port) {
-                                    if let (Some(ssh_port), Some(ref key_path)) =
-                                        (panel.ssh_host_port, &panel.ssh_key_path)
-                                    {
-                                        let fwd = format!(
-                                            "{}:127.0.0.1:{}",
-                                            port, port
-                                        );
-                                        let ssh_host = panel
-                                            .ssh_host
-                                            .as_deref()
-                                            .unwrap_or("127.0.0.1");
-                                        let ssh_dest = format!("root@{}", ssh_host);
-                                        match std::process::Command::new("ssh")
-                                            .args([
-                                                "-L", &fwd,
-                                                "-p", &ssh_port.to_string(),
-                                                "-i",
-                                                &key_path.to_string_lossy().as_ref(),
-                                                "-o", "BatchMode=yes",
-                                                "-o", "ExitOnForwardFailure=yes",
-                                                "-o", "StrictHostKeyChecking=no",
-                                                "-o", if cfg!(unix) { "UserKnownHostsFile=/dev/null" } else { "UserKnownHostsFile=NUL" },
-                                                "-o", "LogLevel=ERROR",
-                                                "-N",
-                                                &ssh_dest,
-                                            ])
-                                            .stdin(std::process::Stdio::null())
-                                            .stdout(std::process::Stdio::null())
-                                            .stderr(std::process::Stdio::piped())
-                                            .spawn()
-                                        {
-                                            Ok(mut child) => {
-                                                if let Some(stderr) = child.stderr.take() {
-                                                    let panel_name = panel.agent_name.clone();
-                                                    std::thread::spawn(move || {
-                                                        use std::io::BufRead;
-                                                        let reader = std::io::BufReader::new(stderr);
-                                                        for line in reader.lines() {
-                                                            match line {
-                                                                Ok(line) => tracing::debug!(
-                                                                    panel = %panel_name,
-                                                                    callback_port = port,
-                                                                    line = %line,
-                                                                    "OAuth callback SSH forward stderr"
-                                                                ),
-                                                                Err(e) => {
-                                                                    tracing::debug!(
-                                                                        panel = %panel_name,
-                                                                        callback_port = port,
-                                                                        error = %e,
-                                                                        "OAuth callback SSH forward stderr reader ended"
-                                                                    );
-                                                                    break;
-                                                                }
-                                                            }
-                                                        }
-                                                    });
-                                                }
-
-                                                tracing::debug!(
-                                                    panel = %panel.agent_name,
-                                                    callback_port = port,
-                                                    ssh_dest = %ssh_dest,
-                                                    ssh_port,
-                                                    "Started OAuth callback SSH port-forward"
-                                                );
-                                                panel.forwarded_ports.insert(port);
-                                                panel.port_forward_children.push(child);
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    panel = %panel.agent_name,
-                                                    callback_port = port,
-                                                    ssh_dest = %ssh_dest,
-                                                    ssh_port,
-                                                    error = %e,
-                                                    "Failed to start OAuth callback SSH port-forward"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                tracing::debug!(
-                                    panel = %panel.agent_name,
-                                    url = %url,
-                                    "Auth URL does not contain localhost redirect port; skipping callback forward"
-                                );
-                            }
                             panel.opened_urls.insert(key);
                             tracing::debug!(
                                 panel = %panel.agent_name,
@@ -908,7 +726,12 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
             AppEvent::OpenTuiTool { binary, path } => {
                 // Suspend TUI: leave alternate screen, disable raw mode
                 let _ = disable_raw_mode();
-                let _ = execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape, DisableMouseCapture, LeaveAlternateScreen);
+                let _ = execute!(
+                    terminal.backend_mut(),
+                    SetCursorStyle::DefaultUserShape,
+                    DisableMouseCapture,
+                    LeaveAlternateScreen
+                );
 
                 // Restore stderr so the tool can use it
                 stderr_redirect::restore(saved_stderr);
@@ -917,10 +740,18 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                 let path_str = path.to_string_lossy().to_string();
                 let mut cmd = std::process::Command::new(&binary);
                 match binary.as_str() {
-                    "gitui" => { cmd.args(["-d", &path_str]); }
-                    "lazygit" => { cmd.args(["-p", &path_str]); }
-                    "tig" => { cmd.current_dir(&path); }
-                    _ => { cmd.arg(&path); }
+                    "gitui" => {
+                        cmd.args(["-d", &path_str]);
+                    }
+                    "lazygit" => {
+                        cmd.args(["-p", &path_str]);
+                    }
+                    "tig" => {
+                        cmd.current_dir(&path);
+                    }
+                    _ => {
+                        cmd.arg(&path);
+                    }
                 };
                 // Block until tool exits
                 let _ = cmd.status();
@@ -930,10 +761,19 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
 
                 // Resume TUI: enter alternate screen, enable raw mode
                 let _ = enable_raw_mode();
-                let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, SetCursorStyle::SteadyBar);
+                let _ = execute!(
+                    terminal.backend_mut(),
+                    EnterAlternateScreen,
+                    EnableMouseCapture,
+                    EnableBracketedPaste,
+                    SetCursorStyle::SteadyBar
+                );
                 terminal.clear()?;
             }
-            AppEvent::UploadStarted { panel_idx, filename } => {
+            AppEvent::UploadStarted {
+                panel_idx,
+                filename,
+            } => {
                 let msg = format!("Uploading {}...", filename);
                 // Show immediately; stays until replaced by Complete/Failed.
                 // 120 ticks × 250ms = 30s (generous timeout, replaced on completion).
@@ -941,7 +781,12 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                     panel.notification = Some((msg, false, 120));
                 }
             }
-            AppEvent::UploadComplete { panel_idx, filename, remote_path, size } => {
+            AppEvent::UploadComplete {
+                panel_idx,
+                filename,
+                remote_path,
+                size,
+            } => {
                 let msg = format!(
                     "Uploaded {} ({}) -> {}",
                     filename,
@@ -973,7 +818,13 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
 
     // Restore terminal before cleanup so the user sees progress messages.
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        SetCursorStyle::DefaultUserShape,
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     // Restore stderr so cleanup log messages are visible.
@@ -983,48 +834,7 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
     // Suspend when: project is mounted AND /quit (not /destroy).
     let should_suspend = app.project_path.is_some() && !app.destroy_on_quit;
 
-    // Kill SSH port-forward processes in all cases.
-    for panel in &mut app.panels {
-        for child in &mut panel.port_forward_children {
-            let _ = child.kill();
-        }
-    }
-
     if should_suspend {
-        // Best-effort flush: ask each guest to sync filesystem buffers before
-        // host-side suspend/auto-commit reads the clone directories.
-        eprintln!("Syncing guest filesystems...");
-        for (panel_idx, panel) in app.panels.iter().enumerate() {
-            let Some(sb_arc) = panel.sandbox.as_ref() else {
-                continue;
-            };
-
-            let sync_result = {
-                let sb = sb_arc.lock().await;
-                match (**sb).gateway() {
-                    Ok(gw) => tokio::time::timeout(Duration::from_secs(4), gw.exec("sync", &[])).await,
-                    Err(_) => continue,
-                }
-            };
-
-            match sync_result {
-                Ok(Ok(result)) if result.exit_code == 0 => {}
-                Ok(Ok(result)) => {
-                    eprintln!(
-                        "Warning: panel {} sync exited with code {}",
-                        panel_idx + 1,
-                        result.exit_code
-                    );
-                }
-                Ok(Err(e)) => {
-                    eprintln!("Warning: panel {} sync failed: {}", panel_idx + 1, e);
-                }
-                Err(_) => {
-                    eprintln!("Warning: panel {} sync timed out", panel_idx + 1);
-                }
-            }
-        }
-
         // Suspend session: auto-commit + sync but keep clones alive.
         eprintln!("Suspending session...");
         for panel in &mut app.panels {
@@ -1074,17 +884,13 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
     }
 
     // Stop/destroy all sandbox VMs.
-    let sandbox_count = app
-        .panels
-        .iter()
-        .filter(|p| p.sandbox.is_some())
-        .count();
+    let sandbox_count = app.panels.iter().filter(|p| p.sandbox().is_some()).count();
     if sandbox_count > 0 {
         eprintln!("Shutting down {} sandbox(es)...", sandbox_count);
 
         let mut handles = Vec::new();
         for panel in &mut app.panels {
-            if let Some(sb_arc) = panel.sandbox.take() {
+            if let Some(sb_arc) = panel.take_sandbox() {
                 handles.push(tokio::spawn(async move {
                     match Arc::try_unwrap(sb_arc) {
                         Ok(mutex) => {
@@ -1118,139 +924,6 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
     Ok(())
 }
 
-/// Run an agent command via the gateway exec endpoint (no SSH).
-///
-/// Used for auto-mode: sends the agent command to the guest gateway over
-/// TCP and streams NDJSON output back to the TUI as `TerminalData` events
-/// for the headless parser.
-async fn spawn_gateway_exec(
-    sandbox: Arc<Mutex<Sandbox>>,
-    agent_name: &str,
-    env: &HashMap<String, String>,
-    workdir: Option<&str>,
-    permissions: sandbox::Permissions,
-    prompt: Option<&str>,
-    is_resumed: bool,
-    selected_agent_session_id: Option<&str>,
-    model: Option<&str>,
-    panel_idx: usize,
-    tx: mpsc::UnboundedSender<AppEvent>,
-) {
-    let agent_cmd = super::terminal::agent_cli_command_with_session(
-        agent_name,
-        permissions,
-        true,
-        is_resumed,
-        selected_agent_session_id,
-        model,
-        true, // auto_mode always has provider context or fails naturally
-    );
-    let cmd = match agent_cmd {
-        Some(c) => c,
-        None => {
-            let _ = tx.send(AppEvent::SshDisconnected {
-                panel_idx,
-                error: Some("No agent command for gateway exec".to_string()),
-            });
-            return;
-        }
-    };
-
-    // Build environment map — panel env + agent-specific vars.
-    // Secrets are injected by the gateway automatically via exec_with_options.
-    let mut exec_env: HashMap<String, String> = env
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    exec_env.extend(super::terminal::agent_env_vars(
-        agent_name, permissions, true, model, prompt,
-    ));
-
-    // Wrap in `script -qfc` for PTY allocation (forces line-buffered output
-    // from Node.js/Rust CLIs that default to full buffering without a TTY).
-    let escaped_cmd = cmd.replace('"', "\\\"");
-    let shell_cmd = format!("script -qfc \"{}\" /dev/null", escaped_cmd);
-    tracing::info!(
-        "[spawn_gateway_exec] agent={} auto=true resumed={} cmd={:?}",
-        agent_name, is_resumed, cmd,
-    );
-    tracing::info!("[spawn_gateway_exec] shell_cmd={:?}", shell_cmd);
-
-    let exec_opts = sandbox::ExecOptions {
-        workdir: workdir.map(|s| s.to_string()),
-        env: exec_env,
-        user: None,
-        timeout_secs: Some(86400), // 24h for long-running agent tasks
-    };
-
-    // Transition panel to Headless mode with a no-op handle.
-    let handle = super::terminal::SshTerminalHandle::noop();
-    let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
-
-    let exec_result = {
-        let sb = sandbox.lock().await;
-        // Verify sandbox is running
-        if sb.status() != sandbox::SandboxStatus::Running {
-            let _ = tx.send(AppEvent::SshDisconnected {
-                panel_idx,
-                error: Some("Sandbox not ready for exec".to_string()),
-            });
-            return;
-        }
-        // The on_output callback sends TerminalData events.
-        let tx_data = tx.clone();
-        let chunk_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let chunk_counter_cb = chunk_counter.clone();
-        let gw_result = match sb.gateway() {
-            Ok(gw) => gw.exec_stream_with_options(
-                "sh",
-                &["-c", &shell_cmd],
-                exec_opts,
-                move |chunk| {
-                    // Gateway SSE events don't include trailing newlines, but the
-                    // headless NDJSON parser splits on \n. Append newline to each
-                    // chunk (same as `nanosb exec` in main.rs).
-                    let n = chunk_counter_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    if n == 1 || n % 20 == 0 {
-                        let preview: String = chunk.data.chars().take(200).collect();
-                        tracing::info!(
-                            "[spawn_gateway_exec] chunk #{} (stream={:?}): {}",
-                            n, chunk.stream, preview
-                        );
-                    }
-                    let mut data = chunk.data.into_bytes();
-                    data.push(b'\n');
-                    let _ = tx_data.send(AppEvent::TerminalData {
-                        panel_idx,
-                        data,
-                    });
-                },
-            ).await,
-            Err(e) => Err(e),
-        };
-        gw_result
-    };
-
-    match exec_result {
-        Ok(exit_code) => {
-            let _ = tx.send(AppEvent::SshDisconnected {
-                panel_idx,
-                error: if exit_code != 0 {
-                    Some(format!("Agent exited with code {}", exit_code))
-                } else {
-                    None
-                },
-            });
-        }
-        Err(e) => {
-            let _ = tx.send(AppEvent::SshDisconnected {
-                panel_idx,
-                error: Some(format!("Gateway exec failed: {}", e)),
-            });
-        }
-    }
-}
-
 /// Print validation results as a checklist.
 fn print_validation_results(validation: &sandbox::validation::ValidationResult) {
     for err in &validation.errors {
@@ -1266,7 +939,12 @@ fn print_validation_results(validation: &sandbox::validation::ValidationResult) 
     // Show passed checks
     #[cfg(target_os = "macos")]
     {
-        let checks = ["Architecture", "libkrun Library", "Hypervisor.framework", "gvproxy"];
+        let checks = [
+            "Architecture",
+            "libkrun Library",
+            "Hypervisor.framework",
+            "gvproxy",
+        ];
         for name in &checks {
             let failed = validation.errors.iter().any(|e| e.check == *name);
             let warned = validation.warnings.iter().any(|w| w.contains(name));
@@ -1290,7 +968,10 @@ fn print_validation_results(validation: &sandbox::validation::ValidationResult) 
 
 /// Kill a panel's sandbox, teardown its project mount, and remove it from the panel list.
 /// Returns the agent name and optional sandbox Arc for background destruction.
-fn kill_panel_at(app: &mut App, idx: usize) -> Option<(String, Option<Arc<Mutex<Sandbox>>>)> {
+fn kill_panel_at(
+    app: &mut App,
+    idx: usize,
+) -> Option<(String, Option<Arc<Mutex<Sandbox>>>, Option<String>)> {
     if idx >= app.panels.len() {
         return None;
     }
@@ -1300,12 +981,8 @@ fn kill_panel_at(app: &mut App, idx: usize) -> Option<(String, Option<Arc<Mutex<
         let _ = pm.teardown();
     }
 
-    // Kill SSH port-forward processes.
-    for child in &mut app.panels[idx].port_forward_children {
-        let _ = child.kill();
-    }
-
-    let sandbox_arc = app.panels[idx].sandbox.take();
+    let sandbox_arc = app.panels[idx].take_sandbox();
+    let supervisor_name = app.panels[idx].supervisor_name().map(|s| s.to_string());
     let agent_name = app.panels[idx].agent_name.clone();
 
     app.panels.remove(idx);
@@ -1329,7 +1006,7 @@ fn kill_panel_at(app: &mut App, idx: usize) -> Option<(String, Option<Arc<Mutex<
         }
     }
 
-    Some((agent_name, sandbox_arc))
+    Some((agent_name, sandbox_arc, supervisor_name))
 }
 
 /// Spawn a background task to destroy a sandbox.
@@ -1349,11 +1026,137 @@ fn try_attach_supervisor(
             panel_idx,
             name: sandbox_name.to_string(),
             short_id,
+            project_mount: None,
         });
         true
     } else {
         false
     }
+}
+
+fn supervisor_sandbox_dir(name: &str) -> std::path::PathBuf {
+    crate::supervisor::client::SupervisorClient::new(name)
+        .sandbox_dir()
+        .to_path_buf()
+}
+
+/// Spawn a supervisor-managed sandbox for a TUI panel and attach its console.
+///
+/// Mirrors `nanosb run`'s next-mode path: plan the deploy, materialize mounts
+/// and config files, spawn the detached supervisor, wait for it to report
+/// `Running`, then emit `AppEvent::SupervisorReady` so the panel attaches.
+async fn spawn_supervisor_panel(
+    config: sandbox::AgentSandboxConfig,
+    panel_idx: usize,
+    tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+) {
+    use crate::deploy;
+
+    let name = config.sandbox.name.clone();
+    let sandbox_dir = supervisor_sandbox_dir(&name);
+
+    let _ = tx.send(AppEvent::SandboxCreating {
+        panel_idx,
+        message: "Planning deploy...".into(),
+    });
+
+    let project_mount = if config.sandbox.project.is_some() {
+        let mut rc_for_mount = config.sandbox.clone();
+        match sandbox::sandbox::setup_project_mount(&mut rc_for_mount, None) {
+            Ok(pm) => pm,
+            Err(e) => {
+                let _ = tx.send(AppEvent::SandboxFailed {
+                    panel_idx,
+                    error: format!("Failed to set up project mount: {}", e),
+                });
+                return;
+            }
+        }
+    } else {
+        None::<sandbox::ProjectMount>
+    };
+
+    let (plan, rc) = deploy::deploy_plan_for(&config, &sandbox_dir);
+    if let Err(e) = deploy::materialize_plan(&sandbox_dir, &plan) {
+        if let Some(mut pm) = project_mount {
+            let _ = pm.teardown();
+        }
+        let _ = tx.send(AppEvent::SandboxFailed {
+            panel_idx,
+            error: format!("Failed to materialize deploy plan: {}", e),
+        });
+        return;
+    }
+
+    let config_json = match serde_json::to_string(&rc) {
+        Ok(json) => json,
+        Err(e) => {
+            let _ = tx.send(AppEvent::SandboxFailed {
+                panel_idx,
+                error: format!("Failed to serialize config: {}", e),
+            });
+            return;
+        }
+    };
+    let (config_json, boot_env_json) = match deploy::extract_boot_env(&config_json) {
+        Ok(pair) => pair,
+        Err(e) => {
+            let _ = tx.send(AppEvent::SandboxFailed {
+                panel_idx,
+                error: format!("Failed to prepare boot env: {}", e),
+            });
+            return;
+        }
+    };
+    let extra_mounts = deploy::extra_mounts_from_plan(&plan);
+    let extra_mounts_json = match serde_json::to_string(&extra_mounts) {
+        Ok(json) => json,
+        Err(e) => {
+            let _ = tx.send(AppEvent::SandboxFailed {
+                panel_idx,
+                error: format!("Failed to serialize mounts: {}", e),
+            });
+            return;
+        }
+    };
+
+    let _ = tx.send(AppEvent::SandboxCreating {
+        panel_idx,
+        message: "Booting microVM...".into(),
+    });
+
+    let origin = deploy::Origin::cli(Vec::new(), Vec::new());
+    if let Err(e) = deploy::spawn_supervisor(
+        &name,
+        &config_json,
+        &extra_mounts_json,
+        &boot_env_json,
+        &origin.to_json(),
+        rc.timeout_secs,
+    ) {
+        let _ = tx.send(AppEvent::SandboxFailed {
+            panel_idx,
+            error: format!("Failed to spawn supervisor: {}", e),
+        });
+        return;
+    }
+
+    let client = crate::supervisor::client::SupervisorClient::new(&name);
+    if let Err(e) = deploy::wait_supervisor_running(&client, 60).await {
+        let _ = tx.send(AppEvent::SandboxFailed {
+            panel_idx,
+            error: format!("Supervisor did not start: {}", e),
+        });
+        return;
+    }
+
+    let short_id = name.chars().take(8).collect::<String>();
+    let _ = tx.send(AppEvent::SupervisorReady {
+        panel_idx,
+        name,
+        short_id,
+        project_mount,
+    });
 }
 
 fn spawn_sandbox_destroy(sandbox_arc: Arc<Mutex<Sandbox>>) {
@@ -1371,12 +1174,15 @@ fn spawn_sandbox_destroy(sandbox_arc: Arc<Mutex<Sandbox>>) {
     });
 }
 
+fn spawn_supervisor_stop(name: String) {
+    tokio::task::spawn_blocking(move || {
+        let client = crate::supervisor::client::SupervisorClient::new(&name);
+        let _ = client.stop(false);
+    });
+}
+
 /// Handle a single key event.
-async fn handle_key_event(
-    app: &mut App,
-    key: KeyEvent,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) {
+async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<AppEvent>) {
     // Pending reconnect confirmation: intercept y/n before anything else.
     if app.pending_reconnect.is_some() {
         match key.code {
@@ -1614,7 +1420,7 @@ async fn handle_key_event(
                         let write_tx = app.panels.get(app.focused_panel)
                             .and_then(|p| p.terminal_handle.as_ref())
                             .map(|h| h.write_tx.clone());
-                        let upload_info = panel_ssh_info(app);
+                        let upload_info = panel_mount_root(app);
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             tracing::debug!(
@@ -1658,9 +1464,11 @@ async fn handle_key_event(
                                 return;
                             }
 
-                            // Try clipboard image upload first when we have SSH
-                            // metadata for out-of-band upload.
-                            if let Some((panel_idx, ssh_host, ssh_port, key_path)) = upload_info {
+                            if let Some((panel_idx, mount_root)) = upload_info {
+                                if mount_root.is_none() {
+                                    tracing::debug!("Clipboard paste produced empty text and no mount");
+                                    return;
+                                }
                                 let image = tokio::task::spawn_blocking(
                                     super::upload::read_clipboard_image,
                                 )
@@ -1673,7 +1481,7 @@ async fn handle_key_event(
                                         "Clipboard image detected; starting upload"
                                     );
                                     super::upload::spawn_bytes_upload(
-                                        ssh_host, ssh_port, key_path, png_bytes, filename,
+                                        mount_root, png_bytes, filename,
                                         panel_idx, tx,
                                     );
                                     return;
@@ -1753,7 +1561,8 @@ async fn handle_key_event(
                         app.sidebar_files_scroll = app.sidebar_files_scroll.saturating_sub(1);
                     }
                     SidebarFilesTab::Committed => {
-                        app.sidebar_committed_scroll = app.sidebar_committed_scroll.saturating_sub(1);
+                        app.sidebar_committed_scroll =
+                            app.sidebar_committed_scroll.saturating_sub(1);
                     }
                 }
                 return;
@@ -1950,7 +1759,9 @@ async fn handle_key_event(
             if app.autocomplete_active() {
                 let suggestions = commands::autocomplete(app.current_input());
                 if !suggestions.is_empty() {
-                    let current = app.autocomplete_index.unwrap_or(suggestions.len().saturating_sub(1));
+                    let current = app
+                        .autocomplete_index
+                        .unwrap_or(suggestions.len().saturating_sub(1));
                     app.autocomplete_index = Some((current + 1) % suggestions.len());
                 }
             } else {
@@ -1981,11 +1792,7 @@ async fn handle_key_event(
 }
 
 /// Handle a parsed slash command.
-async fn handle_command(
-    app: &mut App,
-    cmd: Command,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) {
+async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<AppEvent>) {
     match cmd {
         Command::Quit => {
             if app.input_focus == InputFocus::Panel {
@@ -2059,8 +1866,11 @@ async fn handle_command(
             }
 
             app.panels[idx].visible = false;
-            let name = app.panels[idx].display_name.as_deref()
-                .unwrap_or(&app.panels[idx].agent_name).to_string();
+            let name = app.panels[idx]
+                .display_name
+                .as_deref()
+                .unwrap_or(&app.panels[idx].agent_name)
+                .to_string();
             app.set_status_message(format!("Hidden '{}'. Use /open to show.", name));
 
             if app.focused_panel == idx {
@@ -2077,7 +1887,10 @@ async fn handle_command(
             let idx = match target.as_deref() {
                 None => {
                     // No arg: find the most recently hidden panel (highest index).
-                    app.panels.iter().enumerate().rev()
+                    app.panels
+                        .iter()
+                        .enumerate()
+                        .rev()
                         .find(|(_, p)| !p.visible)
                         .map(|(i, _)| i)
                 }
@@ -2090,8 +1903,11 @@ async fn handle_command(
                         app.set_status_message("Panel is already visible.");
                     } else {
                         app.panels[i].visible = true;
-                        let name = app.panels[i].display_name.as_deref()
-                            .unwrap_or(&app.panels[i].agent_name).to_string();
+                        let name = app.panels[i]
+                            .display_name
+                            .as_deref()
+                            .unwrap_or(&app.panels[i].agent_name)
+                            .to_string();
                         app.set_status_message(format!("Showing '{}'.", name));
                         app.focused_panel = i;
                         app.focus_panel_input();
@@ -2124,8 +1940,36 @@ async fn handle_command(
         Command::McpToggle => {
             app.show_mcp_sidebar = !app.show_mcp_sidebar;
         }
-        Command::AddAgent { agent, image, tag, project, branch, name, auto_mode, prompt, model, use_env, env_file, run_as_root } => {
-            add_agent(app, &agent, image.as_deref(), tag.as_deref(), project.as_deref(), branch.as_deref(), name.as_deref(), auto_mode, prompt.as_deref(), model.as_deref(), &use_env, env_file.as_deref(), run_as_root, tx);
+        Command::AddAgent {
+            agent,
+            image,
+            tag,
+            project,
+            branch,
+            name,
+            auto_mode,
+            prompt,
+            model,
+            use_env,
+            env_file,
+            run_as_root,
+        } => {
+            add_agent(
+                app,
+                &agent,
+                image.as_deref(),
+                tag.as_deref(),
+                project.as_deref(),
+                branch.as_deref(),
+                name.as_deref(),
+                auto_mode,
+                prompt.as_deref(),
+                model.as_deref(),
+                &use_env,
+                env_file.as_deref(),
+                run_as_root,
+                tx,
+            );
         }
         Command::Env { assignment } => {
             handle_env(app, assignment);
@@ -2140,8 +1984,7 @@ async fn handle_command(
             let panel_idx = app.focused_panel;
             // Pre-calculate panel dimensions before mutable borrow.
             let (pty_cols, pty_rows) = {
-                let term_size = ratatui::crossterm::terminal::size()
-                    .unwrap_or((160, 40));
+                let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
                 let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
                 super::grid::estimate_panel_inner_size(
                     term_size.0,
@@ -2152,7 +1995,6 @@ async fn handle_command(
                 )
             };
             if let Some(panel) = app.panels.get_mut(panel_idx) {
-                // Drop existing SSH connection and reset URL tracking.
                 panel.terminal = None;
                 panel.terminal_handle = None;
                 panel.opened_urls.clear();
@@ -2161,20 +2003,10 @@ async fn handle_command(
                 panel.mode = PanelMode::Loading;
                 panel.loading_error = None;
                 panel.loading_tick = 0;
-                // Kill SSH port-forward processes and allow re-forwarding.
-                for child in &mut panel.port_forward_children {
-                    let _ = child.kill();
-                }
-                panel.port_forward_children.clear();
-                panel.forwarded_ports.clear();
 
-                let console_name = if panel.sandbox.is_none() {
-                    panel.supervisor_name.clone()
-                } else {
-                    None
-                };
+                let console_name = panel.supervisor_name().map(|s| s.to_string());
 
-                if let Some(name) = console_name.clone() {
+                if let Some(name) = console_name {
                     let tx = tx.clone();
                     tokio::spawn(async move {
                         match super::terminal::connect_console(
@@ -2197,53 +2029,9 @@ async fn handle_command(
                             }
                         }
                     });
-                }
-
-                let ssh_info = if let Some(ref sb_arc) = panel.sandbox {
-                    let sb = sb_arc.lock().await;
-                    sb.ssh_port().zip(sb.ssh_key_path())
                 } else {
-                    None
-                };
-
-                if let Some((ssh_port, key_path)) = ssh_info {
-                    let agent_name = panel.agent_name.clone();
-                    // Gateway merges secrets automatically — just pass panel env.
-                    let env = panel.env.clone();
-                    let workdir = panel.project_mount.as_ref().map(|_| "/workspace".to_string());
-                    let permissions = panel.permissions;
-                    let auto_mode = panel.auto_mode;
-                    let prompt = panel.headless_state.as_ref().map(|h| h.task.clone());
-                    let is_resumed = panel.is_resumed;
-                    let had_interaction = panel.had_interaction;
-                    let selected_agent_session_id = panel.selected_agent_session_id.clone();
-                    let model = panel.model.clone();
-                    let ssh_host = panel
-                        .ssh_host
-                        .clone()
-                        .unwrap_or_else(|| "127.0.0.1".to_string());
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        match super::terminal::connect_ssh(
-                            ssh_host, ssh_port, key_path, pty_cols, pty_rows,
-                            &agent_name, &env, workdir.as_deref(),
-                            permissions, auto_mode, prompt.as_deref(),
-                            is_resumed, had_interaction,
-                            selected_agent_session_id.as_deref(), model.as_deref(), panel_idx, tx.clone(),
-                        ).await {
-                            Ok(handle) => {
-                                let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::SshDisconnected {
-                                    panel_idx,
-                                    error: Some(format!("SSH reconnect failed: {}", e)),
-                                });
-                            }
-                        }
-                    });
-                } else if console_name.is_none() {
-                    panel.loading_error = Some("No sandbox running. Cannot reconnect SSH.".to_string());
+                    panel.loading_error =
+                        Some("No supervised sandbox for this panel. Cannot reconnect.".to_string());
                     panel.reconnecting = false;
                 }
             } else {
@@ -2269,9 +2057,12 @@ async fn handle_command(
                 }
             };
 
-            if let Some((agent_name, sandbox_arc)) = kill_panel_at(app, idx) {
+            if let Some((agent_name, sandbox_arc, supervisor_name)) = kill_panel_at(app, idx) {
                 if let Some(sb) = sandbox_arc {
                     spawn_sandbox_destroy(sb);
+                }
+                if let Some(name) = supervisor_name {
+                    spawn_supervisor_stop(name);
                 }
 
                 app.set_system_message(ChatMessage {
@@ -2293,7 +2084,9 @@ async fn handle_command(
                 });
             } else {
                 match cmd {
-                    Command::McpList => { handle_mcp_list(app).await; },
+                    Command::McpList => {
+                        handle_mcp_list(app).await;
+                    }
                     Command::McpAdd { .. }
                     | Command::McpRemove { .. }
                     | Command::McpEnable { .. }
@@ -2335,7 +2128,9 @@ async fn handle_command(
                         }
                         Err(e) => format!("Failed to list branches: {}", e),
                     }
-                }).await.unwrap_or_else(|e| format!("Task failed: {}", e));
+                })
+                .await
+                .unwrap_or_else(|e| format!("Task failed: {}", e));
                 let chat_msg = ChatMessage {
                     role: MessageRole::System,
                     content: msg,
@@ -2344,7 +2139,8 @@ async fn handle_command(
             } else {
                 app.set_system_message(ChatMessage {
                     role: MessageRole::System,
-                    content: "No project configured. Use --project flag when launching nanosb.".to_string(),
+                    content: "No project configured. Use --project flag when launching nanosb."
+                        .to_string(),
                 });
             }
         }
@@ -2353,16 +2149,21 @@ async fn handle_command(
             match action.as_deref() {
                 None => {
                     // Show sync status
-                    let auto = app.panels.get(panel_idx)
+                    let auto = app
+                        .panels
+                        .get(panel_idx)
                         .and_then(|p| p.sync_override)
                         .unwrap_or(app.settings.gitsync.auto_sync);
                     let status_label = if auto { "ON (unsafe)" } else { "OFF (safe)" };
-                    let has_branch = app.panels.get(panel_idx)
+                    let has_branch = app
+                        .panels
+                        .get(panel_idx)
                         .and_then(|p| p.project_mount.as_ref())
                         .map(|pm| !pm.created_branches.is_empty())
                         .unwrap_or(false);
                     let branch_info = if has_branch {
-                        app.panels.get(panel_idx)
+                        app.panels
+                            .get(panel_idx)
                             .and_then(|p| p.project_mount.as_ref())
                             .and_then(|pm| pm.created_branches.first())
                             .map(|(_, b)| format!("Branch: {}", b))
@@ -2373,7 +2174,11 @@ async fn handle_command(
                     let msg = format!(
                         "Git sync: {}\nNotify on commit: {}\n{}",
                         status_label,
-                        if app.settings.gitsync.notify_on_commit { "ON" } else { "OFF" },
+                        if app.settings.gitsync.notify_on_commit {
+                            "ON"
+                        } else {
+                            "OFF"
+                        },
                         branch_info,
                     );
                     if let Some(panel) = app.panels.get_mut(panel_idx) {
@@ -2435,12 +2240,19 @@ async fn handle_command(
                                     let src = source.clone();
                                     let ok = tokio::task::spawn_blocking(move || {
                                         std::process::Command::new("git")
-                                            .args(["fetch", &wt.to_string_lossy(), &refspec, "--force"])
+                                            .args([
+                                                "fetch",
+                                                &wt.to_string_lossy(),
+                                                &refspec,
+                                                "--force",
+                                            ])
                                             .current_dir(&src)
                                             .output()
                                             .map(|o| o.status.success())
                                             .unwrap_or(false)
-                                    }).await.unwrap_or(false);
+                                    })
+                                    .await
+                                    .unwrap_or(false);
                                     let msg = if ok {
                                         format!("Synced to branch '{}'.", branch)
                                     } else {
@@ -2465,7 +2277,9 @@ async fn handle_command(
         }
         Command::Edit { tool } => {
             let panel_idx = app.focused_panel;
-            let clone_path = app.panels.get(panel_idx)
+            let clone_path = app
+                .panels
+                .get(panel_idx)
                 .and_then(|p| p.project_mount.as_ref())
                 .and_then(|pm| pm.worktree_base.clone());
 
@@ -2478,12 +2292,13 @@ async fn handle_command(
             };
 
             // Use the explicit tool arg, or fall back to settings preference
-            let editor_pref = tool.as_deref()
-                .unwrap_or(&app.settings.tools.editor);
+            let editor_pref = tool.as_deref().unwrap_or(&app.settings.tools.editor);
 
             // Handle custom command template
             if let Some(ref cmd_template) = app.settings.tools.custom_command {
-                if editor_pref == "custom" || (editor_pref == "auto" && sandbox::settings::resolve_tool("auto").is_none()) {
+                if editor_pref == "custom"
+                    || (editor_pref == "auto" && sandbox::settings::resolve_tool("auto").is_none())
+                {
                     let cmd = cmd_template.replace("{path}", &clone_path.to_string_lossy());
                     let parts: Vec<&str> = cmd.split_whitespace().collect();
                     if let Some((bin, args)) = parts.split_first() {
@@ -2624,8 +2439,9 @@ async fn handle_command(
         Command::AgentSet { .. } => {
             app.set_system_message(ChatMessage {
                 role: MessageRole::System,
-                content: "Agent hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply)."
-                    .to_string(),
+                content:
+                    "Agent hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply)."
+                        .to_string(),
             });
         }
         Command::AgentList => handle_agent_list(app),
@@ -2726,16 +2542,14 @@ fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
 }
 
 /// Get the SSH port and key path from the focused panel, if available.
-fn panel_ssh_info(app: &App) -> Option<(usize, String, u16, std::path::PathBuf)> {
+fn panel_mount_root(app: &App) -> Option<(usize, Option<std::path::PathBuf>)> {
     let idx = app.focused_panel;
     let panel = app.panels.get(idx)?;
-    let port = panel.ssh_host_port?;
-    let key = panel.ssh_key_path.clone()?;
-    let host = panel
-        .ssh_host
-        .clone()
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    Some((idx, host, port, key))
+    let mount_root = panel
+        .project_mount
+        .as_ref()
+        .and_then(|pm| pm.worktree_base.clone());
+    Some((idx, mount_root))
 }
 
 /// Resolve a user-supplied path: strip quotes, expand `~`, resolve relative paths.
@@ -2767,16 +2581,24 @@ fn resolve_upload_path(raw: &str) -> std::path::PathBuf {
 
 /// Handle the `/upload <path>` command.
 fn handle_upload(app: &mut App, path: &str, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let (panel_idx, ssh_host, ssh_port, key_path) = match panel_ssh_info(app) {
+    let (panel_idx, mount_root) = match panel_mount_root(app) {
         Some(info) => info,
         None => {
             app.set_system_message(ChatMessage {
                 role: MessageRole::System,
-                content: "No active SSH session. Wait for sandbox to be ready.".to_string(),
+                content: "No panel to upload to. Use /add <agent> first.".to_string(),
             });
             return;
         }
     };
+    if mount_root.is_none() {
+        app.set_system_message(ChatMessage {
+            role: MessageRole::System,
+            content: "No project mount for this panel. Uploads require a mounted workspace."
+                .to_string(),
+        });
+        return;
+    }
 
     let host_path = resolve_upload_path(path);
     if !host_path.exists() {
@@ -2800,21 +2622,29 @@ fn handle_upload(app: &mut App, path: &str, tx: &mpsc::UnboundedSender<AppEvent>
         .unwrap_or_else(|| "unknown".to_string());
     app.set_status_message(format!("Uploading {}...", filename));
 
-    super::upload::spawn_file_upload(ssh_host, ssh_port, key_path, host_path, panel_idx, tx.clone());
+    super::upload::spawn_file_upload(mount_root, host_path, panel_idx, tx.clone());
 }
 
 /// Handle the `/paste-image` command.
 fn handle_paste_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let (panel_idx, ssh_host, ssh_port, key_path) = match panel_ssh_info(app) {
+    let (panel_idx, mount_root) = match panel_mount_root(app) {
         Some(info) => info,
         None => {
             app.set_system_message(ChatMessage {
                 role: MessageRole::System,
-                content: "No active SSH session. Wait for sandbox to be ready.".to_string(),
+                content: "No panel to upload to. Use /add <agent> first.".to_string(),
             });
             return;
         }
     };
+    if mount_root.is_none() {
+        app.set_system_message(ChatMessage {
+            role: MessageRole::System,
+            content: "No project mount for this panel. Uploads require a mounted workspace."
+                .to_string(),
+        });
+        return;
+    }
 
     app.set_status_message("Reading clipboard image...");
     let tx = tx.clone();
@@ -2825,9 +2655,7 @@ fn handle_paste_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
 
         match result {
             Ok(Ok((png_bytes, filename))) => {
-                super::upload::spawn_bytes_upload(
-                    ssh_host, ssh_port, key_path, png_bytes, filename, panel_idx, tx,
-                );
+                super::upload::spawn_bytes_upload(mount_root, png_bytes, filename, panel_idx, tx);
             }
             Ok(Err(e)) => {
                 let _ = tx.send(AppEvent::UploadFailed {
@@ -2851,11 +2679,7 @@ fn handle_paste_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
 /// as a `CrosstermEvent::Paste`. When the clipboard contains only an image
 /// (no text), the terminal sends an empty paste — we detect that and check
 /// the clipboard for an image to upload.
-fn handle_paste_event(
-    app: &mut App,
-    text: String,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) {
+fn handle_paste_event(app: &mut App, text: String, tx: &mpsc::UnboundedSender<AppEvent>) {
     tracing::info!(
         text_len = text.len(),
         focused_panel = app.focused_panel,
@@ -2873,14 +2697,15 @@ fn handle_paste_event(
     // In Terminal mode: if the paste is empty (image-only clipboard via Cmd+V),
     // check the clipboard for an image to upload.
     if text.is_empty() {
-        if let Some((panel_idx, ssh_host, ssh_port, key_path)) = panel_ssh_info(app) {
+        if let Some((panel_idx, mount_root)) = panel_mount_root(app) {
+            if mount_root.is_none() {
+                tracing::debug!("Empty paste ignored: no project mount for panel");
+                return;
+            }
             let tx = tx.clone();
             tokio::spawn(async move {
                 tracing::debug!(panel_idx, "Empty paste; checking clipboard image");
-                let result = tokio::task::spawn_blocking(
-                    super::upload::read_clipboard_image,
-                )
-                .await;
+                let result = tokio::task::spawn_blocking(super::upload::read_clipboard_image).await;
                 match result {
                     Ok(Ok((png_bytes, filename))) => {
                         tracing::debug!(
@@ -2890,8 +2715,7 @@ fn handle_paste_event(
                             "Empty paste resolved to clipboard image upload"
                         );
                         super::upload::spawn_bytes_upload(
-                            ssh_host, ssh_port, key_path, png_bytes, filename,
-                            panel_idx, tx,
+                            mount_root, png_bytes, filename, panel_idx, tx,
                         );
                     }
                     Ok(Err(e)) => {
@@ -2911,7 +2735,7 @@ fn handle_paste_event(
                 }
             });
         } else {
-            tracing::debug!("Empty paste ignored: no SSH panel info available");
+            tracing::debug!("Empty paste ignored: no panel info available");
         }
         return;
     }
@@ -2961,9 +2785,11 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 let term_row = y.saturating_sub(inner_area.y);
 
                 // Only start selection in terminal mode panels.
-                if app.panels.get(panel_idx).is_some_and(|p| {
-                    p.mode == PanelMode::Terminal && p.terminal.is_some()
-                }) {
+                if app
+                    .panels
+                    .get(panel_idx)
+                    .is_some_and(|p| p.mode == PanelMode::Terminal && p.terminal.is_some())
+                {
                     app.mouse_selection = Some(MouseSelection {
                         panel_idx,
                         start: (term_row, term_col),
@@ -3022,8 +2848,9 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 let (start, end) = sel.normalized();
                 if let Some(panel) = app.panels.get(sel.panel_idx) {
                     if let Some(ref term) = panel.terminal {
-                        let text =
-                            term.screen().contents_between(start.0, start.1, end.0, end.1);
+                        let text = term
+                            .screen()
+                            .contents_between(start.0, start.1, end.0, end.1);
                         if !text.is_empty() {
                             let _ = copy_to_clipboard(&text);
                             app.set_status_message(format!(
@@ -3066,11 +2893,7 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
 /// Find which panel's inner area contains the given absolute coordinates.
 fn find_panel_at(app: &App, x: u16, y: u16) -> Option<(usize, ratatui::layout::Rect)> {
     for &(panel_idx, area) in &app.panel_areas {
-        if x >= area.x
-            && x < area.x + area.width
-            && y >= area.y
-            && y < area.y + area.height
-        {
+        if x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height {
             return Some((panel_idx, area));
         }
     }
@@ -3140,16 +2963,15 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
             state.started_at = std::time::Instant::now();
         }
 
-        let event_type = json
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
+        let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
         // Trace every parsed event so we can diagnose missing-output bugs.
         // Truncated to keep logs readable for long content blocks.
         tracing::info!(
             "[parse_headless] event_type={:?} raw_len={} agent_text_len={}",
-            event_type, clean.len(), state.agent_text.len()
+            event_type,
+            clean.len(),
+            state.agent_text.len()
         );
 
         match event_type {
@@ -3207,9 +3029,8 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                             .unwrap_or("");
                         match delta_type {
                             "text_delta" => {
-                                if let Some(text) = json
-                                    .pointer("/event/delta/text")
-                                    .and_then(|v| v.as_str())
+                                if let Some(text) =
+                                    json.pointer("/event/delta/text").and_then(|v| v.as_str())
                                 {
                                     state.agent_text.push_str(text);
                                     state.status = "thinking".to_string();
@@ -3248,9 +3069,8 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                     "message_delta" | "message_stop" | "ping" => {}
                     // Legacy / un-nested form — preserve prior shallow extraction.
                     _ => {
-                        if let Some(text) = json
-                            .pointer("/event/delta/text")
-                            .and_then(|v| v.as_str())
+                        if let Some(text) =
+                            json.pointer("/event/delta/text").and_then(|v| v.as_str())
                         {
                             state.agent_text.push_str(text);
                             state.status = "thinking".to_string();
@@ -3272,7 +3092,8 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
             }
             // Complete assistant turn — content[] holds text, thinking, and tool_use blocks.
             "assistant" => {
-                if let Some(content) = json.get("message")
+                if let Some(content) = json
+                    .get("message")
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_array())
                 {
@@ -3292,13 +3113,22 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                 }
                             }
                             "tool_use" => {
-                                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
-                                let input = block.get("input").map(|v| v.to_string()).unwrap_or_default();
+                                let name = block
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("unknown");
+                                let input = block
+                                    .get("input")
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_default();
                                 let summary = truncate_str(&input, 200);
-                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
+                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n')
+                                {
                                     state.agent_text.push('\n');
                                 }
-                                state.agent_text.push_str(&format!("[tool:{}] {}\n", name, summary));
+                                state
+                                    .agent_text
+                                    .push_str(&format!("[tool:{}] {}\n", name, summary));
                                 state.tool_calls.push(super::app::HeadlessToolCall {
                                     tool_name: name.to_string(),
                                     input_summary: truncate_str(&input, 80),
@@ -3322,7 +3152,10 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
             // even when subtype="success" (Claude Code emits a synthetic result on auth
             // or quota errors, e.g. "Credit balance is too low" with HTTP 400).
             "result" => {
-                let is_error = json.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                let is_error = json
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let api_status = json.get("api_error_status").and_then(|v| v.as_i64());
                 let result_text = json.get("result").and_then(|r| r.as_str()).unwrap_or("");
 
@@ -3337,7 +3170,11 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                     state.agent_text.push_str(&header);
                     state.agent_text.push_str(result_text);
                     state.agent_text.push('\n');
-                    tracing::info!("[parse_headless] result is_error=true api={:?} text={:?}", api_status, result_text);
+                    tracing::info!(
+                        "[parse_headless] result is_error=true api={:?} text={:?}",
+                        api_status,
+                        result_text
+                    );
                     state.finish("error");
                 } else {
                     if !result_text.is_empty() {
@@ -3388,9 +3225,12 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                         }
                         "command_execution" => {
                             if event_type == "item.started" {
-                                let cmd = item.get("command")
-                                    .and_then(|v| v.as_str()).unwrap_or("command");
-                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
+                                let cmd = item
+                                    .get("command")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("command");
+                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n')
+                                {
                                     state.agent_text.push('\n');
                                 }
                                 state.agent_text.push_str(&format!("$ {}\n", cmd));
@@ -3403,10 +3243,12 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                 state.status = "tool_use".to_string();
                             }
                             if event_type == "item.completed" {
-                                let exit_code = item.get("exit_code")
-                                    .and_then(|v| v.as_i64()).unwrap_or(0);
-                                let output = item.get("aggregated_output")
-                                    .and_then(|v| v.as_str()).unwrap_or("");
+                                let exit_code =
+                                    item.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let output = item
+                                    .get("aggregated_output")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
                                 if !output.is_empty() {
                                     state.agent_text.push_str(&truncate_str(output, 800));
                                     if !state.agent_text.ends_with('\n') {
@@ -3414,7 +3256,9 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                     }
                                 }
                                 if exit_code != 0 {
-                                    state.agent_text.push_str(&format!("[exit {}]\n", exit_code));
+                                    state
+                                        .agent_text
+                                        .push_str(&format!("[exit {}]\n", exit_code));
                                 }
                                 if let Some(last) = state.tool_calls.last_mut() {
                                     last.status = if exit_code == 0 {
@@ -3430,9 +3274,10 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                         }
                         "file_change" => {
                             if event_type == "item.started" {
-                                let path = item.get("path")
-                                    .and_then(|v| v.as_str()).unwrap_or("file");
-                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
+                                let path =
+                                    item.get("path").and_then(|v| v.as_str()).unwrap_or("file");
+                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n')
+                                {
                                     state.agent_text.push('\n');
                                 }
                                 state.agent_text.push_str(&format!("[file] {}\n", path));
@@ -3445,9 +3290,11 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                 state.status = "tool_use".to_string();
                             }
                             if event_type == "item.completed" {
-                                let summary = item.get("diff")
+                                let summary = item
+                                    .get("diff")
                                     .or_else(|| item.get("summary"))
-                                    .and_then(|v| v.as_str()).unwrap_or("");
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
                                 if !summary.is_empty() {
                                     state.agent_text.push_str(&truncate_str(summary, 400));
                                     if !state.agent_text.ends_with('\n') {
@@ -3464,16 +3311,25 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                         }
                         "mcp_tool_call" | "web_search" => {
                             if event_type == "item.started" {
-                                let name = item.get("tool")
+                                let name = item
+                                    .get("tool")
                                     .or_else(|| item.get("type"))
-                                    .and_then(|v| v.as_str()).unwrap_or("tool");
-                                let input = item.get("arguments")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("tool");
+                                let input = item
+                                    .get("arguments")
                                     .or_else(|| item.get("query"))
-                                    .map(|v| v.to_string()).unwrap_or_default();
-                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_default();
+                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n')
+                                {
                                     state.agent_text.push('\n');
                                 }
-                                state.agent_text.push_str(&format!("[{}] {}\n", name, truncate_str(&input, 200)));
+                                state.agent_text.push_str(&format!(
+                                    "[{}] {}\n",
+                                    name,
+                                    truncate_str(&input, 200)
+                                ));
                                 state.tool_calls.push(super::app::HeadlessToolCall {
                                     tool_name: name.to_string(),
                                     input_summary: truncate_str(&input, 80),
@@ -3483,11 +3339,16 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                 state.status = "tool_use".to_string();
                             }
                             if event_type == "item.completed" {
-                                let output = item.get("result")
+                                let output = item
+                                    .get("result")
                                     .or_else(|| item.get("output"))
-                                    .and_then(|v| v.as_str()).unwrap_or("");
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
                                 if !output.is_empty() {
-                                    state.agent_text.push_str(&format!("[result] {}\n", truncate_str(output, 400)));
+                                    state.agent_text.push_str(&format!(
+                                        "[result] {}\n",
+                                        truncate_str(output, 400)
+                                    ));
                                 }
                                 if let Some(last) = state.tool_calls.last_mut() {
                                     last.status = "done".to_string();
@@ -3500,10 +3361,12 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                         "todo_list" | "patch_apply" | "plan_update" => {
                             // Codex extension item types — surface as a tool entry.
                             if event_type == "item.started" {
-                                let summary = item.get("summary")
+                                let summary = item
+                                    .get("summary")
                                     .or_else(|| item.get("path"))
                                     .or_else(|| item.get("title"))
-                                    .and_then(|v| v.as_str()).unwrap_or("");
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
                                 state.tool_calls.push(super::app::HeadlessToolCall {
                                     tool_name: item_type.to_string(),
                                     input_summary: truncate_str(summary, 80),
@@ -3546,7 +3409,8 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
 
             // Message event — assistant text, tool requests, and tool responses.
             "message" => {
-                if let Some(content) = json.get("message")
+                if let Some(content) = json
+                    .get("message")
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_array())
                 {
@@ -3561,14 +3425,23 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                 }
                             }
                             "tool_request" => {
-                                let name = block.pointer("/tool_call/name")
-                                    .and_then(|v| v.as_str()).unwrap_or("tool");
-                                let args = block.pointer("/tool_call/arguments")
-                                    .map(|v| v.to_string()).unwrap_or_default();
-                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
+                                let name = block
+                                    .pointer("/tool_call/name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("tool");
+                                let args = block
+                                    .pointer("/tool_call/arguments")
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_default();
+                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n')
+                                {
                                     state.agent_text.push('\n');
                                 }
-                                state.agent_text.push_str(&format!("[tool:{}] {}\n", name, truncate_str(&args, 200)));
+                                state.agent_text.push_str(&format!(
+                                    "[tool:{}] {}\n",
+                                    name,
+                                    truncate_str(&args, 200)
+                                ));
                                 state.tool_calls.push(super::app::HeadlessToolCall {
                                     tool_name: name.to_string(),
                                     input_summary: truncate_str(&args, 80),
@@ -3578,8 +3451,10 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                 state.status = "tool_use".to_string();
                             }
                             "tool_response" => {
-                                let is_error = block.get("is_error")
-                                    .and_then(|v| v.as_bool()).unwrap_or(false);
+                                let is_error = block
+                                    .get("is_error")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
                                 if let Some(last) = state.tool_calls.last_mut() {
                                     last.status = if is_error {
                                         "error".to_string()
@@ -3589,28 +3464,30 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                     // Goose response payloads can live in tool_result[],
                                     // content[], or a flat output string.
                                     let mut output = String::new();
-                                    if let Some(arr) = block.pointer("/tool_result")
-                                        .and_then(|v| v.as_array())
+                                    if let Some(arr) =
+                                        block.pointer("/tool_result").and_then(|v| v.as_array())
                                     {
                                         for c in arr {
-                                            if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
+                                            if let Some(t) = c.get("text").and_then(|v| v.as_str())
+                                            {
                                                 output.push_str(t);
                                             }
                                         }
-                                    } else if let Some(arr) = block.get("content")
-                                        .and_then(|v| v.as_array())
+                                    } else if let Some(arr) =
+                                        block.get("content").and_then(|v| v.as_array())
                                     {
                                         for c in arr {
-                                            if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
+                                            if let Some(t) = c.get("text").and_then(|v| v.as_str())
+                                            {
                                                 output.push_str(t);
                                             }
                                         }
-                                    } else if let Some(s) = block.get("output")
-                                        .and_then(|v| v.as_str())
+                                    } else if let Some(s) =
+                                        block.get("output").and_then(|v| v.as_str())
                                     {
                                         output.push_str(s);
-                                    } else if let Some(s) = block.get("content")
-                                        .and_then(|v| v.as_str())
+                                    } else if let Some(s) =
+                                        block.get("content").and_then(|v| v.as_str())
                                     {
                                         output.push_str(s);
                                     }
@@ -3620,37 +3497,49 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                 }
                                 // Surface response inline regardless of tool_calls state.
                                 let mut output = String::new();
-                                if let Some(arr) = block.pointer("/tool_result")
-                                    .and_then(|v| v.as_array())
+                                if let Some(arr) =
+                                    block.pointer("/tool_result").and_then(|v| v.as_array())
                                 {
                                     for c in arr {
                                         if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
                                             output.push_str(t);
                                         }
                                     }
-                                } else if let Some(arr) = block.get("content")
-                                    .and_then(|v| v.as_array())
+                                } else if let Some(arr) =
+                                    block.get("content").and_then(|v| v.as_array())
                                 {
                                     for c in arr {
                                         if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
                                             output.push_str(t);
                                         }
                                     }
-                                } else if let Some(s) = block.get("output")
-                                    .and_then(|v| v.as_str())
+                                } else if let Some(s) = block.get("output").and_then(|v| v.as_str())
                                 {
                                     output.push_str(s);
-                                } else if let Some(s) = block.get("content")
-                                    .and_then(|v| v.as_str())
+                                } else if let Some(s) =
+                                    block.get("content").and_then(|v| v.as_str())
                                 {
                                     output.push_str(s);
                                 }
-                                let tag = if is_error { "[result:error]" } else { "[result]" };
-                                let display = if output.is_empty() { "(empty)" } else { output.as_str() };
-                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
+                                let tag = if is_error {
+                                    "[result:error]"
+                                } else {
+                                    "[result]"
+                                };
+                                let display = if output.is_empty() {
+                                    "(empty)"
+                                } else {
+                                    output.as_str()
+                                };
+                                if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n')
+                                {
                                     state.agent_text.push('\n');
                                 }
-                                state.agent_text.push_str(&format!("{} {}\n", tag, truncate_str(display, 400)));
+                                state.agent_text.push_str(&format!(
+                                    "{} {}\n",
+                                    tag,
+                                    truncate_str(display, 400)
+                                ));
                             }
                             "image" => {
                                 state.agent_text.push_str("[image]\n");
@@ -3662,19 +3551,29 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
             }
             // Notification — extension log / progress messages with severity.
             "notification" => {
-                let msg = json.pointer("/log/message")
+                let msg = json
+                    .pointer("/log/message")
                     .or_else(|| json.pointer("/progress/message"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let level = json.pointer("/log/level")
-                    .and_then(|v| v.as_str()).unwrap_or("info");
-                let ext = json.get("extension_id")
-                    .and_then(|v| v.as_str()).unwrap_or("ext");
+                let level = json
+                    .pointer("/log/level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("info");
+                let ext = json
+                    .get("extension_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ext");
                 if !msg.is_empty() {
                     if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
                         state.agent_text.push('\n');
                     }
-                    state.agent_text.push_str(&format!("[{}:{}] {}\n", ext, level, truncate_str(msg, 200)));
+                    state.agent_text.push_str(&format!(
+                        "[{}:{}] {}\n",
+                        ext,
+                        level,
+                        truncate_str(msg, 200)
+                    ));
                     state.tool_calls.push(super::app::HeadlessToolCall {
                         tool_name: ext.to_string(),
                         input_summary: truncate_str(msg, 80),
@@ -3735,15 +3634,22 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                     let (name, input) = if let Some(ref obj) = tc_obj {
                         let key = obj.keys().next().map(|k| k.as_str()).unwrap_or("tool");
                         let friendly = key.strip_suffix("ToolCall").unwrap_or(key);
-                        let args = obj.values().next()
+                        let args = obj
+                            .values()
+                            .next()
                             .and_then(|v| v.get("args"))
                             .and_then(|a| a.as_object());
-                        let input = args.and_then(|a| {
-                            a.get("command").or_else(|| a.get("path"))
-                                .or_else(|| a.get("query")).or_else(|| a.get("pattern"))
-                                .or_else(|| a.get("url")).or_else(|| a.get("file_path"))
-                                .and_then(|v| v.as_str())
-                        }).unwrap_or("");
+                        let input = args
+                            .and_then(|a| {
+                                a.get("command")
+                                    .or_else(|| a.get("path"))
+                                    .or_else(|| a.get("query"))
+                                    .or_else(|| a.get("pattern"))
+                                    .or_else(|| a.get("url"))
+                                    .or_else(|| a.get("file_path"))
+                                    .and_then(|v| v.as_str())
+                            })
+                            .unwrap_or("");
                         (friendly.to_string(), input.to_string())
                     } else {
                         ("tool".to_string(), String::new())
@@ -3751,7 +3657,11 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                     if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
                         state.agent_text.push('\n');
                     }
-                    state.agent_text.push_str(&format!("[tool:{}] {}\n", name, truncate_str(&input, 200)));
+                    state.agent_text.push_str(&format!(
+                        "[tool:{}] {}\n",
+                        name,
+                        truncate_str(&input, 200)
+                    ));
                     state.tool_calls.push(super::app::HeadlessToolCall {
                         tool_name: name,
                         input_summary: truncate_str(&input, 80),
@@ -3785,7 +3695,9 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                         if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
                             state.agent_text.push('\n');
                         }
-                        state.agent_text.push_str(&format!("{} {}\n", tag, truncate_str(out, 400)));
+                        state
+                            .agent_text
+                            .push_str(&format!("{} {}\n", tag, truncate_str(out, 400)));
                     }
                     if let Some(last) = state.tool_calls.last_mut() {
                         last.status = "done".to_string();
@@ -3799,7 +3711,8 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                 } else if subtype == "failed" || subtype == "error" {
                     if let Some(last) = state.tool_calls.last_mut() {
                         last.status = "error".to_string();
-                        let err = json.pointer("/error/message")
+                        let err = json
+                            .pointer("/error/message")
                             .or_else(|| json.get("error"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
@@ -3847,18 +3760,23 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
             // The result content can be a string, an array of {type,text} blocks,
             // or absent entirely (legacy form — just acknowledge tool done).
             "user" => {
-                let content = json.get("message")
+                let content = json
+                    .get("message")
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_array());
                 if let Some(blocks) = content {
                     for block in blocks {
                         if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                            let is_error = block.get("is_error")
-                                .and_then(|v| v.as_bool()).unwrap_or(false);
+                            let is_error = block
+                                .get("is_error")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                             let mut output = String::new();
                             if let Some(s) = block.get("content").and_then(|v| v.as_str()) {
                                 output.push_str(s);
-                            } else if let Some(arr) = block.get("content").and_then(|v| v.as_array()) {
+                            } else if let Some(arr) =
+                                block.get("content").and_then(|v| v.as_array())
+                            {
                                 for c in arr {
                                     if let Some(t) = c.get("text").and_then(|v| v.as_str()) {
                                         output.push_str(t);
@@ -3866,12 +3784,24 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
                                 }
                             }
                             // Surface the tool result inline in the panel.
-                            let tag = if is_error { "[result:error]" } else { "[result]" };
-                            let display = if output.is_empty() { "(empty)" } else { output.as_str() };
+                            let tag = if is_error {
+                                "[result:error]"
+                            } else {
+                                "[result]"
+                            };
+                            let display = if output.is_empty() {
+                                "(empty)"
+                            } else {
+                                output.as_str()
+                            };
                             if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
                                 state.agent_text.push('\n');
                             }
-                            state.agent_text.push_str(&format!("{} {}\n", tag, truncate_str(display, 400)));
+                            state.agent_text.push_str(&format!(
+                                "{} {}\n",
+                                tag,
+                                truncate_str(display, 400)
+                            ));
                             if let Some(last) = state.tool_calls.last_mut() {
                                 last.status = if is_error {
                                     "error".to_string()
@@ -3893,12 +3823,14 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
 
             // Errors — surface as visible text so the user sees them.
             "error" | "turn.failed" => {
-                let msg = json.pointer("/error/message")
+                let msg = json
+                    .pointer("/error/message")
                     .and_then(|v| v.as_str())
                     .or_else(|| json.get("error").and_then(|v| v.as_str()))
                     .or_else(|| json.get("message").and_then(|v| v.as_str()))
                     .unwrap_or("unknown error");
-                let code = json.pointer("/error/code")
+                let code = json
+                    .pointer("/error/code")
                     .and_then(|v| v.as_str())
                     .or_else(|| json.pointer("/error/type").and_then(|v| v.as_str()));
                 let header = match code {
@@ -3916,9 +3848,11 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
 
             // Model change — surface inline, others are too chatty to render.
             "model_change" => {
-                let model = json.get("model")
+                let model = json
+                    .get("model")
                     .or_else(|| json.get("to"))
-                    .and_then(|v| v.as_str()).unwrap_or("");
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if !state.agent_text.is_empty() && !state.agent_text.ends_with('\n') {
                     state.agent_text.push('\n');
                 }
@@ -3931,13 +3865,14 @@ fn parse_headless_data(state: &mut super::app::HeadlessState, data: &[u8]) {
             }
 
             // Truly silent lifecycle events — no payload, very chatty.
-            "ping" | "keepalive" | "heartbeat"
-            | "session.created" | "session.updated"
+            "ping" | "keepalive" | "heartbeat" | "session.created" | "session.updated"
             | "usage" | "rate_limit" => {}
 
             _ => {
                 // Unknown event — try several common text-bearing fields.
-                let extracted = json.get("text").and_then(|v| v.as_str())
+                let extracted = json
+                    .get("text")
+                    .and_then(|v| v.as_str())
                     .or_else(|| json.pointer("/delta/text").and_then(|v| v.as_str()))
                     .or_else(|| json.pointer("/data/text").and_then(|v| v.as_str()))
                     .or_else(|| json.get("content").and_then(|v| v.as_str()))
@@ -4007,10 +3942,7 @@ fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
     match agent {
         "claude" => vec![("ANTHROPIC_API_KEY", true)],
         "codex" => vec![("OPENAI_API_KEY", true)],
-        "goose" => vec![
-            ("OPENAI_API_KEY", false),
-            ("ANTHROPIC_API_KEY", false),
-        ],
+        "goose" => vec![("OPENAI_API_KEY", false), ("ANTHROPIC_API_KEY", false)],
         _ => vec![],
     }
 }
@@ -4106,9 +4038,13 @@ fn add_agent(
     // Goose requires GOOSE_PROVIDER to be set — auto-detect from available keys.
     if agent == "goose" && !panel.env.contains_key("GOOSE_PROVIDER") {
         if panel.env.contains_key("ANTHROPIC_API_KEY") {
-            panel.env.insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
+            panel
+                .env
+                .insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
         } else if panel.env.contains_key("OPENAI_API_KEY") {
-            panel.env.insert("GOOSE_PROVIDER".to_string(), "openai".to_string());
+            panel
+                .env
+                .insert("GOOSE_PROVIDER".to_string(), "openai".to_string());
         }
     }
 
@@ -4148,9 +4084,12 @@ fn add_agent(
 
     // Resolve agent-type-aware compute defaults for cpus and memory.
     let parsed_agent_type = agent.parse::<sandbox::AgentType>().ok();
-    let compute = parsed_agent_type
-        .map(sandbox::agent_compute_for)
-        .unwrap_or(sandbox::AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
+    let compute = parsed_agent_type.map(sandbox::agent_compute_for).unwrap_or(
+        sandbox::AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
 
     let mut builder = SandboxConfig::builder()
         .image(&image_name)
@@ -4183,14 +4122,6 @@ fn add_agent(
     panel.original_config = Some(config.clone());
     panel.display_name = name.map(String::from);
 
-    // Capture panel env vars and agent-specific fields before panel is moved into app.panels.
-    let panel_env: HashMap<String, String> = panel.env.clone();
-    let agent_permissions = panel.permissions;
-    let agent_name_str = agent.to_string();
-    let agent_auto_mode = auto_mode;
-    let agent_model = model.map(String::from);
-    let agent_prompt = prompt.map(String::from);
-
     app.panels.push(panel);
     let panel_idx = app.panels.len() - 1;
     app.focused_panel = panel_idx;
@@ -4199,87 +4130,11 @@ fn add_agent(
 
     // Spawn sandbox creation in the background so the event loop stays responsive.
     let tx = tx.clone();
-    let image_manager = app.image_manager.clone();
     tokio::spawn(async move {
         if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
             return;
         }
-        let _ = tx.send(AppEvent::SandboxCreating {
-            panel_idx,
-            message: "Pulling image...".into(),
-        });
-        let create_result = if let Some(im) = image_manager {
-            Sandbox::create_with_manager(config, im).await
-        } else {
-            Sandbox::create(config).await
-        };
-        match create_result {
-            Ok(mut sandbox) => {
-                let short_id = sandbox.id()[..8.min(sandbox.id().len())].to_string();
-                let _ = tx.send(AppEvent::SandboxCreating {
-                    panel_idx,
-                    message: "Booting microVM...".into(),
-                });
-
-                // Stagger VM starts to avoid concurrent gvproxy/VM-subprocess races.
-                // create() (image pull + rootfs) runs in parallel; start() is staggered.
-                if panel_idx > 0 {
-                    tokio::time::sleep(Duration::from_millis(panel_idx as u64 * 600)).await;
-                }
-
-                match sandbox.start().await {
-                    Ok(()) => {
-                        // Insert panel env vars (API keys, etc.) and agent-specific vars
-                        // into the runtime config.env so they're delivered via gateway POST.
-                        // Deref: AgentSandbox -> SandboxInner -> runtime::Sandbox
-                        for (key, val) in &panel_env {
-                            (**sandbox).config_mut().env.insert(key.clone(), val.clone());
-                        }
-                        for (key, val) in super::terminal::agent_env_vars(
-                            &agent_name_str,
-                            agent_permissions,
-                            agent_auto_mode,
-                            agent_model.as_deref(),
-                            agent_prompt.as_deref(),
-                        ) {
-                            (**sandbox).config_mut().env.insert(key, val);
-                        }
-                        // Encrypt and send ALL env vars to gateway
-                        let clone_path = sandbox
-                            .project_mount()
-                            .and_then(|pm| pm.worktree_base.clone());
-                        if let Err(e) = send_encrypted_env(
-                            &mut sandbox, std::path::Path::new("."), &clone_path,
-                        ) {
-                            tracing::warn!("Failed to send env to gateway: {}", e);
-                        }
-
-                        // Take the project mount from the sandbox so we can
-                        // store it on the panel for teardown on kill.
-                        let project_mount = sandbox.take_project_mount();
-                        let sb = Arc::new(Mutex::new(sandbox));
-                        let _ = tx.send(AppEvent::SandboxReady {
-                            panel_idx,
-                            sandbox: sb,
-                            short_id,
-                            project_mount,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::SandboxFailed {
-                            panel_idx,
-                            error: format!("Failed to start sandbox: {}", e),
-                        });
-                    }
-                }
-            }
-            Err(e) => {
-                let _ = tx.send(AppEvent::SandboxFailed {
-                    panel_idx,
-                    error: format!("Failed to create sandbox: {}", e),
-                });
-            }
-        }
+        spawn_supervisor_panel(config, panel_idx, &tx).await;
     });
 }
 
@@ -4351,7 +4206,6 @@ fn add_agent_from_config(
 
     // Store the runtime config for session persistence.
     panel.original_config = Some(config.clone());
-    let panel_env: HashMap<String, String> = panel.env.clone();
 
     app.panels.push(panel);
     let panel_idx = app.panels.len() - 1;
@@ -4359,119 +4213,12 @@ fn add_agent_from_config(
     app.show_welcome = false;
     app.focus_panel_input();
 
-    // Capture config_dir (directory containing sandbox.yml) before the async move.
-    // Use the project path from config, falling back to CWD.
-    let config_dir = config
-        .sandbox
-        .project
-        .as_ref()
-        .map(|p| p.path.clone())
-        .or_else(|| app.project_path.clone())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    // Capture the agent type string for secrets bootstrap.
-    let agent_type_str = agent_type.clone();
-
-    // Capture agent-specific fields before config is moved into the async block.
-    let agent_auto_mode = config.auto_mode;
-    let agent_permissions = config.permissions;
-    let agent_model = config.model.clone();
-    let agent_prompt = config.prompt.clone();
-
     let tx = tx.clone();
-    let image_manager = app.image_manager.clone();
     tokio::spawn(async move {
         if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
             return;
         }
-        let _ = tx.send(AppEvent::SandboxCreating {
-            panel_idx,
-            message: "Pulling image...".into(),
-        });
-        let create_result = if let Some(im) = image_manager {
-            Sandbox::create_with_manager(config, im).await
-        } else {
-            Sandbox::create(config).await
-        };
-        match create_result {
-            Ok(mut sandbox) => {
-                let short_id = sandbox.id()[..8.min(sandbox.id().len())].to_string();
-                let _ = tx.send(AppEvent::SandboxCreating {
-                    panel_idx,
-                    message: "Booting microVM...".into(),
-                });
-
-                // Stagger VM starts to avoid concurrent gvproxy/VM-subprocess races.
-                if panel_idx > 0 {
-                    tokio::time::sleep(Duration::from_millis(panel_idx as u64 * 600)).await;
-                }
-
-                match sandbox.start().await {
-                    Ok(()) => {
-                        // Insert panel env vars (config env + runtime-selected/startup fallback)
-                        // into runtime config.env so they're delivered via gateway POST.
-                        for (key, val) in &panel_env {
-                            (**sandbox).config_mut().env.insert(key.clone(), val.clone());
-                        }
-
-                        // Merge agent-specific env vars (GOOSE_MODE, NANOSB_PROMPT, etc.)
-                        // into the runtime config.env so they're included in the gateway POST.
-                        for (key, val) in super::terminal::agent_env_vars(
-                            &agent_type_str,
-                            agent_permissions,
-                            agent_auto_mode,
-                            agent_model.as_deref(),
-                            agent_prompt.as_deref(),
-                        ) {
-                            // Deref: AgentSandbox -> SandboxInner -> runtime::Sandbox
-                            (**sandbox).config_mut().env.insert(key, val);
-                        }
-
-                        // Encrypt and send ALL env vars to gateway (always — not just when secrets: is configured)
-                        let clone_path = sandbox
-                            .project_mount()
-                            .and_then(|pm| pm.worktree_base.clone());
-                        match send_encrypted_env(
-                            &mut sandbox,
-                            &config_dir,
-                            &clone_path,
-                        ) {
-                            Ok(manifest) => {
-                                if !manifest.secrets.is_empty() || !manifest.files.is_empty() {
-                                    let bootstrap = secrets_bootstrap_content(&manifest);
-                                    if let Err(e) = write_secrets_bootstrap(&mut sandbox, &agent_type_str, &bootstrap).await {
-                                        tracing::warn!("Failed to write secrets bootstrap: {}", e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to send env to gateway: {}", e);
-                            }
-                        }
-
-                        let project_mount = sandbox.take_project_mount();
-                        let sb = Arc::new(Mutex::new(sandbox));
-                        let _ = tx.send(AppEvent::SandboxReady {
-                            panel_idx,
-                            sandbox: sb,
-                            short_id,
-                            project_mount,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::SandboxFailed {
-                            panel_idx,
-                            error: format!("Failed to start sandbox: {}", e),
-                        });
-                    }
-                }
-            }
-            Err(e) => {
-                let _ = tx.send(AppEvent::SandboxFailed {
-                    panel_idx,
-                    error: format!("Failed to create sandbox: {}", e),
-                });
-            }
-        }
+        spawn_supervisor_panel(config, panel_idx, &tx).await;
     });
 }
 fn normalize_agent_name(agent_name: &str) -> &str {
@@ -4559,7 +4306,13 @@ fn detect_goose_session_id_from_state(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(|e| format!("failed to open goose sessions DB ({}): {}", db_path.display(), e))?;
+    .map_err(|e| {
+        format!(
+            "failed to open goose sessions DB ({}): {}",
+            db_path.display(),
+            e
+        )
+    })?;
 
     match conn.query_row(
         "SELECT id FROM sessions ORDER BY created_at DESC LIMIT 1",
@@ -4608,19 +4361,13 @@ fn detect_agent_session_id_from_state(
         }
 
         let by_json = match normalize_agent_name(agent_name) {
-            "claude" => {
-                extract_json_string_field(&content, "session_id")
-                    .or_else(|| extract_json_string_field(&content, "sessionId"))
-            }
-            "cursor" => {
-                extract_json_string_field(&content, "chatId")
-                    .or_else(|| extract_json_string_field(&content, "session_id"))
-                    .or_else(|| extract_json_string_field(&content, "sessionId"))
-            }
-            _ => {
-                extract_json_string_field(&content, "session_id")
-                    .or_else(|| extract_json_string_field(&content, "sessionId"))
-            }
+            "claude" => extract_json_string_field(&content, "session_id")
+                .or_else(|| extract_json_string_field(&content, "sessionId")),
+            "cursor" => extract_json_string_field(&content, "chatId")
+                .or_else(|| extract_json_string_field(&content, "session_id"))
+                .or_else(|| extract_json_string_field(&content, "sessionId")),
+            _ => extract_json_string_field(&content, "session_id")
+                .or_else(|| extract_json_string_field(&content, "sessionId")),
         };
         if by_json.is_some() {
             return Ok(by_json);
@@ -4711,7 +4458,10 @@ fn resume_session(
         if let Some(ref clone_path) = sp.clone_path {
             if clone_path.exists() {
                 // Add VirtioFS mount for existing clone directly.
-                config.sandbox.mounts.push(sandbox::Mount::virtiofs(clone_path, "/workspace"));
+                config
+                    .sandbox
+                    .mounts
+                    .push(sandbox::Mount::virtiofs(clone_path, "/workspace"));
                 // Do NOT set config.sandbox.project — this skips setup_project_mount().
                 config.sandbox.project = None;
 
@@ -4724,10 +4474,7 @@ fn resume_session(
                 // Clone dir is gone — create a fresh clone from the branch.
                 config.sandbox.project = Some(sandbox::ProjectConfig {
                     path: panel_project_path,
-                    branch: sp
-                        .branches
-                        .first()
-                        .map(|(_, b)| b.clone()),
+                    branch: sp.branches.first().map(|(_, b)| b.clone()),
                     mount_point: "/workspace".to_string(),
                     auto_sync: app.settings.gitsync.auto_sync,
                 });
@@ -4751,10 +4498,8 @@ fn resume_session(
             None
         };
 
-        panel.selected_agent_session_id = sp
-            .selected_agent_session_id
-            .clone()
-            .or(detected_session_id);
+        panel.selected_agent_session_id =
+            sp.selected_agent_session_id.clone().or(detected_session_id);
 
         // Resume only when we have a deterministic agent-native session id.
         // This avoids generic continue flags resuming an unrelated conversation.
@@ -4763,125 +4508,19 @@ fn resume_session(
             panel.selected_agent_session_id.as_deref(),
         );
 
-        let panel_env: HashMap<String, String> = panel.env.clone();
-
         app.panels.push(panel);
         let panel_idx = app.panels.len() - 1;
         app.focused_panel = panel_idx;
         app.show_welcome = false;
         app.focus_panel_input();
 
-        // Capture config_dir and agent_type_str for secrets injection before async move.
-        let config_dir = config
-            .sandbox
-            .project
-            .as_ref()
-            .map(|p| p.path.clone())
-            .unwrap_or_else(|| session.project_path.clone());
-        let agent_type_str = agent_type.clone();
-
-        // Capture agent-specific fields before config is moved into the async block.
-        let agent_auto_mode = sp.auto_mode;
-        let agent_permissions = sp.permissions;
-        let agent_model = sp.model.clone();
-        let agent_prompt = sp.prompt.clone();
-
         // Spawn sandbox creation in background.
         let tx = tx.clone();
-        let image_manager = app.image_manager.clone();
         tokio::spawn(async move {
             if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
                 return;
             }
-            let _ = tx.send(AppEvent::SandboxCreating {
-                panel_idx,
-                message: "Pulling image...".into(),
-            });
-            let create_result = if let Some(im) = image_manager {
-                Sandbox::create_with_manager(config, im).await
-            } else {
-                Sandbox::create(config).await
-            };
-            match create_result {
-                Ok(mut sandbox) => {
-                    let short_id = sandbox.id()[..8.min(sandbox.id().len())].to_string();
-                    let _ = tx.send(AppEvent::SandboxCreating {
-                        panel_idx,
-                        message: "Booting microVM...".into(),
-                    });
-
-                    // Stagger VM starts to avoid concurrent gvproxy/VM-subprocess races.
-                    if panel_idx > 0 {
-                        tokio::time::sleep(Duration::from_millis(panel_idx as u64 * 600)).await;
-                    }
-
-                    match sandbox.start().await {
-                        Ok(()) => {
-                            // Insert panel env vars (config + resumed runtime values)
-                            // into runtime config.env so they're delivered via gateway POST.
-                            for (key, val) in &panel_env {
-                                (**sandbox).config_mut().env.insert(key.clone(), val.clone());
-                            }
-
-                            // Merge agent-specific env vars (GOOSE_MODE, NANOSB_PROMPT, etc.)
-                            // into the runtime config.env so they're included in the gateway POST.
-                            for (key, val) in super::terminal::agent_env_vars(
-                                &agent_type_str,
-                                agent_permissions,
-                                agent_auto_mode,
-                                agent_model.as_deref(),
-                                agent_prompt.as_deref(),
-                            ) {
-                                // Deref: AgentSandbox -> SandboxInner -> runtime::Sandbox
-                                (**sandbox).config_mut().env.insert(key, val);
-                            }
-
-                            // Encrypt and send ALL env vars to gateway (always)
-                            let clone_path = sandbox
-                                .project_mount()
-                                .and_then(|pm| pm.worktree_base.clone());
-                            match send_encrypted_env(
-                                &mut sandbox,
-                                &config_dir,
-                                &clone_path,
-                            ) {
-                                Ok(manifest) => {
-                                    if !manifest.secrets.is_empty() || !manifest.files.is_empty() {
-                                        let bootstrap = secrets_bootstrap_content(&manifest);
-                                        if let Err(e) = write_secrets_bootstrap(&mut sandbox, &agent_type_str, &bootstrap).await {
-                                            tracing::warn!("Failed to write secrets bootstrap: {}", e);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to send env to gateway: {}", e);
-                                }
-                            }
-
-                            let project_mount = sandbox.take_project_mount();
-                            let sb = Arc::new(Mutex::new(sandbox));
-                            let _ = tx.send(AppEvent::SandboxReady {
-                                panel_idx,
-                                sandbox: sb,
-                                short_id,
-                                project_mount,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::SandboxFailed {
-                                panel_idx,
-                                error: format!("Failed to start sandbox: {}", e),
-                            });
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::SandboxFailed {
-                        panel_idx,
-                        error: format!("Failed to create sandbox: {}", e),
-                    });
-                }
-            }
+            spawn_supervisor_panel(config, panel_idx, &tx).await;
         });
     }
 
@@ -4967,7 +4606,8 @@ async fn handle_mcp_list(app: &mut App) {
     let servers = &config.mcp_servers;
     let content = if servers.is_empty() {
         "No MCP servers configured in sandbox.yml.\n\
-         Add them to sandbox.yml and redeploy (nanosb apply).".to_string()
+         Add them to sandbox.yml and redeploy (nanosb apply)."
+            .to_string()
     } else {
         let mut lines = vec!["MCP Servers (from sandbox.yml):".to_string()];
         let mut sorted: Vec<_> = servers.iter().collect();
@@ -4976,7 +4616,10 @@ async fn handle_mcp_list(app: &mut App) {
             let status = if cfg.enabled { "enabled" } else { "disabled" };
             lines.push(format!(
                 "  {} [{}]  {} {}",
-                name, status, cfg.command, cfg.args.join(" "),
+                name,
+                status,
+                cfg.command,
+                cfg.args.join(" "),
             ));
         }
         lines.push(String::new());
@@ -4988,8 +4631,6 @@ async fn handle_mcp_list(app: &mut App) {
         content,
     });
 }
-
-
 
 // ========== Agents Registry Loader ==========
 
@@ -5009,8 +4650,8 @@ fn build_session_from_app(
     project_path: &std::path::Path,
     sandbox_config_content: &str,
 ) -> std::result::Result<sandbox::session::Session, String> {
-    use sandbox::session::{Session, SessionPanel, config_hash, SESSION_VERSION};
     use chrono::Utc;
+    use sandbox::session::{config_hash, Session, SessionPanel, SESSION_VERSION};
 
     let mut panels: Vec<SessionPanel> = Vec::new();
     for panel in &app.panels {
@@ -5036,20 +4677,21 @@ fn build_session_from_app(
             .cloned()
             .collect();
 
-        let selected_agent_session_id = if let Some(existing) = panel.selected_agent_session_id.clone() {
-            Some(existing)
-        } else if let Some(ref clone) = clone_path {
-            detect_agent_session_id_from_state(&panel.agent_name, clone).map_err(|e| {
-                format!(
-                    "failed to detect session id for agent '{}' from '{}': {}",
-                    panel.agent_name,
-                    clone.display(),
-                    e
-                )
-            })?
-        } else {
-            None
-        };
+        let selected_agent_session_id =
+            if let Some(existing) = panel.selected_agent_session_id.clone() {
+                Some(existing)
+            } else if let Some(ref clone) = clone_path {
+                detect_agent_session_id_from_state(&panel.agent_name, clone).map_err(|e| {
+                    format!(
+                        "failed to detect session id for agent '{}' from '{}': {}",
+                        panel.agent_name,
+                        clone.display(),
+                        e
+                    )
+                })?
+            } else {
+                None
+            };
 
         panels.push(SessionPanel {
             agent_name: panel.agent_name.clone(),
@@ -5137,7 +4779,10 @@ fn load_agents_registry() -> Option<sandbox::AgentsRegistryClient> {
 // ========== Skills Handlers ==========
 
 fn push_skills_feedback(app: &mut App, content: String, persistent: bool) {
-    let msg = ChatMessage { role: MessageRole::System, content };
+    let msg = ChatMessage {
+        role: MessageRole::System,
+        content,
+    };
     if persistent {
         app.set_system_message_persistent(msg);
     } else {
@@ -5166,7 +4811,8 @@ async fn handle_skills_list(app: &mut App) {
     let skills = &config.skills;
     let content = if skills.is_empty() {
         "No skills configured in sandbox.yml.\n\
-         Add them to sandbox.yml and redeploy (nanosb apply).".to_string()
+         Add them to sandbox.yml and redeploy (nanosb apply)."
+            .to_string()
     } else {
         let mut lines = vec!["Skills (from sandbox.yml):".to_string()];
         let mut sorted: Vec<_> = skills.iter().collect();
@@ -5185,7 +4831,8 @@ async fn handle_skills_list(app: &mut App) {
 async fn handle_skills_add(app: &mut App, _name: &str) {
     push_skills_feedback(
         app,
-        "Skill hot-reload was removed — add skills to sandbox.yml and redeploy (nanosb apply).".to_string(),
+        "Skill hot-reload was removed — add skills to sandbox.yml and redeploy (nanosb apply)."
+            .to_string(),
         true,
     );
 }
@@ -5225,7 +4872,10 @@ fn handle_skills_show(app: &mut App, name: &str) {
         None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
     };
 
-    app.set_system_message_persistent(ChatMessage { role: MessageRole::System, content });
+    app.set_system_message_persistent(ChatMessage {
+        role: MessageRole::System,
+        content,
+    });
 }
 
 // ========== Agent Handlers ==========
@@ -5246,7 +4896,7 @@ async fn handle_agent_show(app: &mut App) {
     ];
 
     // Show current sandbox config agent if set
-    if let Some(sb) = panel.sandbox.as_ref() {
+    if let Some(sb) = panel.sandbox() {
         let sb = sb.lock().await;
         if let Some(resolved) = sb.config().resolved_agent.as_ref() {
             let summary = if resolved.agent_name.is_empty() && !resolved.skills.is_empty() {
@@ -5272,8 +4922,6 @@ async fn handle_agent_show(app: &mut App) {
         content: lines.join("\n"),
     });
 }
-
-
 
 /// Handle `/agent list` — list agents from the registry (no sandbox needed).
 fn handle_agent_list(app: &mut App) {
@@ -5359,130 +5007,6 @@ fn handle_agent_info(app: &mut App, name: &str) {
 ///
 /// The gateway injects these into every SSH session and exec call via cmd.Env —
 /// no shell export, no .env files inside the VM.
-fn send_encrypted_env(
-    sandbox: &mut sandbox::Sandbox,
-    _config_dir: &std::path::Path,
-    _clone_path: &Option<std::path::PathBuf>,
-) -> anyhow::Result<sandbox::SecretManifest> {
-    let mut payload = sandbox::secrets::payload::SecretPayload::new();
-
-    // Add ALL config.env vars to the payload
-    for (k, v) in &(***sandbox).config().env {
-        payload.add_secret(k.clone(), v.clone());
-    }
-
-    if payload.secrets.is_empty() {
-        return Ok(sandbox::SecretManifest {
-            secrets: std::collections::HashMap::new(),
-            files: std::collections::HashMap::new(),
-        });
-    }
-
-    // 3. Encrypt using the gateway's crypto (same crate as decrypt — no version mismatch)
-    let pubkey_b64 = (**sandbox).gateway()
-        .map_err(|e| anyhow::anyhow!("Gateway not available: {}", e))?
-        .secrets_pubkey()
-        .ok_or_else(|| anyhow::anyhow!("Gateway secrets pubkey not available"))?;
-
-    let pubkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
-        .decode(&pubkey_b64)
-        .map_err(|e| anyhow::anyhow!("Invalid gateway pubkey: {}", e))?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Gateway pubkey must be 32 bytes"))?;
-
-    let plaintext = payload.to_json_bytes()
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    let encrypted = sandbox::encrypt_payload(&plaintext, &pubkey_bytes)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    let encrypted_json = serde_json::to_string(&encrypted)?;
-
-    // 4. Send encrypted payload → gateway decrypts → stores in secrets_store
-    let manifest = (**sandbox).gateway_mut()
-        .map_err(|e| anyhow::anyhow!("Gateway not available: {}", e))?
-        .send_secrets(&encrypted_json)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    Ok(manifest)
-}
-
-/// Generate secrets access instructions for agent config files.
-fn secrets_bootstrap_content(manifest: &sandbox::SecretManifest) -> String {
-    let mut lines = Vec::new();
-    lines.push("## Secrets Access".to_string());
-    lines.push(String::new());
-    lines.push("The following secrets are available as environment variables in this session.".to_string());
-    lines.push("Do NOT hardcode these values. Read them from the environment when needed.".to_string());
-    lines.push(String::new());
-
-    if !manifest.secrets.is_empty() {
-        let mut keys: Vec<&String> = manifest.secrets.keys().collect();
-        keys.sort();
-        lines.push(format!(
-            "Available secret env vars: {}",
-            keys.iter().map(|k| format!("`${}`", k)).collect::<Vec<_>>().join(", ")
-        ));
-    }
-
-    if !manifest.files.is_empty() {
-        lines.push(String::new());
-        lines.push("Intercepted files are available at:".to_string());
-        let mut files: Vec<(&String, &String)> = manifest.files.iter().collect();
-        files.sort_by_key(|(k, _)| *k);
-        for (name, path) in files {
-            lines.push(format!("- `{}` → `{}`", name, path));
-        }
-    }
-
-    lines.push(String::new());
-    lines.push("IMPORTANT: Never hardcode secrets. Never echo secret values. Always read from env vars.".to_string());
-
-    lines.join("\n")
-}
-
-/// Write secrets access instructions to the appropriate agent config file inside the VM.
-async fn write_secrets_bootstrap(
-    sandbox: &mut sandbox::Sandbox,
-    agent_type: &str,
-    content: &str,
-) -> anyhow::Result<()> {
-    let file_path = match agent_type {
-        "claude" => "/workspace/CLAUDE.md",
-        "codex" => "/workspace/.codexrc",
-        "goose" => "/workspace/.goose/instructions.md",
-        _ => return Ok(()), // Unknown agent, skip
-    };
-
-    // Read existing content (if any) and prepend
-    let existing = match (**sandbox).gateway() {
-        Ok(gw) => gw.exec_with_options("cat", &[file_path], Default::default())
-            .await
-            .map(|r| r.stdout)
-            .unwrap_or_default(),
-        Err(_) => String::new(),
-    };
-
-    let new_content = format!("{}\n\n{}", content, existing);
-    let escaped = new_content.replace('\'', "'\\''");
-
-    let write_cmd = format!(
-        "mkdir -p $(dirname '{}') && printf '%s' '{}' > '{}'",
-        file_path, escaped, file_path
-    );
-    match (**sandbox).gateway() {
-        Ok(gw) => {
-            gw.exec_with_options("sh", &["-c", &write_cmd], Default::default())
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", file_path, e))?;
-        }
-        Err(e) => return Err(anyhow::anyhow!("Gateway not available: {}", e)),
-    }
-
-    tracing::info!("Wrote secrets bootstrap to {}", file_path);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5625,8 +5149,8 @@ mod tests {
     #[test]
     fn test_detect_goose_session_id_no_db_returns_none() {
         let clone_dir = make_temp_dir("goose-no-db");
-        let detected = detect_goose_session_id_from_state(&clone_dir)
-            .expect("missing db should not fail");
+        let detected =
+            detect_goose_session_id_from_state(&clone_dir).expect("missing db should not fail");
         assert_eq!(detected, None);
         let _ = fs::remove_dir_all(&clone_dir);
     }
