@@ -136,11 +136,14 @@ fn serve(stream: vsock::VsockStream) -> Result<(), String> {
 struct Session {
     pid: u32,
     stdin: Option<std::process::ChildStdin>,
+    pty_master: Option<std::os::fd::RawFd>,
     done: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
     fn start(req: ExecRequest, writer: Writer) -> Result<Self, String> {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
         let (program, args) = if req.shell {
@@ -152,11 +155,40 @@ impl Session {
             (req.command.clone(), req.args.clone())
         };
 
+        // PTY mode: one master fd carries merged stdout/stderr and accepts
+        // stdin/resize; the child gets the slave as its controlling terminal.
+        let mut pty_master: Option<std::os::fd::RawFd> = None;
+        let mut pty_slave: Option<std::os::fd::RawFd> = None;
         let mut cmd = Command::new(&program);
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args(&args);
+
+        if req.tty {
+            let (master, slave) = openpty(req.cols.max(1), req.rows.max(1))?;
+            // Child's stdio all point at the slave; `pre_exec` makes it the
+            // controlling terminal via fd 0 (already the slave at that point).
+            unsafe {
+                cmd.stdin(Stdio::from_raw_fd(libc::dup(slave)));
+                cmd.stdout(Stdio::from_raw_fd(libc::dup(slave)));
+                cmd.stderr(Stdio::from_raw_fd(libc::dup(slave)));
+                cmd.pre_exec(move || {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+                // Parent keeps only the master; close its slave copy after spawn.
+            }
+            pty_master = Some(master);
+            pty_slave = Some(slave);
+        } else {
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+        }
+
         if let Some(cwd) = &req.cwd {
             cmd.current_dir(cwd);
         }
@@ -168,12 +200,72 @@ impl Session {
             .spawn()
             .map_err(|e| format!("spawn {}: {}", program, e))?;
 
+        // Close the parent's slave copy now that the child owns its own dups.
+        if let Some(slave) = pty_slave {
+            unsafe { libc::close(slave) };
+        }
+
         writer.event(&ExecEvent::Started { pid: child.id() })?;
+
+        let pid = child.id();
+
+        if let Some(master) = pty_master {
+            // Stream the PTY master as stdout (stderr is merged by the kernel).
+            let w = writer.clone();
+            let mfd = master;
+            std::thread::spawn(move || {
+                let mut f = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(mfd) };
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = f.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let _ = w.event(&ExecEvent::Stdout {
+                        data: String::from_utf8_lossy(&buf[..n]).to_string(),
+                    });
+                }
+            });
+
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            {
+                let done = done.clone();
+                let w = writer.clone();
+                let timeout = req.timeout_secs;
+                std::thread::spawn(move || {
+                    if timeout > 0 {
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+                        loop {
+                            if done.load(std::sync::atomic::Ordering::Relaxed) {
+                                return;
+                            }
+                            if std::time::Instant::now() >= deadline {
+                                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    }
+                    let code = match child.wait() {
+                        Ok(st) => st.code().unwrap_or(-1),
+                        Err(_) => -1,
+                    };
+                    let _ = w.event(&ExecEvent::Exit { code });
+                    done.store(true, std::sync::atomic::Ordering::Relaxed);
+                });
+            }
+
+            return Ok(Session {
+                pid,
+                stdin: None,
+                pty_master: Some(master),
+                done,
+            });
+        }
 
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let pid = child.id();
 
         if let Some(mut s) = stdout {
             let w = writer.clone();
@@ -241,6 +333,7 @@ impl Session {
         Ok(Session {
             pid,
             stdin,
+            pty_master: None,
             done,
         })
     }
@@ -248,7 +341,23 @@ impl Session {
     fn apply(&mut self, ctl: ExecControl) -> Result<(), String> {
         match ctl {
             ExecControl::Stdin { data } => {
-                if let Some(si) = self.stdin.as_mut() {
+                if let Some(mfd) = self.pty_master {
+                    let bytes = data.as_bytes();
+                    let mut off = 0;
+                    while off < bytes.len() {
+                        let n = unsafe {
+                            libc::write(
+                                mfd,
+                                bytes[off..].as_ptr() as *const libc::c_void,
+                                bytes.len() - off,
+                            )
+                        };
+                        if n <= 0 {
+                            break;
+                        }
+                        off += n as usize;
+                    }
+                } else if let Some(si) = self.stdin.as_mut() {
                     si.write_all(data.as_bytes())
                         .map_err(|e| format!("stdin write: {}", e))?;
                     si.flush().ok();
@@ -260,8 +369,18 @@ impl Session {
             ExecControl::Kill => {
                 unsafe { libc::kill(self.pid as i32, libc::SIGKILL) };
             }
-            ExecControl::Resize { .. } => {
-                // PTY resize is handled in the tty path (Phase 6).
+            ExecControl::Resize { cols, rows } => {
+                if let Some(mfd) = self.pty_master {
+                    let ws = libc::winsize {
+                        ws_row: rows,
+                        ws_col: cols,
+                        ws_xpixel: 0,
+                        ws_ypixel: 0,
+                    };
+                    unsafe {
+                        libc::ioctl(mfd, libc::TIOCSWINSZ, &ws);
+                    }
+                }
             }
         }
         Ok(())
@@ -276,6 +395,31 @@ impl Session {
         unsafe { libc::kill(self.pid as i32, libc::SIGKILL) };
         Ok(())
     }
+}
+
+/// Allocate a pseudo-terminal pair, sized `cols` x `rows`.
+fn openpty(cols: u16, rows: u16) -> Result<(std::os::fd::RawFd, std::os::fd::RawFd), String> {
+    let mut master: libc::c_int = -1;
+    let mut slave: libc::c_int = -1;
+    let mut ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let ret = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &mut ws,
+        )
+    };
+    if ret < 0 {
+        return Err(format!("openpty: {}", std::io::Error::last_os_error()));
+    }
+    Ok((master, slave))
 }
 
 /// Read one length-prefixed frame; `None` on clean EOF.

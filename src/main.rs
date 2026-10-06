@@ -241,6 +241,10 @@ mod cli {
             #[arg(long)]
             shell: bool,
 
+            /// Allocate a PTY (interactive programs; implies streaming)
+            #[arg(short = 't', long)]
+            tty: bool,
+
             /// Stream output as it is produced
             #[arg(short, long)]
             follow: bool,
@@ -682,9 +686,10 @@ mod cli {
             Some(Commands::Exec {
                 sandbox,
                 shell,
+                tty,
                 follow,
                 command,
-            }) => cmd_exec(&sandbox, shell, follow, &command).await,
+            }) => cmd_exec(&sandbox, shell, tty, follow, &command).await,
             Some(Commands::Ps { all }) => cmd_ps(all, cli.format).await,
             Some(Commands::Stop { sandbox }) => cmd_stop(&sandbox, cli.verbose).await,
             Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
@@ -1612,6 +1617,7 @@ mod cli {
     async fn cmd_exec(
         sandbox: &str,
         shell: bool,
+        tty: bool,
         follow: bool,
         command: &[String],
     ) -> anyhow::Result<()> {
@@ -1635,7 +1641,7 @@ mod cli {
         }
         let exec = runtime::exec::ExecClient::new(sock);
 
-        let opts = runtime::exec::ExecOptions::new().shell(shell);
+        let opts = runtime::exec::ExecOptions::new().shell(shell).tty(tty);
         let (program, args): (String, Vec<String>) = if shell {
             (command.join(" "), Vec::new())
         } else {
@@ -1643,16 +1649,74 @@ mod cli {
         };
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-        if follow {
+        // A PTY implies streaming (interactive).
+        if follow || tty {
             use std::io::Write;
-            let code = exec
-                .exec_stream(&program, &arg_refs, opts, |chunk| {
-                    let out = std::io::stdout();
-                    let mut h = out.lock();
-                    let _ = h.write_all(chunk.data.as_bytes());
-                    let _ = h.flush();
-                })
+            let mut handle = exec
+                .start(&program, &arg_refs, opts)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            // For a PTY, forward the host's stdin to the guest while reading
+            // guest output. The handle is not shared, so multiplex manually:
+            // poll stdin briefly, then drain any available guest events.
+            if tty {
+                let mut stdin_buf = [0u8; 1024];
+                let mut keyfds = [libc::pollfd {
+                    fd: 0,
+                    events: libc::POLLIN,
+                    revents: 0,
+                }];
+                loop {
+                    let r = unsafe { libc::poll(keyfds.as_mut_ptr(), 1, 50) };
+                    if r > 0 && keyfds[0].revents & libc::POLLIN != 0 {
+                        let n = unsafe {
+                            libc::read(0, stdin_buf.as_mut_ptr() as *mut libc::c_void, stdin_buf.len())
+                        };
+                        if n > 0 {
+                            let s = String::from_utf8_lossy(&stdin_buf[..n as usize]).to_string();
+                            let _ = handle.write_stdin(&s);
+                        }
+                    }
+                    // Drain whatever the guest has produced so far.
+                    match handle.next_event(Some(std::time::Duration::from_millis(10))) {
+                        Ok(Some(runtime::exec::ExecEvent::Output(c))) => {
+                            let out = std::io::stdout();
+                            let mut h = out.lock();
+                            let _ = h.write_all(c.data.as_bytes());
+                            let _ = h.flush();
+                        }
+                        Ok(Some(runtime::exec::ExecEvent::Exit { code })) => {
+                            if code != 0 {
+                                std::process::exit(code);
+                            }
+                            return Ok(());
+                        }
+                        Ok(Some(runtime::exec::ExecEvent::Error { message })) => {
+                            anyhow::bail!("{}", message)
+                        }
+                        Err(_) => {}
+                        _ => {}
+                    }
+                }
+            }
+
+            let code = loop {
+                match handle.next_event(None) {
+                    Ok(Some(runtime::exec::ExecEvent::Output(c))) => {
+                        let out = std::io::stdout();
+                        let mut h = out.lock();
+                        let _ = h.write_all(c.data.as_bytes());
+                        let _ = h.flush();
+                    }
+                    Ok(Some(runtime::exec::ExecEvent::Exit { code })) => break code,
+                    Ok(Some(runtime::exec::ExecEvent::Error { message })) => {
+                        anyhow::bail!("{}", message)
+                    }
+                    Ok(Some(runtime::exec::ExecEvent::Started { .. })) => {}
+                    Ok(None) => break 0,
+                    Err(e) => anyhow::bail!("{}", e),
+                }
+            };
             if code != 0 {
                 std::process::exit(code);
             }

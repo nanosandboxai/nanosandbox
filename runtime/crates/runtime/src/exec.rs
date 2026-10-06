@@ -70,6 +70,23 @@ impl ExecOptions {
         self.timeout_secs = Some(secs);
         self
     }
+
+    /// Allocate a PTY for the process (interactive programs).
+    pub fn tty(mut self, tty: bool) -> Self {
+        self.tty = tty;
+        if tty && (self.cols == 0 || self.rows == 0) {
+            self.cols = 80;
+            self.rows = 24;
+        }
+        self
+    }
+
+    /// Set the initial PTY size (used with `tty(true)`).
+    pub fn size(mut self, cols: u16, rows: u16) -> Self {
+        self.cols = cols;
+        self.rows = rows;
+        self
+    }
 }
 
 /// The result of a completed (buffered) execution.
