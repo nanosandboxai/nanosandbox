@@ -15,8 +15,10 @@ Related: `docs/epics/epic-2-tui-refactor-and-testing.md`, PR #91
 | D5 | **Pre-sign at package build time**; no install-time signing; lazy re-sign fallback. |
 | D6 | **Cloud later**: `SandboxClient` backend abstraction now; implement only `Local`. |
 | D7 | **Protocol framing = NDJSON** (matches today's control socket). |
-| D8 | **Snapshots + pause/resume in scope** for this epic. |
-| D9 | **guest `fs` API in scope** (read/write/list/stat/mkdir/remove + host copies). |
+| D8 | **Full snapshots** (writable layer + manifest; restore + fork) **and pause/resume**, in scope for this epic. |
+| D9 | **guest `fs` API in scope**; v1 verb set fixed in §4.3. |
+| D10 | **Networking = full surface in scope** (policy + allowlists + DNS + TLS interception + rate limits + interface overrides + host CA trust + host access + NAT64 + strict hostname mode). |
+| D11 | **Owned volumes deferred** — an owned volume is the sandbox writable layer, already covered by snapshots; adds surface without new capability. |
 
 ## 1. Context (verified 2026-10-07)
 
@@ -106,17 +108,24 @@ Legend: **[A]** SDK-surface work · **[R]** runtime work · **[D]** deliberate d
 | `tty` | ✅ | parity |
 
 ### 4.3 Filesystem
+**v1 set (ship):** `read`, `readToString`, `readStream`, `write`, `writeStream`,
+`list`, `stat`, `exists`, `mkdir`, `remove`, `removeDir`, `copy`, `rename`,
+`copyFromHost`, `copyToHost`.
+
 | Interface | nanosandbox | Target |
 |---|---|---|
-| `fs.read` / `readToString` / `readStream` | ❌ | **[A]** |
-| `fs.write` / `writeStream` | ❌ (upload only) | **[A]** |
-| `fs.list` / `stat` / `exists` | ❌ | **[A]** |
-| `fs.mkdir` / `remove` / `removeDir` | ❌ | **[A]** |
-| `fs.copy` / `rename` / `symlink` / `readLink` | ❌ | **[A]** (v1 subset) |
-| `fs.copyFromHost` / `copyToHost` | upload-only | **[A]** |
-| `fs.open` handles / `fstat` / `setStat` | ❌ | **[A]** (later) |
+| `fs.read` / `readToString` / `readStream` | ❌ | **[A] v1** |
+| `fs.write` / `writeStream` | ❌ (upload only) | **[A] v1** |
+| `fs.list` / `stat` / `exists` | ❌ | **[A] v1** |
+| `fs.mkdir` / `remove` / `removeDir` | ❌ | **[A] v1** |
+| `fs.copy` / `rename` | ❌ | **[A] v1** |
+| `fs.copyFromHost` / `copyToHost` | upload-only | **[A] v1** |
+| `fs.symlink` / `readLink` / `realPath` | ❌ | **[A] defer** |
+| `fs.open` handles / `fstat` / `setStat` | ❌ | **[A] defer** |
 
 > Transport: exec-agent file verbs over vsock (works without a project mount).
+> All ops run as the configured guest user, inheriting that containment; no
+> additional path scope is imposed (matches microsandbox).
 
 ### 4.4 Observability
 | Interface | nanosandbox | Target |
@@ -144,7 +153,7 @@ Legend: **[A]** SDK-surface work · **[R]** runtime work · **[D]** deliberate d
 | named volumes (dir-backed / disk-backed) | ❌ | **[A]** |
 | disk-image volumes (`raw`/`qcow2`/`vmdk` + fstype) | ❌ | **[A]** |
 | tmpfs | ❌ | **[A]** |
-| owned volumes | ❌ | **[R]** |
+| owned volumes | ❌ | **defer** (D11 — equals the writable layer) |
 | mount options (`noexec`/`nosuid`/`nodev`) | ❌ | **[A]** |
 | mount owner (`uid`/`gid`) | ❌ | **[A]** |
 | stat virtualization (`strict`/`relaxed`/`off`) | partial (image xattrs) | **[R]** |
@@ -213,16 +222,25 @@ secrets, config, detached, drain, ping. `Local` implemented; `Cloud` stubbed.
 `fs` (verbs over vsock), `metrics`, structured `logs`, `secrets`, `rlimits`,
 `volumes` (+ options), `handles`, `labels`, `ephemeral`, `pullPolicy`, scripts.
 
-### WS5 — Networking & isolation **[R]** (largest new area)
-Network policy (deny-by-default + profiles + allowlist rules), DNS filtering,
-UDP/bind-address publishing, rate limits. **Propose splitting heavy items
-(TLS interception, NAT64, stat virtualization, quotas) into Epic 3 — Runtime
-Network & Isolation.**
+### WS5 — Networking & isolation **[R]** (largest workstream)
+Full surface (D10): deny-by-default + `public`/`private`/`host` profiles;
+allowlist rules (IP / CIDR / domain / domain-suffix / port-range); ingress
+defaults; DNS interception + rebind protection + nameserver pinning; **TLS
+interception**; `onSecretViolation` secret substitution; rate limits /
+`maxConnections` (TCP + UDP); interface overrides (ipv4/ipv6 pools, addresses,
+mac, mtu); `trustHostCAs`; host access (`host.*.internal`); NAT64 prefixes;
+strict hostname mode; egress denial responses.
+- Sequenced: **v1** = policy + profiles + allowlists + DNS + UDP/bind publishing;
+  **v2** = TLS interception + rate limits + interface overrides + NAT64 + strict
+  mode. All in this epic; `v2` is its own milestone band.
 
-### WS6 — Snapshots / pause-resume **[R]** (D8)
-Disk-state snapshot + restore/fork; pause/resume.
-AC: snapshot a running sandbox, restore into a new one; pause stops execution and
-resume continues.
+### WS6 — Snapshots / pause-resume **[R]** (D8 — full)
+- **Full snapshot**: writable layer + manifest pinning the base image, with an
+  optional integrity hash; `restore` yields a new independent sandbox; `fork`
+  branches from a snapshot.
+- `pause` / `resume` (execution state).
+- AC: snapshot a running sandbox → restore into a new one; pause stops execution
+  and resume continues.
 
 ### WS7 — Language SDKs (protocol clients only)
 Rust, Python, TS/Node, Go, Ruby, **Java/Kotlin**, **C#/.NET**. Each passes the
@@ -260,27 +278,34 @@ volumes, secrets, snapshots, errors, timeouts.
 - **M2** Core surface: fs/metrics/logs/secrets/volumes/handles (WS4).
 - **M3** Python + TypeScript SDKs (WS7).
 - **M4** Go + Ruby SDKs (WS7) — matches microsandbox's language set.
-- **M5** Snapshots + pause/resume; networking policy v1 (WS6, WS5).
-- **M6** Java/Kotlin + C#/.NET; packaging/signing; conformance + docs (WS7, WS9, WS10).
+- **M5** Full snapshots + pause/resume (WS6); networking **v1** — policy,
+  profiles, allowlists, DNS, UDP/bind publishing (WS5).
+- **M6** Networking **v2** — TLS interception, rate limits, interface overrides,
+  NAT64, strict hostname mode, host access (WS5).
+- **M7** Java/Kotlin + C#/.NET; packaging/signing; conformance + docs (WS7, WS9, WS10).
 
 ## 8. Risks
 
-- R1 **Surface size** — microsandbox's interface is vast; stage it (M2 core,
-  M5 advanced). Don't ship a half-implemented verb set — version and gate.
-- R2 **Networking policy is a big runtime effort** (packet inspection, DNS/TLS)
-  → carve Epic 3; ship a minimal policy (deny-all + published ports) in M5.
-- R3 **Snapshots on libkrun** (writable-layer capture) → time-boxed spike in M5;
-  may defer if disproportionate.
+- R1 **Surface size** — microsandbox's interface is vast; stage it (M2 core, M5/M6
+  advanced). Version the protocol; don't ship a half-implemented verb set.
+- R2 **Networking is the largest effort** (packet inspection, DNS, TLS) — now the
+  full surface is in scope (D10); sequence v1/v2 (M5/M6) and keep the egress
+  engine isolated so it can be developed independently.
+- R3 **Full snapshots on libkrun** (writable-layer capture + manifest) → spike
+  early in M5; if writable-layer capture proves disproportionate, fall back to
+  disk-only snapshots and mark memory/process state out of scope.
 - R4 **`fs` transport** → exec-agent verbs (chosen); validate throughput vs
   microsandbox's warning that bulk transfers should use volumes.
-- R5 **7-language packaging** → automation; macOS arm64 first; `NANOSB_HOME` covers CI.
-- R6 **Divergence from `ssh()`** → document; provide exec/attach as the answer.
+- R5 **7-language packaging** → automation; macOS arm64 first; `NANOSB_HOME`
+  covers Linux/CI.
+- R6 **Divergence from `ssh()`** — document; provide exec/attach as the answer.
 
-## 9. Open questions
+## 9. Resolved decisions
 
-1. Networking: ship a **minimal policy** (deny-all default + published ports +
-   DNS) in this epic and defer full allowlists/TLS to Epic 3 — agree?
-2. Snapshots: full (writable-layer + manifest) vs disk-only for v1?
-3. `fs` v1 verb set confirmed: read/write/list/stat/mkdir/remove/copy/rename/exists
-   + streams — anything to add?
-4. Owned volumes: in scope for v1 or defer?
+- **Q1 Networking: FULL surface** in scope (D10), sequenced v1/v2 (M5/M6) — no
+  separate epic.
+- **Q2 Snapshots: FULL** (writable layer + manifest; restore/fork) (D8, D11).
+- **Q3 `fs` v1 verb set:** fixed in §4.3 (v1 = read/readToString/readStream/
+  write/writeStream/list/stat/exists/mkdir/remove/removeDir/copy/rename/
+  copyFromHost/copyToHost; defer symlink/readLink/realPath + handles).
+- **Q4 Owned volumes: deferred** (D11).
