@@ -7,6 +7,7 @@ pub mod grid;
 pub mod renderer;
 pub mod run;
 pub mod terminal;
+pub mod tests;
 pub mod text_input;
 pub mod theme;
 pub mod upload;
