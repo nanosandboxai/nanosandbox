@@ -135,7 +135,9 @@ fn frame_panel_terminal() {
 #[test]
 fn frame_multi_panel_grid() {
     let mut app = App::new();
-    for name in &["a", "b", "c"] {
+    // Distinct multi-char names so a title match cannot be a substring of
+    // unrelated screen text.
+    for name in &["alpha-panel", "beta-panel", "gamma-panel"] {
         let mut panel = AgentPanel::new(name);
         panel.mode = PanelMode::Terminal;
         let mut term = SshTerminal::new(40, 12);
@@ -148,7 +150,7 @@ fn frame_multi_panel_grid() {
 
     let text = render_screen(&mut app, 80, 40);
     assert_eq!(app.panel_areas.len(), 3, "should have 3 panel areas");
-    for name in ["a", "b", "c"] {
+    for name in ["alpha-panel", "beta-panel", "gamma-panel"] {
         assert!(
             text.contains(name),
             "each panel title should render, missing {name:?} in: {text:?}"

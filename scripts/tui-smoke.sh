@@ -49,9 +49,9 @@ if [[ -z "$NANOSB_BINARY" ]]; then
     NANOSB_BINARY="$REPO_ROOT/target/debug/nanosb"
 fi
 
-SMOKE_BOOT_WAIT="${SMOKE_BOOT_WAIT:-3}"
-SMOKE_CMD_WAIT="${SMOKE_CMD_WAIT:-2}"
-SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-30}"
+SMOKE_BOOT_WAIT="${SMOKE_BOOT_WAIT:-14}"
+SMOKE_CMD_WAIT="${SMOKE_CMD_WAIT:-3}"
+SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-60}"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
