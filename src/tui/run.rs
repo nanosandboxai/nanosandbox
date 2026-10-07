@@ -1172,6 +1172,7 @@ async fn spawn_supervisor_panel(
         &boot_env_json,
         &origin.to_json(),
         rc.timeout_secs,
+        plan.console_tty,
     ) {
         let _ = tx.send(AppEvent::SandboxFailed {
             panel_idx,

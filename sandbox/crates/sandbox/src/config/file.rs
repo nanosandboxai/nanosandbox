@@ -47,6 +47,8 @@ pub struct SandboxDefaults {
     pub skills: Option<Vec<String>>,
     /// Enable auto/headless mode.
     pub auto_mode: Option<bool>,
+    /// Run the agent interactively on a TTY console (default false = headless).
+    pub interactive: Option<bool>,
     /// Agent permission level.
     pub permissions: Option<super::Permissions>,
     /// Task prompt for headless mode.
@@ -84,6 +86,8 @@ pub struct SandboxDefinition {
     pub skills: Option<Vec<String>>,
     /// Enable auto/headless mode.
     pub auto_mode: Option<bool>,
+    /// Run the agent interactively on a TTY console (default false = headless).
+    pub interactive: Option<bool>,
     /// Agent permission level.
     pub permissions: Option<super::Permissions>,
     /// Task prompt for headless mode.
@@ -440,6 +444,9 @@ pub fn resolve_sandbox_configs(
         // Auto mode: per-sandbox overrides defaults
         agent_config.auto_mode = def.auto_mode.or(defaults.auto_mode).unwrap_or(false);
 
+        // Interactive: per-sandbox overrides defaults
+        agent_config.interactive = def.interactive.or(defaults.interactive).unwrap_or(false);
+
         // Permissions: per-sandbox overrides defaults
         agent_config.permissions = def
             .permissions
@@ -453,6 +460,14 @@ pub fn resolve_sandbox_configs(
         if agent_config.auto_mode && agent_config.prompt.is_none() {
             return Err(format!(
                 "Sandbox '{}': 'prompt' is required when 'auto_mode' is true",
+                key,
+            ));
+        }
+
+        // Validate: interactive and auto_mode are mutually exclusive.
+        if agent_config.interactive && agent_config.auto_mode {
+            return Err(format!(
+                "Sandbox '{}': 'interactive' and 'auto_mode' are mutually exclusive",
                 key,
             ));
         }

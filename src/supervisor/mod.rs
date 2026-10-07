@@ -255,6 +255,7 @@ pub struct SuperviseArgs {
     pub config_json: String,
     pub extra_mounts_json: String,
     pub timeout_secs: u64,
+    pub tty: bool,
 }
 
 /// Run the supervisor process. This function:
@@ -345,7 +346,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         stdin_fd: stdin_read.as_raw_fd(),
         stdout_fd: stdout_write.as_raw_fd(),
         stderr_fd: stderr_write.as_raw_fd(),
-        tty: false,
+        tty: args.tty,
     });
 
     // Compute config hash (simple SHA256 of the serialized config)

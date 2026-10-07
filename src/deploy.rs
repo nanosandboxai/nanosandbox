@@ -125,6 +125,7 @@ pub fn spawn_supervisor(
     boot_env_json: &str,
     origin_json: &str,
     timeout_secs: u32,
+    interactive: bool,
 ) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     // Tests run under the cargo test harness binary, which does not know the
@@ -166,8 +167,11 @@ pub fn spawn_supervisor(
         .arg("--extra-mounts-json")
         .arg(extra_mounts_json)
         .arg("--timeout-secs")
-        .arg(timeout_secs.to_string())
-        .env("NANOSB_BOOT_ENV", boot_env_json)
+        .arg(timeout_secs.to_string());
+    if interactive {
+        cmd.arg("--tty");
+    }
+    cmd.env("NANOSB_BOOT_ENV", boot_env_json)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(supervisor_log))
         .stderr(std::process::Stdio::from(supervisor_log_err));
@@ -261,6 +265,7 @@ pub fn deploy_plan_for(
             skills: Vec::new(),
             mcp_servers: config.mcp_servers.clone(),
             auto_mode: config.auto_mode,
+            interactive: config.interactive,
             permissions: config.permissions,
             agent_type: config.agent_type,
             claude_settings: config.claude_settings.clone(),

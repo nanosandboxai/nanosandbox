@@ -286,6 +286,9 @@ pub struct ResolvedAgentConfig {
     pub mcp_servers: HashMap<String, McpServerConfig>,
     #[serde(default)]
     pub auto_mode: bool,
+    /// Run the agent interactively on a TTY console (default false = headless).
+    #[serde(default)]
+    pub interactive: bool,
     #[serde(default)]
     pub permissions: Permissions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -313,6 +316,8 @@ pub struct AgentSandboxConfig {
     pub resolved_agent: Option<ResolvedAgentConfig>,
     /// Enable auto/headless mode.
     pub auto_mode: bool,
+    /// Run the agent interactively on a TTY console (default false = headless).
+    pub interactive: bool,
     /// Agent permission level.
     pub permissions: Permissions,
     /// Task prompt for headless mode.
@@ -334,6 +339,7 @@ impl Default for AgentSandboxConfig {
             skills: Vec::new(),
             resolved_agent: None,
             auto_mode: false,
+            interactive: false,
             permissions: Permissions::Default,
             prompt: None,
             agent_type: None,
@@ -395,6 +401,10 @@ impl AgentSandboxConfigBuilder {
     }
     pub fn agent_type(mut self, at: AgentType) -> Self {
         self.config.agent_type = Some(at);
+        self
+    }
+    pub fn interactive(mut self, interactive: bool) -> Self {
+        self.config.interactive = interactive;
         self
     }
     pub fn model(mut self, model: impl Into<String>) -> Self {
