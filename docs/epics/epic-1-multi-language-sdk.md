@@ -1,173 +1,200 @@
-# Epic 1 — Multi-language Sandbox SDK (match and exceed microsandbox)
+# Epic 1 — Multi-language Sandbox SDK (protocol-first, helper-based)
 
-Status: draft
+Status: decisions locked (2026-10-07) — see §0
 Date: 2026-10-07
-Related: `runtime/docs/zero-image-customization-security.md`, PR #91
+Related: `docs/epics/epic-2-tui-refactor-and-testing.md`, PR #91
+
+## 0. Decisions (locked 2026-10-07)
+
+| # | Decision |
+|---|---|
+| D1 | **Substrate = a single slim helper** (`nanosb-runtime`). All SDKs are **protocol clients** over its local socket. |
+| D2 | **No C FFI in the SDK.** The C ABI is de-scoped and retired; it is not the substrate and is not shipped as an SDK. |
+| D3 | **Bundle by default** (macOS arm64) **and** allow an external runtime override (`NANOSB_HOME` / `paths.runtime`). |
+| D4 | **Slim helper via feature flags** (one crate, two profiles) — not a separate codebase. |
+| D5 | **Pre-sign at package build time**; no install-time codesigning; lazy re-sign fallback at first run. |
+| D6 | **Cloud later**: design a `SandboxClient` backend abstraction now; implement only `Local`. |
 
 ## 1. Context (verified 2026-10-07)
 
-**What nanosandbox has today**
-- Rust SDK crate (`sandbox`) + a C ABI (`sandbox/crates/sandbox/src/ffi.rs`,
-  `--features ffi`). **15 exported symbols:**
-  `last_error`, `sandbox_create`, `sandbox_start`, `sandbox_stop`,
-  `sandbox_destroy`, `sandbox_free`, `sandbox_status`, `sandbox_exec`,
-  `sandbox_exec_stream`, `image_pull`, `image_list`, `image_exists`,
-  `free_string`, `version`, `validate_runtime`.
-- Exec now works in next mode over virtio-vsock (`ExecClient`).
-- **No shipped language bindings.** Python/Node/Go bindings were planned but are
-  not in-tree; the ABI has no consumers we can see.
+**Why the helper, not FFI.** The VM cannot be hosted in-process: `hv_vm_create()` on
+macOS requires the `com.apple.security.hypervisor` entitlement in a clean
+single-threaded process. Our runtime already boots the VM in a subprocess
+(`internal-boot-vm`) spawned from a codesigned binary (`NANOSB_BINARY_PATH` or
+`current_exe()`). So an "in-process FFI" still shells out — FFI buys no in-process
+benefit, adds a hard ABI contract, makes streaming callbacks bespoke per language,
+and would require a native addon + codesign per language × platform.
 
-**What microsandbox ships (the bar to clear)**
-- **Languages (5): TypeScript, Rust, Python, Go, Ruby.**
-- Surface: `exec`/`execWith`/`execStream`/`execStreamWith`, `shell`/`shellStream`,
-  `attach`/`attachWith`/`attachShell`; stdin (pipe/bytes), `tty`, `rlimit`,
-  `timeout`, `user`, `workdir`, `env`; `fs()` (guest filesystem); `metrics()` +
-  `metricsStream()`; `logs()` + `logStream()` (on-disk JSON Lines, `follow`,
-  `cursor`); secrets; volumes (bind/named/tmpfs/disk); network + published ports;
-  snapshots + pause/resume (local-only); `modify()` (live / next-start /
-  requires-restart plan); labels; `Sandbox.get/list/listWith/remove/start/
-  startDetached`; detached mode; pull policy; registry config; pre-boot rootfs
-  patches.
-- Design notes: the SDK **spawns the VM directly as a child process** (no
-  daemon), or targets microsandbox cloud with an API key. A low-level "Agent
-  Client" protocol is documented for custom integrations.
+**Runtime artifacts (three linkage models).**
 
-## 2. Gap analysis
+| Artifact | Linkage | Location today |
+|---|---|---|
+| libkrun | static, linked at build time | compiled into the helper |
+| `libkrunfw.5.dylib` | `dlopen` at runtime | `~/.nanosandbox/libs/` or system |
+| `gvproxy` | sidecar process | `which gvproxy` or `~/.nanosandbox/bin/` |
+| VM host | subprocess (`internal-boot-vm`) | the helper binary |
 
-| Capability | nanosandbox | microsandbox | Epic target |
-|---|---|---|---|
-| Rust SDK | ✅ | ✅ | parity |
-| Python | ❌ | ✅ | ship |
-| TypeScript/Node | ❌ | ✅ | ship |
-| Go | ❌ | ✅ | ship |
-| Ruby | ❌ | ✅ | ship |
-| **Java/Kotlin** | ❌ | ❌ | **exceed** |
-| **C#/.NET** | ❌ | ❌ | **exceed** |
-| **C (ABI)** | ✅ | ❌ (not advertised) | keep + document |
-| exec / shell / attach | ✅ (exec/shell; attach via console) | ✅ | parity |
-| stdin / tty / rlimit / timeout | ✅ (stdin/tty/timeout) | ✅ | add rlimits |
-| guest filesystem (`fs`) | ❌ | ✅ | add |
-| metrics / logs API | ❌ (CLI logs only) | ✅ | add |
-| secrets API | partial (env delivery) | ✅ | add |
-| volumes / mounts | ✅ (virtiofs) | ✅ | expose in SDK |
-| snapshots / pause-resume | ❌ | ✅ (local) | assess (may defer) |
-| `modify()` plan | ❌ | ✅ | assess |
-| handles (`get/list/remove`) | partial (CLI `ps`) | ✅ | add |
-| detached mode | ✅ (supervisor) | ✅ | expose |
-| pre-boot rootfs patches | ❌ | ✅ | assess |
+**microsandbox (the bar):** 5 languages (TS, Rust, Python, Go, Ruby); native
+addon bundles the runtime; `local | cloud` backends; an "Agent Client" protocol
+for custom integrations.
+
+## 2. Architecture (ADR-1 — accepted)
+
+```
+  SDKs (thin protocol clients)                     Helper (the substrate)
+  ───────────────────────────                     ──────────────────────
+  Rust │ Python │ TS │ Go │ Ruby │ Java/Kotlin │ C#
+        └──────────────┬───────────────────┘
+                       │  SandboxClient
+                       │   ├── Local  → unix socket (NDJSON)  ─┐
+                       │   └── Cloud  → HTTPS API (future)     │
+                       ▼                                       ▼
+                 versioned protocol  ─────────────►  nanosb-runtime (helper)
+                                                     ├── supervisor + VM (internal-boot-vm)
+                                                     ├── console / logs
+                                                     ├── control socket (attach/exec/logs)
+                                                     └── deploy planner (mounts, agent cmd)
+                                                     + libkrunfw + gvproxy
+```
+
+- **All planning stays in the helper** (config building, mount planning, agent
+  command, secrets resolution). Clients send intent (a `sandbox.yml` path or a
+  config object) and receive results. Clients never reimplement planning.
+- **Streaming is the socket stream** — `exec_stream`, `attach`, `logs --follow`
+  are all the same transport in every language.
+- **Retire the C FFI**: delete `sandbox/crates/sandbox/src/ffi.rs`, the `ffi`
+  feature, and the `cbindgen` plan. Nothing in-tree consumes it.
 
 ## 3. Goal
 
-Ship **first-class, idiomatic SDKs in more languages than microsandbox**, sharing
-one stable core, so nanosandbox is the most language-accessible microVM sandbox.
+Ship **idiomatic SDKs in more languages than microsandbox** on one stable,
+helper-based protocol — no native addons, no C ABI, no per-platform signing per
+language.
 
-Non-goals: a hosted cloud backend; Windows; re-implementing snapshots if the
-effort is disproportionate (assessed in M5).
+Non-goals: cloud implementation (design only); Windows; snapshots if the effort
+is disproportionate (M5 assessment).
 
-## 4. Architecture decision (ADR-1): core + thin bindings
+## 4. Gap analysis (vs microsandbox)
 
-Two viable cores; **recommend A**:
-
-- **A. Expand the C ABI, then generate/bind per language.** One `libnanosandbox_sdk`
-  (`cdylib`) + a stable header; each language binds via FFI (ctypes, N-API, cgo,
-  FFI gem, JNI, P/Invoke). Pros: single implementation, no IPC, matches the
-  existing `--features ffi`. Cons: callbacks for streaming are clunky across
-  languages; error strings need marshalling.
-- **B. A stable local agent protocol** (JSON-over-unix-socket / IPC), with thin
-  language clients — closer to microsandbox's "Agent Client". Pros: trivial
-  bindings, streaming is natural, language-agnostic; reuses the supervisor
-  control socket. Cons: a separate process model to document.
-
-Recommended: **A for the library surface + B for streaming/attach** — expose a
-synchronous/FFI core for lifecycle + exec, and a documented local socket protocol
-(the supervisor control socket, already NDJSON) for streaming/attach/logs. This
-gives cheap, idiomatic bindings without FFI callback contortions.
+| Capability | nanosandbox | microsandbox | Target |
+|---|---|---|---|
+| Languages | 0 shipped | TS, Rust, Python, Go, Ruby (5) | + Java/Kotlin, C#/.NET (7) |
+| exec / shell / attach | ✅ (exec/console attach) | ✅ | parity via protocol |
+| stdin / tty / timeout | ✅ (agent) | ✅ | parity |
+| rlimits | ❌ | ✅ | add (agent + config) |
+| guest `fs` API | ❌ | ✅ | add (exec-agent file verbs) |
+| `metrics` | ❌ | ✅ | add (host rusage + guest /proc) |
+| `logs` (structured, follow) | partial (CLI) | ✅ | add (protocol) |
+| secrets API | partial (env) | ✅ | typed protocol API |
+| volumes / mounts | ✅ (virtiofs) | ✅ | expose |
+| handles (get/list/remove) | partial (CLI ps) | ✅ | add (protocol) |
+| detached mode | ✅ (supervisor) | ✅ | expose |
+| snapshots / pause-resume | ❌ | ✅ (local) | assess (M5) |
+| `modify()` plan | ❌ | ✅ | assess (M5) |
+| pre-boot rootfs patches | ❌ | ✅ | assess (M5) |
 
 ## 5. Workstreams
 
-### WS0 — ABI stabilization & versioning
-- Freeze `sandbox_*` semantics; add `sandbox_abi_version()`.
-- Define memory/ownership rules (who frees, thread-safety, error retrieval).
-- Provide a generated C header (`cbindgen`) checked into the repo.
+### WS1 — `nanosb-runtime` helper (D4)
+- Add a Cargo feature `runtime-host`; build `nanosb-runtime` with
+  `--no-default-features --features runtime-host`.
+- Exclude TUI/`ratatui`/`arboard`/`rusqlite`/`git2`; keep runtime + supervisor +
+  `internal-boot-vm` + deploy planner.
+- Verify the helper boots a supervised sandbox and exposes the control socket.
+- AC: helper builds; `nanosb-runtime run <img>` works; binary is materially
+  smaller than the full CLI.
 
-### WS1 — Core surface expansion (the missing primitives)
-In the `sandbox` crate (not just FFI), so Rust SDK users get them too:
-- `fs`: read/write/list/mkdir/remove/stat for the guest filesystem. **Needs a
-  transport** — either extend the exec agent (a file-ops verb set over vsock) or
-  use a shared virtiofs mount. Prefer agent verbs (works without a project mount).
-- `metrics`: CPU/mem/IO. Host-side where possible (VM rusage) + guest `/proc` via
-  exec for accuracy.
-- `logs`: expose the supervisor `console.log` as a structured, followable stream
-  (JSON Lines + cursor), reusing the supervisor control socket.
-- `secrets`: a typed API that maps to the existing env delivery + a scoped
-  secret store; never persist values.
-- `volumes`/`mounts`: expose `SandboxConfig.mounts`/`extra_mounts` in the SDK.
-- `handles`: `get`/`list`/`remove` over the supervisor registry + `state.json`.
-- `rlimits`, `user`, `workdir`, `timeout`: already in config; surface them.
+### WS2 — Local protocol (the substrate)
+- Formalize the supervisor socket as a **versioned** protocol:
+  `hello`/`version`, `create`/`start`/`stop`/`kill`/`remove`, `status`, `list`,
+  `get`, `exec` (buffered), `exec_stream`, `attach`, `logs` (follow + cursor),
+  `metrics`, `fs` (read/write/list/mkdir/remove/stat), `secrets` (set/list/rm,
+  values never persisted), `modify` (plan).
+- NDJSON frames, matching the existing `ControlRequest`/`ControlResponse` shape.
+- Document it as the **Agent Client protocol** (mirrors microsandbox's naming).
+- AC: protocol spec in `docs/`; a reference client exercises every verb.
 
-### WS2 — Language bindings
-For each language: idiomatic ergonomics, async where native, typed errors, and a
-shared conformance suite.
-- **Rust** (in-tree crate) — reference.
-- **Python** (`nanosandbox` on PyPI; ctypes/cffi over the ABI; async).
-- **TypeScript/Node** (npm; N-API addon; promises + async iterators).
-- **Go** (module; cgo; context-based).
-- **Ruby** (gem; FFI; blocks for streaming).
-- **Java/Kotlin** (Maven Central; JNI or JNA; **exceeds microsandbox**).
-- **C#/.NET** (NuGet; P/Invoke; `IAsyncEnumerable`; **exceeds microsandbox**).
-- **C** (documented ABI + header; examples).
+### WS3 — `SandboxClient` interface + backend abstraction (D6)
+- Define the client contract: `builder`, `create`, `get`, `list`, `remove`,
+  `start`, `stop`, `kill`, `exec`, `exec_stream`, `shell`, `attach`, `logs`,
+  `metrics`, `fs`, `secrets`, `config`, `detached`.
+- `Local` backend (socket) implemented; `Cloud` backend stubbed behind the same
+  trait (returns `NotImplemented`), so it slots in later without reshaping SDKs.
 
-### WS3 — Packaging & release
-- Per-language CI build + publish (PyPI, npm, crates.io, Go module tag, RubyGems,
-  Maven Central, NuGet).
-- Ship the prebuilt runtime libs (libkrun/libkrunfw/gvproxy) or document
-  `Runtime setup` like microsandbox.
+### WS4 — Core surface expansion (in the helper)
+- `fs`: file verbs in the exec-agent over vsock (works without a project mount),
+  surfaced through the protocol.
+- `metrics`: host VM rusage + guest `/proc` sampled via exec.
+- `logs`: structured, followable, cursor-based (reuse `console.log`).
+- `secrets`: typed get/set/rm mapped to the existing env delivery; never on disk.
+- `rlimits`, `user`, `workdir`, `timeout`: surface via protocol + config.
+- `volumes`/`mounts`, `handles`.
 
-### WS4 — Streaming & attach protocol
-- Formalize the supervisor control socket (`ControlRequest`/`ControlResponse`,
-  `AttachFrame`) as a versioned, documented protocol usable by any language
-  without FFI. This is what makes `attach`/`logs --follow` trivial everywhere.
+### WS5 — Language SDKs (protocol clients only)
+Rust, Python, TypeScript/Node, Go, Ruby, **Java/Kotlin**, **C#/.NET**.
+Each: idiomatic API, async where native, typed errors, streaming via the socket.
+- AC: each passes the shared conformance suite.
 
-### WS5 — Conformance & docs
-- One **conformance test suite** (spec) exercised by every binding: create, exec,
-  stream, shell, attach, fs, logs, metrics, secrets, lifecycle, error cases.
-- Per-language quickstarts + API reference; a compatibility matrix.
+### WS6 — Packaging & signing (D3, D5)
+- Bundle `nanosb-runtime` + `libkrunfw` + `gvproxy` for macOS arm64 in each
+  package (wheel/npm/gem/jar/nuget/crate).
+- **Pre-sign** the helper at build time (entitlement applied); lazy re-sign
+  fallback on first run if validation fails.
+- External override: `NANOSB_HOME` / `paths.runtime` → use an installed runtime.
+- "Runtime setup" doc for Linux/CI.
+
+### WS7 — Conformance suite & docs
+- One conformance spec, implemented per language: create, exec, stream, shell,
+  attach, fs, logs, metrics, secrets, lifecycle, errors, timeouts.
+- Quickstarts + API refs + compatibility matrix.
+
+### WS8 — Retire the C FFI (D2)
+- Delete `ffi.rs`, the `ffi` feature, and the `cbindgen`/header work.
+- Update `sandbox/Cargo.toml` + `lib.rs`.
+- AC: `grep -r 'extern "C" fn sandbox_' sandbox/` is empty; workspace builds.
 
 ## 6. Acceptance criteria
 
-- AC1 Rust/Python/TypeScript/Go/Ruby SDKs each pass the conformance suite.
-- AC2 Java/Kotlin and C#/.NET SDKs each pass the conformance suite (exceeds
-  microsandbox's language count).
-- AC3 `exec`, `exec_stream`, `shell`, `attach` work in every binding on a
-  next-mode vanilla image.
-- AC4 `fs` read/write/list and `logs` follow work in every binding.
-- AC5 Every binding exposes typed errors and a documented timeout/abort.
-- AC6 `cargo test -p sandbox --features ffi` green; header generated and stable.
-- AC7 No binding persists secret values to disk (matches the security model).
+- AC1 `nanosb-runtime` builds from features; boots + controls a sandbox.
+- AC2 Protocol spec published; a reference client passes every verb.
+- AC3 Rust/Python/TS/Go/Ruby SDKs pass the conformance suite.
+- AC4 Java/Kotlin + C#/.NET SDKs pass the conformance suite (exceeds microsandbox).
+- AC5 `exec`, `exec_stream`, `shell`, `attach`, `fs`, `logs`, `metrics` work in
+  every binding on a next-mode vanilla image.
+- AC6 No binding persists secret values to disk.
+- AC7 The C FFI is fully removed; no SDK depends on a native addon.
+- AC8 Bundled macOS arm64 install runs with zero extra setup; `NANOSB_HOME`
+  override works.
 
 ## 7. Milestones
 
-- **M0** ADR-1 decision + ABI freeze + generated header.
-- **M1** Rust SDK covers the full surface (fs/logs/metrics/secrets/volumes/handles).
-- **M2** Streaming/attach protocol documented + a reference client.
-- **M3** Python + TypeScript (the two most-requested).
-- **M4** Go + Ruby (match microsandbox's set).
-- **M5** Java/Kotlin + C#/.NET (exceed) + snapshot/modify assessment.
-- **M6** Conformance suite across all bindings + docs + release automation.
+- **M0** Protocol spec + reference client; helper build profile (WS1+WS2).
+- **M1** `SandboxClient` + `Local` backend; retire the C FFI (WS3+WS8).
+- **M2** Core surface: fs/metrics/logs/secrets/handles (WS4).
+- **M3** Python + TypeScript SDKs (WS5).
+- **M4** Go + Ruby SDKs (WS5) — matches microsandbox.
+- **M5** Java/Kotlin + C#/.NET (WS5) + snapshot/modify assessment.
+- **M6** Packaging/signing + conformance across all + docs (WS6+WS7).
 
 ## 8. Risks
 
-- R1 **Streaming FFI callbacks are awkward** → mitigated by ADR-1 option B.
-- R2 **`fs` transport choice** (agent verbs vs mount) affects non-project use →
-  decide in M1; agent verbs preferred.
-- R3 **Packaging/release sprawl** (7 languages) → automation or a subset first.
-- R4 **Snapshot/pause-resume** may be disproportionate on libkrun →
-  time-boxed assessment in M5; may defer.
+- R1 **Protocol surface creep** → version it (`hello`/`version`) and keep verbs
+  minimal; the helper owns planning.
+- R2 **`fs` needs a transport** (agent verbs vs mount) → agent verbs preferred
+  (works without a project mount). Decide in M2.
+- R3 **Helper bundle size / signing** → feature-gate the helper; pre-sign at
+  build; lazy re-sign fallback.
+- R4 **7-language packaging sprawl** → automation; ship macOS arm64 first; the
+  `NANOSB_HOME` override covers Linux/CI until bundling lands there.
+- R5 **Snapshots/modify** may be disproportionate on libkrun → time-boxed M5;
+  may defer.
 
 ## 9. Open questions
 
-1. ADR-1: FFI-first (A) vs protocol-first (B) — or the recommended hybrid?
-2. Which languages first (recommend Python, TypeScript, then Go/Ruby)?
-3. Guest filesystem API over agent verbs or a shared mount?
-4. Do we ship the runtime binaries in packages, or require `Runtime setup`?
-5. Are snapshots/pause-resume in scope for this epic or a follow-up?
+1. Protocol framing: stay NDJSON (matches today) or move to length-prefixed
+   binary for high-throughput `exec_stream`? (Recommend NDJSON now; revisit if
+   profiling demands it.)
+2. `fs` verbs: which operations in v1 (read/write/list/stat/mkdir/remove)?
+3. Do we publish the helper as a standalone downloadable runtime in addition to
+   bundling?
+4. Snapshots / pause-resume: in scope for this epic or a follow-up?
