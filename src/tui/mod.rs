@@ -11,3 +11,6 @@ pub mod tests;
 pub mod text_input;
 pub mod theme;
 pub mod upload;
+
+#[cfg(test)]
+mod vm_test;

@@ -4116,7 +4116,8 @@ fn add_agent(
 }
 
 /// Add an agent panel from a resolved AgentSandboxConfig (from sandbox.yml).
-fn add_agent_from_config(
+// Visibility: pub(crate) so the #[cfg(test)] vm_test module can call it.
+pub(crate) fn add_agent_from_config(
     app: &mut App,
     key: &str,
     mut config: AgentSandboxConfig,
