@@ -53,29 +53,6 @@ pub enum Command {
     McpToggle,
     /// List configured MCP servers.
     McpList,
-    /// Add a new MCP server configuration.
-    McpAdd {
-        name: String,
-        command: String,
-        args: Vec<String>,
-        /// Target scope: None = focused, Some("all") = all, Some(name) = specific sandbox.
-        target: Option<String>,
-    },
-    /// Remove an MCP server by name.
-    McpRemove {
-        name: String,
-        target: Option<String>,
-    },
-    /// Enable an MCP server by name.
-    McpEnable {
-        name: String,
-        target: Option<String>,
-    },
-    /// Disable an MCP server by name.
-    McpDisable {
-        name: String,
-        target: Option<String>,
-    },
     /// Set or list environment variables for the focused panel.
     Env {
         /// KEY=VALUE pair to set, or None to list current env vars.
@@ -113,16 +90,6 @@ pub enum Command {
     },
     /// Toggle the skills sidebar / list skills.
     SkillsList,
-    /// Add a skill by name.
-    SkillsAdd {
-        /// Skill name from registry.
-        name: String,
-    },
-    /// Remove a skill by name.
-    SkillsRemove {
-        /// Skill name.
-        name: String,
-    },
     /// Show details of a skill.
     SkillsShow {
         /// Skill name.
@@ -130,11 +97,6 @@ pub enum Command {
     },
     /// Show current agent definition.
     AgentShow,
-    /// Set the agent definition from registry.
-    AgentSet {
-        /// Agent name from registry.
-        name: String,
-    },
     /// List available agents in the registry.
     AgentList,
     /// Show details of a registry agent.
@@ -168,6 +130,147 @@ pub enum ParseResult {
 
 /// Supported agent names for `/add`.
 const SUPPORTED_AGENTS: &[&str] = &["claude", "goose", "codex", "cursor"];
+
+/// A single line of `/help` output: a command pattern and its description.
+///
+/// This is the **single source of truth** for the advertised command surface.
+/// `format_help()` renders it and `HELP_ENTRIES` is asserted against the parser
+/// so no advertised command can be a dead stub.
+pub struct CommandHelpEntry {
+    /// Usage pattern, e.g. `"/focus <n>"`, or empty for a free-form note.
+    pub pattern: &'static str,
+    /// Human-readable description shown to the right of the pattern.
+    pub description: &'static str,
+}
+
+/// The advertised command surface, rendered by [`format_help`].
+///
+/// Ordering is intentional: core panel lifecycle first, then environment,
+/// registry introspection, git, and finally session control.
+pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
+    CommandHelpEntry {
+        pattern: "/add <agent> [--tag <version>] [--model <model>] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
+        description: "Add a new agent panel",
+    },
+    CommandHelpEntry {
+        pattern: "/sandboxes",
+        description: "Toggle sandbox sidebar",
+    },
+    CommandHelpEntry {
+        pattern: "/focus <n>",
+        description: "Focus panel n (0-indexed)",
+    },
+    CommandHelpEntry {
+        pattern: "/close [n|name]",
+        description: "Hide panel (sandbox keeps running)",
+    },
+    CommandHelpEntry {
+        pattern: "/open [n|name]",
+        description: "Show a hidden panel",
+    },
+    CommandHelpEntry {
+        pattern: "/kill [n|name]",
+        description: "Kill sandbox & remove panel",
+    },
+    CommandHelpEntry {
+        pattern: "/copy",
+        description: "Copy panel content to clipboard",
+    },
+    CommandHelpEntry {
+        pattern: "/upload <path>",
+        description: "Upload host file to sandbox",
+    },
+    CommandHelpEntry {
+        pattern: "/paste-image",
+        description: "Paste clipboard image to sandbox",
+    },
+    CommandHelpEntry {
+        pattern: "/zoom",
+        description: "Toggle panel zoom (Ctrl+F)",
+    },
+    CommandHelpEntry {
+        pattern: "/theme [name]",
+        description: "Switch colour theme",
+    },
+    CommandHelpEntry {
+        pattern: "/env [KEY=VALUE]",
+        description: "Set/list panel env vars",
+    },
+    CommandHelpEntry {
+        pattern: "/reconnect",
+        description: "Reconnect SSH terminal",
+    },
+    CommandHelpEntry {
+        pattern: "/branches",
+        description: "List nanosb branches in project",
+    },
+    CommandHelpEntry {
+        pattern: "/gitsync [on|off|now]",
+        description: "Sync sandbox commits to local repo",
+    },
+    CommandHelpEntry {
+        pattern: "/mcp",
+        description: "Toggle MCP sidebar",
+    },
+    CommandHelpEntry {
+        pattern: "/mcp list",
+        description: "List MCP servers (from sandbox.yml)",
+    },
+    CommandHelpEntry {
+        pattern: "/skills [list]",
+        description: "List skills (from sandbox.yml)",
+    },
+    CommandHelpEntry {
+        pattern: "/skills show <name>",
+        description: "Show skill details",
+    },
+    CommandHelpEntry {
+        pattern: "/agent list",
+        description: "List available agents",
+    },
+    CommandHelpEntry {
+        pattern: "/agent show <name>",
+        description: "Show agent details",
+    },
+    CommandHelpEntry {
+        pattern: "/edit [tool]",
+        description: "Open clone in external tool",
+    },
+    CommandHelpEntry {
+        pattern: "/clearhistory",
+        description: "Clear command history",
+    },
+    CommandHelpEntry {
+        pattern: "/quit",
+        description: "Suspend session and exit",
+    },
+    CommandHelpEntry {
+        pattern: "/destroy",
+        description: "Full cleanup and exit",
+    },
+    CommandHelpEntry {
+        pattern: "",
+        description: "Config is declarative: edit sandbox.yml and run `nanosb apply`.",
+    },
+];
+
+/// Render the `/help` overlay text from [`HELP_ENTRIES`].
+///
+/// Kept in sync with the parser by `test_help_entries_are_all_parsable`.
+pub fn format_help() -> String {
+    let mut lines = vec!["Available commands:".to_string()];
+    for entry in HELP_ENTRIES {
+        if entry.pattern.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("  {}", entry.description));
+        } else {
+            lines.push(format!("  {:<74}{}", entry.pattern, entry.description));
+        }
+    }
+    lines.push(String::new());
+    lines.push("  Press Esc to dismiss.".to_string());
+    lines.join("\n")
+}
 
 const ALL_COMMANDS: &[&str] = &[
     "/quit", "/q", "/destroy", "/help", "/clearhistory", "/close", "/copy",
@@ -488,7 +591,7 @@ fn parse_mcp(parts: &[&str]) -> ParseResult {
         Some(sub) => ParseResult::Err(format!(
             "Unknown MCP subcommand: '{}'\n\
              Available: /mcp list\n\
-             Note: MCP hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
+             Config is declarative — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
@@ -568,26 +671,6 @@ fn parse_theme(parts: &[&str]) -> ParseResult {
 fn parse_skills(parts: &[&str]) -> ParseResult {
     match parts.get(1).copied() {
         None | Some("list") => ParseResult::Ok(Command::SkillsList),
-        Some("add") => match parts.get(2) {
-            Some(name) => ParseResult::Ok(Command::SkillsAdd {
-                name: name.to_string(),
-            }),
-            None => ParseResult::Err(
-                "Usage: /skills add <name>\n\
-                 Note: Skill hot-reload was removed — add skills to sandbox.yml and redeploy (nanosb apply)."
-                    .to_string(),
-            ),
-        },
-        Some("remove") => match parts.get(2) {
-            Some(name) => ParseResult::Ok(Command::SkillsRemove {
-                name: name.to_string(),
-            }),
-            None => ParseResult::Err(
-                "Usage: /skills remove <name>\n\
-                 Note: Skill hot-reload was removed — remove skills from sandbox.yml and redeploy (nanosb apply)."
-                    .to_string(),
-            ),
-        },
         Some("show") => match parts.get(2) {
             Some(name) => ParseResult::Ok(Command::SkillsShow {
                 name: name.to_string(),
@@ -601,7 +684,7 @@ fn parse_skills(parts: &[&str]) -> ParseResult {
         Some(sub) => ParseResult::Err(format!(
             "Unknown skills subcommand: '{}'\n\
              Available: /skills [list], /skills show\n\
-             Note: Skill hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
+             Config is declarative — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
@@ -624,7 +707,7 @@ fn parse_agent(parts: &[&str]) -> ParseResult {
         Some(sub) => ParseResult::Err(format!(
             "Unknown agent subcommand: '{}'\n\
              Available: /agent, /agent list, /agent show\n\
-             Note: Agent hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
+             Config is declarative — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
@@ -743,26 +826,21 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_mcp_add() {
-        let result = parse_command_verbose("/mcp add github npx @github/mcp-server");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
+    fn test_removed_mcp_subcommands_are_not_commands() {
+        for sub in ["add", "remove", "enable", "disable"] {
+            let input = format!("/mcp {} github", sub);
+            let result = parse_command_verbose(&input);
+            match result {
+                ParseResult::Err(msg) => {
+                    assert!(
+                        msg.contains("Unknown MCP subcommand"),
+                        "{} should be rejected as an unknown subcommand, got: {}",
+                        sub,
+                        msg
+                    );
+                }
+                other => panic!("expected Err for {}, got {:?}", sub, other),
             }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_mcp_remove() {
-        let result = parse_command_verbose("/mcp remove github");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
-            }
-            other => panic!("expected Err, got {:?}", other),
         }
     }
 
@@ -858,66 +936,6 @@ mod tests {
             ParseResult::Err(msg) => {
                 assert!(msg.contains("abc"));
                 assert!(msg.contains("not a valid panel number"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_add_missing_args_shows_help() {
-        let result = parse_command_verbose("/mcp add");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("Available: /mcp list"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_add_missing_command_shows_help() {
-        let result = parse_command_verbose("/mcp add github");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("add"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_remove_missing_name_shows_help() {
-        let result = parse_command_verbose("/mcp remove");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_enable_missing_name_shows_help() {
-        let result = parse_command_verbose("/mcp enable");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_disable_missing_name_shows_help() {
-        let result = parse_command_verbose("/mcp disable");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
             }
             other => panic!("expected Err, got {:?}", other),
         }
@@ -1293,31 +1311,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_skills_add() {
-        assert_eq!(
-            parse_command("/skills add tdd"),
-            Some(Command::SkillsAdd { name: "tdd".to_string() })
-        );
-    }
-
-    #[test]
-    fn test_parse_skills_add_missing_name() {
-        let result = parse_command_verbose("/skills add");
-        assert!(matches!(result, ParseResult::Err(_)));
-    }
-
-    #[test]
-    fn test_parse_skills_remove() {
-        assert_eq!(
-            parse_command("/skills remove tdd"),
-            Some(Command::SkillsRemove { name: "tdd".to_string() })
-        );
-    }
-
-    #[test]
-    fn test_parse_skills_remove_missing_name() {
-        let result = parse_command_verbose("/skills remove");
-        assert!(matches!(result, ParseResult::Err(_)));
+    fn test_removed_skills_subcommands_are_not_commands() {
+        for input in ["/skills add tdd", "/skills remove tdd"] {
+            let result = parse_command_verbose(input);
+            match result {
+                ParseResult::Err(msg) => assert!(
+                    msg.contains("Unknown skills subcommand"),
+                    "{} should be rejected as an unknown subcommand, got: {}",
+                    input,
+                    msg
+                ),
+                other => panic!("expected Err for {}, got {:?}", input, other),
+            }
+        }
     }
 
     #[test]
@@ -1354,21 +1360,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_agent_set() {
-        let result = parse_command_verbose("/agent set python-developer");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown agent subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
+    fn test_removed_agent_set_is_not_a_command() {
+        for input in ["/agent set python-developer", "/agent set"] {
+            let result = parse_command_verbose(input);
+            match result {
+                ParseResult::Err(msg) => assert!(
+                    msg.contains("Unknown agent subcommand"),
+                    "{} should be rejected as an unknown subcommand, got: {}",
+                    input,
+                    msg
+                ),
+                other => panic!("expected Err for {}, got {:?}", input, other),
             }
-            other => panic!("expected Err, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_parse_agent_set_missing_name() {
-        let result = parse_command_verbose("/agent set");
-        assert!(matches!(result, ParseResult::Err(_)));
     }
 
     #[test]
@@ -1476,5 +1480,66 @@ mod tests {
     fn test_autocomplete_destroy() {
         let suggestions = autocomplete("/des");
         assert!(suggestions.iter().any(|s| s == "/destroy"));
+    }
+
+    // ===== Help/parser parity (Epic 2 AC1) =====
+
+    fn base_command_is_recognized(pattern: &str) -> bool {
+        let base = pattern.split_whitespace().next().unwrap();
+        match parse_command_verbose(base) {
+            ParseResult::Ok(_) => true,
+            ParseResult::Err(msg) => !msg.contains("Unknown command"),
+            ParseResult::NotACommand => false,
+        }
+    }
+
+    #[test]
+    fn test_help_entries_are_all_recognized_commands() {
+        for entry in HELP_ENTRIES {
+            if !entry.pattern.starts_with('/') {
+                continue;
+            }
+            assert!(
+                base_command_is_recognized(entry.pattern),
+                "help advertises '{}' but its base command is not a known command",
+                entry.pattern
+            );
+        }
+    }
+
+    #[test]
+    fn test_help_advertises_no_removed_subcommands() {
+        let help = format_help();
+        for removed in [
+            "/mcp add",
+            "/mcp remove",
+            "/mcp enable",
+            "/mcp disable",
+            "/skills add",
+            "/skills remove",
+            "/agent set",
+        ] {
+            assert!(
+                !help.contains(removed),
+                "help still advertises removed command '{}'",
+                removed
+            );
+        }
+    }
+
+    #[test]
+    fn test_help_mentions_declarative_config() {
+        assert!(format_help().contains("sandbox.yml"));
+    }
+
+    #[test]
+    fn test_autocomplete_entries_are_all_recognized_commands() {
+        for cmd in ALL_COMMANDS {
+            assert!(
+                base_command_is_recognized(cmd),
+                "autocomplete advertises '{}' but it is not a known command",
+                cmd
+            );
+        }
     }
 }
