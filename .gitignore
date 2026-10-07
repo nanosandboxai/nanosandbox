@@ -21,3 +21,12 @@ Thumbs.db
 .env.local
 
 .cargo-home
+
+# Agent session state (local tooling)
+.omo/
+
+# Desktop app (separate project, built independently)
+desktop/
+
+# Cross-compiled guest binaries (built on demand)
+guest/crates/exec-agent/target/

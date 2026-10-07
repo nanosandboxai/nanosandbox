@@ -1,8 +1,7 @@
 ARG BASE_IMAGE=agents-registry/base:latest
 FROM ${BASE_IMAGE}
 
-# Pinned so the agent-gateway codex integration (flags + login flow) stays
-# compatible with the CLI version baked into the image.
+# Pinned so CLI flags and the login flow stay stable across rebuilds.
 ARG CODEX_VERSION=0.160.0
 
 LABEL org.opencontainers.image.description="Codex agent for nanosandbox sandboxes"
@@ -41,4 +40,4 @@ RUN CODEX_JS="/usr/local/lib/node_modules/@openai/codex/bin/codex.js" \
 RUN codex --version && echo "Codex: OK"
 RUN rm -rf /workspace/*
 
-CMD ["/usr/local/bin/nanosb-init.sh"]
+CMD ["codex"]

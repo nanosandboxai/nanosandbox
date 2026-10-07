@@ -3,7 +3,7 @@
 #
 # This script does NOT require KVM — it only compiles and runs unit tests.
 # Integration tests that boot VMs are gated behind the "integration-tests" feature.
-# The agent-gateway is not built here — it has its own build pipeline.
+# The Go agent-gateway has been removed; guest setup lives at the microVM layer.
 set -euo pipefail
 
 source "$HOME/.cargo/env" 2>/dev/null || true

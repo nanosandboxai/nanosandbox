@@ -39,8 +39,8 @@
 6. init mounts /dev, /proc, /sys, cgroups
 7. init reads /.krun_config.json
 8. init does chroot() to rootfs (virtiofs-mounted OCI image layers)
-9. init forks child → child execs user's command (nanosb-init.sh)
-10. nanosb-init.sh configures networking, starts sshd, execs agent-gateway
+9. init forks child → child execs the workload (next mode) or nanosb-init.sh (legacy images)
+10. In next mode the patched init has already mounted extra virtiofs shares and configured eth0; no in-image scripts run
 ```
 
 ## Monorepo Structure
@@ -53,7 +53,6 @@ runtime/
 ├── deps/
 │   ├── libkrunfw/          Git submodule → containers/libkrunfw (LGPL-2.1)
 │   └── gvproxy/            Git submodule → containers/gvisor-tap-vsock (Apache-2.0)
-├── agent-gateway/          Go HTTP server — runs as PID 1 inside VMs
 ├── docker/                 Container images for agent VMs (Debian slim)
 ├── scripts/                Build and CI helper scripts
 └── .github/workflows/      CI: lint, multi-distro build, release
@@ -65,8 +64,7 @@ runtime/
 - **libkrun-sys** links against a prebuilt `libkrun.a` (built from upstream v1.19.5 via `scripts/build-libkrun.sh`)
 - **libkrun** (upstream) depends on **libkrunfw** at runtime (dlopen)
 - **gvproxy** provides user-mode networking (virtio-net); optional, TSI fallback when absent
-- **agent-gateway** is independent (Go binary, built separately)
-- **Docker images** bundle agent-gateway + agent CLIs on Debian slim
+- **Docker images** bundle agent CLIs and tooling only; guest setup lives at the microVM layer (libkrun init patches)
 
 ## Building
 
@@ -146,7 +144,6 @@ export NANOSANDBOX_LIBKRUNFW_PATH=/custom/path/libkrunfw.so
 | libkrunfw | LGPL-2.1 | Always dynamic (dlopen by libkrun) |
 | Linux kernel (inside libkrunfw) | GPL-2.0 | Embedded in libkrunfw.so |
 | gvproxy (gvisor-tap-vsock) | Apache-2.0 | Standalone binary |
-| agent-gateway | Apache-2.0 | — |
 
 Static linking of libkrun into nanosandbox is safe — libkrunfw (LGPL/GPL) is always loaded dynamically at runtime by libkrun on Linux/macOS.
 
@@ -171,5 +168,4 @@ End user
 | `deps-linux-amd64.tar.gz` | libkrunfw.so, libkrun.so, gvproxy |
 | `deps-darwin-arm64.tar.gz` | libkrunfw.dylib, libkrun.dylib, gvproxy |
 | `nanosandbox-{os}-{arch}.tar.gz` | nanosandbox binary |
-| `agent-gateway-linux-{arch}.tar.gz` | agent-gateway binary |
 

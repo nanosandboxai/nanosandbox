@@ -4,7 +4,7 @@
 
 ## Overview
 
-Wraps the [nanosandbox](https://github.com/nanosandboxai/runtime) runtime crate with agent-specific functionality. This is the SDK interface that other language SDKs bind to via C FFI. It provides agent lifecycle management, MCP server management, skill injection, session persistence, and `sandbox.yml` configuration.
+Wraps the [nanosandbox](https://github.com/nanosandboxai/runtime) runtime crate with agent-specific functionality. This is the SDK interface that other language SDKs bind to via C FFI. It provides sandbox lifecycle management, `sandbox.yml` configuration, and host-side config delivery (MCP servers, skills, agent commands) via the `deploy` module.
 
 ## Architecture
 
@@ -22,12 +22,24 @@ Language SDKs (Python, Node, Go)
 
 ## Key Components
 
-- **`AgentSandbox`** -- Agent-aware wrapper around `nanosandbox::Sandbox`. Adds operations for messaging, bootstrapping, MCP server management, and skill injection via the in-VM gateway HTTP API.
+- **`AgentSandbox`** -- Agent-aware wrapper around `nanosandbox::Sandbox`. Provides lifecycle operations (create, destroy) and console-based messaging.
 - **`AgentSandboxConfig`** -- Extends the runtime `SandboxConfig` with agent-specific fields: MCP servers, skills, permissions, agent type, model selection, and auto mode.
+- **`deploy`** -- Host-side config delivery module. Generates mount plans, MCP config files, skills files, and agent commands at deploy time. Replaces the in-VM Go gateway's config generation.
 - **`Session`** -- Session persistence supporting resume, fresh, and destroy workflows.
 - **`config::file`** -- `sandbox.yml` parsing, resolution, and CLI override application.
 - **`AgentsRegistryClient`** -- Fetches agent definitions and skill content from the OCI-based agents registry (`ghcr.io/nanosandboxai/agents-registry`).
-- **`agent-gateway/`** -- Go binary that runs inside the microVM, handling agent orchestration, MCP server lifecycle, and skill delivery over a local HTTP API.
+
+## Config Delivery Model (Phase 4+)
+
+All agent configuration is delivered at deploy time via the `deploy` module:
+
+1. **Mount planner** (`deploy::MountPlanner`) -- Computes virtiofs mounts: workspace RW and one merged per-agent RW mount per guest path (generated config files are written into the state dirs so each path has a single mount).
+2. **MCP config generation** (`deploy::ConfigGenerator`) -- Generates per-agent MCP server config files (Claude JSON, Goose YAML, Codex TOML, Cursor JSON).
+3. **Skills generation** (`deploy::SkillsGenerator`) -- Generates skill/prompt files per agent format (SKILL.md, .goosehints, .mdc rules).
+4. **Agent command builder** (`deploy::AgentCommandBuilder`) -- Builds the CLI invocation (binary + args) for each agent type.
+5. **Secrets** -- Passed via in-memory boot env (`krun_set_env`); never written to disk.
+
+No in-VM CRUD APIs remain. Config is regenerated host-side on every deploy and merged into the agent state mounts.
 
 ## FFI Bindings
 
@@ -45,7 +57,13 @@ sandbox/
 │   └── sandbox/
 │       └── src/
 │           ├── lib.rs              # Re-exports + public API surface
-│           ├── agent_sandbox.rs    # AgentSandbox wrapper
+│           ├── agent_sandbox.rs    # AgentSandbox wrapper (lifecycle only)
+│           ├── deploy/             # Host-side config delivery
+│           │   ├── mod.rs          # DeployPlanner orchestration
+│           │   ├── mount_planner.rs # virtiofs mount planning
+│           │   ├── config_gen.rs   # MCP config generation
+│           │   ├── skills_gen.rs   # Skills/prompt generation
+│           │   └── agent_cmd.rs    # Agent command + env building
 │           ├── config/
 │           │   ├── mod.rs          # Agent config types (AgentSandboxConfig, Permissions, AgentType)
 │           │   ├── file.rs         # sandbox.yml parsing and resolution
@@ -54,10 +72,6 @@ sandbox/
 │           ├── session.rs          # Session persistence
 │           ├── settings.rs         # User settings
 │           └── error.rs            # Error types
-├── agent-gateway/                  # Go binary (in-VM agent orchestration)
-│   ├── main.go
-│   ├── mcp/                       # MCP server management
-│   └── skills/                    # Skill injection
 └── docs/
     └── sdk-bindings.md             # FFI documentation
 ```
@@ -73,9 +87,6 @@ cargo test -p sandbox
 
 # Build as shared library (for FFI)
 cargo build --release -p sandbox --features ffi
-
-# Build agent-gateway
-cd agent-gateway && go build -o agent-gateway .
 ```
 
 ## Supported Agent Types

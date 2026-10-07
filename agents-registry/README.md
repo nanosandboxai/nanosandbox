@@ -97,7 +97,7 @@ This repo also contains Docker images for running agents inside nanosandbox VMs.
 ### Image Architecture
 
 ```
-Dockerfile.base (node:22-slim + agent-gateway + MCP packages + SSH)
+Dockerfile.base (node:22-slim + MCP packages + agent tooling)
     |
     ├── Dockerfile.claude  → ghcr.io/nanosandboxai/agents-registry/claude
     ├── Dockerfile.codex   → ghcr.io/nanosandboxai/agents-registry/codex
@@ -108,10 +108,9 @@ Dockerfile.base (node:22-slim + agent-gateway + MCP packages + SSH)
 ### Base Image Contents
 
 - node:22-slim with system deps (git, SSH, curl)
-- agent-gateway binary (from sandbox repo)
 - Pre-installed MCP server npm packages (github, filesystem, memory, brave-search, context7)
 - Non-root `developer` user (UID 1000)
-- nanosb-init.sh (sets up mounts, SSH keys, execs agent-gateway)
+- No nanosb runtime code: sandbox setup happens at the microVM layer
 
 ### Available Images
 

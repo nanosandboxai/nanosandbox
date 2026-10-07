@@ -81,7 +81,30 @@ if [ "$ACTUAL_SHA" != "$LIBKRUN_SHA" ]; then
 fi
 ok "SHA verified: ${ACTUAL_SHA}"
 
-# 2. Apply musl statx patch only for musl targets
+# 2a. Apply next-mode init patches (extra virtiofs mounts + static network)
+#     Uses the combined patch (0003) which includes both features.
+#     Idempotent: if already applied, git apply --reverse --check succeeds and we skip.
+PATCHES_DIR="$REPO_ROOT/scripts/patches"
+PATCH_FILE="$PATCHES_DIR/0003-combined-next-mode-init-changes.patch"
+if [ -f "$PATCH_FILE" ]; then
+    # Check if already applied (reverse apply check)
+    if git apply --reverse --check "$PATCH_FILE" 2>/dev/null; then
+        ok "Next-mode patches already applied, skipping"
+    else
+        info "Applying next-mode patches from $(basename $PATCH_FILE)..."
+        git apply "$PATCH_FILE" || {
+            err "FAILED: patch application failed — checkout may have drifted from v1.19.5"
+            err "Check git status and re-verify SHA: ${LIBKRUN_SHA}"
+            exit 1
+        }
+        ok "Next-mode patches applied"
+    fi
+else
+    err "Patch file not found: $PATCH_FILE"
+    exit 1
+fi
+
+# 2b. Apply musl statx patch only for musl targets
 if [ -n "${MUSL_TARGET:-}" ] || (command -v apk >/dev/null 2>&1); then
     info "Applying musl statx compatibility patch..."
     PASSTHROUGH="$LIBKRUN_CACHE_DIR/src/devices/src/virtio/fs/linux/passthrough.rs"

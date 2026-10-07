@@ -6,7 +6,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     /// MCP not supported (sandbox not in persistent/gateway mode)
-    #[error("MCP operations require a persistent sandbox with agent-gateway")]
+    #[error("MCP operations require a supervisor-managed sandbox")]
     McpNotSupported,
 
     /// MCP server operation failed

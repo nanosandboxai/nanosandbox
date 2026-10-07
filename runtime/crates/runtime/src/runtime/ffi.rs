@@ -146,6 +146,32 @@ pub fn set_console_output(ctx_id: u32, filepath: &str) -> Result<(), String> {
     libkrun_sys::safe_set_console_output(ctx_id, filepath)
 }
 
+pub fn disable_implicit_console(ctx_id: u32) -> Result<(), String> {
+    libkrun_sys::safe_disable_implicit_console(ctx_id)
+}
+
+pub fn add_virtio_console_default(
+    ctx_id: u32,
+    input_fd: i32,
+    output_fd: i32,
+    err_fd: i32,
+) -> Result<(), String> {
+    libkrun_sys::safe_add_virtio_console_default(ctx_id, input_fd, output_fd, err_fd)
+}
+
+pub fn add_virtio_console_multiport(ctx_id: u32) -> Result<u32, String> {
+    libkrun_sys::safe_add_virtio_console_multiport(ctx_id)
+}
+
+pub fn add_console_port_tty(
+    ctx_id: u32,
+    console_id: u32,
+    name: &str,
+    tty_fd: i32,
+) -> Result<(), String> {
+    libkrun_sys::safe_add_console_port_tty(ctx_id, console_id, name, tty_fd)
+}
+
 #[allow(dead_code)]
 pub fn add_vsock(ctx_id: u32, tsi_features: u32) -> Result<(), String> {
     libkrun_sys::safe_add_vsock(ctx_id, tsi_features)

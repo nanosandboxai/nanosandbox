@@ -4,7 +4,6 @@ FROM ${BASE_IMAGE}
 LABEL org.opencontainers.image.description="Goose agent for nanosandbox sandboxes"
 
 # Install bzip2 (tarball extraction) and libgomp1 (OpenMP runtime required by goose)
-# Use /usr/bin/apt-get directly to bypass the rootless wrapper during build.
 RUN /usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends bzip2 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -27,4 +26,4 @@ RUN set -eux; \
 RUN goose --version && echo "Goose: OK"
 RUN rm -rf /workspace/*
 
-CMD ["/usr/local/bin/nanosb-init.sh"]
+CMD ["goose"]

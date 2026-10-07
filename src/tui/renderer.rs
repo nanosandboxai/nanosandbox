@@ -634,7 +634,7 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("◻ ", Style::new().fg(theme.text_muted))
             } else if panel.mode == PanelMode::Terminal {
                 Span::styled("● ", Style::new().fg(theme.success))
-            } else if panel.sandbox.is_some() {
+            } else if panel.sandbox().is_some() {
                 Span::styled("◌ ", Style::new().fg(theme.warning))
             } else {
                 Span::styled("○ ", Style::new().fg(theme.text_muted))
@@ -958,7 +958,7 @@ fn render_panel(
         Span::styled("\u{25b6} ", Style::new().fg(theme.accent))
     } else if panel.mode == PanelMode::Loading {
         Span::styled("\u{25cc} ", Style::new().fg(theme.warning))
-    } else if panel.sandbox.is_some() {
+    } else if panel.sandbox().is_some() {
         Span::styled("\u{25cf} ", Style::new().fg(theme.success))
     } else {
         Span::styled("\u{25cb} ", Style::new().fg(theme.text_muted))

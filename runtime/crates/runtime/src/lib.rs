@@ -27,8 +27,8 @@
 //!     let mut sandbox = Sandbox::create(config).await?;
 //!     sandbox.start().await?;
 //!
-//!     // Command execution is handled by the gateway crate
-//!     // (agent-gateway inside the VM).
+//!     // Command execution and logs are handled by the sandbox supervisor
+//!     // via the virtio-console channel.
 //!
 //!     sandbox.destroy().await?;
 //!     Ok(())
@@ -42,6 +42,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod exec;
 pub mod image;
 pub mod oci;
 pub mod registry;
@@ -51,8 +52,8 @@ pub mod sandbox;
 // Re-exports
 pub use auth::CredentialStore;
 pub use config::{
-    Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping, ProjectConfig,
-    RegistryConfig, SandboxConfig,
+    ConsoleSpec, ExtraMount, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope,
+    PortMapping, ProjectConfig, RegistryConfig, RuntimeMode, SandboxConfig,
 };
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PruneResult, PulledImage};

@@ -1,10 +1,10 @@
 //! File and image upload to sandbox VMs.
 //!
-//! Transfers files from the host into sandbox VMs over SSH exec channels,
-//! with clipboard image reading and pasted file path detection.
+//! Writes uploads host-side into the panel's virtiofs workspace mount, which
+//! the guest sees at `/workspace`. Also handles clipboard image reading and
+//! pasted file path detection.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
@@ -38,8 +38,7 @@ pub fn encode_rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8
 /// Returns `(png_bytes, suggested_filename)`.
 /// Runs blocking clipboard access — call from `spawn_blocking`.
 pub fn read_clipboard_image() -> Result<(Vec<u8>, String), String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|e| format!("Clipboard init: {}", e))?;
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard init: {}", e))?;
     let image = clipboard
         .get_image()
         .map_err(|e| format!("No image in clipboard: {}", e))?;
@@ -57,8 +56,7 @@ pub fn read_clipboard_image() -> Result<(Vec<u8>, String), String> {
 ///
 /// Runs blocking clipboard access — call from `spawn_blocking`.
 pub fn read_clipboard_text() -> Result<String, String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|e| format!("Clipboard init: {}", e))?;
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard init: {}", e))?;
     clipboard
         .get_text()
         .map_err(|e| format!("No text in clipboard: {}", e))
@@ -77,137 +75,36 @@ pub fn detect_file_paths(text: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Minimal russh client handler for upload connections.
-///
-/// Accepts all server keys (localhost sandbox with ephemeral keys).
-struct UploadSshHandler;
-
-impl russh::client::Handler for UploadSshHandler {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _server_public_key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
+/// Map a guest upload path (`/workspace/...`) onto the host mount root.
+pub fn host_upload_path(mount_root: &Path, remote_path: &str) -> Option<PathBuf> {
+    let rel = remote_path.strip_prefix("/workspace")?;
+    Some(mount_root.join(rel.trim_start_matches('/')))
 }
 
-/// Upload a file to the sandbox VM via SSH exec channel.
+/// Write upload bytes into the panel's virtiofs workspace mount.
 ///
-/// Opens a **separate** SSH connection (using the panel's stored port + key),
-/// runs `mkdir -p <dir> && cat > <path>` on the remote, pipes the file data
-/// to stdin, then closes the channel. This avoids relying on the SFTP
-/// subsystem which may not be configured in all VM images.
-///
-/// Returns the number of bytes written.
-pub async fn ssh_upload(
-    ssh_host: &str,
-    ssh_port: u16,
-    key_path: &Path,
-    local_data: &[u8],
+/// The guest sees the same bytes at `remote_path` because the mount is shared.
+pub async fn fs_upload(
+    mount_root: &Path,
     remote_path: &str,
+    local_data: &[u8],
 ) -> Result<u64, String> {
-    use russh::ChannelMsg;
-
-    // Load private key.
-    let key_data = tokio::fs::read_to_string(key_path)
-        .await
-        .map_err(|e| format!("Read SSH key: {}", e))?;
-    let key_pair = russh::keys::decode_secret_key(&key_data, None)
-        .map_err(|e| format!("Decode SSH key: {}", e))?;
-    let key_with_hash =
-        russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key_pair), None);
-
-    // Connect.
-    let config = Arc::new(russh::client::Config::default());
-    let mut session =
-        russh::client::connect(config, format!("{}:{}", ssh_host, ssh_port), UploadSshHandler)
+    let host_path = host_upload_path(mount_root, remote_path)
+        .ok_or_else(|| format!("unsupported upload path: {}", remote_path))?;
+    if let Some(parent) = host_path.parent() {
+        tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|e| format!("SSH connect: {}", e))?;
-
-    // Authenticate.
-    let auth_result = session
-        .authenticate_publickey("developer", key_with_hash)
-        .await
-        .map_err(|e| format!("SSH auth: {}", e))?;
-    if !matches!(auth_result, russh::client::AuthResult::Success) {
-        return Err("SSH authentication failed".to_string());
+            .map_err(|e| format!("Create {}: {}", parent.display(), e))?;
     }
-
-    // Determine the parent directory for mkdir -p.
-    let parent_dir = Path::new(remote_path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "/tmp".to_string());
-
-    // Open a session channel and exec the upload command.
-    // `cat > path` reads binary data from stdin and writes it verbatim.
-    let mut channel = session
-        .channel_open_session()
+    tokio::fs::write(&host_path, local_data)
         .await
-        .map_err(|e| format!("SSH channel open: {}", e))?;
-
-    let cmd = format!(
-        "mkdir -p '{}' && cat > '{}'",
-        parent_dir.replace('\'', "'\\''"),
-        remote_path.replace('\'', "'\\''"),
-    );
-    channel
-        .exec(true, cmd)
-        .await
-        .map_err(|e| format!("SSH exec: {}", e))?;
-
-    // Send the file data through the channel.
-    channel
-        .data(&local_data[..])
-        .await
-        .map_err(|e| format!("SSH data send: {}", e))?;
-
-    // Signal EOF so `cat` finishes writing and exits.
-    channel
-        .eof()
-        .await
-        .map_err(|e| format!("SSH eof: {}", e))?;
-
-    // Wait for the remote side to close and check exit status.
-    let mut exit_status = None;
-    let mut stderr_output = Vec::new();
-    while let Some(msg) = channel.wait().await {
-        match msg {
-            ChannelMsg::ExitStatus { exit_status: code } => {
-                exit_status = Some(code);
-            }
-            ChannelMsg::ExtendedData { data, .. } => {
-                stderr_output.extend_from_slice(&data);
-            }
-            ChannelMsg::Eof | ChannelMsg::Close => break,
-            _ => {}
-        }
-    }
-
-    if let Some(code) = exit_status {
-        if code != 0 {
-            let stderr = String::from_utf8_lossy(&stderr_output);
-            return Err(format!(
-                "Remote command exited with status {}: {}",
-                code,
-                stderr.trim()
-            ));
-        }
-    }
-
+        .map_err(|e| format!("Write {}: {}", host_path.display(), e))?;
     Ok(local_data.len() as u64)
 }
 
 /// Spawn an async upload task for a host file.
-///
-/// Reads the file from disk, validates size, and uploads via SFTP.
-/// Sends `UploadComplete` or `UploadFailed` events back to the TUI.
 pub fn spawn_file_upload(
-    ssh_host: String,
-    ssh_port: u16,
-    key_path: PathBuf,
+    mount_root: Option<PathBuf>,
     host_path: PathBuf,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
@@ -219,7 +116,15 @@ pub fn spawn_file_upload(
             .unwrap_or_else(|| "unknown".to_string());
         let remote_path = format!("{}/{}", UPLOAD_DIR, filename);
 
-        // Read file from host.
+        let Some(mount_root) = mount_root else {
+            let _ = tx.send(AppEvent::UploadFailed {
+                panel_idx,
+                error: "No project mount for this panel; uploads require a mounted workspace."
+                    .to_string(),
+            });
+            return;
+        };
+
         let data = match tokio::fs::read(&host_path).await {
             Ok(d) => d,
             Err(e) => {
@@ -249,7 +154,7 @@ pub fn spawn_file_upload(
             filename: filename.clone(),
         });
 
-        match ssh_upload(&ssh_host, ssh_port, &key_path, &data, &remote_path).await {
+        match fs_upload(&mount_root, &remote_path, &data).await {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
                     panel_idx,
@@ -270,9 +175,7 @@ pub fn spawn_file_upload(
 
 /// Spawn an async upload task for raw bytes (e.g. clipboard image).
 pub fn spawn_bytes_upload(
-    ssh_host: String,
-    ssh_port: u16,
-    key_path: PathBuf,
+    mount_root: Option<PathBuf>,
     data: Vec<u8>,
     filename: String,
     panel_idx: usize,
@@ -280,6 +183,15 @@ pub fn spawn_bytes_upload(
 ) {
     tokio::spawn(async move {
         let remote_path = format!("{}/{}", UPLOAD_DIR, filename);
+
+        let Some(mount_root) = mount_root else {
+            let _ = tx.send(AppEvent::UploadFailed {
+                panel_idx,
+                error: "No project mount for this panel; uploads require a mounted workspace."
+                    .to_string(),
+            });
+            return;
+        };
 
         if data.len() as u64 > MAX_UPLOAD_SIZE {
             let _ = tx.send(AppEvent::UploadFailed {
@@ -299,7 +211,7 @@ pub fn spawn_bytes_upload(
             filename: filename.clone(),
         });
 
-        match ssh_upload(&ssh_host, ssh_port, &key_path, &data, &remote_path).await {
+        match fs_upload(&mount_root, &remote_path, &data).await {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
                     panel_idx,

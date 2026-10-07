@@ -25,9 +25,9 @@ mod libkrun;
 // gvproxy networking (Unix only — uses Unix sockets)
 pub(crate) mod gvproxy;
 
-pub use self::libkrun::LibkrunRuntime;
+pub use self::libkrun::{handle_boot_vm_subprocess, BootVmRequest, LibkrunRuntime};
 
-pub use self::libkrun::handle_boot_vm_subprocess;
+pub use self::gvproxy::GvproxyManager;
 
 /// Check if gvproxy is available on this system.
 pub fn gvproxy_available() -> bool {
@@ -41,7 +41,7 @@ pub fn gvproxy_available() -> bool {
     }
 }
 
-use crate::config::SandboxConfig;
+use crate::config::{ConsoleSpec, ExtraMount, SandboxConfig};
 use crate::error::Result;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -81,6 +81,18 @@ impl RuntimeBackend {
         }
     }
 
+    /// Start the VM in next mode with console fds and extra mounts.
+    pub async fn start_next(
+        &self,
+        id: &str,
+        console: Option<ConsoleSpec>,
+        extra_mounts: Vec<ExtraMount>,
+    ) -> Result<()> {
+        match self {
+            RuntimeBackend::Libkrun(r) => r.start_next(id, console, extra_mounts).await,
+        }
+    }
+
     /// Dynamically forward a guest port to the same host port via gvproxy.
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
         match self {
@@ -98,6 +110,18 @@ impl RuntimeBackend {
     pub fn is_vm_running(&self, id: &str) -> bool {
         match self {
             RuntimeBackend::Libkrun(r) => r.is_vm_running(id),
+        }
+    }
+
+    pub fn vm_pid(&self, id: &str) -> Option<i32> {
+        match self {
+            RuntimeBackend::Libkrun(r) => r.vm_pid(id),
+        }
+    }
+
+    pub fn vm_exit_code(&self, id: &str) -> Option<i32> {
+        match self {
+            RuntimeBackend::Libkrun(r) => r.vm_exit_code(id),
         }
     }
 
@@ -157,6 +181,16 @@ impl Runtime {
         self.backend.start(id).await
     }
 
+    /// Start the VM in next mode with console fds and extra mounts.
+    pub async fn start_next(
+        &self,
+        id: &str,
+        console: Option<ConsoleSpec>,
+        extra_mounts: Vec<ExtraMount>,
+    ) -> Result<()> {
+        self.backend.start_next(id, console, extra_mounts).await
+    }
+
     /// Dynamically forward a guest port to the same host port via gvproxy.
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
         self.backend.expose_port(id, port)
@@ -170,6 +204,16 @@ impl Runtime {
     /// Check if the VM process is still running.
     pub fn is_vm_running(&self, id: &str) -> bool {
         self.backend.is_vm_running(id)
+    }
+
+    /// Get the VM process id (if spawned).
+    pub fn vm_pid(&self, id: &str) -> Option<i32> {
+        self.backend.vm_pid(id)
+    }
+
+    /// Get the VM exit code (if the VM has exited).
+    pub fn vm_exit_code(&self, id: &str) -> Option<i32> {
+        self.backend.vm_exit_code(id)
     }
 
     /// Stop a VM (force kill).

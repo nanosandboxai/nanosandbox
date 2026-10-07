@@ -17,7 +17,7 @@ This crate handles VM lifecycle, OCI image management, and containerization. It 
 - **OCI Image Support** -- Use any container image from Docker Hub, GHCR, or private registries
 - **Sub-Second Boot Times** -- Optimized VM startup using libkrun
 - **TSI Networking** -- Transparent Socket Impersonation for seamless network access
-- **Generic HTTP Gateway API** -- `gateway_http_get/post/delete/post_sse` for communicating with in-VM services
+- **Next-Mode Console Boot** -- console I/O fds, extra virtiofs mounts, and microVM-layer network bring-up for vanilla images
 - **Cross-Platform** -- macOS Apple Silicon (stable), Linux (in development)
 
 ## Architecture
@@ -50,10 +50,7 @@ Key exports from the `nanosandbox` crate:
 | `SandboxConfig` | Builder pattern for VM configuration (CPUs, memory, image, mounts, networking) |
 | `ImageManager` | OCI image operations: pull, list, remove, prune |
 | `Runtime` | Low-level platform abstraction over libkrun FFI |
-| `gateway_http_get` | HTTP GET to an in-VM service |
-| `gateway_http_post` | HTTP POST to an in-VM service |
-| `gateway_http_delete` | HTTP DELETE to an in-VM service |
-| `gateway_http_post_sse` | HTTP POST with SSE streaming to an in-VM service |
+| `Sandbox::start_next` | Next-mode start with console fds and extra virtiofs mounts |
 
 Additional re-exports: `SandboxConfig`, `ExecResult`, `ExecOptions`, `SandboxStatus`, `SandboxRegistry`, `SandboxInfo`, `OciBundle`, `CredentialStore`, `NetworkConfig`, `NetworkMode`, `NetworkScope`, `Mount`, `MountType`, `PortMapping`, `ImageRef`, `PulledImage`, `PruneResult`.
 
@@ -141,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
 
 | Concern | Where to find it |
 |---------|-----------------|
-| Agent gateway | [Sandbox SDK](https://github.com/nanosandboxai/sandbox) |
+| Console streaming / logs | CLI (`nanosb`) |
 | MCP server management | [Sandbox SDK](https://github.com/nanosandboxai/sandbox) |
 | Agent configuration / sandbox.yml parsing | [Sandbox SDK](https://github.com/nanosandboxai/sandbox) |
 | Docker images for agents | [Agents Registry](https://github.com/nanosandboxai/agents-registry) |
