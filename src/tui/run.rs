@@ -91,6 +91,22 @@ pub enum SessionStartMode {
     ResumeById(String),
 }
 
+/// Result of processing a single [`AppEvent`] in the headless event core.
+pub enum EventOutcome {
+    /// Keep looping.
+    Continue,
+    /// The application should exit.
+    Quit,
+    /// A TUI tool must be launched with the terminal suspended. The caller
+    /// (which owns the real terminal) performs the suspend/run/resume.
+    RunTuiTool {
+        /// Binary name of the tool to launch.
+        binary: String,
+        /// Path to the clone directory to open.
+        path: std::path::PathBuf,
+    },
+}
+
 pub async fn run_tui(
     project_path: Option<std::path::PathBuf>,
     sandbox_configs: Vec<(String, sandbox::AgentSandboxConfig)>,
@@ -330,400 +346,9 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
     // Main event loop.
     //
     while let Some(event) = rx.recv().await {
-        match event {
-            AppEvent::Terminal(crossterm_event) => {
-                match crossterm_event {
-                    CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                        // Ctrl+C with active selection → copy to clipboard
-                        // instead of forwarding/clearing.
-                        if key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                            && app
-                                .mouse_selection
-                                .as_ref()
-                                .is_some_and(|s| !s.dragging && s.start != s.end)
-                        {
-                            if let Some(sel) = app.mouse_selection.as_ref() {
-                                let (start, end) = sel.normalized();
-                                if let Some(panel) = app.panels.get(sel.panel_idx) {
-                                    if let Some(ref term) = panel.terminal {
-                                        let text = term
-                                            .screen()
-                                            .contents_between(start.0, start.1, end.0, end.1);
-                                        if !text.is_empty() {
-                                            let _ = copy_to_clipboard(&text);
-                                            app.set_status_message(format!(
-                                                "Copied {} chars to clipboard.",
-                                                text.len()
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            app.mouse_selection = None;
-                        } else {
-                            // Clear mouse selection on any other keypress.
-                            app.mouse_selection = None;
-                            handle_key_event(&mut app, key, &tx).await;
-                        }
-                    }
-                    CrosstermEvent::Key(_) => {
-                        // Ignore Release / Repeat events.
-                    }
-                    CrosstermEvent::Mouse(mouse) => {
-                        handle_mouse_event(&mut app, mouse);
-                    }
-                    CrosstermEvent::Paste(text) => {
-                        tracing::info!(
-                            text_len = text.len(),
-                            focused_panel = app.focused_panel,
-                            "Received terminal paste event"
-                        );
-                        handle_paste_event(&mut app, text, &tx);
-                    }
-                    CrosstermEvent::Resize(_cols, _rows) => {
-                        // ratatui picks up new size on next draw();
-                        // render_panel() detects the delta and propagates
-                        // to vt100 parser + SSH PTY.
-                    }
-                    CrosstermEvent::FocusGained => {}
-                    CrosstermEvent::FocusLost => {}
-                }
-            }
-            AppEvent::SandboxCreating { panel_idx, message } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.loading_message = Some(message);
-                }
-            }
-            AppEvent::SupervisorReady {
-                panel_idx,
-                name,
-                short_id,
-                project_mount,
-            } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.backend = None;
-                    panel.set_supervisor(name.clone());
-                    panel.sandbox_id_short = short_id;
-                    if project_mount.is_some() {
-                        panel.project_mount = project_mount;
-                    }
-                    panel.loading_message = Some("Attaching to supervised sandbox...".into());
-                    panel.mode = PanelMode::Loading;
-                }
-
-                let (pty_cols, pty_rows) = {
-                    let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
-                    let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
-                    super::grid::estimate_panel_inner_size(
-                        term_size.0,
-                        term_size.1,
-                        app.visible_panel_count(),
-                        has_sidebar,
-                        app.zoomed,
-                    )
-                };
-
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let max_attempts = 10;
-                    let mut last_err = String::new();
-                    for attempt in 1..=max_attempts {
-                        let delay = if attempt == 1 { 300 } else { 1000 };
-                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                        match super::terminal::connect_console(
-                            name.clone(),
-                            pty_cols,
-                            pty_rows,
-                            panel_idx,
-                            tx.clone(),
-                        )
-                        .await
-                        {
-                            Ok(handle) => {
-                                let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
-                                return;
-                            }
-                            Err(e) => {
-                                last_err = e;
-                            }
-                        }
-                    }
-                    let _ = tx.send(AppEvent::SshDisconnected {
-                        panel_idx,
-                        error: Some(format!(
-                            "Console attach failed after {} attempts: {}",
-                            max_attempts, last_err
-                        )),
-                    });
-                });
-            }
-            AppEvent::SandboxFailed { panel_idx, error } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.loading_error = Some(error);
-                }
-            }
-            AppEvent::SshConnected { panel_idx, handle } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    let was_reconnecting = panel.reconnecting;
-                    if was_reconnecting && panel.terminal.is_some() {
-                        // Reconnect: keep the existing terminal screen intact
-                        // so the user doesn't see any flicker. Only attach
-                        // the new SSH handle.
-                        panel.terminal_handle = Some(handle);
-                    } else {
-                        // Fresh connection: create new terminal.
-                        let (cols, rows) = panel.last_terminal_size;
-                        panel.terminal = Some(super::terminal::SshTerminal::new(cols, rows));
-                        panel.terminal_handle = Some(handle);
-                    }
-                    panel.mode = if panel.auto_mode {
-                        PanelMode::Headless
-                    } else {
-                        PanelMode::Terminal
-                    };
-                    panel.reconnecting = false;
-                    panel.loading_message = None;
-                    panel.loading_error = None;
-                }
-            }
-            AppEvent::TerminalData { panel_idx, data } => {
-                // Clear selection if terminal content changes in the selected panel
-                // (but not while user is actively dragging).
-                if app
-                    .mouse_selection
-                    .as_ref()
-                    .is_some_and(|s| s.panel_idx == panel_idx && !s.dragging)
-                {
-                    app.mouse_selection = None;
-                }
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    if panel.mode == PanelMode::Headless {
-                        // Headless: parse NDJSON lines from raw SSH bytes.
-                        if let Some(ref mut hs) = panel.headless_state {
-                            parse_headless_data(hs, &data);
-                        }
-                        // Still feed vt100 for /terminal fallback + URL extraction.
-                        if let Some(ref mut term) = panel.terminal {
-                            term.process_bytes(&data);
-
-                            let urls = super::terminal::extract_urls_from_screen(term.screen());
-                            let now = std::time::Instant::now();
-                            for url in urls {
-                                if !super::terminal::is_auth_url(&url) {
-                                    continue;
-                                }
-                                if !url.contains('?') && !super::terminal::is_device_code_url(&url)
-                                {
-                                    continue;
-                                }
-                                let key = super::terminal::url_dedup_key(&url);
-                                if panel.opened_urls.contains(&key) {
-                                    continue;
-                                }
-                                panel
-                                    .pending_urls
-                                    .entry(key)
-                                    .and_modify(|(existing_url, ts)| {
-                                        if url.len() > existing_url.len() {
-                                            *existing_url = url.clone();
-                                            *ts = now;
-                                        }
-                                    })
-                                    .or_insert((url, now));
-                            }
-                        }
-                    } else if let Some(ref mut term) = panel.terminal {
-                        term.process_bytes(&data);
-
-                        // Extract URLs from the parsed vt100 screen, then
-                        // validate the hostname.  TUI apps (ink.js) re-render
-                        // the screen, sometimes garbling text — host validation
-                        // rejects those broken URLs.  The first clean read is
-                        // buffered for 2s (keeping the longest per host+path),
-                        // then opened once.
-                        let urls = super::terminal::extract_urls_from_screen(term.screen());
-                        let now = std::time::Instant::now();
-                        for url in urls {
-                            if !super::terminal::is_auth_url(&url) {
-                                continue;
-                            }
-                            // OAuth authorize URLs always have query parameters
-                            // (?client_id=...).  Truncated URLs from partial screen
-                            // renders won't have reached the '?' yet — skip them.
-                            // Exception: device-code flow URLs (e.g. github.com/login/device,
-                            // cursor.com/loginlink) are complete without query params.
-                            if !url.contains('?') && !super::terminal::is_device_code_url(&url) {
-                                continue;
-                            }
-                            let key = super::terminal::url_dedup_key(&url);
-                            if panel.opened_urls.contains(&key) {
-                                continue;
-                            }
-                            // Keep the longest valid URL seen for each dedup key.
-                            // Reset the debounce timer when the URL grows so we
-                            // wait for the screen to stabilise after a re-render.
-                            panel
-                                .pending_urls
-                                .entry(key)
-                                .and_modify(|(existing_url, ts)| {
-                                    if url.len() > existing_url.len() {
-                                        *existing_url = url.clone();
-                                        *ts = now;
-                                    }
-                                })
-                                .or_insert((url, now));
-                        }
-                    }
-                }
-            }
-            AppEvent::SshDisconnected { panel_idx, error } => {
-                // Check if this is a reconnect attempt that failed.
-                let is_reconnecting = app.panels.get(panel_idx).is_some_and(|p| p.reconnecting);
-                let is_headless = app
-                    .panels
-                    .get(panel_idx)
-                    .is_some_and(|p| p.mode == PanelMode::Headless);
-
-                if is_reconnecting {
-                    // Reconnect failed: revert to loading screen with error.
-                    if let Some(panel) = app.panels.get_mut(panel_idx) {
-                        panel.terminal = None;
-                        panel.terminal_handle = None;
-                        panel.mode = PanelMode::Loading;
-                        panel.loading_error = error.map(|e| format!("Reconnect failed: {}", e));
-                        panel.reconnecting = false;
-                        panel.loading_tick = 0;
-                    }
-                } else if is_headless {
-                    // Headless panel: keep panel visible so user can read output.
-                    // Mark the headless state as completed/error and clean up SSH resources.
-                    if let Some(panel) = app.panels.get_mut(panel_idx) {
-                        // Only update status if not already marked completed/error
-                        // (ExitStatus + Eof/Close both fire SshDisconnected).
-                        if let Some(ref mut hs) = panel.headless_state {
-                            if hs.status != "completed" && hs.status != "error" {
-                                if let Some(ref err) = error {
-                                    hs.agent_text.push_str(&format!("\n[process] {}\n", err));
-                                    hs.finish("error");
-                                } else {
-                                    hs.finish("completed");
-                                }
-                            }
-                        }
-                        // Drop SSH handle but keep the panel.
-                        panel.terminal_handle = None;
-
-                        let name = panel.agent_name.clone();
-                        let msg = if let Some(ref err) = error {
-                            format!("'{}' headless agent exited: {}", name, err)
-                        } else {
-                            format!("'{}' headless agent completed.", name)
-                        };
-                        app.set_status_message(msg);
-                    }
-                } else {
-                    // Genuine disconnect: kill sandbox and close panel.
-                    if let Some((name, sandbox_arc, supervisor_name)) =
-                        kill_panel_at(&mut app, panel_idx)
-                    {
-                        if let Some(sb) = sandbox_arc {
-                            spawn_sandbox_destroy(sb);
-                        }
-                        if let Some(sname) = supervisor_name {
-                            spawn_supervisor_stop(sname);
-                        }
-
-                        let msg = if let Some(err) = error {
-                            format!("'{}' disconnected: {}", name, err)
-                        } else {
-                            format!("'{}' session ended.", name)
-                        };
-                        app.set_status_message(msg);
-                    }
-                }
-            }
-            AppEvent::Tick => {
-                // Increment loading animation counter and tick down panel notifications.
-                for panel in app.panels.iter_mut() {
-                    if panel.mode == PanelMode::Loading {
-                        panel.loading_tick = panel.loading_tick.wrapping_add(1);
-                    }
-                    if let Some((_, _, ref mut ticks)) = panel.notification {
-                        *ticks = ticks.saturating_sub(1);
-                        if *ticks == 0 {
-                            panel.notification = None;
-                        }
-                    }
-                }
-
-                // Flush pending URLs whose 2s debounce window has elapsed.
-                let now = std::time::Instant::now();
-                let debounce = std::time::Duration::from_secs(2);
-                for panel in app.panels.iter_mut() {
-                    let ready: Vec<String> = panel
-                        .pending_urls
-                        .iter()
-                        .filter(|(_key, (_url, first_seen))| {
-                            now.duration_since(*first_seen) >= debounce
-                        })
-                        .map(|(key, _)| key.clone())
-                        .collect();
-                    for key in ready {
-                        if let Some((url, _)) = panel.pending_urls.remove(&key) {
-                            tracing::debug!(
-                                panel = %panel.agent_name,
-                                dedup_key = %key,
-                                url = %url,
-                                "Auth URL debounce elapsed; opening in host browser"
-                            );
-                            panel.opened_urls.insert(key);
-                            tracing::debug!(
-                                panel = %panel.agent_name,
-                                url = %url,
-                                "Opening auth URL in host browser"
-                            );
-                            super::terminal::open_url_in_browser(&url);
-                        }
-                    }
-                }
-
-                // Tick down temporary status message.
-                if let Some((_, ref mut ticks)) = app.status_message {
-                    *ticks = ticks.saturating_sub(1);
-                    if *ticks == 0 {
-                        app.status_message = None;
-                    }
-                }
-
-                // Tick down auto-dismiss system message popup.
-                if let Some(ref mut ticks) = app.system_message_ticks {
-                    *ticks = ticks.saturating_sub(1);
-                    if *ticks == 0 {
-                        app.system_messages.clear();
-                        app.system_message_ticks = None;
-                    }
-                }
-                app.sidebar_tick_counter = app.sidebar_tick_counter.wrapping_add(1);
-                if app.sidebar_tick_counter.is_multiple_of(8) {
-                    // Refresh file lists when sidebar is visible (~every 2s).
-                    if app.show_sandbox_sidebar {
-                        app.refresh_sidebar_modified_files();
-                        app.refresh_sidebar_committed_files();
-                    }
-                    // Auto-sync commits from all panel clones to source repos.
-                    let notifications = app.sync_project_commits();
-                    for (panel_idx, message) in notifications {
-                        if let Some(panel) = app.panels.get_mut(panel_idx) {
-                            panel.chat_history.push(ChatMessage {
-                                role: MessageRole::System,
-                                content: message,
-                            });
-                        }
-                    }
-                }
-            }
-            AppEvent::OpenTuiTool { binary, path } => {
+        match handle_event(&mut app, event, &tx).await {
+            EventOutcome::Quit => break,
+            EventOutcome::RunTuiTool { binary, path } => {
                 // Suspend TUI: leave alternate screen, disable raw mode
                 let _ = disable_raw_mode();
                 let _ = execute!(
@@ -770,44 +395,8 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                 );
                 terminal.clear()?;
             }
-            AppEvent::UploadStarted {
-                panel_idx,
-                filename,
-            } => {
-                let msg = format!("Uploading {}...", filename);
-                // Show immediately; stays until replaced by Complete/Failed.
-                // 120 ticks × 250ms = 30s (generous timeout, replaced on completion).
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.notification = Some((msg, false, 120));
-                }
-            }
-            AppEvent::UploadComplete {
-                panel_idx,
-                filename,
-                remote_path,
-                size,
-            } => {
-                let msg = format!(
-                    "Uploaded {} ({}) -> {}",
-                    filename,
-                    super::upload::format_size(size),
-                    remote_path,
-                );
-                // Show overlay notification on the panel (replaces previous, auto-dismisses).
-                // 16 ticks × 250ms = 4s.
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.notification = Some((msg, false, 16));
-                }
-            }
-            AppEvent::UploadFailed { panel_idx, error } => {
-                let msg = format!("Upload failed: {}", error);
-                // 24 ticks × 250ms = 6s (errors stay longer).
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.notification = Some((msg, true, 24));
-                }
-            }
+            EventOutcome::Continue => {}
         }
-
         if app.should_quit {
             break;
         }
@@ -922,6 +511,456 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
     // but belt-and-suspenders — explicitly exit so the process never lingers
     // after /quit or /destroy.
     Ok(())
+}
+
+/// Process a single [`AppEvent`], mutating `app` and possibly spawning work
+/// via `tx`. This is the headless event core: it performs NO terminal I/O.
+/// The one terminal-coupled event ([`AppEvent::OpenTuiTool`]) is returned to
+/// the caller as [`EventOutcome::RunTuiTool`] instead of being executed here.
+pub async fn handle_event(
+    app: &mut App,
+    event: AppEvent,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> EventOutcome {
+    match event {
+        AppEvent::Terminal(crossterm_event) => {
+            match crossterm_event {
+                CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Ctrl+C with active selection → copy to clipboard
+                    // instead of forwarding/clearing.
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && app
+                            .mouse_selection
+                            .as_ref()
+                            .is_some_and(|s| !s.dragging && s.start != s.end)
+                    {
+                        if let Some(sel) = app.mouse_selection.as_ref() {
+                            let (start, end) = sel.normalized();
+                            if let Some(panel) = app.panels.get(sel.panel_idx) {
+                                if let Some(ref term) = panel.terminal {
+                                    let text = term
+                                        .screen()
+                                        .contents_between(start.0, start.1, end.0, end.1);
+                                    if !text.is_empty() {
+                                        let _ = copy_to_clipboard(&text);
+                                        app.set_status_message(format!(
+                                            "Copied {} chars to clipboard.",
+                                            text.len()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        app.mouse_selection = None;
+                    } else {
+                        // Clear mouse selection on any other keypress.
+                        app.mouse_selection = None;
+                        handle_key_event(app, key, tx).await;
+                    }
+                }
+                CrosstermEvent::Key(_) => {
+                    // Ignore Release / Repeat events.
+                }
+                CrosstermEvent::Mouse(mouse) => {
+                    handle_mouse_event(app, mouse);
+                }
+                CrosstermEvent::Paste(text) => {
+                    tracing::info!(
+                        text_len = text.len(),
+                        focused_panel = app.focused_panel,
+                        "Received terminal paste event"
+                    );
+                    handle_paste_event(app, text, tx);
+                }
+                CrosstermEvent::Resize(_cols, _rows) => {
+                    // ratatui picks up new size on next draw();
+                    // render_panel() detects the delta and propagates
+                    // to vt100 parser + SSH PTY.
+                }
+                CrosstermEvent::FocusGained => {}
+                CrosstermEvent::FocusLost => {}
+            }
+        }
+        AppEvent::SandboxCreating { panel_idx, message } => {
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.loading_message = Some(message);
+            }
+        }
+        AppEvent::SupervisorReady {
+            panel_idx,
+            name,
+            short_id,
+            project_mount,
+        } => {
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.backend = None;
+                panel.set_supervisor(name.clone());
+                panel.sandbox_id_short = short_id;
+                if project_mount.is_some() {
+                    panel.project_mount = project_mount;
+                }
+                panel.loading_message = Some("Attaching to supervised sandbox...".into());
+                panel.mode = PanelMode::Loading;
+            }
+
+            let (pty_cols, pty_rows) = {
+                let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
+                let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
+                super::grid::estimate_panel_inner_size(
+                    term_size.0,
+                    term_size.1,
+                    app.visible_panel_count(),
+                    has_sidebar,
+                    app.zoomed,
+                )
+            };
+
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let max_attempts = 10;
+                let mut last_err = String::new();
+                for attempt in 1..=max_attempts {
+                    let delay = if attempt == 1 { 300 } else { 1000 };
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    match super::terminal::connect_console(
+                        name.clone(),
+                        pty_cols,
+                        pty_rows,
+                        panel_idx,
+                        tx.clone(),
+                    )
+                    .await
+                    {
+                        Ok(handle) => {
+                            let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
+                            return;
+                        }
+                        Err(e) => {
+                            last_err = e;
+                        }
+                    }
+                }
+                let _ = tx.send(AppEvent::SshDisconnected {
+                    panel_idx,
+                    error: Some(format!(
+                        "Console attach failed after {} attempts: {}",
+                        max_attempts, last_err
+                    )),
+                });
+            });
+        }
+        AppEvent::SandboxFailed { panel_idx, error } => {
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.loading_error = Some(error);
+            }
+        }
+        AppEvent::SshConnected { panel_idx, handle } => {
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                let was_reconnecting = panel.reconnecting;
+                if was_reconnecting && panel.terminal.is_some() {
+                    // Reconnect: keep the existing terminal screen intact
+                    // so the user doesn't see any flicker. Only attach
+                    // the new SSH handle.
+                    panel.terminal_handle = Some(handle);
+                } else {
+                    // Fresh connection: create new terminal.
+                    let (cols, rows) = panel.last_terminal_size;
+                    panel.terminal = Some(super::terminal::SshTerminal::new(cols, rows));
+                    panel.terminal_handle = Some(handle);
+                }
+                panel.mode = if panel.auto_mode {
+                    PanelMode::Headless
+                } else {
+                    PanelMode::Terminal
+                };
+                panel.reconnecting = false;
+                panel.loading_message = None;
+                panel.loading_error = None;
+            }
+        }
+        AppEvent::TerminalData { panel_idx, data } => {
+            // Clear selection if terminal content changes in the selected panel
+            // (but not while user is actively dragging).
+            if app
+                .mouse_selection
+                .as_ref()
+                .is_some_and(|s| s.panel_idx == panel_idx && !s.dragging)
+            {
+                app.mouse_selection = None;
+            }
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                if panel.mode == PanelMode::Headless {
+                    // Headless: parse NDJSON lines from raw SSH bytes.
+                    if let Some(ref mut hs) = panel.headless_state {
+                        parse_headless_data(hs, &data);
+                    }
+                    // Still feed vt100 for /terminal fallback + URL extraction.
+                    if let Some(ref mut term) = panel.terminal {
+                        term.process_bytes(&data);
+
+                        let urls = super::terminal::extract_urls_from_screen(term.screen());
+                        let now = std::time::Instant::now();
+                        for url in urls {
+                            if !super::terminal::is_auth_url(&url) {
+                                continue;
+                            }
+                            if !url.contains('?') && !super::terminal::is_device_code_url(&url)
+                            {
+                                continue;
+                            }
+                            let key = super::terminal::url_dedup_key(&url);
+                            if panel.opened_urls.contains(&key) {
+                                continue;
+                            }
+                            panel
+                                .pending_urls
+                                .entry(key)
+                                .and_modify(|(existing_url, ts)| {
+                                    if url.len() > existing_url.len() {
+                                        *existing_url = url.clone();
+                                        *ts = now;
+                                    }
+                                })
+                                .or_insert((url, now));
+                        }
+                    }
+                } else if let Some(ref mut term) = panel.terminal {
+                    term.process_bytes(&data);
+
+                    // Extract URLs from the parsed vt100 screen, then
+                    // validate the hostname.  TUI apps (ink.js) re-render
+                    // the screen, sometimes garbling text — host validation
+                    // rejects those broken URLs.  The first clean read is
+                    // buffered for 2s (keeping the longest per host+path),
+                    // then opened once.
+                    let urls = super::terminal::extract_urls_from_screen(term.screen());
+                    let now = std::time::Instant::now();
+                    for url in urls {
+                        if !super::terminal::is_auth_url(&url) {
+                            continue;
+                        }
+                        // OAuth authorize URLs always have query parameters
+                        // (?client_id=...).  Truncated URLs from partial screen
+                        // renders won't have reached the '?' yet — skip them.
+                        // Exception: device-code flow URLs (e.g. github.com/login/device,
+                        // cursor.com/loginlink) are complete without query params.
+                        if !url.contains('?') && !super::terminal::is_device_code_url(&url) {
+                            continue;
+                        }
+                        let key = super::terminal::url_dedup_key(&url);
+                        if panel.opened_urls.contains(&key) {
+                            continue;
+                        }
+                        // Keep the longest valid URL seen for each dedup key.
+                        // Reset the debounce timer when the URL grows so we
+                        // wait for the screen to stabilise after a re-render.
+                        panel
+                            .pending_urls
+                            .entry(key)
+                            .and_modify(|(existing_url, ts)| {
+                                if url.len() > existing_url.len() {
+                                    *existing_url = url.clone();
+                                    *ts = now;
+                                }
+                            })
+                            .or_insert((url, now));
+                    }
+                }
+            }
+        }
+        AppEvent::SshDisconnected { panel_idx, error } => {
+            // Check if this is a reconnect attempt that failed.
+            let is_reconnecting = app.panels.get(panel_idx).is_some_and(|p| p.reconnecting);
+            let is_headless = app
+                .panels
+                .get(panel_idx)
+                .is_some_and(|p| p.mode == PanelMode::Headless);
+
+            if is_reconnecting {
+                // Reconnect failed: revert to loading screen with error.
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.terminal = None;
+                    panel.terminal_handle = None;
+                    panel.mode = PanelMode::Loading;
+                    panel.loading_error = error.map(|e| format!("Reconnect failed: {}", e));
+                    panel.reconnecting = false;
+                    panel.loading_tick = 0;
+                }
+            } else if is_headless {
+                // Headless panel: keep panel visible so user can read output.
+                // Mark the headless state as completed/error and clean up SSH resources.
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    // Only update status if not already marked completed/error
+                    // (ExitStatus + Eof/Close both fire SshDisconnected).
+                    if let Some(ref mut hs) = panel.headless_state {
+                        if hs.status != "completed" && hs.status != "error" {
+                            if let Some(ref err) = error {
+                                hs.agent_text.push_str(&format!("\n[process] {}\n", err));
+                                hs.finish("error");
+                            } else {
+                                hs.finish("completed");
+                            }
+                        }
+                    }
+                    // Drop SSH handle but keep the panel.
+                    panel.terminal_handle = None;
+
+                    let name = panel.agent_name.clone();
+                    let msg = if let Some(ref err) = error {
+                        format!("'{}' headless agent exited: {}", name, err)
+                    } else {
+                        format!("'{}' headless agent completed.", name)
+                    };
+                    app.set_status_message(msg);
+                }
+            } else {
+                // Genuine disconnect: kill sandbox and close panel.
+                if let Some((name, sandbox_arc, supervisor_name)) =
+                    kill_panel_at(app, panel_idx)
+                {
+                    if let Some(sb) = sandbox_arc {
+                        spawn_sandbox_destroy(sb);
+                    }
+                    if let Some(sname) = supervisor_name {
+                        spawn_supervisor_stop(sname);
+                    }
+
+                    let msg = if let Some(err) = error {
+                        format!("'{}' disconnected: {}", name, err)
+                    } else {
+                        format!("'{}' session ended.", name)
+                    };
+                    app.set_status_message(msg);
+                }
+            }
+        }
+        AppEvent::Tick => {
+            // Increment loading animation counter and tick down panel notifications.
+            for panel in app.panels.iter_mut() {
+                if panel.mode == PanelMode::Loading {
+                    panel.loading_tick = panel.loading_tick.wrapping_add(1);
+                }
+                if let Some((_, _, ref mut ticks)) = panel.notification {
+                    *ticks = ticks.saturating_sub(1);
+                    if *ticks == 0 {
+                        panel.notification = None;
+                    }
+                }
+            }
+
+            // Flush pending URLs whose 2s debounce window has elapsed.
+            let now = std::time::Instant::now();
+            let debounce = std::time::Duration::from_secs(2);
+            for panel in app.panels.iter_mut() {
+                let ready: Vec<String> = panel
+                    .pending_urls
+                    .iter()
+                    .filter(|(_key, (_url, first_seen))| {
+                        now.duration_since(*first_seen) >= debounce
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                for key in ready {
+                    if let Some((url, _)) = panel.pending_urls.remove(&key) {
+                        tracing::debug!(
+                            panel = %panel.agent_name,
+                            dedup_key = %key,
+                            url = %url,
+                            "Auth URL debounce elapsed; opening in host browser"
+                        );
+                        panel.opened_urls.insert(key);
+                        tracing::debug!(
+                            panel = %panel.agent_name,
+                            url = %url,
+                            "Opening auth URL in host browser"
+                        );
+                        super::terminal::open_url_in_browser(&url);
+                    }
+                }
+            }
+
+            // Tick down temporary status message.
+            if let Some((_, ref mut ticks)) = app.status_message {
+                *ticks = ticks.saturating_sub(1);
+                if *ticks == 0 {
+                    app.status_message = None;
+                }
+            }
+
+            // Tick down auto-dismiss system message popup.
+            if let Some(ref mut ticks) = app.system_message_ticks {
+                *ticks = ticks.saturating_sub(1);
+                if *ticks == 0 {
+                    app.system_messages.clear();
+                    app.system_message_ticks = None;
+                }
+            }
+            app.sidebar_tick_counter = app.sidebar_tick_counter.wrapping_add(1);
+            if app.sidebar_tick_counter.is_multiple_of(8) {
+                // Refresh file lists when sidebar is visible (~every 2s).
+                if app.show_sandbox_sidebar {
+                    app.refresh_sidebar_modified_files();
+                    app.refresh_sidebar_committed_files();
+                }
+                // Auto-sync commits from all panel clones to source repos.
+                let notifications = app.sync_project_commits();
+                for (panel_idx, message) in notifications {
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        panel.chat_history.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: message,
+                        });
+                    }
+                }
+            }
+        }
+        AppEvent::OpenTuiTool { binary, path } => {
+            return EventOutcome::RunTuiTool { binary, path };
+        }
+        AppEvent::UploadStarted {
+            panel_idx,
+            filename,
+        } => {
+            let msg = format!("Uploading {}...", filename);
+            // Show immediately; stays until replaced by Complete/Failed.
+            // 120 ticks × 250ms = 30s (generous timeout, replaced on completion).
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.notification = Some((msg, false, 120));
+            }
+        }
+        AppEvent::UploadComplete {
+            panel_idx,
+            filename,
+            remote_path,
+            size,
+        } => {
+            let msg = format!(
+                "Uploaded {} ({}) -> {}",
+                filename,
+                super::upload::format_size(size),
+                remote_path,
+            );
+            // Show overlay notification on the panel (replaces previous, auto-dismisses).
+            // 16 ticks × 250ms = 4s.
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.notification = Some((msg, false, 16));
+            }
+        }
+        AppEvent::UploadFailed { panel_idx, error } => {
+            let msg = format!("Upload failed: {}", error);
+            // 24 ticks × 250ms = 6s (errors stay longer).
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.notification = Some((msg, true, 24));
+            }
+        }
+    }
+
+    if app.should_quit {
+        EventOutcome::Quit
+    } else {
+        EventOutcome::Continue
+    }
 }
 
 /// Print validation results as a checklist.
@@ -1182,7 +1221,7 @@ fn spawn_supervisor_stop(name: String) {
 }
 
 /// Handle a single key event.
-async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<AppEvent>) {
+pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<AppEvent>) {
     // Pending reconnect confirmation: intercept y/n before anything else.
     if app.pending_reconnect.is_some() {
         match key.code {
@@ -1792,7 +1831,7 @@ async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSend
 }
 
 /// Handle a parsed slash command.
-async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<AppEvent>) {
+pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<AppEvent>) {
     match cmd {
         Command::Quit => {
             if app.input_focus == InputFocus::Panel {
@@ -1810,38 +1849,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
         Command::Help => {
             app.set_system_message_persistent(ChatMessage {
                 role: MessageRole::System,
-                content: concat!(
-                    "Available commands:\n",
-                    "  /add <agent> [--tag <version>] [--model <model>] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...\n",
-                    "                                Add a new agent panel\n",
-                    "  /sandboxes                    Toggle sandbox sidebar\n",
-                    "  /focus <n>                    Focus panel n (0-indexed)\n",
-                    "  /close [n|name]               Hide panel (sandbox keeps running)\n",
-                    "  /open [n|name]                Show a hidden panel\n",
-                    "  /kill [n|name]                Kill sandbox & remove panel\n",
-                    "  /copy                         Copy panel content to clipboard\n",
-                    "  /upload <path>                Upload host file to sandbox\n",
-                    "  /paste-image                  Paste clipboard image to sandbox\n",
-                    "  /zoom                         Toggle panel zoom (Ctrl+F)\n",
-                    "  /theme [name]                 Switch colour theme\n",
-                    "  /env [KEY=VALUE]              Set/list panel env vars\n",
-                    "  /reconnect                    Reconnect SSH terminal\n",
-                    "  /branches                     List nanosb branches in project\n",
-                    "  /mcp                          Toggle MCP sidebar\n",
-                    "  /mcp list                     List MCP servers (from sandbox.yml)\n",
-                    "  /skills [list]                List skills (from sandbox.yml)\n",
-                    "  /skills show <name>           Show skill details\n",
-                    "  /agent list                   List available agents\n",
-                    "  /agent show <name>            Show agent details\n",
-                    "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
-                    "  /edit [tool]                  Open clone in external tool\n",
-                    "  /clearhistory                 Clear command history\n",
-                    "  /quit                         Suspend session and exit\n",
-                    "  /destroy                      Full cleanup and exit\n",
-                    "\n",
-                    "  Press Esc to dismiss.\n",
-                )
-                .to_string(),
+                content: commands::format_help(),
             });
         }
         Command::Close { target } => {
@@ -2071,11 +2079,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                 });
             }
         }
-        Command::McpList
-        | Command::McpAdd { .. }
-        | Command::McpRemove { .. }
-        | Command::McpEnable { .. }
-        | Command::McpDisable { .. } => {
+        Command::McpList => {
             if app.panels.is_empty() {
                 app.set_system_message(ChatMessage {
                     role: MessageRole::System,
@@ -2083,21 +2087,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                         .to_string(),
                 });
             } else {
-                match cmd {
-                    Command::McpList => {
-                        handle_mcp_list(app).await;
-                    }
-                    Command::McpAdd { .. }
-                    | Command::McpRemove { .. }
-                    | Command::McpEnable { .. }
-                    | Command::McpDisable { .. } => {
-                        app.set_system_message(ChatMessage {
-                            role: MessageRole::System,
-                            content: "MCP hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).".to_string(),
-                        });
-                    }
-                    _ => unreachable!(),
-                };
+                handle_mcp_list(app).await;
             }
         }
         Command::Copy => {
@@ -2403,10 +2393,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
         }
 
         // ===== Skills commands =====
-        Command::SkillsList
-        | Command::SkillsAdd { .. }
-        | Command::SkillsRemove { .. }
-        | Command::SkillsShow { .. } => {
+        Command::SkillsList | Command::SkillsShow { .. } => {
             if app.panels.is_empty() {
                 app.set_system_message(ChatMessage {
                     role: MessageRole::System,
@@ -2416,8 +2403,6 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
             } else {
                 match cmd {
                     Command::SkillsList => handle_skills_list(app).await,
-                    Command::SkillsAdd { name } => handle_skills_add(app, &name).await,
-                    Command::SkillsRemove { name } => handle_skills_remove(app, &name).await,
                     Command::SkillsShow { name } => handle_skills_show(app, &name),
                     _ => unreachable!(),
                 }
@@ -2435,14 +2420,6 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
             } else {
                 handle_agent_show(app).await;
             }
-        }
-        Command::AgentSet { .. } => {
-            app.set_system_message(ChatMessage {
-                role: MessageRole::System,
-                content:
-                    "Agent hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply)."
-                        .to_string(),
-            });
         }
         Command::AgentList => handle_agent_list(app),
         Command::AgentInfo { name } => handle_agent_info(app, &name),
@@ -2769,7 +2746,7 @@ fn send_bracketed_paste(write_tx: &mpsc::UnboundedSender<Vec<u8>>, text: &str) -
 }
 
 /// Handle a mouse event for panel-scoped text selection.
-fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
+pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     let x = mouse.column;
     let y = mouse.row;
 
@@ -4825,25 +4802,6 @@ async fn handle_skills_list(app: &mut App) {
         lines.join("\n")
     };
     push_skills_feedback(app, content, true);
-}
-
-/// Handle `/skills add <name>` — show redeploy message.
-async fn handle_skills_add(app: &mut App, _name: &str) {
-    push_skills_feedback(
-        app,
-        "Skill hot-reload was removed — add skills to sandbox.yml and redeploy (nanosb apply)."
-            .to_string(),
-        true,
-    );
-}
-
-/// Handle `/skills remove <name>` — show redeploy message.
-async fn handle_skills_remove(app: &mut App, _name: &str) {
-    push_skills_feedback(
-        app,
-        "Skill hot-reload was removed — remove skills from sandbox.yml and redeploy (nanosb apply).".to_string(),
-        true,
-    );
 }
 
 /// Handle `/skills show <name>` — show skill content from the registry.
