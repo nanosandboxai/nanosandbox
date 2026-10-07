@@ -101,10 +101,12 @@ end-to-end check. See [runtime/docs/TESTING.md](runtime/docs/TESTING.md) for the
 # Frame, handler, and event-loop tests (no TTY, no VM) — runs in CI
 cargo test -p nanosb-cli
 
-# Scripted VM end-to-end test (requires libkrun/gvproxy; opt-in)
-cargo test -p nanosb-cli --test tui_vm_test -- --ignored --nocapture
+# Scripted VM end-to-end test (requires libkrun/gvproxy + a codesigned
+# binary; opt-in). Run with the real nanosb binary via NANOSB_BINARY_PATH.
+NANOSB_BINARY_PATH="$PWD/target/debug/nanosb" \
+  cargo test -p nanosb-cli tui::vm_test -- --ignored --nocapture
 
-# Local pty smoke harness: boots a sandbox and drives the TUI by hand
+# Local pty smoke harness: drives the TUI under a real PTY
 scripts/tui-smoke.sh
 ```
 

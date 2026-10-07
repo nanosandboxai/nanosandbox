@@ -317,11 +317,13 @@ scripts/tui-smoke.sh                 # uses target/debug/nanosb
 scripts/tui-smoke.sh --binary /path/to/nanosb
 ```
 
-The harness builds the CLI, boots a temporary supervised sandbox, launches the
-TUI under a real PTY (`script -q` on macOS; `expect` preferred when present),
-sends `/help` then `/quit`, captures the transcript, and asserts the help
-overlay rendered. It prints `PASS: tui-smoke.sh` or `FAIL: …` and cleans up the
-temporary sandbox on exit.
+The harness builds the CLI, runs the TUI from an empty directory (welcome
+screen, so no microVM boot), launches it under a real PTY (`expect` when
+available, else `script -q`), sends `/help` then `/quit`, captures the
+transcript, and asserts the `/help` overlay rendered. It prints
+`PASS: tui-smoke.sh` or `FAIL: …` and cleans up the temporary directory on
+exit. Interactive panel attach (which the pty harness does not exercise) is
+covered by the `#[ignore]` VM test above.
 
 ## Makefile Reference
 

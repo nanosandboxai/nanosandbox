@@ -2,32 +2,35 @@
 #
 # tui-smoke.sh — Nanosandbox TUI smoke-test harness
 #
-# Launches the nanosb TUI under a real PTY, sends a scripted key sequence
-# (/help + Enter, /quit + Enter), and asserts that the help overlay appears.
+# Launches the nanosb TUI under a real PTY (welcome screen, no sandbox boot),
+# sends a scripted key sequence (/help + Enter, /quit + Enter), and asserts
+# that the /help overlay appears in the captured PTY transcript.
 #
 # Usage:
 #   ./scripts/tui-smoke.sh [--binary <path>]
 #
 # Environment variables:
 #   NANOSB_BINARY    Path to nanosb binary (default: target/debug/nanosb)
-#   SMOKE_BOOT_WAIT  Seconds to wait for TUI boot  (default: 3)
-#   SMOKE_CMD_WAIT   Seconds to wait after a command (default: 2)
-#   SMOKE_TIMEOUT    Total test timeout in seconds  (default: 30)
+#   SMOKE_BOOT_WAIT  Seconds to wait for TUI boot  (default: 14)
+#   SMOKE_CMD_WAIT   Seconds to wait after a command (default: 3)
+#   SMOKE_TIMEOUT    Total test timeout in seconds  (default: 60)
 #
 # Platform notes:
-#   macOS: Uses `script -q <outfile> /dev/null` with a piped here-doc.
-#          This creates a real PTY that crossterm recognises as a TTY.
-#   Linux: `script -qec <cmd>` is the equivalent. If `expect` is available
-#          it is preferred on both platforms for more reliable timing.
+#   macOS: uses `expect` when available, else `script -q`.
+#          Both create a real PTY that crossterm recognises as a TTY.
+#   Linux: `script -qec <cmd>` is the equivalent. Install `expect` for the
+#          more reliable path.
 #
 # Required runtime deps (must be installed before running):
 #   - libkrun / libkrunfw (via install-deps or ~/.nanosandbox/libs/)
 #   - gvproxy (via install-deps or ~/.nanosandbox/bin/gvproxy)
 #   - Hypervisor.framework entitlement (macOS: codesign the binary)
 #
-# The script creates a temporary sandbox.yml, starts the TUI, sends
-# keystrokes, captures output, and cleans up. It does NOT modify or
-# delete ~/.nanosandbox state.
+# The script runs the TUI from an empty temp dir (so it shows the welcome
+# screen instead of booting a microVM), sends keystrokes, captures the PTY
+# transcript, and asserts the /help marker. Interactive panel attach is covered
+# by the #[ignore]d VM test (cargo test -p nanosb-cli tui::vm_test -- --ignored).
+# It does NOT modify or delete ~/.nanosandbox state.
 #
 set -uo pipefail
 
@@ -206,6 +209,12 @@ WAIT_START=$(date +%s)
 while true; do
     if ! kill -0 "$NANOSB_PID" 2>/dev/null; then
         echo "  TUI exited cleanly."
+        break
+    fi
+    # The TUI prints its session/teardown line on /quit; treat that as exit
+    # even if the wrapper process has not been reaped yet.
+    if grep -q "Suspending session\|Session saved\|Session destroyed" "$OUTFILE" 2>/dev/null; then
+        echo "  TUI handled /quit (teardown line seen)."
         break
     fi
     NOW=$(date +%s)

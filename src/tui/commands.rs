@@ -256,7 +256,7 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
 
 /// Render the `/help` overlay text from [`HELP_ENTRIES`].
 ///
-/// Kept in sync with the parser by `test_help_entries_are_all_parsable`.
+/// Kept in sync with the parser by `test_help_entries_are_all_recognized_commands`.
 pub fn format_help() -> String {
     let mut lines = vec!["Available commands:".to_string()];
     for entry in HELP_ENTRIES {
@@ -1484,11 +1484,47 @@ mod tests {
 
     // ===== Help/parser parity (Epic 2 AC1) =====
 
-    fn base_command_is_recognized(pattern: &str) -> bool {
-        let base = pattern.split_whitespace().next().unwrap();
-        match parse_command_verbose(base) {
+    /// Materialize a help pattern into a concrete command string by replacing
+    /// each `<...>`/`[--flag ...]` placeholder with a plausible token, so the
+    /// parser is exercised at the SUBCOMMAND level (not just the base token).
+    fn concrete_command(pattern: &str) -> String {
+        let mut out = String::new();
+        for tok in pattern.split_whitespace() {
+            if out.is_empty() {
+                out.push_str(tok);
+            } else if tok.starts_with('<') {
+                out.push_str(" X");
+            } else if tok.starts_with('[') {
+                // Optional-arg groups: keep only the bare subcommand forms we
+                // can feed (e.g. "[on|off|now]" -> "on"); skip flag groups.
+                if tok.contains('|') && !tok.contains("--") {
+                    let first = tok
+                        .trim_matches(|c| c == '[' || c == ']')
+                        .split('|')
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    if !first.is_empty() {
+                        out.push(' ');
+                        out.push_str(first);
+                    }
+                }
+            } else if !tok.starts_with("--") {
+                out.push(' ');
+                out.push_str(tok);
+            }
+        }
+        out
+    }
+
+    /// True if `input` is recognized by the parser: an `Ok`, or an `Err` that is
+    /// NOT "Unknown command"/"Unknown <x> subcommand" (i.e. not a rejected verb).
+    fn command_is_recognized(input: &str) -> bool {
+        match parse_command_verbose(input) {
             ParseResult::Ok(_) => true,
-            ParseResult::Err(msg) => !msg.contains("Unknown command"),
+            ParseResult::Err(msg) => {
+                !msg.contains("Unknown command") && !msg.contains("subcommand")
+            }
             ParseResult::NotACommand => false,
         }
     }
@@ -1499,11 +1535,31 @@ mod tests {
             if !entry.pattern.starts_with('/') {
                 continue;
             }
+            let concrete = concrete_command(entry.pattern);
             assert!(
-                base_command_is_recognized(entry.pattern),
-                "help advertises '{}' but its base command is not a known command",
-                entry.pattern
+                command_is_recognized(&concrete),
+                "help advertises '{}' (as '{}') but it is not a recognized command",
+                entry.pattern,
+                concrete
             );
+        }
+    }
+
+    #[test]
+    fn test_help_subcommands_are_not_unknown() {
+        // A removed/never-implemented subcommand in the help table must fail
+        // this test (this is what the base-token check could not catch).
+        for entry in HELP_ENTRIES {
+            let concrete = concrete_command(entry.pattern);
+            let result = parse_command_verbose(&concrete);
+            if let ParseResult::Err(msg) = result {
+                assert!(
+                    !msg.contains("Unknown") || !msg.contains("subcommand"),
+                    "help advertises '{}' but the parser rejects it as unknown: {}",
+                    entry.pattern,
+                    msg
+                );
+            }
         }
     }
 
@@ -1536,8 +1592,8 @@ mod tests {
     fn test_autocomplete_entries_are_all_recognized_commands() {
         for cmd in ALL_COMMANDS {
             assert!(
-                base_command_is_recognized(cmd),
-                "autocomplete advertises '{}' but it is not a known command",
+                command_is_recognized(cmd),
+                "autocomplete advertises '{}' but it is not a recognized command",
                 cmd
             );
         }

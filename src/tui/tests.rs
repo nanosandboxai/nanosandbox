@@ -148,7 +148,12 @@ fn frame_multi_panel_grid() {
 
     let text = render_screen(&mut app, 80, 40);
     assert_eq!(app.panel_areas.len(), 3, "should have 3 panel areas");
-    assert!(!text.is_empty(), "screen should be non-empty");
+    for name in ["a", "b", "c"] {
+        assert!(
+            text.contains(name),
+            "each panel title should render, missing {name:?} in: {text:?}"
+        );
+    }
 }
 
 #[test]
@@ -588,9 +593,14 @@ async fn event_loop_100_synthetic_events() {
         let _ = handle_event(&mut app, ev, &tx).await;
     }
 
-    // Render and verify.
+    // Render and verify the frame actually painted content.
     let text = render_screen(&mut app, 80, 40);
-    assert!(!text.is_empty(), "screen should be non-empty after events");
+    assert!(
+        text.contains("No agent panels")
+            || text.contains("Getting Started")
+            || text.contains("Available commands"),
+        "render after 100 events should paint a known screen: {text:?}"
+    );
 
     // At least one state mutation occurred.
     assert!(
