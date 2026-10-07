@@ -9,23 +9,26 @@ Related: `docs/epics/epic-2-tui-refactor-and-testing.md`, PR #91
 | # | Decision |
 |---|---|
 | D1 | **Substrate = a single slim helper** (`nanosb-runtime`). All SDKs are **protocol clients** over its local socket. |
-| D2 | **No C FFI in the SDK.** The C ABI is de-scoped and retired; it is not the substrate and is not shipped as an SDK. |
-| D3 | **Bundle by default** (macOS arm64) **and** allow an external runtime override (`NANOSB_HOME` / `paths.runtime`). |
-| D4 | **Slim helper via feature flags** (one crate, two profiles) — not a separate codebase. |
-| D5 | **Pre-sign at package build time**; no install-time codesigning; lazy re-sign fallback at first run. |
-| D6 | **Cloud later**: design a `SandboxClient` backend abstraction now; implement only `Local`. |
+| D2 | **No C FFI in the SDK.** The C ABI is retired (WS8): not the substrate, not shipped as an SDK. |
+| D3 | **Bundle only** (macOS arm64): helper + `libkrunfw` + `gvproxy` ship inside each package. External override (`NANOSB_HOME`) remains for Linux/CI. |
+| D4 | **Slim helper via feature flags** (one crate, two profiles). |
+| D5 | **Pre-sign at package build time**; no install-time signing; lazy re-sign fallback. |
+| D6 | **Cloud later**: `SandboxClient` backend abstraction now; implement only `Local`. |
+| D7 | **Protocol framing = NDJSON** (matches today's control socket). |
+| D8 | **Snapshots + pause/resume in scope** for this epic. |
+| D9 | **guest `fs` API in scope** (read/write/list/stat/mkdir/remove + host copies). |
 
 ## 1. Context (verified 2026-10-07)
 
-**Why the helper, not FFI.** The VM cannot be hosted in-process: `hv_vm_create()` on
-macOS requires the `com.apple.security.hypervisor` entitlement in a clean
-single-threaded process. Our runtime already boots the VM in a subprocess
-(`internal-boot-vm`) spawned from a codesigned binary (`NANOSB_BINARY_PATH` or
-`current_exe()`). So an "in-process FFI" still shells out — FFI buys no in-process
-benefit, adds a hard ABI contract, makes streaming callbacks bespoke per language,
-and would require a native addon + codesign per language × platform.
+**Why the helper, not FFI.** The VM cannot be hosted in-process: `hv_vm_create()`
+on macOS needs the `com.apple.security.hypervisor` entitlement in a clean
+single-threaded process. The runtime already boots the VM in a subprocess
+(`internal-boot-vm`) spawned from a codesigned binary. So an "in-process FFI"
+still shells out — FFI buys no in-process benefit, adds a hard ABI contract,
+makes streaming callbacks bespoke per language, and would need a native addon +
+codesign per language × platform.
 
-**Runtime artifacts (three linkage models).**
+**Runtime artifacts.**
 
 | Artifact | Linkage | Location today |
 |---|---|---|
@@ -34,9 +37,8 @@ and would require a native addon + codesign per language × platform.
 | `gvproxy` | sidecar process | `which gvproxy` or `~/.nanosandbox/bin/` |
 | VM host | subprocess (`internal-boot-vm`) | the helper binary |
 
-**microsandbox (the bar):** 5 languages (TS, Rust, Python, Go, Ruby); native
-addon bundles the runtime; `local | cloud` backends; an "Agent Client" protocol
-for custom integrations.
+**microsandbox (the bar):** 5 languages (TS, Rust, Python, Go, Ruby); a rich
+per-sandbox surface (§4); `local | cloud` backends; an "Agent Client" protocol.
 
 ## 2. Architecture (ADR-1 — accepted)
 
@@ -51,150 +53,234 @@ for custom integrations.
                        ▼                                       ▼
                  versioned protocol  ─────────────►  nanosb-runtime (helper)
                                                      ├── supervisor + VM (internal-boot-vm)
-                                                     ├── console / logs
-                                                     ├── control socket (attach/exec/logs)
+                                                     ├── console / logs / metrics
+                                                     ├── control socket (attach/exec/fs/logs)
                                                      └── deploy planner (mounts, agent cmd)
                                                      + libkrunfw + gvproxy
 ```
 
-- **All planning stays in the helper** (config building, mount planning, agent
-  command, secrets resolution). Clients send intent (a `sandbox.yml` path or a
-  config object) and receive results. Clients never reimplement planning.
-- **Streaming is the socket stream** — `exec_stream`, `attach`, `logs --follow`
-  are all the same transport in every language.
-- **Retire the C FFI**: delete `sandbox/crates/sandbox/src/ffi.rs`, the `ffi`
-  feature, and the `cbindgen` plan. Nothing in-tree consumes it.
+- **All planning stays in the helper.** Clients send intent and receive results;
+  they never reimplement mount planning, agent command, or secret resolution.
+- **One transport for everything.** `exec_stream`, `attach`, `logs --follow`,
+  `fs` streams all ride the same socket.
+- The agent's `fs`/exec verbs use the **vsock exec channel**, so they work with
+  networking disabled — exactly microsandbox's design ("same channel as command
+  execution, not the network").
 
 ## 3. Goal
 
-Ship **idiomatic SDKs in more languages than microsandbox** on one stable,
-helper-based protocol — no native addons, no C ABI, no per-platform signing per
-language.
+Ship **idiomatic SDKs in more languages than microsandbox**, on one stable,
+helper-based protocol, with a sandbox surface that **matches or exceeds**
+microsandbox's — no native addons, no C ABI, no per-language signing.
 
-Non-goals: cloud implementation (design only); Windows; snapshots if the effort
-is disproportionate (M5 assessment).
+## 4. Missing-interface inventory (vs microsandbox)
 
-## 4. Gap analysis (vs microsandbox)
+Legend: **[A]** SDK-surface work · **[R]** runtime work · **[D]** deliberate divergence.
 
-| Capability | nanosandbox | microsandbox | Target |
+### 4.1 Lifecycle & handles
+| Interface | nanosandbox | Target |
+|---|---|---|
+| create / start / stop / kill / remove | ✅ (CLI/supervisor) | expose via protocol |
+| `get`, `list`, `listWith` (filters, pagination) | partial (`ps`) | **[A]** |
+| handles (lightweight, read-only vs live) | ❌ | **[A]** |
+| detached mode | ✅ | expose |
+| `ephemeral` | ❌ | **[A]** |
+| `replace` / `replaceWithTimeoutMs` | ❌ | **[A]** |
+| `waitUntilStopped` | poll | **[A]** |
+| `ping` / `touch` (keepalive) | ❌ | **[A]** |
+| `requestDrain` / `requestStop` / `requestKill` | partial | **[A]** |
+| `idleTimeoutSecs` / `maxDurationSecs` | timeout only | **[A]** |
+| `pause` / `resume` | ❌ | **[R]** (M5) |
+| `snapshot` / `restore` / `fork` | ❌ | **[R]** (M5) |
+
+### 4.2 Execution
+| Interface | nanosandbox | Target |
+|---|---|---|
+| `exec` / `execWith` (cwd, env, user, timeout) | ✅ | parity |
+| `exec_stream` | ✅ | parity |
+| `shell` / `shell_stream` | ✅ | parity |
+| `attach` (interactive PTY) | ✅ (`--tty`) | full detach/resize |
+| `stdin` (null / pipe / bytes) | pipe | add null/bytes modes |
+| per-exec `rlimit` | ❌ | **[A]** |
+| default-workload variants (`exec_default`, `attach_default`) | ❌ | **[A]** |
+| `tty` | ✅ | parity |
+
+### 4.3 Filesystem
+| Interface | nanosandbox | Target |
+|---|---|---|
+| `fs.read` / `readToString` / `readStream` | ❌ | **[A]** |
+| `fs.write` / `writeStream` | ❌ (upload only) | **[A]** |
+| `fs.list` / `stat` / `exists` | ❌ | **[A]** |
+| `fs.mkdir` / `remove` / `removeDir` | ❌ | **[A]** |
+| `fs.copy` / `rename` / `symlink` / `readLink` | ❌ | **[A]** (v1 subset) |
+| `fs.copyFromHost` / `copyToHost` | upload-only | **[A]** |
+| `fs.open` handles / `fstat` / `setStat` | ❌ | **[A]** (later) |
+
+> Transport: exec-agent file verbs over vsock (works without a project mount).
+
+### 4.4 Observability
+| Interface | nanosandbox | Target |
+|---|---|---|
+| `metrics` (CPU / mem / disk / net) | ❌ | **[A]** |
+| `metricsStream` | ❌ | **[A]** |
+| `logs` (structured) | raw `console.log` | **[A]** |
+| `logStream` (follow + cursor) | ❌ | **[A]** |
+| log sources (stdout / stderr / pty / system) | ❌ | **[A]** |
+| `labels` (metric attribution) | ❌ | **[A]** |
+
+### 4.5 Secrets
+| Interface | nanosandbox | Target |
+|---|---|---|
+| `secret` / `secretEnv` (named entries) | ❌ (env passthrough) | **[A]** |
+| secret store / substitution | ❌ | **[A]** (basic) |
+| `onSecretViolation` (network substitution) | ❌ | **[R]** (with egress) |
+| never persist secret values | ✅ | keep invariant |
+
+### 4.6 Storage / volumes
+| Interface | nanosandbox | Target |
+|---|---|---|
+| bind mount (dir) | ✅ (project/virtiofs) | expose |
+| file mount | ❌ | **[A]** |
+| named volumes (dir-backed / disk-backed) | ❌ | **[A]** |
+| disk-image volumes (`raw`/`qcow2`/`vmdk` + fstype) | ❌ | **[A]** |
+| tmpfs | ❌ | **[A]** |
+| owned volumes | ❌ | **[R]** |
+| mount options (`noexec`/`nosuid`/`nodev`) | ❌ | **[A]** |
+| mount owner (`uid`/`gid`) | ❌ | **[A]** |
+| stat virtualization (`strict`/`relaxed`/`off`) | partial (image xattrs) | **[R]** |
+| `quota` | ❌ | **[R]** |
+| nested mount destinations | ❌ | **[A]** |
+| `Volume.get/list` + `volume.fs()` (host-side) | ❌ | **[A]** |
+
+### 4.7 Networking
+| Interface | nanosandbox | Target |
+|---|---|---|
+| publish TCP port (loopback default) | ✅ (`--port`) | parity |
+| publish with explicit bind address | ❌ | **[A]** |
+| publish UDP port | ❌ | **[A]** |
+| network policy (deny-by-default, profiles `public`/`private`/`host`) | ❌ | **[R]** |
+| rule allowlists (IP / CIDR / domain / domain-suffix / port-range) | ❌ | **[R]** |
+| DNS interception / filtering | ❌ | **[R]** |
+| TLS interception | ❌ | **[R]** (defer) |
+| rate limiting / max connections | ❌ | **[R]** |
+| interface overrides (ipv4/ipv6 pools, mac, mtu) | ❌ | **[R]** |
+| `trustHostCAs` | ❌ | **[R]** |
+| host access (`host.*.internal`) | ❌ | **[R]** |
+| NAT64 prefixes | ❌ | **[R]** (defer) |
+
+### 4.8 Config / images
+| Interface | nanosandbox | Target |
+|---|---|---|
+| OCI image source | ✅ | parity |
+| local directory rootfs | ❌ | **[R]** |
+| disk-image rootfs (+ fstype) | ❌ | **[R]** |
+| `pullPolicy` (always / …) | ❌ (always pulls) | **[A]** |
+| registry config (per-sandbox) | partial | **[A]** |
+| pre-boot rootfs patches (copyFile/copyDir/text/mkdir/remove) | ❌ | **[R]** |
+| named scripts (`/.msb/scripts/`) | ❌ | **[A]** |
+| `entrypoint` / `cmd` / `hostname` overrides | ✅ (command) | parity |
+| `securityProfile` (`default`/`restricted`) | ❌ | **[R]** |
+| `max_cpus` / `max_memory` (hotplug ceilings) | ❌ | **[R]** (defer) |
+| `guest_clock` / THP policy | ❌ | **[R]** (defer) |
+| `libkrunfwPath` / runtime path override | `NANOSB_HOME` | parity |
+
+### 4.9 Divergence
+| Interface | microsandbox | nanosandbox | Note |
 |---|---|---|---|
-| Languages | 0 shipped | TS, Rust, Python, Go, Ruby (5) | + Java/Kotlin, C#/.NET (7) |
-| exec / shell / attach | ✅ (exec/console attach) | ✅ | parity via protocol |
-| stdin / tty / timeout | ✅ (agent) | ✅ | parity |
-| rlimits | ❌ | ✅ | add (agent + config) |
-| guest `fs` API | ❌ | ✅ | add (exec-agent file verbs) |
-| `metrics` | ❌ | ✅ | add (host rusage + guest /proc) |
-| `logs` (structured, follow) | partial (CLI) | ✅ | add (protocol) |
-| secrets API | partial (env) | ✅ | typed protocol API |
-| volumes / mounts | ✅ (virtiofs) | ✅ | expose |
-| handles (get/list/remove) | partial (CLI ps) | ✅ | add (protocol) |
-| detached mode | ✅ (supervisor) | ✅ | expose |
-| snapshots / pause-resume | ❌ | ✅ (local) | assess (M5) |
-| `modify()` plan | ❌ | ✅ | assess (M5) |
-| pre-boot rootfs patches | ❌ | ✅ | assess (M5) |
+| `ssh()` | ✅ | removed | **[D]** — expose `exec`/`attach` instead; document why (SSH was a network-reachable surface we deliberately dropped) |
+| `attach` via SSH | ✅ | console/vsock | **[D]** — arguably more secure (no network listener) |
 
 ## 5. Workstreams
 
 ### WS1 — `nanosb-runtime` helper (D4)
-- Add a Cargo feature `runtime-host`; build `nanosb-runtime` with
-  `--no-default-features --features runtime-host`.
-- Exclude TUI/`ratatui`/`arboard`/`rusqlite`/`git2`; keep runtime + supervisor +
-  `internal-boot-vm` + deploy planner.
-- Verify the helper boots a supervised sandbox and exposes the control socket.
-- AC: helper builds; `nanosb-runtime run <img>` works; binary is materially
-  smaller than the full CLI.
+Feature `runtime-host`; build with `--no-default-features --features runtime-host`;
+exclude TUI/`ratatui`/`arboard`/`rusqlite`/`git2`.
+AC: helper boots + controls a sandbox; materially smaller than the CLI.
 
-### WS2 — Local protocol (the substrate)
-- Formalize the supervisor socket as a **versioned** protocol:
-  `hello`/`version`, `create`/`start`/`stop`/`kill`/`remove`, `status`, `list`,
-  `get`, `exec` (buffered), `exec_stream`, `attach`, `logs` (follow + cursor),
-  `metrics`, `fs` (read/write/list/mkdir/remove/stat), `secrets` (set/list/rm,
-  values never persisted), `modify` (plan).
-- NDJSON frames, matching the existing `ControlRequest`/`ControlResponse` shape.
-- Document it as the **Agent Client protocol** (mirrors microsandbox's naming).
-- AC: protocol spec in `docs/`; a reference client exercises every verb.
+### WS2 — Local protocol (D7)
+Versioned NDJSON verbs: `hello`, `create/start/stop/kill/remove`, `status`,
+`list/get`, `exec`, `exec_stream`, `attach`, `logs` (follow+cursor), `metrics`,
+`fs/*`, `volumes/*`, `secrets/*`, `snapshot/restore`, `pause/resume`, `drain`,
+`ping/touch`, `modify`.
+AC: spec in `docs/`; reference client exercises every verb.
 
-### WS3 — `SandboxClient` interface + backend abstraction (D6)
-- Define the client contract: `builder`, `create`, `get`, `list`, `remove`,
-  `start`, `stop`, `kill`, `exec`, `exec_stream`, `shell`, `attach`, `logs`,
-  `metrics`, `fs`, `secrets`, `config`, `detached`.
-- `Local` backend (socket) implemented; `Cloud` backend stubbed behind the same
-  trait (returns `NotImplemented`), so it slots in later without reshaping SDKs.
+### WS3 — `SandboxClient` + backend abstraction (D6)
+Contract: builder, create, get, list, remove, start, stop, kill, pause, resume,
+snapshot, restore, exec, exec_stream, shell, attach, logs, metrics, fs, volumes,
+secrets, config, detached, drain, ping. `Local` implemented; `Cloud` stubbed.
 
 ### WS4 — Core surface expansion (in the helper)
-- `fs`: file verbs in the exec-agent over vsock (works without a project mount),
-  surfaced through the protocol.
-- `metrics`: host VM rusage + guest `/proc` sampled via exec.
-- `logs`: structured, followable, cursor-based (reuse `console.log`).
-- `secrets`: typed get/set/rm mapped to the existing env delivery; never on disk.
-- `rlimits`, `user`, `workdir`, `timeout`: surface via protocol + config.
-- `volumes`/`mounts`, `handles`.
+`fs` (verbs over vsock), `metrics`, structured `logs`, `secrets`, `rlimits`,
+`volumes` (+ options), `handles`, `labels`, `ephemeral`, `pullPolicy`, scripts.
 
-### WS5 — Language SDKs (protocol clients only)
-Rust, Python, TypeScript/Node, Go, Ruby, **Java/Kotlin**, **C#/.NET**.
-Each: idiomatic API, async where native, typed errors, streaming via the socket.
-- AC: each passes the shared conformance suite.
+### WS5 — Networking & isolation **[R]** (largest new area)
+Network policy (deny-by-default + profiles + allowlist rules), DNS filtering,
+UDP/bind-address publishing, rate limits. **Propose splitting heavy items
+(TLS interception, NAT64, stat virtualization, quotas) into Epic 3 — Runtime
+Network & Isolation.**
 
-### WS6 — Packaging & signing (D3, D5)
-- Bundle `nanosb-runtime` + `libkrunfw` + `gvproxy` for macOS arm64 in each
-  package (wheel/npm/gem/jar/nuget/crate).
-- **Pre-sign** the helper at build time (entitlement applied); lazy re-sign
-  fallback on first run if validation fails.
-- External override: `NANOSB_HOME` / `paths.runtime` → use an installed runtime.
-- "Runtime setup" doc for Linux/CI.
+### WS6 — Snapshots / pause-resume **[R]** (D8)
+Disk-state snapshot + restore/fork; pause/resume.
+AC: snapshot a running sandbox, restore into a new one; pause stops execution and
+resume continues.
 
-### WS7 — Conformance suite & docs
-- One conformance spec, implemented per language: create, exec, stream, shell,
-  attach, fs, logs, metrics, secrets, lifecycle, errors, timeouts.
-- Quickstarts + API refs + compatibility matrix.
+### WS7 — Language SDKs (protocol clients only)
+Rust, Python, TS/Node, Go, Ruby, **Java/Kotlin**, **C#/.NET**. Each passes the
+conformance suite.
 
 ### WS8 — Retire the C FFI (D2)
-- Delete `ffi.rs`, the `ffi` feature, and the `cbindgen`/header work.
-- Update `sandbox/Cargo.toml` + `lib.rs`.
-- AC: `grep -r 'extern "C" fn sandbox_' sandbox/` is empty; workspace builds.
+Delete `ffi.rs`, the `ffi` feature, cbindgen; update `sandbox/Cargo.toml`.
+AC: `grep -r 'extern "C" fn sandbox_' sandbox/` empty.
+
+### WS9 — Packaging & signing (D3, D5)
+Bundle helper + `libkrunfw` + `gvproxy` (macOS arm64) in each package; pre-sign
+at build; lazy re-sign fallback; `NANOSB_HOME` override; "Runtime setup" doc.
+
+### WS10 — Conformance suite & docs
+One spec per language: lifecycle, exec/stream/shell/attach, fs, logs, metrics,
+volumes, secrets, snapshots, errors, timeouts.
 
 ## 6. Acceptance criteria
 
 - AC1 `nanosb-runtime` builds from features; boots + controls a sandbox.
-- AC2 Protocol spec published; a reference client passes every verb.
-- AC3 Rust/Python/TS/Go/Ruby SDKs pass the conformance suite.
-- AC4 Java/Kotlin + C#/.NET SDKs pass the conformance suite (exceeds microsandbox).
-- AC5 `exec`, `exec_stream`, `shell`, `attach`, `fs`, `logs`, `metrics` work in
-  every binding on a next-mode vanilla image.
-- AC6 No binding persists secret values to disk.
-- AC7 The C FFI is fully removed; no SDK depends on a native addon.
-- AC8 Bundled macOS arm64 install runs with zero extra setup; `NANOSB_HOME`
-  override works.
+- AC2 Protocol spec published; reference client passes every verb.
+- AC3 Rust/Python/TS/Go/Ruby SDKs pass conformance.
+- AC4 Java/Kotlin + C#/.NET pass conformance (exceeds microsandbox).
+- AC5 exec/exec_stream/shell/attach/fs/logs/metrics/volumes work in every binding
+  on a next-mode vanilla image.
+- AC6 Snapshot + restore and pause + resume work (local).
+- AC7 No binding persists secret values.
+- AC8 The C FFI is fully removed; no native addon dependency.
+- AC9 Bundled macOS arm64 install runs with zero extra setup; `NANOSB_HOME` works.
 
 ## 7. Milestones
 
-- **M0** Protocol spec + reference client; helper build profile (WS1+WS2).
-- **M1** `SandboxClient` + `Local` backend; retire the C FFI (WS3+WS8).
-- **M2** Core surface: fs/metrics/logs/secrets/handles (WS4).
-- **M3** Python + TypeScript SDKs (WS5).
-- **M4** Go + Ruby SDKs (WS5) — matches microsandbox.
-- **M5** Java/Kotlin + C#/.NET (WS5) + snapshot/modify assessment.
-- **M6** Packaging/signing + conformance across all + docs (WS6+WS7).
+- **M0** Helper build profile + protocol spec + reference client (WS1, WS2).
+- **M1** `SandboxClient` + `Local`; retire the C FFI (WS3, WS8).
+- **M2** Core surface: fs/metrics/logs/secrets/volumes/handles (WS4).
+- **M3** Python + TypeScript SDKs (WS7).
+- **M4** Go + Ruby SDKs (WS7) — matches microsandbox's language set.
+- **M5** Snapshots + pause/resume; networking policy v1 (WS6, WS5).
+- **M6** Java/Kotlin + C#/.NET; packaging/signing; conformance + docs (WS7, WS9, WS10).
 
 ## 8. Risks
 
-- R1 **Protocol surface creep** → version it (`hello`/`version`) and keep verbs
-  minimal; the helper owns planning.
-- R2 **`fs` needs a transport** (agent verbs vs mount) → agent verbs preferred
-  (works without a project mount). Decide in M2.
-- R3 **Helper bundle size / signing** → feature-gate the helper; pre-sign at
-  build; lazy re-sign fallback.
-- R4 **7-language packaging sprawl** → automation; ship macOS arm64 first; the
-  `NANOSB_HOME` override covers Linux/CI until bundling lands there.
-- R5 **Snapshots/modify** may be disproportionate on libkrun → time-boxed M5;
-  may defer.
+- R1 **Surface size** — microsandbox's interface is vast; stage it (M2 core,
+  M5 advanced). Don't ship a half-implemented verb set — version and gate.
+- R2 **Networking policy is a big runtime effort** (packet inspection, DNS/TLS)
+  → carve Epic 3; ship a minimal policy (deny-all + published ports) in M5.
+- R3 **Snapshots on libkrun** (writable-layer capture) → time-boxed spike in M5;
+  may defer if disproportionate.
+- R4 **`fs` transport** → exec-agent verbs (chosen); validate throughput vs
+  microsandbox's warning that bulk transfers should use volumes.
+- R5 **7-language packaging** → automation; macOS arm64 first; `NANOSB_HOME` covers CI.
+- R6 **Divergence from `ssh()`** → document; provide exec/attach as the answer.
 
 ## 9. Open questions
 
-1. Protocol framing: stay NDJSON (matches today) or move to length-prefixed
-   binary for high-throughput `exec_stream`? (Recommend NDJSON now; revisit if
-   profiling demands it.)
-2. `fs` verbs: which operations in v1 (read/write/list/stat/mkdir/remove)?
-3. Do we publish the helper as a standalone downloadable runtime in addition to
-   bundling?
-4. Snapshots / pause-resume: in scope for this epic or a follow-up?
+1. Networking: ship a **minimal policy** (deny-all default + published ports +
+   DNS) in this epic and defer full allowlists/TLS to Epic 3 — agree?
+2. Snapshots: full (writable-layer + manifest) vs disk-only for v1?
+3. `fs` v1 verb set confirmed: read/write/list/stat/mkdir/remove/copy/rename/exists
+   + streams — anything to add?
+4. Owned volumes: in scope for v1 or defer?
