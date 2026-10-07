@@ -127,7 +127,13 @@ pub fn spawn_supervisor(
     timeout_secs: u32,
 ) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let exe = std::env::current_exe()?;
+    // Tests run under the cargo test harness binary, which does not know the
+    // `__supervise` subcommand. Honor NANOSB_BINARY_PATH (as the runtime does)
+    // so tests can spawn the real nanosb binary.
+    let exe = match std::env::var("NANOSB_BINARY_PATH") {
+        Ok(path) if !path.is_empty() => std::path::PathBuf::from(path),
+        _ => std::env::current_exe()?,
+    };
     let sandbox_dir = SupervisorClient::new(sandbox_name)
         .sandbox_dir()
         .to_path_buf();
