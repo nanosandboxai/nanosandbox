@@ -17,7 +17,7 @@ Related: `docs/epics/epic-2-tui-refactor-and-testing.md`, PR #91
 | D7 | **Protocol framing = NDJSON** (matches today's control socket). |
 | D8 | **Full snapshots** (writable layer + manifest; restore + fork) **and pause/resume**, in scope for this epic. |
 | D9 | **guest `fs` API in scope**; v1 verb set fixed in §4.3. |
-| D10 | **Networking = full surface in scope** (policy + allowlists + DNS + TLS interception + rate limits + interface overrides + host CA trust + host access + NAT64 + strict hostname mode). |
+| D10 | **Networking engine → Epic 3** (depends on this epic). This epic ships only the networking **config surface**: published ports (TCP/UDP/bind) + policy-config passthrough over the protocol. |
 | D11 | **Owned volumes deferred** — an owned volume is the sandbox writable layer, already covered by snapshots; adds surface without new capability. |
 
 ## 1. Context (verified 2026-10-07)
@@ -162,20 +162,24 @@ Legend: **[A]** SDK-surface work · **[R]** runtime work · **[D]** deliberate d
 | `Volume.get/list` + `volume.fs()` (host-side) | ❌ | **[A]** |
 
 ### 4.7 Networking
+This epic ships the **config surface**; the **enforcement engine is Epic 3**
+(depends on this epic). Legend: **[A]** config surface here · **[E3]** Epic 3.
+
 | Interface | nanosandbox | Target |
 |---|---|---|
-| publish TCP port (loopback default) | ✅ (`--port`) | parity |
+| publish TCP port (loopback default) | ✅ (`--port`) | **[A]** parity |
 | publish with explicit bind address | ❌ | **[A]** |
 | publish UDP port | ❌ | **[A]** |
-| network policy (deny-by-default, profiles `public`/`private`/`host`) | ❌ | **[R]** |
-| rule allowlists (IP / CIDR / domain / domain-suffix / port-range) | ❌ | **[R]** |
-| DNS interception / filtering | ❌ | **[R]** |
-| TLS interception | ❌ | **[R]** (defer) |
-| rate limiting / max connections | ❌ | **[R]** |
-| interface overrides (ipv4/ipv6 pools, mac, mtu) | ❌ | **[R]** |
-| `trustHostCAs` | ❌ | **[R]** |
-| host access (`host.*.internal`) | ❌ | **[R]** |
-| NAT64 prefixes | ❌ | **[R]** (defer) |
+| policy-config passthrough (`NetworkConfig`) | ❌ | **[A]** |
+| network policy enforcement (deny-by-default, profiles) | ❌ | **[E3]** |
+| rule allowlists (IP / CIDR / domain / domain-suffix / port-range) | ❌ | **[E3]** |
+| DNS interception / filtering | ❌ | **[E3]** |
+| TLS interception | ❌ | **[E3]** |
+| rate limiting / max connections | ❌ | **[E3]** |
+| interface overrides (ipv4/ipv6 pools, mac, mtu) | ❌ | **[E3]** |
+| `trustHostCAs` | ❌ | **[E3]** |
+| host access (`host.*.internal`) | ❌ | **[E3]** |
+| NAT64 prefixes | ❌ | **[E3]** |
 
 ### 4.8 Config / images
 | Interface | nanosandbox | Target |
@@ -222,17 +226,17 @@ secrets, config, detached, drain, ping. `Local` implemented; `Cloud` stubbed.
 `fs` (verbs over vsock), `metrics`, structured `logs`, `secrets`, `rlimits`,
 `volumes` (+ options), `handles`, `labels`, `ephemeral`, `pullPolicy`, scripts.
 
-### WS5 — Networking & isolation **[R]** (largest workstream)
-Full surface (D10): deny-by-default + `public`/`private`/`host` profiles;
-allowlist rules (IP / CIDR / domain / domain-suffix / port-range); ingress
-defaults; DNS interception + rebind protection + nameserver pinning; **TLS
-interception**; `onSecretViolation` secret substitution; rate limits /
-`maxConnections` (TCP + UDP); interface overrides (ipv4/ipv6 pools, addresses,
-mac, mtu); `trustHostCAs`; host access (`host.*.internal`); NAT64 prefixes;
-strict hostname mode; egress denial responses.
-- Sequenced: **v1** = policy + profiles + allowlists + DNS + UDP/bind publishing;
-  **v2** = TLS interception + rate limits + interface overrides + NAT64 + strict
-  mode. All in this epic; `v2` is its own milestone band.
+### WS5 — Networking config surface (engine is Epic 3)
+- Expose published ports (TCP/UDP, explicit bind address, loopback default) via
+  the protocol.
+- Pass a `NetworkConfig` / policy object through to the runtime (the helper
+  serializes it into the sandbox config).
+- The **enforcement engine** (policy, allowlists, DNS, TLS, rate limits,
+  interface overrides, host CA trust, host access, NAT64, strict mode) is
+  **Epic 3 — Runtime Networking & Isolation**, which depends on this epic's
+  helper + protocol.
+- AC: `SandboxBuilder.network(...)` config round-trips to the helper; published
+  TCP/UDP ports work end-to-end.
 
 ### WS6 — Snapshots / pause-resume **[R]** (D8 — full)
 - **Full snapshot**: writable layer + manifest pinning the base image, with an
@@ -278,19 +282,18 @@ volumes, secrets, snapshots, errors, timeouts.
 - **M2** Core surface: fs/metrics/logs/secrets/volumes/handles (WS4).
 - **M3** Python + TypeScript SDKs (WS7).
 - **M4** Go + Ruby SDKs (WS7) — matches microsandbox's language set.
-- **M5** Full snapshots + pause/resume (WS6); networking **v1** — policy,
-  profiles, allowlists, DNS, UDP/bind publishing (WS5).
-- **M6** Networking **v2** — TLS interception, rate limits, interface overrides,
-  NAT64, strict hostname mode, host access (WS5).
-- **M7** Java/Kotlin + C#/.NET; packaging/signing; conformance + docs (WS7, WS9, WS10).
+- **M5** Full snapshots + pause/resume (WS6).
+- **M6** Java/Kotlin + C#/.NET; packaging/signing; conformance + docs (WS7, WS9, WS10).
+
+> The networking **engine** is **Epic 3** (`docs/epics/epic-3-runtime-networking.md`),
+> which depends on this epic's helper + protocol.
 
 ## 8. Risks
 
-- R1 **Surface size** — microsandbox's interface is vast; stage it (M2 core, M5/M6
+- R1 **Surface size** — microsandbox's interface is vast; stage it (M2 core, M5
   advanced). Version the protocol; don't ship a half-implemented verb set.
-- R2 **Networking is the largest effort** (packet inspection, DNS, TLS) — now the
-  full surface is in scope (D10); sequence v1/v2 (M5/M6) and keep the egress
-  engine isolated so it can be developed independently.
+- R2 **Networking engine is deferred to Epic 3** (largest runtime effort) — this
+  epic ships the config surface + ports only; Epic 3 owns enforcement.
 - R3 **Full snapshots on libkrun** (writable-layer capture + manifest) → spike
   early in M5; if writable-layer capture proves disproportionate, fall back to
   disk-only snapshots and mark memory/process state out of scope.
@@ -302,10 +305,8 @@ volumes, secrets, snapshots, errors, timeouts.
 
 ## 9. Resolved decisions
 
-- **Q1 Networking: FULL surface** in scope (D10), sequenced v1/v2 (M5/M6) — no
-  separate epic.
-- **Q2 Snapshots: FULL** (writable layer + manifest; restore/fork) (D8, D11).
-- **Q3 `fs` v1 verb set:** fixed in §4.3 (v1 = read/readToString/readStream/
-  write/writeStream/list/stat/exists/mkdir/remove/removeDir/copy/rename/
-  copyFromHost/copyToHost; defer symlink/readLink/realPath + handles).
+- **Q1 Networking: engine moved to Epic 3** (D10); this epic ships the config
+  surface (ports + policy passthrough).
+- **Q2 Snapshots: FULL** (writable layer + manifest; restore/fork) (D8).
+- **Q3 `fs` v1 verb set:** fixed in §4.3.
 - **Q4 Owned volumes: deferred** (D11).
