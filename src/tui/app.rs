@@ -334,6 +334,8 @@ pub struct AgentPanel {
     pub visible: bool,
     /// Whether auto/headless mode is enabled for this panel's agent.
     pub auto_mode: bool,
+    /// Whether the agent runs interactively on a TTY console.
+    pub interactive: bool,
     /// Agent permission level.
     pub permissions: sandbox::Permissions,
     /// Agent type (source of truth for CLI command + config format).
@@ -385,6 +387,7 @@ impl AgentPanel {
             reconnecting: false,
             visible: true,
             auto_mode: false,
+            interactive: false,
             permissions: sandbox::Permissions::Default,
             agent_type: None,
             model: None,

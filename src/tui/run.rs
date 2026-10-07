@@ -1957,6 +1957,7 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
             branch,
             name,
             auto_mode,
+            interactive,
             prompt,
             model,
             use_env,
@@ -1972,6 +1973,7 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 branch.as_deref(),
                 name.as_deref(),
                 auto_mode,
+                interactive,
                 prompt.as_deref(),
                 model.as_deref(),
                 &use_env,
@@ -3953,6 +3955,7 @@ fn add_agent(
     branch: Option<&str>,
     name: Option<&str>,
     auto_mode: bool,
+    interactive: bool,
     prompt: Option<&str>,
     model: Option<&str>,
     use_env_keys: &[String],
@@ -3975,6 +3978,7 @@ fn add_agent(
 
     // Headless mode setup.
     panel.auto_mode = auto_mode;
+    panel.interactive = interactive && !auto_mode;
     if auto_mode {
         panel.permissions = sandbox::Permissions::AllowAll;
         let task = prompt.unwrap_or("(no prompt)");
@@ -4090,6 +4094,14 @@ fn add_agent(
 
     let mut config = builder.build();
 
+    // Propagate the resolved agent type onto the config so downstream deploy
+    // planning (`deploy_plan_for` -> `has_agent`) actually builds the agent
+    // command. Without this the VM boots with no command (sleep hold).
+    if let Some(agent_type) = panel.agent_type {
+        config.agent_type = Some(agent_type);
+    }
+    config.interactive = panel.interactive;
+
     // Pass auto_sync setting to project config so sandbox creation
     // knows whether to use setup() or setup_deferred().
     if let Some(ref mut proj) = config.sandbox.project {
@@ -4136,11 +4148,20 @@ pub(crate) fn add_agent_from_config(
     let mut panel = AgentPanel::new(&agent_type);
     panel.display_name = Some(display_name.clone());
     panel.auto_mode = config.auto_mode;
+    panel.interactive = config.interactive && !config.auto_mode;
     panel.permissions = config.permissions;
     panel.model = config.model.clone();
     if config.auto_mode {
         let task = config.prompt.as_deref().unwrap_or("(no prompt)");
         panel.headless_state = Some(super::app::HeadlessState::new(task));
+    }
+
+    // Propagate the detected agent type onto the config so deploy planning
+    // builds the agent command (see add_agent for the same fix).
+    if config.agent_type.is_none() {
+        if let Ok(at) = agent_type.parse::<sandbox::AgentType>() {
+            config.agent_type = Some(at);
+        }
     }
 
     // Copy env vars from config to panel.

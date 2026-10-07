@@ -1293,6 +1293,60 @@ sandboxes:
     }
 
     #[test]
+    fn test_yaml_interactive_per_sandbox() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    interactive: true
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert!(configs[0].1.interactive);
+    }
+
+    #[test]
+    fn test_yaml_interactive_defaults_inherited() {
+        let yaml = r#"
+defaults:
+  interactive: true
+sandboxes:
+  test:
+    image: test:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert!(configs[0].1.interactive);
+    }
+
+    #[test]
+    fn test_yaml_interactive_defaults_false() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert!(!configs[0].1.interactive);
+    }
+
+    #[test]
+    fn test_yaml_interactive_and_auto_mode_rejected() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    interactive: true
+    auto_mode: true
+    prompt: hi
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("mutually exclusive"), "got: {err}");
+    }
+
+    #[test]
     fn test_yaml_agent_type_invalid() {
         let yaml = r#"
 sandboxes:

@@ -33,6 +33,8 @@ pub enum Command {
         name: Option<String>,
         /// Run in headless/autonomous mode.
         auto_mode: bool,
+        /// Run the agent interactively on a TTY console.
+        interactive: bool,
         /// Task prompt for headless mode (required with --auto-mode).
         prompt: Option<String>,
         /// Optional model identifier (e.g., "claude-sonnet-4-5-20250929").
@@ -149,7 +151,7 @@ pub struct CommandHelpEntry {
 /// registry introspection, git, and finally session control.
 pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
     CommandHelpEntry {
-        pattern: "/add <agent> [--tag <version>] [--model <model>] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
+        pattern: "/add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
         description: "Add a new agent panel",
     },
     CommandHelpEntry {
@@ -357,7 +359,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         Some(a) => *a,
         None => {
             return ParseResult::Err(format!(
-                "Usage: /add <agent> [--tag <version>] [--model <model>] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...\n\
+                "Usage: /add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...\n\
                  Supported agents: {}\n\
                  Example: /add claude\n\
                  With tag: /add claude --tag rc11\n\
@@ -376,6 +378,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
     let mut branch = None;
     let mut name = None;
     let mut auto_mode = false;
+    let mut interactive = false;
     let mut prompt = None;
     let mut model = None;
     let mut use_env: Vec<String> = Vec::new();
@@ -500,6 +503,10 @@ fn parse_add(parts: &[&str]) -> ParseResult {
                 auto_mode = true;
                 i += 1;
             }
+            "--interactive" => {
+                interactive = true;
+                i += 1;
+            }
             "--run-as-root" => {
                 run_as_root = true;
                 i += 1;
@@ -523,7 +530,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
             other => {
                 return ParseResult::Err(format!(
                     "Unknown option: {}\n\
-                     Usage: /add <agent> [--tag <version>] [--model <model>] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
+                     Usage: /add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
                     other,
                 ));
             }
@@ -535,6 +542,14 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         return ParseResult::Err(
             "--prompt is required with --auto-mode\n\
              Usage: /add <agent> --auto-mode -p \"your task\"".to_string(),
+        );
+    }
+
+    // Validate: interactive and auto-mode are mutually exclusive.
+    if interactive && auto_mode {
+        return ParseResult::Err(
+            "--interactive and --auto-mode are mutually exclusive\n\
+             Interactive runs the agent TUI; auto-mode is headless.".to_string(),
         );
     }
 
@@ -557,6 +572,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         branch,
         name,
         auto_mode,
+        interactive,
         prompt,
         model,
         use_env,
@@ -764,6 +780,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -785,6 +802,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -806,6 +824,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -902,6 +921,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -1042,6 +1062,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -1063,6 +1084,7 @@ mod tests {
                 branch: Some("feat/auth".to_string()),
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -1103,6 +1125,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: true,
+                interactive: false,
                 prompt: Some("list files".to_string()),
                 model: None,
                 use_env: vec![],
@@ -1125,6 +1148,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: true,
+                interactive: false,
                 prompt: Some("analyse project".to_string()),
                 model: None,
                 use_env: vec![],
@@ -1157,6 +1181,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec!["OPENAI_API_KEY".to_string(), "GITHUB_TOKEN".to_string()],
@@ -1184,6 +1209,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -1211,6 +1237,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: true,
+                interactive: false,
                 prompt: Some("fix the bug".to_string()),
                 model: None,
                 use_env: vec![],
@@ -1430,6 +1457,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: Some("claude-sonnet-4-5-20250929".to_string()),
                 use_env: vec![],
@@ -1462,6 +1490,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: true,
+                interactive: false,
                 prompt: Some("do stuff".to_string()),
                 model: Some("claude-opus-4-20250514".to_string()),
                 use_env: vec![],
@@ -1480,6 +1509,46 @@ mod tests {
     fn test_autocomplete_destroy() {
         let suggestions = autocomplete("/des");
         assert!(suggestions.iter().any(|s| s == "/destroy"));
+    }
+
+    #[test]
+    fn test_parse_add_interactive() {
+        assert_eq!(
+            parse_command_verbose("/add claude --interactive"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                tag: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: false,
+                interactive: true,
+                prompt: None,
+                model: None,
+                use_env: vec![],
+                env_file: None,
+                run_as_root: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_defaults_interactive_false() {
+        let parsed = parse_command_verbose("/add claude");
+        assert!(matches!(
+            parsed,
+            ParseResult::Ok(Command::AddAgent { interactive: false, .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_add_interactive_and_auto_mode_rejected() {
+        let result = parse_command_verbose("/add claude --interactive --auto-mode -p hi");
+        match result {
+            ParseResult::Err(msg) => assert!(msg.contains("mutually exclusive")),
+            other => panic!("expected Err, got {:?}", other),
+        }
     }
 
     // ===== Help/parser parity (Epic 2 AC1) =====
