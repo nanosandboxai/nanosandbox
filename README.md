@@ -80,10 +80,32 @@ Notes:
 - `sandbox.yml` env values take precedence over startup env for matching keys.
 - Local `.env` is auto-loaded only when no `sandbox.yml` is active.
 - `/add` does not import startup env automatically; select keys explicitly with `--use-env`.
+- Type `/help` in the TUI for the full command list. The command surface is
+  generated from a single table, so it is always in sync with what the TUI
+  accepts.
+- Agent, MCP, and skill configuration is **declarative**: it lives in
+  `sandbox.yml` and is applied by redeploying (`nanosb apply`). There is no
+  in-TUI hot-reload.
 
 ```bash
 # Add panel and import selected startup env keys
 /add claude --use-env OPENAI_API_KEY --use-env GITHUB_TOKEN
+```
+
+### Testing the TUI
+
+The TUI has a headless test suite (no terminal, no VM) plus an opt-in
+end-to-end check. See [runtime/docs/TESTING.md](runtime/docs/TESTING.md) for the full guide.
+
+```bash
+# Frame, handler, and event-loop tests (no TTY, no VM) — runs in CI
+cargo test -p nanosb-cli
+
+# Scripted VM end-to-end test (requires libkrun/gvproxy; opt-in)
+cargo test -p nanosb-cli --test tui_vm_test -- --ignored --nocapture
+
+# Local pty smoke harness: boots a sandbox and drives the TUI by hand
+scripts/tui-smoke.sh
 ```
 
 ### CLI Commands
