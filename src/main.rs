@@ -106,9 +106,6 @@ mod cli {
             /// Timeout in seconds
             #[arg(long, default_value = "3600")]
             timeout_secs: u64,
-            /// Open the console as a real TTY (interactive sandboxes).
-            #[arg(long, default_value_t = false)]
-            tty: bool,
         },
 
         /// View sandbox console logs
@@ -994,7 +991,6 @@ mod cli {
         boot_env_json: &str,
         origin_json: &str,
         timeout_secs: u32,
-        interactive: bool,
     ) -> anyhow::Result<()> {
         nanosb_cli::deploy::spawn_supervisor(
             sandbox_name,
@@ -1003,7 +999,6 @@ mod cli {
             boot_env_json,
             origin_json,
             timeout_secs,
-            interactive,
         )
     }
 
@@ -1131,7 +1126,6 @@ mod cli {
                         &boot_env_json,
                         &origin.to_json(),
                         rc.timeout_secs,
-                        false,
                     );
                 }
                 if outcome.is_ok() {
@@ -1279,7 +1273,6 @@ mod cli {
             &boot_env_json,
             &origin.to_json(),
             timeout_secs,
-            false,
         )?;
         wait_supervisor_running(&client, 60).await?;
         println!("{} Restarted {}", "✓".green(), sandbox_id.bold());
@@ -1483,7 +1476,6 @@ mod cli {
             &boot_env_json,
             &origin.to_json(),
             timeout,
-            false,
         )?;
         let client = SupervisorClient::new(sandbox_name);
         wait_supervisor_running(&client, 60).await?;
@@ -2492,7 +2484,6 @@ fn main() -> anyhow::Result<()> {
             config_json,
             extra_mounts_json,
             timeout_secs,
-            tty,
         }) = parsed.command
         {
             crate::supervisor::run_supervisor(crate::supervisor::SuperviseArgs {
@@ -2500,7 +2491,6 @@ fn main() -> anyhow::Result<()> {
                 config_json,
                 extra_mounts_json,
                 timeout_secs,
-                tty,
             });
         }
         anyhow::bail!("__supervise requires sandbox_name and config_json arguments");

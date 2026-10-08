@@ -59,8 +59,6 @@ pub struct DeployPlan {
     pub agent_command: AgentCommand,
     /// Environment variables for the VM boot (includes resolved secrets).
     pub env: HashMap<String, String>,
-    /// Whether the sandbox console should be a real TTY (interactive mode).
-    pub console_tty: bool,
 }
 
 /// Top-level planner that orchestrates mount planning, config generation,
@@ -118,7 +116,6 @@ impl DeployPlanner {
             config_files,
             agent_command: agent_cmd,
             env,
-            console_tty: config.interactive,
         }
     }
 }
@@ -194,6 +191,5 @@ mod tests {
         assert!(!plan.mounts.is_empty(), "should have at least workspace mount");
         assert!(!plan.config_files.is_empty(), "should have config files");
         assert_eq!(plan.agent_command.binary, "claude");
-        assert!(!plan.console_tty, "default should be non-TTY");
     }
 }

@@ -255,7 +255,6 @@ pub struct SuperviseArgs {
     pub config_json: String,
     pub extra_mounts_json: String,
     pub timeout_secs: u64,
-    pub tty: bool,
 }
 
 /// Run the supervisor process. This function:
