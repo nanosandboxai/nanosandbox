@@ -76,9 +76,37 @@ pub enum Command {
     /// List git branches created by nanosb sandboxes.
     Branches,
     /// Git sync control: show status, enable, disable, or manual sync.
-    GitSync {
+    Sync {
+        /// Whether to perform a dry-run (show what would be synced).
+        dry_run: bool,
         /// Subcommand: None (status), "on", "off", "now"
         action: Option<String>,
+    },
+    /// Show diff of sandbox changes.
+    Diff {
+        /// Whether to show a summary stat instead of the full diff.
+        stat: bool,
+    },
+    /// Show git status of sandbox clones.
+    Status,
+    /// Discard sandbox changes.
+    Discard,
+    /// List mounted volumes.
+    Mounts,
+    /// Execute a command inside a sandbox.
+    Exec {
+        /// Command and arguments to run.
+        args: Vec<String>,
+    },
+    /// Show sandbox logs.
+    Logs {
+        /// Number of recent log lines to show, or None for all.
+        count: Option<usize>,
+    },
+    /// Stop a sandbox.
+    Stop {
+        /// Target: panel index or name, or None for focused panel.
+        target: Option<String>,
     },
     /// Open clone directory in an external tool.
     Edit {
@@ -332,7 +360,14 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/copy" => ParseResult::Ok(Command::Copy),
         "/zoom" => ParseResult::Ok(Command::Zoom),
         "/branches" => ParseResult::Ok(Command::Branches),
-        "/gitsync" => parse_gitsync(&parts),
+        "/gitsync" | "/sync" => parse_sync(&parts),
+        "/diff" => parse_diff(&parts),
+        "/status" => parse_no_arg("/status", &parts),
+        "/discard" => parse_no_arg("/discard", &parts),
+        "/mounts" => parse_no_arg("/mounts", &parts),
+        "/exec" => parse_exec(&parts),
+        "/logs" => parse_logs(&parts),
+        "/stop" => parse_stop(&parts),
         "/open" => {
             let target = parts.get(1).map(|s| s.to_string());
             ParseResult::Ok(Command::Open { target })
@@ -649,26 +684,90 @@ fn parse_kill(parts: &[&str]) -> ParseResult {
     }
 }
 
-fn parse_gitsync(parts: &[&str]) -> ParseResult {
-    match parts.get(1).copied() {
-        None => ParseResult::Ok(Command::GitSync { action: None }),
-        Some("on") | Some("off") | Some("now") => {
-            ParseResult::Ok(Command::GitSync {
-                action: Some(parts[1].to_string()),
-            })
-        }
-        Some(other) => ParseResult::Err(format!(
-            "Unknown gitsync action: '{}'\n\
-             Usage: /gitsync [on|off|now]\n\
-             - /gitsync     Show current sync status\n\
-             - /gitsync on  Auto-sync sandbox commits to your local repo branches\n\
-             - /gitsync off Stop syncing (changes stay in sandbox clone only)\n\
-             - /gitsync now Sync sandbox commits to local repo once",
-            other,
-        )),
+fn parse_no_arg(cmd: &str, parts: &[&str]) -> ParseResult {
+    if parts.len() > 1 {
+        return ParseResult::Err(format!(
+            "{} does not take arguments.
+Usage: {}",
+            cmd, cmd,
+        ));
+    }
+    match cmd {
+        "/status" => ParseResult::Ok(Command::Status),
+        "/discard" => ParseResult::Ok(Command::Discard),
+        "/mounts" => ParseResult::Ok(Command::Mounts),
+        _ => unreachable!(),
     }
 }
 
+fn parse_sync(parts: &[&str]) -> ParseResult {
+    let mut dry_run = false;
+    let mut action = None;
+
+    let mut i = 1;
+    while i < parts.len() {
+        match parts[i] {
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            "on" | "off" | "now" => {
+                action = Some(parts[i].to_string());
+                i += 1;
+            }
+            other => {
+                return ParseResult::Err(format!(
+                    "Unknown sync action: '{}'\n                     Usage: /sync [--dry-run] [on|off|now]\n                     - /sync         Show current sync status\n                     - /sync on      Auto-sync sandbox commits to your local repo branches\n                     - /sync off     Stop syncing (changes stay in sandbox clone only)\n                     - /sync now     Sync sandbox commits to local repo once\n                     - /sync --dry-run  Show what would be synced without syncing",
+                    other,
+                ));
+            }
+        }
+    }
+
+    ParseResult::Ok(Command::Sync { dry_run, action })
+}
+
+fn parse_diff(parts: &[&str]) -> ParseResult {
+    let stat = parts.get(1).copied() == Some("--stat");
+    if parts.len() > 1 && !stat {
+        return ParseResult::Err(format!(
+            "Unknown diff option: '{}'\n             Usage: /diff [--stat]\n             - /diff       Show full diff of sandbox changes\n             - /diff --stat  Show summary stat only",
+            parts[1],
+        ));
+    }
+    ParseResult::Ok(Command::Diff { stat })
+}
+
+fn parse_exec(parts: &[&str]) -> ParseResult {
+    if parts.len() < 2 {
+        return ParseResult::Err(
+            "Usage: /exec <command> [args...]\n             Example: /exec ls -la /workspace\n             Example: /exec git log --oneline -5"
+                .to_string(),
+        );
+    }
+    let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+    ParseResult::Ok(Command::Exec { args })
+}
+
+fn parse_logs(parts: &[&str]) -> ParseResult {
+    match parts.get(1).copied() {
+        None => ParseResult::Ok(Command::Logs { count: None }),
+        Some(n) => match n.parse::<usize>() {
+            Ok(count) => ParseResult::Ok(Command::Logs {
+                count: Some(count),
+            }),
+            Err(_) => ParseResult::Err(format!(
+                "'{}' is not a valid log line count.\n                 Usage: /logs [<n>]\n                 - /logs     Show all logs\n                 - /logs 50  Show last 50 lines",
+                n,
+            )),
+        },
+    }
+}
+
+fn parse_stop(parts: &[&str]) -> ParseResult {
+    let target = parts.get(1).map(|s| s.to_string());
+    ParseResult::Ok(Command::Stop { target })
+}
 fn parse_theme(parts: &[&str]) -> ParseResult {
     match parts.get(1) {
         None => ParseResult::Ok(Command::Theme { name: None }),
@@ -1254,14 +1353,17 @@ mod tests {
 
     #[test]
     fn test_parse_gitsync_status() {
-        assert_eq!(parse_command("/gitsync"), Some(Command::GitSync { action: None }));
+        assert_eq!(
+            parse_command("/gitsync"),
+            Some(Command::Sync { dry_run: false, action: None })
+        );
     }
 
     #[test]
     fn test_parse_gitsync_on() {
         assert_eq!(
             parse_command_verbose("/gitsync on"),
-            ParseResult::Ok(Command::GitSync { action: Some("on".to_string()) })
+            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("on".to_string()) })
         );
     }
 
@@ -1269,7 +1371,7 @@ mod tests {
     fn test_parse_gitsync_off() {
         assert_eq!(
             parse_command_verbose("/gitsync off"),
-            ParseResult::Ok(Command::GitSync { action: Some("off".to_string()) })
+            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("off".to_string()) })
         );
     }
 
@@ -1277,7 +1379,7 @@ mod tests {
     fn test_parse_gitsync_now() {
         assert_eq!(
             parse_command_verbose("/gitsync now"),
-            ParseResult::Ok(Command::GitSync { action: Some("now".to_string()) })
+            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("now".to_string()) })
         );
     }
 
@@ -1287,6 +1389,182 @@ mod tests {
         assert!(matches!(result, ParseResult::Err(_)));
     }
 
+    #[test]
+    fn test_parse_sync_alias() {
+        assert_eq!(
+            parse_command_verbose("/sync"),
+            ParseResult::Ok(Command::Sync { dry_run: false, action: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_dry_run() {
+        assert_eq!(
+            parse_command_verbose("/sync --dry-run"),
+            ParseResult::Ok(Command::Sync { dry_run: true, action: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_dry_run_with_action() {
+        assert_eq!(
+            parse_command_verbose("/sync --dry-run now"),
+            ParseResult::Ok(Command::Sync { dry_run: true, action: Some("now".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_dry_run_after_action() {
+        assert_eq!(
+            parse_command_verbose("/sync on --dry-run"),
+            ParseResult::Ok(Command::Sync { dry_run: true, action: Some("on".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_invalid_action() {
+        let result = parse_command_verbose("/sync foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Diff command tests =====
+
+    #[test]
+    fn test_parse_diff() {
+        assert_eq!(
+            parse_command("/diff"),
+            Some(Command::Diff { stat: false })
+        );
+    }
+
+    #[test]
+    fn test_parse_diff_stat() {
+        assert_eq!(
+            parse_command("/diff --stat"),
+            Some(Command::Diff { stat: true })
+        );
+    }
+
+    #[test]
+    fn test_parse_diff_unknown_option() {
+        let result = parse_command_verbose("/diff --foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Status command tests =====
+
+    #[test]
+    fn test_parse_status() {
+        assert_eq!(parse_command("/status"), Some(Command::Status));
+    }
+
+    #[test]
+    fn test_parse_status_with_args_is_unknown() {
+        let result = parse_command_verbose("/status foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Discard command tests =====
+
+    #[test]
+    fn test_parse_discard() {
+        assert_eq!(parse_command("/discard"), Some(Command::Discard));
+    }
+
+    #[test]
+    fn test_parse_discard_with_args_is_unknown() {
+        let result = parse_command_verbose("/discard foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Mounts command tests =====
+
+    #[test]
+    fn test_parse_mounts() {
+        assert_eq!(parse_command("/mounts"), Some(Command::Mounts));
+    }
+
+    #[test]
+    fn test_parse_mounts_with_args_is_unknown() {
+        let result = parse_command_verbose("/mounts foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Exec command tests =====
+
+    #[test]
+    fn test_parse_exec_single_arg() {
+        assert_eq!(
+            parse_command("/exec ls"),
+            Some(Command::Exec { args: vec!["ls".to_string()] })
+        );
+    }
+
+    #[test]
+    fn test_parse_exec_multiple_args() {
+        assert_eq!(
+            parse_command("/exec ls -la /workspace"),
+            Some(Command::Exec {
+                args: vec!["ls".to_string(), "-la".to_string(), "/workspace".to_string()]
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_exec_no_args_fails() {
+        let result = parse_command_verbose("/exec");
+        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("Usage:")));
+    }
+
+    // ===== Logs command tests =====
+
+    #[test]
+    fn test_parse_logs_no_count() {
+        assert_eq!(
+            parse_command("/logs"),
+            Some(Command::Logs { count: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_logs_with_count() {
+        assert_eq!(
+            parse_command("/logs 50"),
+            Some(Command::Logs { count: Some(50) })
+        );
+    }
+
+    #[test]
+    fn test_parse_logs_invalid_count() {
+        let result = parse_command_verbose("/logs abc");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Stop command tests =====
+
+    #[test]
+    fn test_parse_stop_no_target() {
+        assert_eq!(
+            parse_command("/stop"),
+            Some(Command::Stop { target: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_stop_with_number() {
+        assert_eq!(
+            parse_command("/stop 2"),
+            Some(Command::Stop { target: Some("2".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_stop_with_name() {
+        assert_eq!(
+            parse_command("/stop claude"),
+            Some(Command::Stop { target: Some("claude".to_string()) })
+        );
+    }
     #[test]
     fn test_parse_open_no_arg() {
         assert_eq!(parse_command("/open"), Some(Command::Open { target: None }));

@@ -2215,7 +2215,7 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 });
             }
         }
-        Command::GitSync { action } => {
+        Command::Sync { dry_run: _, action } => {
             let panel_idx = app.focused_panel;
             match action.as_deref() {
                 None => {
@@ -2519,6 +2519,15 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
         Command::ClearHistory => {
             app.command_history.clear();
             app.set_status_message("Command history cleared.");
+        }
+        Command::Diff { .. }
+        | Command::Status
+        | Command::Discard
+        | Command::Mounts
+        | Command::Exec { .. }
+        | Command::Logs { .. }
+        | Command::Stop { .. } => {
+            app.set_status_message("Not yet implemented.");
         }
     }
 }
