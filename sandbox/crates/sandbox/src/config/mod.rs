@@ -317,6 +317,7 @@ pub struct AgentSandboxConfig {
     /// Enable auto/headless mode.
     pub auto_mode: bool,
     /// Run the agent interactively on a TTY console (default false = headless).
+    #[serde(default)]
     pub interactive: bool,
     /// Agent permission level.
     pub permissions: Permissions,
@@ -449,5 +450,30 @@ pub fn normalize_image(image: &str) -> String {
         } else {
             format!("docker.io/library/{}:{}", name, tag)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_config_deserializes_without_interactive_field() {
+        // Sessions saved before the `interactive` field existed must still load.
+        let json = r#"{
+            "sandbox": {"name": "s", "image": "alpine"},
+            "mcp_servers": {},
+            "agent": null,
+            "skills": [],
+            "resolved_agent": null,
+            "auto_mode": false,
+            "permissions": "default",
+            "prompt": null,
+            "agent_type": null,
+            "model": null,
+            "claude_settings": null
+        }"#;
+        let cfg: AgentSandboxConfig = serde_json::from_str(json).expect("old session must load");
+        assert!(!cfg.interactive, "missing interactive must default to false");
     }
 }

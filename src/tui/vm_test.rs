@@ -323,3 +323,78 @@ async fn test_interactive_tty_roundtrip() {
     assert!(saw_tty_yes, "guest stdin was not a TTY (expected TTY_CHECK:yes)");
     assert!(saw_echo, "input did not round-trip (expected ECHO:hello-tty)");
 }
+
+/// Interactive mode launches the **real agent command** (no shell override).
+///
+/// Unlike [`test_interactive_tty_roundtrip`] (which overrides the command with
+/// `/bin/sh` to probe the PTY), this boots with `agent_type = Claude` and no
+/// command override, so `spawn_supervisor_panel` runs the command built by
+/// `AgentCommandBuilder` (bare `claude`, interactive) over the exec-agent PTY.
+/// It asserts the agent produced output — i.e. the real agent command actually
+/// launched and rendered on the PTY.
+///
+/// Requires an agent image with the `claude` binary on PATH:
+///   NANOSB_TEST_AGENT_IMAGE=localhost:5050/claude:latest \
+///   NANOSB_BINARY_PATH="$PWD/target/debug/nanosb" \
+///   cargo test -p nanosb-cli tui::vm_test::test_interactive_launches_agent_command -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn test_interactive_launches_agent_command() {
+    let Ok(image) = std::env::var("NANOSB_TEST_AGENT_IMAGE") else {
+        eprintln!(
+            "skipped: set NANOSB_TEST_AGENT_IMAGE=<agent image with `claude`> to run"
+        );
+        return;
+    };
+    let name = format!("tui-agent-cmd-test-{}", std::process::id());
+
+    let mut config = AgentSandboxConfig::builder()
+        .name(&name)
+        .image(&image)
+        .cpus(1)
+        .memory_mb(1024)
+        .timeout_secs(600)
+        .build();
+    config.interactive = true;
+    config.agent_type = Some(sandbox::AgentType::Claude);
+    // No `config.sandbox.command` override: the real agent command runs.
+
+    let mut app = App::new();
+    let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+    add_agent_from_config(&mut app, &name, config, &tx);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let mut saw_output = false;
+    loop {
+        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            Ok(Some(ev)) => {
+                let _ = handle_event(&mut app, ev, &tx).await;
+            }
+            Ok(None) => break,
+            Err(_) => {}
+        }
+        if let Some(ref term) = app.panels.first().and_then(|p| p.terminal.as_ref()) {
+            if !term.screen().contents().trim().is_empty() {
+                saw_output = true;
+            }
+        }
+        if saw_output {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+    }
+
+    let client = crate::supervisor::client::SupervisorClient::new(&name);
+    let _ = client.stop(true);
+    let sandbox_dir = client.sandbox_dir().to_path_buf();
+    if sandbox_dir.exists() {
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
+    }
+
+    assert!(
+        saw_output,
+        "the real agent command produced no PTY output (agent did not launch)"
+    );
+}
