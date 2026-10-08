@@ -11,6 +11,7 @@
 //! | Cursor  | JSON     | ~/.cursor/mcp.json            |
 
 use std::collections::HashMap;
+use tracing::warn;
 use crate::config::{AgentType, McpServerConfig};
 
 /// Format identifier for MCP config generation.
@@ -127,6 +128,7 @@ impl ConfigGenerator {
                 serde_json::Value::Array(srv.args.iter().map(|a| serde_json::Value::String(a.clone())).collect()),
             );
             if !srv.env.is_empty() {
+                warn_inline_secrets(name, &srv.env);
                 let env_map: serde_json::Map<String, _> = srv
                     .env
                     .iter()
@@ -182,6 +184,7 @@ impl ConfigGenerator {
 
             let non_empty_env: HashMap<_, _> = srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
             if !non_empty_env.is_empty() {
+                warn_inline_secrets(name, &srv.env);
                 output.push_str("env = { ");
                 let mut env_keys: Vec<&String> = non_empty_env.keys().copied().collect();
                 env_keys.sort();
@@ -244,6 +247,7 @@ impl ConfigGenerator {
 
             let non_empty_env: HashMap<_, _> = srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
             if !non_empty_env.is_empty() {
+                warn_inline_secrets(name, &srv.env);
                 output.push_str("    envs:\n");
                 let mut env_keys: Vec<&String> = non_empty_env.keys().copied().collect();
                 env_keys.sort();
@@ -263,6 +267,37 @@ impl ConfigGenerator {
     /// Generate Cursor MCP config (same JSON format as Claude).
     fn generate_cursor(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
         Self::generate_claude(servers)
+    }
+}
+
+fn looks_like_secret(value: &str) -> bool {
+    if value.starts_with('$') {
+        return false;
+    }
+    const PREFIXES: &[&str] = &[
+        "AKIA", "gho_", "ghp_", "github_pat_", "sk-", "sk_", "xoxb-", "xoxp-",
+    ];
+    if PREFIXES.iter().any(|p| value.starts_with(p)) {
+        return true;
+    }
+    value.len() > 20 && !value.contains(char::is_whitespace)
+}
+
+fn warn_inline_secrets(server_name: &str, env: &HashMap<String, String>) {
+    for (key, value) in env {
+        if looks_like_secret(value) {
+            let hint = if value.len() > 8 {
+                format!("{}...{}", &value[..4], &value[value.len() - 4..])
+            } else {
+                "(short)".to_string()
+            };
+            warn!(
+                server = server_name,
+                env_key = key,
+                value_hint = %hint,
+                "MCP server env contains inline secret — will be written to guest-visible config file"
+            );
+        }
     }
 }
 
@@ -397,5 +432,70 @@ mod tests {
         let a_pos = content.find("a_first").unwrap();
         let z_pos = content.find("z_last").unwrap();
         assert!(a_pos < z_pos, "keys should be sorted alphabetically");
+    }
+
+    #[test]
+    fn test_looks_like_secret_sk_prefix() {
+        assert!(looks_like_secret("sk-ant-abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_var_ref() {
+        assert!(!looks_like_secret("$ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_var_ref_braces() {
+        assert!(!looks_like_secret("${ANTHROPIC_API_KEY}"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_ghp() {
+        assert!(looks_like_secret("ghp_abcdefghijklmnopqrstuvwxyz123456"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_gho() {
+        assert!(looks_like_secret("gho_abcdefghijklmnopqrstuvwxyz123456"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_github_pat() {
+        assert!(looks_like_secret("github_pat_abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_akid() {
+        assert!(looks_like_secret("AKIAIOSFODNN7EXAMPLE"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_slack_bot() {
+        assert!(looks_like_secret("xoxb-1234567890-1234567890123-abc123def456"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_slack_user() {
+        assert!(looks_like_secret("xoxp-1234567890-1234567890123-abc123def456"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_long_token() {
+        assert!(looks_like_secret("abcdefghijklmnopqrstuvwxyz123456"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_short_value() {
+        assert!(!looks_like_secret("hello"));
+    }
+
+    #[test]
+    fn test_looks_like_secret_empty() {
+        assert!(!looks_like_secret(""));
+    }
+
+    #[test]
+    fn test_looks_like_secret_sk_underscore() {
+        assert!(looks_like_secret("sk_abcdefghijklmnopqrstuvwxyz"));
     }
 }
