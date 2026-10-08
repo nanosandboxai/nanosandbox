@@ -409,6 +409,191 @@ fn ensure_nanosb_state_gitignored(clone_path: &Path) {
     }
 }
 
+/// Snapshot a non-git source directory into a clone directory.
+///
+/// 1. Creates the clone directory.
+/// 2. Copies all files from source into clone (excluding `.git`).
+/// 3. Writes `DEFAULT_GITIGNORE` into the clone if the source has no `.gitignore`.
+/// 4. `git init` inside the clone.
+/// 5. `git add -A && git commit -m "initial snapshot"` with the nanosandbox author.
+///
+/// The source directory is NEVER modified — no `.git`, no `.gitignore` written.
+fn snapshot_source_to_clone(source: &Path, clone: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(clone).map_err(|e| {
+        let msg = format!("Failed to create clone dir: {}", e);
+        warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+        msg
+    })?;
+
+    // Copy all files from source to clone, excluding .git.
+    copy_dir_excluding_git(source, clone)?;
+
+    // Write .gitignore into the clone if the source doesn't have one.
+    // (We check the source so we don't overwrite a user-provided .gitignore.)
+    let source_gitignore = source.join(".gitignore");
+    let clone_gitignore = clone.join(".gitignore");
+    if !source_gitignore.exists() && !clone_gitignore.exists() {
+        std::fs::write(&clone_gitignore, DEFAULT_GITIGNORE).map_err(|e| {
+            let msg = format!("Failed to write .gitignore in clone: {}", e);
+            warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+            msg
+        })?;
+    }
+
+    // git init inside the clone.
+    let repo = git2::Repository::init(clone).map_err(|e| {
+        let msg = format!("git2 init in clone failed: {}", e);
+        warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+        msg
+    })?;
+
+    // Stage all files (respecting .gitignore).
+    let mut index = repo.index().map_err(|e| {
+        let msg = format!("git2 index failed: {}", e);
+        warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+        msg
+    })?;
+    index
+        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+        .map_err(|e| {
+            let msg = format!("git2 add_all failed: {}", e);
+            warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+            msg
+        })?;
+    index.write().map_err(|e| {
+        let msg = format!("git2 index write failed: {}", e);
+        warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+        msg
+    })?;
+    let tree_oid = index.write_tree().map_err(|e| {
+        let msg = format!("git2 write_tree failed: {}", e);
+        warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+        msg
+    })?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| {
+        let msg = format!("git2 find_tree failed: {}", e);
+        warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+        msg
+    })?;
+
+    // Commit with explicit nanosandbox author.
+    let sig = git2::Signature::now("nanosandbox", "nanosb@local").map_err(|e| {
+        let msg = format!("git2 signature failed: {}", e);
+        warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+        msg
+    })?;
+    repo.commit(Some("HEAD"), &sig, &sig, "initial snapshot", &tree, &[])
+        .map_err(|e| {
+            let msg = format!("git2 commit failed: {}", e);
+            warn!("snapshot_source_to_clone: {} (clone={})", msg, clone.display());
+            msg
+        })?;
+
+    ensure_nanosb_state_gitignored(clone);
+    Ok(())
+}
+
+/// Directories to skip when snapshotting a non-git source into a clone.
+/// These are well-known build artifact and dependency directories that are
+/// large, irrelevant to sandbox execution, and covered by DEFAULT_GITIGNORE.
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".npm",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "env",
+    ".eggs",
+    ".tox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "target",
+    "build",
+    ".gradle",
+    ".m2",
+    "vendor",
+    ".bundle",
+    ".dart_tool",
+    ".pub-cache",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".svelte-kit",
+    ".astro",
+    "dist",
+    ".vite",
+    ".cache",
+    "coverage",
+    ".nyc_output",
+    ".terraform",
+    ".idea",
+    ".vscode",
+    "Pods",
+    "DerivedData",
+    "_build",
+    "deps",
+    "bin",
+    "obj",
+    "packages",
+    "tmp",
+    "temp",
+    "out",
+    "htmlcov",
+    ".vs",
+];
+
+/// Recursively copy a directory, skipping `.git` and well-known build artifact dirs.
+fn copy_dir_excluding_git(src: &Path, dst: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(src).map_err(|e| {
+        let msg = format!("Failed to read source dir: {}", e);
+        warn!("copy_dir_excluding_git: {} (src={})", msg, src.display());
+        msg
+    })? {
+        let entry = entry.map_err(|e| {
+            let msg = format!("Failed to read dir entry: {}", e);
+            warn!("copy_dir_excluding_git: {}", msg);
+            msg
+        })?;
+        let file_type = entry.file_type().map_err(|e| {
+            let msg = format!("Failed to get file type: {}", e);
+            warn!("copy_dir_excluding_git: {}", msg);
+            msg
+        })?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Skip .git entirely.
+        if name == ".git" {
+            continue;
+        }
+
+        // Skip well-known build artifact directories.
+        if file_type.is_dir() && SKIP_DIRS.contains(&name_str.as_ref()) {
+            continue;
+        }
+
+        let src_path = entry.path();
+        let dst_path = dst.join(&name);
+
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&dst_path).map_err(|e| {
+                let msg = format!("Failed to create dir {}: {}", dst_path.display(), e);
+                warn!("copy_dir_excluding_git: {}", msg);
+                msg
+            })?;
+            copy_dir_excluding_git(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path).map_err(|e| {
+                let msg = format!("Failed to copy {} -> {}: {}", src_path.display(), dst_path.display(), e);
+                warn!("copy_dir_excluding_git: {}", msg);
+                msg
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// Initialise a git repository in a non-git source directory.
 ///
 /// Steps:
@@ -420,6 +605,10 @@ fn ensure_nanosb_state_gitignored(clone_path: &Path) {
 ///
 /// After this call, `ProjectMount::detect()` will classify the directory as
 /// `ProjectLayout::SingleRepo` and all normal clone/branch/teardown logic applies.
+///
+/// NOTE: This function is only used in tests. Production NoGit paths use
+/// `snapshot_source_to_clone()` instead, which never mutates the source.
+#[cfg(test)]
 fn git_init_project(path: &Path) -> Result<(), String> {
     // Guard: if the directory is already a valid git repo, nothing to do.
     if path.join(".git").exists() {
@@ -824,42 +1013,15 @@ impl ProjectMount {
 
         match &self.layout {
             ProjectLayout::NoGit => {
-                // Initialise a git repo in the source directory so we can use the
-                // standard clone/branch/teardown flow. After git_init_project() the
-                // source has a `.git` dir and an initial snapshot commit.
-                git_init_project(&self.source_path).map_err(|e| {
-                    warn!(
-                        "ProjectMount::setup: git_init_project failed (sandbox_id={}, source={}): {}",
-                        sandbox_id,
-                        self.source_path.display(),
-                        e
-                    );
-                    e
-                })?;
-                let branch = git_current_branch(&self.source_path).map_err(|e| {
-                    warn!(
-                        "ProjectMount::setup: git_current_branch failed after init (sandbox_id={}, source={}): {}",
-                        sandbox_id,
-                        self.source_path.display(),
-                        e
-                    );
-                    e
-                })?;
-                // Update layout in-place — do NOT recurse into setup() to avoid infinite loop.
-                self.layout = ProjectLayout::SingleRepo {
-                    repo_path: self.source_path.clone(),
-                    current_branch: branch,
-                };
-                // Inline the SingleRepo arm logic.
-                let repo_path = self.source_path.clone();
+                // Create the clone directory first, snapshot the source into it,
+                // then treat the clone as the SingleRepo for all subsequent operations.
+                // The source directory is NEVER modified.
                 let clones = clones_dir(&self.source_path);
                 std::fs::create_dir_all(&clones).map_err(|e| {
                     let msg = format!("Failed to create clones dir: {}", e);
                     warn!(
                         "ProjectMount::setup: {} (sandbox_id={}, clones={})",
-                        msg,
-                        sandbox_id,
-                        clones.display()
+                        msg, sandbox_id, clones.display()
                     );
                     msg
                 })?;
@@ -867,9 +1029,50 @@ impl ProjectMount {
                 if clone_path.exists() {
                     let _ = std::fs::remove_dir_all(&clone_path);
                 }
-                let branch_name = resolve_branch_name(&repo_path, &branch_name);
-                git_clone_local(&repo_path, &clone_path, &branch_name)?;
-                self.created_branches.push((repo_path.clone(), branch_name));
+                // Snapshot source into clone (git init + add + commit inside clone).
+                snapshot_source_to_clone(&self.source_path, &clone_path)?;
+                // The clone is now a valid git repo with an "initial snapshot" commit.
+                // Use the clone as the repo_path for SingleRepo.
+                let branch_name = resolve_branch_name(&clone_path, &branch_name);
+                // Create the nanosb branch in the clone.
+                let clone_repo = git2::Repository::open(&clone_path).map_err(|e| {
+                    let msg = format!("git2 open clone failed: {}", e);
+                    warn!("ProjectMount::setup: {} (clone={})", msg, clone_path.display());
+                    msg
+                })?;
+                let head_commit = clone_repo.head().and_then(|h| h.peel_to_commit()).map_err(|e| {
+                    let msg = format!("git2 head commit failed: {}", e);
+                    warn!("ProjectMount::setup: {} (clone={})", msg, clone_path.display());
+                    msg
+                })?;
+                clone_repo.branch(&branch_name, &head_commit, false).map_err(|e| {
+                    let msg = format!("git2 branch create failed: {}", e);
+                    warn!("ProjectMount::setup: {} (clone={}, branch={})", msg, clone_path.display(), branch_name);
+                    msg
+                })?;
+                let branch_ref: git2::Branch<'_> = clone_repo.find_branch(&branch_name, git2::BranchType::Local)
+                    .map_err(|e| {
+                        let msg = format!("git2 branch ref failed: {}", e);
+                        warn!("ProjectMount::setup: {} (clone={})", msg, clone_path.display());
+                        msg
+                    })?;
+                let branch_ref = branch_ref.into_reference();
+                clone_repo.set_head(branch_ref.name().unwrap_or("refs/heads/main")).map_err(|e| {
+                    let msg = format!("git2 set_head failed: {}", e);
+                    warn!("ProjectMount::setup: {} (clone={})", msg, clone_path.display());
+                    msg
+                })?;
+                clone_repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force())).map_err(|e| {
+                    let msg = format!("git2 checkout failed: {}", e);
+                    warn!("ProjectMount::setup: {} (clone={})", msg, clone_path.display());
+                    msg
+                })?;
+                // Update layout to SingleRepo pointing at the CLONE, not the source.
+                self.layout = ProjectLayout::SingleRepo {
+                    repo_path: clone_path.clone(),
+                    current_branch: branch_name.clone(),
+                };
+                self.created_branches.push((clone_path.clone(), branch_name));
                 self.worktree_base = Some(clone_path.clone());
                 Ok(clone_path)
             }
@@ -1010,40 +1213,14 @@ impl ProjectMount {
 
         match &self.layout {
             ProjectLayout::NoGit => {
-                // Initialise git in source then proceed as SingleRepo (deferred variant).
-                git_init_project(&self.source_path).map_err(|e| {
-                    warn!(
-                        "ProjectMount::setup_deferred: git_init_project failed (sandbox_id={}, source={}): {}",
-                        sandbox_id,
-                        self.source_path.display(),
-                        e
-                    );
-                    e
-                })?;
-                let branch = git_current_branch(&self.source_path).map_err(|e| {
-                    warn!(
-                        "ProjectMount::setup_deferred: git_current_branch failed after init (sandbox_id={}, source={}): {}",
-                        sandbox_id,
-                        self.source_path.display(),
-                        e
-                    );
-                    e
-                })?;
-                // Update layout in-place — do NOT recurse.
-                self.layout = ProjectLayout::SingleRepo {
-                    repo_path: self.source_path.clone(),
-                    current_branch: branch,
-                };
-                // Inline the SingleRepo deferred arm logic.
-                let repo_path = self.source_path.clone();
+                // Snapshot source into clone, then treat clone as SingleRepo.
+                // Source is NEVER modified.
                 let clones = clones_dir(&self.source_path);
                 std::fs::create_dir_all(&clones).map_err(|e| {
                     let msg = format!("Failed to create clones dir: {}", e);
                     warn!(
                         "ProjectMount::setup_deferred: {} (sandbox_id={}, clones={})",
-                        msg,
-                        sandbox_id,
-                        clones.display()
+                        msg, sandbox_id, clones.display()
                     );
                     msg
                 })?;
@@ -1051,8 +1228,16 @@ impl ProjectMount {
                 if clone_path.exists() {
                     let _ = std::fs::remove_dir_all(&clone_path);
                 }
-                git_clone_local_from_head(&repo_path, &clone_path, &branch_name)?;
-                self.deferred_branch = Some((repo_path, branch_name));
+                snapshot_source_to_clone(&self.source_path, &clone_path)?;
+                // The clone is now a valid git repo. Use it as the SingleRepo.
+                self.layout = ProjectLayout::SingleRepo {
+                    repo_path: clone_path.clone(),
+                    current_branch: "main".to_string(),
+                };
+                // Deferred: no branch created in source (there is no source repo).
+                // The clone has its own "main" branch with the initial snapshot.
+                // We store deferred info pointing at the clone itself.
+                self.deferred_branch = Some((clone_path.clone(), branch_name));
                 self.worktree_base = Some(clone_path.clone());
                 Ok(clone_path)
             }
@@ -1791,12 +1976,16 @@ mod tests {
         let mut pm = ProjectMount::detect(tmp.path()).unwrap();
         assert_eq!(pm.layout, ProjectLayout::NoGit);
 
-        // After the fix, setup() on a NoGit dir should succeed by initialising git.
+        // setup() on a NoGit dir should succeed by snapshotting into a clone.
         let result = pm.setup("test-id", &BranchStrategy::Auto);
         assert!(result.is_ok(), "setup() on NoGit dir should succeed, got: {:?}", result);
 
-        // Source dir should now have .git
-        assert!(tmp.path().join(".git").is_dir());
+        // Source dir must NOT have .git — we never mutate the source.
+        assert!(!tmp.path().join(".git").exists(), "source must NOT have .git");
+
+        // Clone should have .git
+        let clone_path = result.unwrap();
+        assert!(clone_path.join(".git").is_dir(), "clone should have .git");
 
         pm.teardown().unwrap();
     }
@@ -2285,12 +2474,12 @@ mod tests {
         let detected = ProjectMount::detect(tmp.path()).unwrap();
         assert_eq!(detected.layout, ProjectLayout::NoGit);
 
-        // setup() should succeed, initialise git in source, and return a clone path
+        // setup() should succeed and return a clone path
         let mut pm = ProjectMount::detect(tmp.path()).unwrap();
         let clone_path = pm.setup("nogit001", &BranchStrategy::Auto).unwrap();
 
-        // Source dir now has .git
-        assert!(tmp.path().join(".git").is_dir(), "source should be git-initialised");
+        // Source dir must NOT have .git — we never mutate the source.
+        assert!(!tmp.path().join(".git").exists(), "source must NOT have .git");
 
         // Clone exists and has .git
         assert!(clone_path.exists());
@@ -2299,14 +2488,14 @@ mod tests {
         // main.py is in the clone
         assert!(clone_path.join("main.py").exists());
 
-        // Branch nanosb/nogit001 exists in source
+        // Branch nanosb/nogit001 exists in the CLONE (not source)
         let output = Command::new("git")
             .args(["branch", "--list", "nanosb/nogit001"])
-            .current_dir(tmp.path())
+            .current_dir(&clone_path)
             .output()
             .unwrap();
         let branches = String::from_utf8_lossy(&output.stdout);
-        assert!(branches.contains("nanosb/nogit001"), "expected branch in source, got: {}", branches);
+        assert!(branches.contains("nanosb/nogit001"), "expected branch in clone, got: {}", branches);
 
         pm.teardown().unwrap();
         assert!(!clone_path.exists(), "clone should be removed after teardown");
@@ -2326,6 +2515,51 @@ mod tests {
         assert!(!clone_path.join("node_modules").exists(), "node_modules must not be cloned");
         assert!(clone_path.join("index.js").exists());
 
+        // Source must NOT have .git
+        assert!(!tmp.path().join(".git").exists(), "source must NOT have .git");
+
+        pm.teardown().unwrap();
+    }
+
+    #[test]
+    fn test_setup_nogit_does_not_mutate_source() {
+        // Verify that a non-git source directory is NEVER modified by setup().
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), "world").unwrap();
+
+        // Record source contents before setup.
+        let before: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+
+        let mut pm = ProjectMount::detect(tmp.path()).unwrap();
+        let clone_path = pm.setup("nosrc01", &BranchStrategy::Auto).unwrap();
+
+        // Source must NOT have .git or .gitignore.
+        assert!(!tmp.path().join(".git").exists(), "source must NOT have .git");
+        assert!(!tmp.path().join(".gitignore").exists(), "source must NOT have .gitignore");
+
+        // Source contents must be unchanged.
+        let after: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        assert_eq!(before, after, "source directory contents must not change");
+
+        // Clone must have .git and the file.
+        assert!(clone_path.join(".git").is_dir(), "clone must have .git");
+        assert!(clone_path.join("hello.txt").exists(), "clone must have the file");
+
+        // Clone must have a valid commit.
+        let output = Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(&clone_path)
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&output.stdout);
+        assert!(log.contains("initial snapshot"), "clone must have initial snapshot commit");
+
         pm.teardown().unwrap();
     }
 
@@ -2341,22 +2575,16 @@ mod tests {
         let mut pm = ProjectMount::detect(tmp.path()).unwrap();
         let clone_path = pm.setup_deferred("defr0001", &BranchStrategy::Auto).unwrap();
 
-        // Source is now git-initialised
-        assert!(tmp.path().join(".git").is_dir());
+        // Source must NOT have .git — we never mutate the source.
+        assert!(!tmp.path().join(".git").exists(), "source must NOT have .git");
 
-        // Clone exists
+        // Clone exists and has .git
         assert!(clone_path.exists());
         assert!(clone_path.join(".git").is_dir());
         assert!(clone_path.join("app.rs").exists());
 
-        // No branch in source yet (deferred)
-        let output = Command::new("git")
-            .args(["branch", "--list", "nanosb/defr0001"])
-            .current_dir(tmp.path())
-            .output()
-            .unwrap();
-        let branches = String::from_utf8_lossy(&output.stdout);
-        assert!(!branches.contains("nanosb/defr0001"), "branch should not exist in source yet for deferred setup");
+        // No branch in source (there is no source repo)
+        // The clone has its own "main" branch with the initial snapshot.
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&clone_path);
