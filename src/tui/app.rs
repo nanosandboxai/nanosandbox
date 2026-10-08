@@ -336,6 +336,9 @@ pub struct AgentPanel {
     pub auto_mode: bool,
     /// Whether the agent runs interactively on a TTY console.
     pub interactive: bool,
+    /// Interactive exec session: (host exec socket, agent program, args).
+    /// Some => the panel attaches via the in-guest exec-agent PTY.
+    pub exec_pty: Option<(std::path::PathBuf, String, Vec<String>)>,
     /// Agent permission level.
     pub permissions: sandbox::Permissions,
     /// Agent type (source of truth for CLI command + config format).
@@ -388,6 +391,7 @@ impl AgentPanel {
             visible: true,
             auto_mode: false,
             interactive: false,
+            exec_pty: None,
             permissions: sandbox::Permissions::Default,
             agent_type: None,
             model: None,

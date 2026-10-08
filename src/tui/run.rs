@@ -592,6 +592,7 @@ pub async fn handle_event(
             name,
             short_id,
             project_mount,
+            exec_pty,
         } => {
             if let Some(panel) = app.panels.get_mut(panel_idx) {
                 panel.backend = None;
@@ -600,6 +601,7 @@ pub async fn handle_event(
                 if project_mount.is_some() {
                     panel.project_mount = project_mount;
                 }
+                panel.exec_pty = exec_pty.clone();
                 panel.loading_message = Some("Attaching to supervised sandbox...".into());
                 panel.mode = PanelMode::Loading;
             }
@@ -623,15 +625,25 @@ pub async fn handle_event(
                 for attempt in 1..=max_attempts {
                     let delay = if attempt == 1 { 300 } else { 1000 };
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                    match super::terminal::connect_console(
-                        name.clone(),
-                        pty_cols,
-                        pty_rows,
-                        panel_idx,
-                        tx.clone(),
-                    )
-                    .await
-                    {
+                    let result = match exec_pty.clone() {
+                        Some((sock, program, args)) => {
+                            super::terminal::connect_exec_pty(
+                                sock, program, args, pty_cols, pty_rows, panel_idx, tx.clone(),
+                            )
+                            .await
+                        }
+                        None => {
+                            super::terminal::connect_console(
+                                name.clone(),
+                                pty_cols,
+                                pty_rows,
+                                panel_idx,
+                                tx.clone(),
+                            )
+                            .await
+                        }
+                    };
+                    match result {
                         Ok(handle) => {
                             let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
                             return;
@@ -1066,6 +1078,7 @@ fn try_attach_supervisor(
             name: sandbox_name.to_string(),
             short_id,
             project_mount: None,
+            exec_pty: None,
         });
         true
     } else {
@@ -1127,6 +1140,54 @@ async fn spawn_supervisor_panel(
         return;
     }
 
+    let mut rc = rc;
+
+    // Interactive mode: the real TTY comes from the in-guest exec agent's PTY,
+    // not the VM console (krun_add_console_port_tty is unusable here). Stage the
+    // agent, bridge a host vsock socket, and make it PID 1 so the panel can run
+    // the agent through `ExecClient` with a PTY.
+    let mut interactive_exec: Option<(String, Vec<String>)> = None;
+    let mut exec_agent_mount: Option<runtime::config::ExtraMount> = None;
+    if config.interactive {
+        // The program the panel launches over the PTY. An explicit
+        // `sandbox.command` (e.g. a shell for tests) overrides the agent command.
+        let (program, args) = match &config.sandbox.command {
+            Some(c) => (c.clone(), config.sandbox.command_args.clone()),
+            None => (
+                plan.agent_command.binary.clone(),
+                plan.agent_command.args.clone(),
+            ),
+        };
+        let agent_dir = sandbox_dir.join("agent");
+        match deploy::stage_exec_agent(&agent_dir) {
+            Ok(guest_path) => {
+                let exec_sock = sandbox_dir.join("exec.sock");
+                let _ = std::fs::remove_file(&exec_sock);
+                rc.vsock_socket = Some(exec_sock.to_string_lossy().to_string());
+                rc.vsock_port = Some(deploy::EXEC_VSOCK_PORT);
+                rc.command = Some(guest_path);
+                rc.command_args = vec![deploy::EXEC_VSOCK_PORT.to_string()];
+                exec_agent_mount = Some(runtime::config::ExtraMount {
+                    tag: "agent".to_string(),
+                    host_path: agent_dir.to_string_lossy().to_string(),
+                    target: "/agent".to_string(),
+                    readonly: false,
+                });
+                interactive_exec = Some((program, args));
+            }
+            Err(e) => {
+                if let Some(mut pm) = project_mount {
+                    let _ = pm.teardown();
+                }
+                let _ = tx.send(AppEvent::SandboxFailed {
+                    panel_idx,
+                    error: format!("Interactive mode needs the exec agent: {}", e),
+                });
+                return;
+            }
+        }
+    }
+
     let config_json = match serde_json::to_string(&rc) {
         Ok(json) => json,
         Err(e) => {
@@ -1147,7 +1208,14 @@ async fn spawn_supervisor_panel(
             return;
         }
     };
-    let extra_mounts = deploy::extra_mounts_from_plan(&plan);
+    let mut extra_mounts = deploy::extra_mounts_from_plan(&plan);
+    if let Some(mount) = exec_agent_mount {
+        // Mount the exec agent FIRST: the guest init aborts the whole extra-mount
+        // loop on the first failure, and agent-state mounts (e.g.
+        // /home/developer/.claude) fail on images that lack that home dir. The
+        // agent mount target (/agent) always resolves, so it must not be skipped.
+        extra_mounts.insert(0, mount);
+    }
     let extra_mounts_json = match serde_json::to_string(&extra_mounts) {
         Ok(json) => json,
         Err(e) => {
@@ -1191,11 +1259,14 @@ async fn spawn_supervisor_panel(
     }
 
     let short_id = name.chars().take(8).collect::<String>();
+    let exec_pty = interactive_exec
+        .map(|(program, args)| (sandbox_dir.join("exec.sock"), program, args));
     let _ = tx.send(AppEvent::SupervisorReady {
         panel_idx,
         name,
         short_id,
         project_mount,
+        exec_pty,
     });
 }
 
@@ -2016,19 +2087,27 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 panel.loading_tick = 0;
 
                 let console_name = panel.supervisor_name().map(|s| s.to_string());
+                let exec_pty = panel.exec_pty.clone();
 
                 if let Some(name) = console_name {
                     let tx = tx.clone();
                     tokio::spawn(async move {
-                        match super::terminal::connect_console(
-                            name,
-                            pty_cols,
-                            pty_rows,
-                            panel_idx,
-                            tx.clone(),
-                        )
-                        .await
-                        {
+                        let result = match exec_pty {
+                            Some((sock, program, args)) => {
+                                super::terminal::connect_exec_pty(
+                                    sock, program, args, pty_cols, pty_rows, panel_idx,
+                                    tx.clone(),
+                                )
+                                .await
+                            }
+                            None => {
+                                super::terminal::connect_console(
+                                    name, pty_cols, pty_rows, panel_idx, tx.clone(),
+                                )
+                                .await
+                            }
+                        };
+                        match result {
                             Ok(handle) => {
                                 let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
                             }

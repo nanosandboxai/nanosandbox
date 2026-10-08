@@ -56,6 +56,9 @@ pub enum AppEvent {
         short_id: String,
         /// Host-side project mount for gitsync / edit, if a project is set.
         project_mount: Option<sandbox::ProjectMount>,
+        /// Interactive exec session: (host exec socket, agent program, args).
+        /// `Some` means attach via the in-guest exec-agent PTY instead of the console.
+        exec_pty: Option<(std::path::PathBuf, String, Vec<String>)>,
     },
     /// Open a TUI tool (suspend terminal, launch tool, resume on exit).
     OpenTuiTool {

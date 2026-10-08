@@ -214,3 +214,112 @@ async fn test_tui_vm_end_to_end() {
         let _ = std::fs::remove_dir_all(&sandbox_dir);
     }
 }
+
+/// Interactive TTY end-to-end test.
+///
+/// Boots a supervised sandbox with `interactive: true`. The supervisor injects
+/// the guest exec agent and bridges a vsock socket; the panel attaches through
+/// that PTY (`connect_exec_pty`). Runs a shell that reports whether stdin is a
+/// TTY, then drives the extracted event loop and asserts:
+///   - the guest sees a TTY (`TTY_CHECK:yes`), and
+///   - input sent through the panel's write channel round-trips as output.
+///
+/// Run: `NANOSB_BINARY_PATH="$PWD/target/debug/nanosb" \
+///   cargo test -p nanosb-cli tui::vm_test::test_interactive_tty_roundtrip -- --ignored --nocapture`
+#[tokio::test]
+#[ignore]
+async fn test_interactive_tty_roundtrip() {
+    let name = format!("tui-interactive-test-{}", std::process::id());
+    // Default to a bare image; override with a real agent image (e.g. a local
+    // registry Claude image) to prove the same path works there:
+    //   NANOSB_TEST_INTERACTIVE_IMAGE=localhost:5050/claude:latest
+    let image = std::env::var("NANOSB_TEST_INTERACTIVE_IMAGE")
+        .unwrap_or_else(|_| "alpine:latest".to_string());
+
+    let mut config = AgentSandboxConfig::builder()
+        .name(&name)
+        .image(&image)
+        .cpus(1)
+        .memory_mb(512)
+        .timeout_secs(600)
+        .build();
+    config.interactive = true;
+    config.sandbox.command = Some("/bin/sh".to_string());
+    config.sandbox.command_args = vec![
+        "-c".to_string(),
+        "if [ -t 0 ]; then echo TTY_CHECK:yes; else echo TTY_CHECK:no; fi; \
+         while read line; do echo ECHO:$line; done"
+            .to_string(),
+    ];
+
+    let mut app = App::new();
+    let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+    add_agent_from_config(&mut app, &name, config, &tx);
+    assert_eq!(app.panels.len(), 1, "expected one panel");
+    assert!(app.panels[0].interactive, "panel should be interactive");
+
+    // Pump until the panel reaches Terminal.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            Ok(Some(ev)) => {
+                let _ = handle_event(&mut app, ev, &tx).await;
+            }
+            Ok(None) => break,
+            Err(_) => {}
+        }
+        if app.panels.first().map(|p| p.mode.clone()) == Some(PanelMode::Terminal) {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("panel never reached Terminal");
+        }
+    }
+
+    // Collect console output and assert the TTY check + echo round-trip.
+    let write_tx = app.panels[0]
+        .terminal_handle
+        .as_ref()
+        .expect("console handle")
+        .write_tx
+        .clone();
+    let _ = write_tx.send(b"hello-tty\n".to_vec());
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(40);
+    let mut saw_tty_yes = false;
+    let mut saw_echo = false;
+    loop {
+        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            Ok(Some(ev)) => {
+                let _ = handle_event(&mut app, ev, &tx).await;
+            }
+            Ok(None) => break,
+            Err(_) => {}
+        }
+        if let Some(ref term) = app.panels.first().and_then(|p| p.terminal.as_ref()) {
+            let text = term.screen().contents();
+            if text.contains("TTY_CHECK:yes") {
+                saw_tty_yes = true;
+            }
+            if text.contains("ECHO:hello-tty") {
+                saw_echo = true;
+            }
+        }
+        if saw_tty_yes && saw_echo {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+    }
+
+    let client = crate::supervisor::client::SupervisorClient::new(&name);
+    let _ = client.stop(true);
+    let sandbox_dir = client.sandbox_dir().to_path_buf();
+    if sandbox_dir.exists() {
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
+    }
+
+    assert!(saw_tty_yes, "guest stdin was not a TTY (expected TTY_CHECK:yes)");
+    assert!(saw_echo, "input did not round-trip (expected ECHO:hello-tty)");
+}

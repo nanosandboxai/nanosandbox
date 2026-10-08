@@ -346,7 +346,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         stdin_fd: stdin_read.as_raw_fd(),
         stdout_fd: stdout_write.as_raw_fd(),
         stderr_fd: stderr_write.as_raw_fd(),
-        tty: args.tty,
+        tty: false,
     });
 
     // Compute config hash (simple SHA256 of the serialized config)
