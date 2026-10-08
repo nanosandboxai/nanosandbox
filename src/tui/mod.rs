@@ -3,6 +3,7 @@
 pub mod app;
 pub mod commands;
 pub mod event;
+pub mod gitcmd;
 pub mod grid;
 pub mod renderer;
 pub mod run;
