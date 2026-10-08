@@ -177,6 +177,28 @@ sandboxes:
 
 Bare image names (e.g., `claude`, `codex`) are automatically resolved to `ghcr.io/nanosandboxai/agents-registry/<name>:latest`.
 
+### Interactive agent panels
+
+By default an agent panel runs **headless**: the agent's output is captured as
+structured events. Set `interactive: true` to instead run the agent's own
+interactive UI in the panel, on a real TTY (keystrokes are forwarded to it):
+
+```yaml
+sandboxes:
+  claude:
+    image: localhost:5050/claude:latest
+    interactive: true
+```
+
+Or per panel from the TUI:
+
+```
+/add claude --image localhost:5050/claude:latest --interactive
+```
+
+`interactive` and `auto_mode` are mutually exclusive. Interactive panels are
+backed by the in-guest exec agent's PTY (the same channel as `nanosb exec --tty`).
+
 ## License
 
 Apache-2.0
