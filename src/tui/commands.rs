@@ -108,6 +108,13 @@ pub enum Command {
         /// Target: panel index or name, or None for focused panel.
         target: Option<String>,
     },
+    /// Show disk usage of nanosb state (clones, sandboxes, sessions).
+    Disk,
+    /// Reclaim disk: dead supervisor dirs and unreferenced clones.
+    Gc {
+        /// Show what would be removed without deleting.
+        dry_run: bool,
+    },
     /// Open clone directory in an external tool.
     Edit {
         /// Tool override, or None for preferred/auto-detected.
@@ -284,6 +291,46 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
         description: "Remove a project from the registry",
     },
     CommandHelpEntry {
+        pattern: "/diff [--stat]",
+        description: "Show agent changes vs base commit",
+    },
+    CommandHelpEntry {
+        pattern: "/status",
+        description: "Show clone branch, dirty files, sync state",
+    },
+    CommandHelpEntry {
+        pattern: "/sync [--dry-run] [on|off|now]",
+        description: "Sync agent changes to refs/nanosb/<id>",
+    },
+    CommandHelpEntry {
+        pattern: "/discard",
+        description: "Reset the clone to its base commit",
+    },
+    CommandHelpEntry {
+        pattern: "/mounts",
+        description: "Show the panel's mounts",
+    },
+    CommandHelpEntry {
+        pattern: "/exec <command>",
+        description: "Run a command in the sandbox (exec channel)",
+    },
+    CommandHelpEntry {
+        pattern: "/logs [n]",
+        description: "Show the sandbox console log tail",
+    },
+    CommandHelpEntry {
+        pattern: "/stop [n|name]",
+        description: "Stop a sandbox (keeps the panel)",
+    },
+    CommandHelpEntry {
+        pattern: "/disk",
+        description: "Show nanosb state disk usage",
+    },
+    CommandHelpEntry {
+        pattern: "/gc [--dry-run]",
+        description: "Reclaim disk (dead dirs, orphan clones)",
+    },
+    CommandHelpEntry {
         pattern: "/quit",
         description: "Suspend session and exit",
     },
@@ -329,6 +376,8 @@ const ALL_COMMANDS: &[&str] = &[
     "/agent list", "/agent show",
     "/upload", "/paste-image",
     "/projects", "/projects forget",
+    "/diff", "/diff --stat", "/status", "/sync", "/sync --dry-run", "/discard",
+    "/mounts", "/exec", "/logs", "/stop", "/disk", "/gc", "/gc --dry-run",
 ];
 
 /// Parse a line of input into a Command, or None if it's a regular message.
@@ -396,6 +445,11 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/upload" => parse_upload(&parts),
         "/paste-image" => ParseResult::Ok(Command::PasteImage),
         "/projects" => parse_projects(&parts),
+        "/disk" => ParseResult::Ok(Command::Disk),
+        "/gc" => {
+            let dry_run = parts.iter().any(|p| *p == "--dry-run");
+            ParseResult::Ok(Command::Gc { dry_run })
+        }
 
         other => ParseResult::Err(format!(
             "Unknown command: {}\nType /help for available commands.",

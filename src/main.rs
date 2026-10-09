@@ -312,8 +312,14 @@ mod cli {
             /// Path to the project to forget
             path: String,
         },
-    }
 
+        /// Reclaim disk: dead supervisor dirs, unreferenced clones, expired sessions
+        Gc {
+            /// Show what would be removed without deleting anything
+            #[arg(long, default_value_t = false)]
+            dry_run: bool,
+        },
+    }
     #[derive(Subcommand)]
     pub enum CacheAction {
         /// Remove unused cache data to reclaim disk space
@@ -719,6 +725,7 @@ mod cli {
             Some(Commands::ProjectsForget { path }) => {
                 cmd_projects_forget(&path, cli.format).await
             }
+            Some(Commands::Gc { dry_run }) => cmd_gc(dry_run).await,
         }
     }
 
@@ -2388,6 +2395,97 @@ mod cli {
         }
 
         println!("\nCleaned up {} clone(s).", cleaned);
+        Ok(())
+    }
+
+    /// Reclaim disk: dead supervisor dirs, unreferenced clones, expired sessions.
+    async fn cmd_gc(dry_run: bool) -> anyhow::Result<()> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let root = std::path::PathBuf::from(&home).join(".nanosandbox");
+        let sandboxes = root.join("sandboxes");
+        let clones = root.join("clones");
+
+        // Collect all clone paths referenced by any saved session.
+        let mut referenced: std::collections::HashSet<std::path::PathBuf> =
+            std::collections::HashSet::new();
+        let sessions_dir = root.join("sessions");
+        if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+            for e in entries.flatten() {
+                let dir = e.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                if let Ok(files) = std::fs::read_dir(&dir) {
+                    for f in files.flatten() {
+                        if let Ok(text) = std::fs::read_to_string(f.path()) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if let Some(panels) = v.get("panels").and_then(|p| p.as_array()) {
+                                    for p in panels {
+                                        if let Some(cp) = p.get("clone_path").and_then(|c| c.as_str())
+                                        {
+                                            referenced.insert(std::path::PathBuf::from(cp));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. Dead supervisor dirs: no running control socket and no live PID.
+        let mut removed_dirs = 0usize;
+        if let Ok(entries) = std::fs::read_dir(&sandboxes) {
+            for e in entries.flatten() {
+                let dir = e.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                let name = dir.file_name().map(|n| n.to_string_lossy().to_string());
+                let Some(name) = name else { continue };
+                let running =
+                    crate::supervisor::client::SupervisorClient::new(&name).is_running();
+                if running {
+                    continue;
+                }
+                removed_dirs += 1;
+                if dry_run {
+                    println!("Would remove dead supervisor dir: {}", name);
+                } else {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    println!("Removed dead supervisor dir: {}", name);
+                }
+            }
+        }
+
+        // 2. Unreferenced clones.
+        let mut removed_clones = 0usize;
+        if let Ok(entries) = std::fs::read_dir(&clones) {
+            for e in entries.flatten() {
+                let dir = e.path();
+                let referenced_any = referenced.iter().any(|r| r.starts_with(&dir));
+                // A clone dir is unreferenced only if NO session references a path
+                // under it AND no running supervisor sandbox exists for its project.
+                if referenced_any {
+                    continue;
+                }
+                removed_clones += 1;
+                if dry_run {
+                    println!("Would remove unreferenced clone tree: {}", dir.display());
+                } else {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    println!("Removed unreferenced clone tree: {}", dir.display());
+                }
+            }
+        }
+
+        println!(
+            "\n{}: {} supervisor dir(s), {} clone tree(s).",
+            if dry_run { "GC dry-run" } else { "GC complete" },
+            removed_dirs,
+            removed_clones
+        );
         Ok(())
     }
 

@@ -2663,7 +2663,116 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 app.set_status_message(format!("'{}' has no supervised sandbox to stop.", name));
             }
         }
+        Command::Disk => {
+            handle_disk_usage(app);
+        }
+        Command::Gc { dry_run } => {
+            handle_gc(app, dry_run);
+        }
     }
+}
+
+/// Sum the byte size of a directory tree (best-effort).
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if let Ok(meta) = e.metadata() {
+                if meta.is_dir() {
+                    stack.push(e.path());
+                } else {
+                    total += meta.len();
+                }
+            }
+        }
+    }
+    total
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    format!("{:.1} {}", v, UNITS[i])
+}
+
+/// `/disk` — report nanosb state directory sizes.
+fn handle_disk_usage(app: &mut App) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let root = std::path::PathBuf::from(home).join(".nanosandbox");
+    let mut lines = vec!["nanosb state disk usage:".to_string()];
+    for (label, sub) in [
+        ("clones", "clones"),
+        ("sandboxes", "sandboxes"),
+        ("sessions", "sessions"),
+        ("bundles", "bundles"),
+        ("images", "images"),
+    ] {
+        let p = root.join(sub);
+        if p.exists() {
+            lines.push(format!("  {:<10} {}", label, human_size(dir_size(&p))));
+        }
+    }
+    push_panel_message(app, lines.join("\n"));
+}
+
+/// `/gc [--dry-run]` — reclaim dead supervisor dirs + unreferenced clone trees.
+fn handle_gc(app: &mut App, dry_run: bool) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let root = std::path::PathBuf::from(home).join(".nanosandbox");
+    let sandboxes = root.join("sandboxes");
+    let clones = root.join("clones");
+
+    let mut dead_dirs = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&sandboxes) {
+        for e in entries.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let Some(name) = dir.file_name().map(|n| n.to_string_lossy().to_string()) else {
+                continue;
+            };
+            if crate::supervisor::client::SupervisorClient::new(&name).is_running() {
+                continue;
+            }
+            dead_dirs += 1;
+            if !dry_run {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    let mut clone_trees = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&clones) {
+        for e in entries.flatten() {
+            if e.path().is_dir() {
+                clone_trees += 1;
+            }
+        }
+    }
+
+    // Clones are only reclaimed conservatively by the CLI `nanosb gc`, which can
+    // cross-check saved sessions; the TUI removes only dead supervisor dirs here.
+    let cloned = if dry_run { "would remove" } else { "removed" };
+    push_panel_message(
+        app,
+        format!(
+            "gc: {} dead supervisor dir(s) {}; {} clone tree(s) present \
+             (use `nanosb gc` for reference-aware clone cleanup).",
+            dead_dirs,
+            if dry_run { "found" } else { cloned },
+            clone_trees
+        ),
+    );
 }
 
 /// Focused panel's project clone + base commit, if usable for host git.
