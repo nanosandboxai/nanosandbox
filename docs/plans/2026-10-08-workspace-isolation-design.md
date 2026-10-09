@@ -164,9 +164,7 @@ secure model" the design calls for.
 
 ---
 
-## 4. Patch-libkrun feasibility (Phase 5, defense-in-depth)
-
-Implement per-component resolution in libkrun's virtualfs server: `openat(parent,
+## 4. Patch-libkrun feasibility (Phase 5, defense-in-depth)Implement per-component resolution in libkrun's virtualfs server: `openat(parent,
 comp, O_NOFOLLOW|O_PATH)` for every component, verify the resulting
 `(st_dev, st_ino)` is a descendant of the share root (canonical-inode lineage),
 reject absolute paths / `..`, and validate `symlink`/`linkat`/`renameat` targets
@@ -183,10 +181,18 @@ verify). Maintenance: must rebase on every libkrun upgrade.
 
 Verdict: do it as **defense-in-depth**, not as the primary control.
 
+**Exact location (verified).** libkrun's virtiofs already uses `O_NOFOLLOW` on
+`openat` in the primary paths, but `open_inode`
+(`~/.cache/nanosandbox/libkrun/src/devices/src/virtio/fs/macos/passthrough.rs:744`)
+reopens by a **stored path string** and **clears `O_NOFOLLOW`** (line 769:
+`(flags | O_CLOEXEC) & (!O_NOFOLLOW) & (!O_EXLOCK)`) — the CVE-2026-77179
+("path-string reopen") class. The correct fix is to reopen via a **held fd**
+(fd-based `InodeHandle`, `openat(parent_fd, name, O_NOFOLLOW)`), not a path
+string. This is a multi-day upstream change; documented, not rushed.
+
 ---
 
 ## 5. Migration phases (non-breaking)
-
 - **Phase 0 — Flag (`quick`).** Add `workspace.mode: isolated | shared` (default
   `isolated`). `shared` = today's behavior (explicit opt-in). No change yet.
 - **Phase 1 — Session state out of the workspace (`short`).** Dedicated RW mount

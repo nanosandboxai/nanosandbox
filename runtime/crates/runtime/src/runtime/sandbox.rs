@@ -81,6 +81,12 @@ impl VmSandboxPaths {
     /// control; this is defense-in-depth).
     #[cfg(target_os = "macos")]
     pub fn apply(&self) {
+        // Escape hatch: `NANOSB_SEATBELT=0` disables confinement (e.g. if a future
+        // macOS change breaks the profile). Off by default — confinement is on.
+        if std::env::var("NANOSB_SEATBELT").as_deref() == Ok("0") {
+            eprintln!("nanosb-seatbelt: disabled via NANOSB_SEATBELT=0");
+            return;
+        }
         let profile = self.to_seatbelt_profile();
         let c_profile = std::ffi::CString::new(profile)
             .expect("seatbelt profile has no interior NUL");
