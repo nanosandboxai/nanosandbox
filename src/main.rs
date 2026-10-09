@@ -286,6 +286,9 @@ mod cli {
             /// Project directory (defaults to current directory)
             #[arg(long)]
             project: Option<String>,
+            /// Show what would be cleaned without removing anything
+            #[arg(long, default_value_t = false)]
+            dry_run: bool,
         },
 
         /// List saved nanosb sessions for a project
@@ -703,7 +706,9 @@ mod cli {
             Some(Commands::Stop { sandbox }) => cmd_stop(&sandbox, cli.verbose).await,
             Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
             Some(Commands::Doctor) => cmd_doctor(cli.format).await,
-            Some(Commands::Cleanup { project }) => cmd_cleanup(project.as_deref()).await,
+            Some(Commands::Cleanup { project, dry_run }) => {
+                cmd_cleanup(project.as_deref(), dry_run).await
+            }
             Some(Commands::Sessions { project }) => {
                 cmd_sessions(project.as_deref(), cli.format).await
             }
@@ -2253,7 +2258,7 @@ mod cli {
     }
 
     /// Clean up stale project clones and list project branches.
-    async fn cmd_cleanup(project: Option<&str>) -> anyhow::Result<()> {
+    async fn cmd_cleanup(project: Option<&str>, dry_run: bool) -> anyhow::Result<()> {
         let project_path = match project {
             Some(p) => std::path::PathBuf::from(p),
             None => std::env::current_dir()?,
@@ -2268,17 +2273,39 @@ mod cli {
             return Ok(());
         }
 
+        // Reference-aware: never remove a clone that a saved session still points
+        // at (that would break resume). Collect the clone paths sessions reference.
+        let referenced: std::collections::HashSet<std::path::PathBuf> =
+            sandbox::session::Session::list(&canonical_path)
+                .iter()
+                .flat_map(|entry| entry.session.panels.iter())
+                .filter_map(|p| p.clone_path.clone())
+                .collect();
+
         let mut cleaned = 0;
         if let Ok(entries) = std::fs::read_dir(&clones) {
             for entry in entries {
                 let entry = entry?;
                 if entry.path().is_dir() {
+                    let clone_path = entry.path();
+                    if referenced.contains(&clone_path) {
+                        println!(
+                            "Skipping clone referenced by a session: {}",
+                            entry.file_name().to_string_lossy()
+                        );
+                        continue;
+                    }
+                    if dry_run {
+                        println!(
+                            "Would clean clone: {}",
+                            entry.file_name().to_string_lossy()
+                        );
+                        continue;
+                    }
                     println!(
                         "Cleaning up stale clone: {}",
                         entry.file_name().to_string_lossy()
                     );
-
-                    let clone_path = entry.path();
 
                     // Detect the branch name from the clone
                     let branch_output = nanosb_cli::tui::gitcmd::host_git()
