@@ -63,8 +63,23 @@ pub fn host_git() -> Command {
         "diff.external=",
         "-c",
         "uploadpack.packObjectsHook=",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "merge.verifySignatures=false",
+        "-c",
+        "gpg.program=false",
+        // Block `ext::` remote helpers (arbitrary command execution via a remote URL).
+        "-c",
+        "protocol.ext.allow=never",
         "--no-optional-locks",
     ]);
+    // Ignore the host user's global/system git config entirely: a poisoned
+    // ~/.gitconfig (`url.*.insteadOf`, `core.hooksPath`, aliases, `includeIf`)
+    // must not influence these operations.
+    c.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0");
     c
 }
 
@@ -272,6 +287,41 @@ mod tests {
             args.contains(&"--no-optional-locks"),
             "expected --no-optional-locks in args: {args:?}"
         );
+    }
+
+    #[test]
+    fn host_git_neutralizes_extra_vectors() {
+        let cmd = host_git();
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        for needle in [
+            "credential.helper=",
+            "protocol.ext.allow=never",
+            "gpg.program=false",
+            "merge.verifySignatures=false",
+        ] {
+            assert!(args.contains(&needle), "expected {needle} in args");
+        }
+    }
+
+    #[test]
+    fn host_git_ignores_host_git_config() {
+        let cmd = host_git();
+        let envs: Vec<(String, String)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().to_string(),
+                    v.map(|v| v.to_string_lossy().to_string()).unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert!(envs
+            .iter()
+            .any(|(k, v)| k == "GIT_CONFIG_NOSYSTEM" && v == "1"));
+        assert!(envs
+            .iter()
+            .any(|(k, v)| k == "GIT_CONFIG_GLOBAL" && v == "/dev/null"));
+        assert!(envs.iter().any(|(k, _)| k == "GIT_TERMINAL_PROMPT"));
     }
 
     // ── has_real_git_dir() ──────────────────────────────────────────────────
