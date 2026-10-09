@@ -264,8 +264,14 @@ pub async fn run_tui(
 
     // Create app state.
     let mut app = App::new();
-    app.project_path = project_path;
+    app.project_path = project_path.clone();
     app.runtime_env_pool = runtime_env_pool;
+
+    // Auto-register the current project in the project registry.
+    if let Some(ref pp) = project_path {
+        let mut registry = sandbox::ProjectRegistry::load();
+        registry.register(pp);
+    }
 
     // Create shared image manager so all sandboxes coordinate pulls
     // (prevents concurrent downloads of the same image layers).
@@ -2303,10 +2309,12 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                                     return;
                                 }
                             }
-                            // Fetch current state
+                            // Fetch current state to namespaced ref (no --force needed).
                             if let Some(ref wt_base) = pm.worktree_base {
                                 if let Some((source, branch)) = pm.created_branches.first() {
-                                    let refspec = format!("{}:{}", branch, branch);
+                                    let short_id = branch.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
+                                    let nanosb_ref = format!("refs/nanosb/{}", short_id);
+                                    let refspec = format!("+{}:{}", branch, nanosb_ref);
                                     let wt = wt_base.clone();
                                     let src = source.clone();
                                     let ok = tokio::task::spawn_blocking(move || {
@@ -2315,7 +2323,6 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                                                 "fetch",
                                                 &wt.to_string_lossy(),
                                                 &refspec,
-                                                "--force",
                                             ])
                                             .current_dir(&src)
                                             .output()
@@ -2325,7 +2332,7 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                                     .await
                                     .unwrap_or(false);
                                     let msg = if ok {
-                                        format!("Synced to branch '{}'.", branch)
+                                        format!("Synced to '{}'.", nanosb_ref)
                                     } else {
                                         "Sync failed. Check clone state.".to_string()
                                     };
@@ -2519,6 +2526,69 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
         Command::ClearHistory => {
             app.command_history.clear();
             app.set_status_message("Command history cleared.");
+        }
+        Command::Projects { forget } => {
+            let registry = sandbox::ProjectRegistry::load();
+            match forget {
+                None => {
+                    // List projects.
+                    let projects = registry.list();
+                    if projects.is_empty() {
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: "No projects registered. Launch nanosb with --project to register one.".to_string(),
+                        });
+                    } else {
+                        let lines: Vec<String> = projects
+                            .iter()
+                            .enumerate()
+                            .map(|(i, entry)| {
+                                let age = {
+                                    let now = chrono::Utc::now();
+                                    let duration = now.signed_duration_since(entry.last_used);
+                                    let secs = duration.num_seconds();
+                                    if secs < 60 {
+                                        format!("{}s ago", secs.max(0))
+                                    } else if secs < 3600 {
+                                        format!("{}m ago", duration.num_minutes())
+                                    } else if secs < 86_400 {
+                                        format!("{}h ago", duration.num_hours())
+                                    } else {
+                                        format!("{}d ago", duration.num_days())
+                                    }
+                                };
+                                format!(
+                                    "{}. {} ({}) — last used {}",
+                                    i + 1,
+                                    entry.display_name,
+                                    entry.path,
+                                    age,
+                                )
+                            })
+                            .collect();
+                        let msg = format!("Registered projects:\n{}", lines.join("\n"));
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: msg,
+                        });
+                    }
+                }
+                Some(path) => {
+                    let mut registry = registry;
+                    let path = std::path::Path::new(&path);
+                    if registry.forget(path) {
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: format!("Forgot project '{}'.", path.display()),
+                        });
+                    } else {
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: format!("Project '{}' was not in the registry.", path.display()),
+                        });
+                    }
+                }
+            }
         }
         Command::Diff { .. }
         | Command::Status

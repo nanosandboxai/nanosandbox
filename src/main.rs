@@ -300,6 +300,15 @@ mod cli {
             #[command(subcommand)]
             action: CacheAction,
         },
+
+        /// List registered projects
+        Projects,
+
+        /// Remove a project from the registry
+        ProjectsForget {
+            /// Path to the project to forget
+            path: String,
+        },
     }
 
     #[derive(Subcommand)]
@@ -701,6 +710,10 @@ mod cli {
             Some(Commands::Cache { action }) => match action {
                 CacheAction::Prune { all } => cmd_cache_prune(all, cli.format).await,
             },
+            Some(Commands::Projects) => cmd_projects(cli.format).await,
+            Some(Commands::ProjectsForget { path }) => {
+                cmd_projects_forget(&path, cli.format).await
+            }
         }
     }
 
@@ -2417,6 +2430,107 @@ mod cli {
                 let out = serde_json::json!({
                     "project": project_path,
                     "sessions": json_sessions,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn cmd_projects(format: OutputFormat) -> anyhow::Result<()> {
+        fn format_age_precise(dt: &chrono::DateTime<chrono::Utc>) -> String {
+            let now = chrono::Utc::now();
+            let duration = now.signed_duration_since(*dt);
+            let secs = duration.num_seconds();
+            if secs < 60 {
+                format!("{}s ago", secs.max(0))
+            } else if secs < 3600 {
+                format!("{}m ago", duration.num_minutes())
+            } else if secs < 86_400 {
+                format!("{}h ago", duration.num_hours())
+            } else {
+                format!("{}d ago", duration.num_days())
+            }
+        }
+
+        let registry = sandbox::ProjectRegistry::load();
+        let projects = registry.list();
+
+        match format {
+            OutputFormat::Text => {
+                if projects.is_empty() {
+                    println!("No projects registered. Launch nanosb with --project to register one.");
+                    return Ok(());
+                }
+
+                #[derive(tabled::Tabled)]
+                struct ProjectRow {
+                    #[tabled(rename = "PATH")]
+                    path: String,
+                    #[tabled(rename = "NAME")]
+                    name: String,
+                    #[tabled(rename = "LAST USED")]
+                    last_used: String,
+                    #[tabled(rename = "AGE")]
+                    age: String,
+                }
+
+                let rows: Vec<ProjectRow> = projects
+                    .iter()
+                    .map(|entry| ProjectRow {
+                        path: entry.path.clone(),
+                        name: entry.display_name.clone(),
+                        last_used: entry
+                            .last_used
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M:%S")
+                            .to_string(),
+                        age: format_age_precise(&entry.last_used),
+                    })
+                    .collect();
+
+                println!("{}", tabled::Table::new(rows));
+            }
+            OutputFormat::Json => {
+                let json_projects: Vec<_> = projects
+                    .iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "path": entry.path,
+                            "display_name": entry.display_name,
+                            "last_used": entry.last_used,
+                        })
+                    })
+                    .collect();
+                let out = serde_json::json!({ "projects": json_projects });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn cmd_projects_forget(path: &str, format: OutputFormat) -> anyhow::Result<()> {
+        let mut registry = sandbox::ProjectRegistry::load();
+        let path = std::path::Path::new(path);
+        let removed = registry.forget(path);
+
+        match format {
+            OutputFormat::Text => {
+                if removed {
+                    println!("Removed '{}' from project registry.", path.display());
+                } else {
+                    println!(
+                        "Project '{}' was not in the registry.",
+                        path.display()
+                    );
+                }
+            }
+            OutputFormat::Json => {
+                let out = serde_json::json!({
+                    "removed": removed,
+                    "path": path.to_string_lossy(),
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);
             }

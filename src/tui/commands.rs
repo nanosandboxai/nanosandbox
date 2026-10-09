@@ -145,6 +145,11 @@ pub enum Command {
     Destroy,
     /// Clear the command history.
     ClearHistory,
+    /// List registered projects or forget one.
+    Projects {
+        /// Path to forget, or None to list.
+        forget: Option<String>,
+    },
 }
 
 /// Result of parsing a slash command.
@@ -271,6 +276,14 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
         description: "Clear command history",
     },
     CommandHelpEntry {
+        pattern: "/projects",
+        description: "List registered projects",
+    },
+    CommandHelpEntry {
+        pattern: "/projects forget <path>",
+        description: "Remove a project from the registry",
+    },
+    CommandHelpEntry {
         pattern: "/quit",
         description: "Suspend session and exit",
     },
@@ -315,6 +328,7 @@ const ALL_COMMANDS: &[&str] = &[
     "/skills", "/skills list", "/skills show",
     "/agent list", "/agent show",
     "/upload", "/paste-image",
+    "/projects", "/projects forget",
 ];
 
 /// Parse a line of input into a Command, or None if it's a regular message.
@@ -381,6 +395,7 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/agent" => parse_agent(&parts),
         "/upload" => parse_upload(&parts),
         "/paste-image" => ParseResult::Ok(Command::PasteImage),
+        "/projects" => parse_projects(&parts),
 
         other => ParseResult::Err(format!(
             "Unknown command: {}\nType /help for available commands.",
@@ -841,6 +856,30 @@ fn parse_upload(parts: &[&str]) -> ParseResult {
              Example: /upload /Users/me/screenshot.png"
                 .to_string(),
         ),
+    }
+}
+
+fn parse_projects(parts: &[&str]) -> ParseResult {
+    match parts.get(1).copied() {
+        None => ParseResult::Ok(Command::Projects { forget: None }),
+        Some("forget") => {
+            let path = parts.get(2).map(|s| s.to_string());
+            match path {
+                Some(p) => ParseResult::Ok(Command::Projects {
+                    forget: Some(p),
+                }),
+                None => ParseResult::Err(
+                    "Usage: /projects forget <path>\n\
+                     Example: /projects forget /Users/me/my-project"
+                        .to_string(),
+                ),
+            }
+        }
+        Some(other) => ParseResult::Err(format!(
+            "Unknown projects subcommand: '{}'\n\
+             Available: /projects, /projects forget <path>",
+            other,
+        )),
     }
 }
 
@@ -1933,6 +1972,38 @@ mod tests {
     #[test]
     fn test_help_mentions_declarative_config() {
         assert!(format_help().contains("sandbox.yml"));
+    }
+
+    // ===== Projects command tests =====
+
+    #[test]
+    fn test_parse_projects_list() {
+        assert_eq!(
+            parse_command("/projects"),
+            Some(Command::Projects { forget: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_projects_forget() {
+        assert_eq!(
+            parse_command("/projects forget /tmp"),
+            Some(Command::Projects {
+                forget: Some("/tmp".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_projects_forget_missing_path() {
+        let result = parse_command_verbose("/projects forget");
+        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("Usage:")));
+    }
+
+    #[test]
+    fn test_parse_projects_unknown_subcommand() {
+        let result = parse_command_verbose("/projects foo");
+        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("Unknown projects subcommand")));
     }
 
     #[test]
