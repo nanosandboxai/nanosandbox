@@ -142,12 +142,12 @@ the real project or any host-trusted path.
 | Feature | Today | Target | Rationale |
 |---|---|---|---|
 | `/diff` `/status` `/sync` `/branches` `/apply` | host git on agent clone | **Keep** — read the **host review repo** (Phase 4); interim: keep `gitcmd` + clean env | review/apply model preserved |
-| `/upload`, `/paste-image` | host writes clone `.uploads/` | **Redesign** → exec-channel write, or a dedicated upload mount (not the workspace) | removes host write into agent-writable state |
+| `/upload`, `/paste-image` | host writes clone `.uploads/` | **Remove `/paste-image`** (Ctrl/Cmd+V covers images); **redesign `/upload`** → exec-channel write or dedicated upload mount | removes host write into agent-writable state |
 | `/discard` | host `git reset --hard` on clone | **Redesign** → in-guest reset via exec, or re-seed staging | removes host write into agent-writable state |
 | `/edit` | host tools write clone | **Remove** (or copy-out to a review dir first) | fundamentally conflicts with the model |
 | `cleanup` auto-commit | host `git add/commit` on clone | **Remove** (or move in-guest) | explicit review/apply covers it |
 | `sanitize_clone_config` | host writes `.git/config` | **Remove** once host stops running git on the clone | no longer needed |
-| Session state `/workspace/.nanosb-state/` | agent-writable, host-read | **Move** to a dedicated RW mount; host treats it as untrusted | removes host trust in workspace state |
+| Session state `/workspace/.nanosb-state/` | legacy; host reads stale path | **Remove** — state is already in dedicated RW mounts (`<sandbox>/state/...`); point resume detection there | removes host trust in workspace state + fixes a latent resume bug |
 | RO config mounts | guest-side `MS_RDONLY` only | **Document as non-security** | no host-side enforcement |
 | `~/.nanosandbox` mount | RW | **Verify** it is `<sandbox>/state/nanosandbox`, never the global dir | global holds other sandboxes' state + firmware |
 
@@ -247,3 +247,82 @@ channel, plus a host-side assertion:
 | 3 | Medium |
 | 4 | Medium–Large |
 | 5 | Large |
+
+---
+
+## 9. Linux solution (parallel to macOS)
+
+libkrun's virtiofs is the **same in-process, unconfined code** on Linux, but Linux
+gives us stronger, unprivileged, per-process confinement primitives — so the Linux
+answer is cleaner than macOS (which is stuck with Seatbelt):
+
+1. **Landlock (Linux 5.13+, unprivileged)** — the Linux analogue of Seatbelt.
+   Apply a Landlock ruleset to the `internal-boot-vm` process allowing file access
+   only under the staging tree + rootfs + firmware + sockets; everything else is
+   denied by the kernel. No root, no namespaces needed. This is the primary
+   Linux control.
+2. **User + mount namespace** (`unshare -r --map-auto`, `pivot_root`) — belt-and-
+   braces; run the VMM in a private mount namespace so the share is the only
+   visible path. (virtiofsd's own `--sandbox namespace` model.)
+3. **`openat2(RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS)` in
+   the server** — the *correct* per-operation fix, available on Linux only (no
+   macOS equivalent). Fold into the Phase 5 libkrun patch; on Linux this can fully
+   eliminate the TOCTOU class that macOS cannot.
+4. **Per-sandbox UID** — run the VMM/filesystem server as a dedicated UID with the
+   staging tree chmod 0700; a real boundary on Linux (no macOS equivalent).
+
+**Net:** Linux confinement = **Landlock + namespaces + `openat2`**; macOS =
+**Seatbelt only** (weaker, no atomic path resolution). The architecture
+(VM-private staging + host review repo + no host-trusted paths) is identical on
+both; only the confinement primitive differs.
+
+---
+
+## 10. `/workspace/.nanosb-state/` — remove it
+
+**It is legacy and not needed.** Agent session state today lives in the
+**dedicated per-agent RW state mounts** (`mount_planner.rs:61-96`):
+`/home/developer/.claude` → `<sandbox>/state/...`, `/home/developer/.codex`,
+`/home/developer/.config/goose`, etc., with `HOME=/home/developer`. The plan doc
+confirms the migration: *"State persistence: symlinks into `/workspace/.nanosb-state`
+→ dedicated RW state mounts per sandbox."*
+
+The resume detector still reads the **stale** location: `detect_agent_session_id_from_state`
+(`src/tui/run.rs:5033`) reads `<clone>/.nanosb-state/<agent>/sessions`, called with
+the **clone** path (`run.rs:5190, 5386`). `ensure_nanosb_state_gitignored`
+(`project.rs:393`) only adds it to `.git/info/exclude`; nothing writes it.
+
+**Action:**
+- Remove `.nanosb-state` handling (`ensure_nanosb_state_gitignored`, the
+  `.nanosb-state` reads) and point resume detection at the **dedicated state
+  mount** (`<sandbox_dir>/state/...`), which the host already owns and which is
+  **outside** the untrusted workspace.
+- Benefit: the host no longer reads agent-writable workspace state (removes a
+  trust coupling and a latent resume bug), and the workspace can be fully private.
+
+---
+
+## 11. Copy/paste vs `/upload` `/paste-image`
+
+What the code already does:
+- **Text paste** — bracketed paste is forwarded to the guest terminal
+  (`run.rs:580` `handle_paste_event`) → **already direct, no command needed**.
+- **Ctrl/Cmd+V image** — the key handler already reads the clipboard image and
+  uploads it (`run.rs:1591-1601`, via `spawn_bytes_upload`). So image paste is
+  **already keybinding-driven**; `/paste-image` (`run.rs:2551`) is a redundant
+  alias for the same action.
+
+**Decisions:**
+- **Remove `/paste-image`** — the Ctrl/Cmd+V keybinding is the direct path.
+- **Keep a host-file transfer, but not as a workspace write.** A keybinding cannot
+  supply an arbitrary host path, so `/upload <path>` (or drag-and-drop, which
+  pastes the path) is still needed for host→guest files. Under the secure model it
+  must write via the **exec channel** (or a dedicated upload mount), never into the
+  workspace clone.
+- **Copy (`Ctrl+C`)** stays as host-clipboard copy of panel text; the guest
+  interrupt path is unchanged.
+
+**Net:** `/paste-image` → remove (keybinding covers it). `/upload` → keep, but
+redesign to the exec channel (not a workspace write). Text copy/paste is already
+command-free.
+
