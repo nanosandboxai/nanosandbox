@@ -342,14 +342,18 @@ impl Session {
             // Check clone directory
             if let Some(ref clone_path) = panel.clone_path {
                 if !clone_path.exists() {
-                    // Check if the branch still exists in source — we could re-clone
+                    // Check whether the agent's commits survive under the
+                    // namespaced ref. Use git2 (no shell, no hooks/fsmonitor);
+                    // the source repo may be agent-adjacent, so never spawn git.
                     let branch_exists = panel.branches.first().is_some_and(|(repo, branch)| {
-                        std::process::Command::new("git")
-                            .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch)])
-                            .current_dir(repo)
-                            .output()
-                            .map(|o| o.status.success())
-                            .unwrap_or(false)
+                        let short = branch
+                            .trim_start_matches("refs/heads/")
+                            .trim_start_matches("nanosb/");
+                        let refname = format!("refs/nanosb/{}", short);
+                        git2::Repository::open(repo)
+                            .ok()
+                            .and_then(|r| r.find_reference(&refname).ok().map(|_| ()))
+                            .is_some()
                     });
 
                     if branch_exists {

@@ -927,6 +927,24 @@ mod cli {
 
         // Parse --env-file(s) first (later files override earlier ones)
         for path in env_files {
+            // Reject symlinks / non-regular / oversized files before reading.
+            const MAX_ENV_FILE: u64 = 1 << 20;
+            match std::fs::symlink_metadata(path) {
+                Ok(m) if m.file_type().is_symlink() => anyhow::bail!(
+                    "env file '{}' is a symlink; refusing",
+                    path
+                ),
+                Ok(m) if !m.is_file() => {
+                    anyhow::bail!("env file '{}' is not a regular file", path)
+                }
+                Ok(m) if m.len() > MAX_ENV_FILE => anyhow::bail!(
+                    "env file '{}' is too large ({} bytes)",
+                    path,
+                    m.len()
+                ),
+                Ok(_) => {}
+                Err(e) => anyhow::bail!("failed to access env file '{}': {}", path, e),
+            }
             let content = std::fs::read_to_string(path).map_err(|e| {
                 error!("Failed to read env file '{}': {}", path, e);
                 anyhow::anyhow!("Failed to read env file '{}': {}", path, e)
@@ -2467,13 +2485,23 @@ mod cli {
         }
 
         // 2. Unreferenced clones.
+        // Conservative: if any supervised sandbox is currently running, skip clone
+        // GC entirely (a live sandbox's clone may not yet be in a saved session).
+        let any_running = supervisor_sandbox_dirs().iter().any(|d| {
+            d.file_name()
+                .map(|n| {
+                    crate::supervisor::client::SupervisorClient::new(&n.to_string_lossy())
+                        .is_running()
+                })
+                .unwrap_or(false)
+        });
         let mut removed_clones = 0usize;
-        if let Ok(entries) = std::fs::read_dir(&clones) {
+        if any_running {
+            println!("Skipping clone GC: a supervised sandbox is running.");
+        } else if let Ok(entries) = std::fs::read_dir(&clones) {
             for e in entries.flatten() {
                 let dir = e.path();
                 let referenced_any = referenced.iter().any(|r| r.starts_with(&dir));
-                // A clone dir is unreferenced only if NO session references a path
-                // under it AND no running supervisor sandbox exists for its project.
                 if referenced_any {
                     continue;
                 }

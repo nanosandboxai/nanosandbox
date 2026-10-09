@@ -121,17 +121,33 @@ pub async fn fs_upload(
 ) -> Result<u64, String> {
     let host_path = host_upload_path(mount_root, remote_path)
         .ok_or_else(|| format!("unsupported upload path: {}", remote_path))?;
-    // Double-check: the resolved path must stay inside the mount root.
+    // The clone is agent-writable, so a symlinked parent or destination could
+    // redirect the host write outside the mount root. Canonicalize the created
+    // parent and reject symlink destinations before writing.
     let root = mount_root
         .canonicalize()
         .map_err(|e| format!("Canonicalize mount root: {}", e))?;
-    if !host_path.starts_with(&root) {
-        return Err(format!("Path escapes mount root: {}", host_path.display()));
-    }
     if let Some(parent) = host_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| format!("Create {}: {}", parent.display(), e))?;
+        let canon_parent = tokio::fs::canonicalize(parent)
+            .await
+            .map_err(|e| format!("Canonicalize {}: {}", parent.display(), e))?;
+        if !canon_parent.starts_with(&root) {
+            return Err(format!(
+                "Upload parent escapes mount root: {}",
+                canon_parent.display()
+            ));
+        }
+    }
+    if let Ok(meta) = tokio::fs::symlink_metadata(&host_path).await {
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "Upload destination is a symlink: {}",
+                host_path.display()
+            ));
+        }
     }
     tokio::fs::write(&host_path, local_data)
         .await

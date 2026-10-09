@@ -252,8 +252,8 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
         description: "List nanosb branches in project",
     },
     CommandHelpEntry {
-        pattern: "/gitsync [on|off|now]",
-        description: "Sync sandbox commits to local repo",
+        pattern: "/sync [on|off|now]",
+        description: "Sync sandbox commits to refs/nanosb/<id>",
     },
     CommandHelpEntry {
         pattern: "/mcp",

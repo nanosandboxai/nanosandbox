@@ -2298,8 +2298,8 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                         panel.chat_history.push(ChatMessage {
                             role: MessageRole::System,
                             content: "Auto-sync ENABLED for this panel.\n\
-                                      WARNING: Agent commits will be fetched to your local branch automatically.\n\
-                                      This can be unsafe — use /gitsync off to disable.".to_string(),
+                                      Agent commits are fetched to refs/nanosb/<id> in the source repo\n\
+                                      (never your branch). Review with /diff, then /apply. Use /sync off to disable.".to_string(),
                         });
                         // Create source branch if deferred
                         if let Some(ref mut pm) = panel.project_mount {
