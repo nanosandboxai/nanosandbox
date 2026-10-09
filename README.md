@@ -199,6 +199,26 @@ Or per panel from the TUI:
 `interactive` and `auto_mode` are mutually exclusive. Interactive panels are
 backed by the in-guest exec agent's PTY (the same channel as `nanosb exec --tty`).
 
+### Reviewing and applying agent changes
+
+Agent changes stay in the sandbox clone until you review them. From the TUI:
+
+```
+/diff [--stat]     # show what the agent changed vs the base commit
+/status            # branch, dirty files, sync state
+/sync [--dry-run]  # fetch agent commits to refs/nanosb/<id> in the source repo
+/discard           # reset the clone to its base commit
+```
+
+The source repo is **read-only to nanosb**: no branches are created in it and
+changes are never written to `refs/heads/*` — you review and apply them yourself
+(`git fetch origin refs/nanosb/<id>` or the equivalent). Non-git project
+directories are never modified (the repo is initialised inside the clone).
+
+Housekeeping: `/disk` shows state usage, `/gc` reclaims dead supervisor dirs,
+and `nanosb gc` / `nanosb cleanup --dry-run` reclaim disk without touching
+session-referenced clones.
+
 ## License
 
 Apache-2.0
