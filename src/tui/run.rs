@@ -1098,6 +1098,13 @@ fn supervisor_sandbox_dir(name: &str) -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// Host directory holding a sandbox's dedicated agent-state mounts
+/// (`<sandbox_dir>/state`), where the agent writes session state — outside the
+/// untrusted workspace.
+fn sandbox_state_dir(name: &str) -> std::path::PathBuf {
+    supervisor_sandbox_dir(name).join("state")
+}
+
 /// Spawn a supervisor-managed sandbox for a TUI panel and attach its console.
 ///
 /// Mirrors `nanosb run`'s next-mode path: plan the deploy, materialize mounts
@@ -4996,9 +5003,9 @@ fn collect_state_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn detect_goose_session_id_from_state(
-    clone_path: &std::path::Path,
+    state_root: &std::path::Path,
 ) -> std::result::Result<Option<String>, String> {
-    let db_path = clone_path.join(".nanosb-state/.config/goose/data/sessions/sessions.db");
+    let db_path = state_root.join(".config_goose/data/sessions/sessions.db");
     if !db_path.exists() {
         return Ok(None);
     }
@@ -5032,13 +5039,12 @@ fn detect_goose_session_id_from_state(
 
 fn detect_agent_session_id_from_state(
     agent_name: &str,
-    clone_path: &std::path::Path,
+    state_root: &std::path::Path,
 ) -> std::result::Result<Option<String>, String> {
     if normalize_agent_name(agent_name) == "goose" {
-        return detect_goose_session_id_from_state(clone_path);
+        return detect_goose_session_id_from_state(state_root);
     }
 
-    let state_root = clone_path.join(".nanosb-state");
     if !state_root.exists() {
         return Ok(None);
     }
@@ -5047,7 +5053,7 @@ fn detect_agent_session_id_from_state(
         "claude" => state_root.join(".claude"),
         "codex" => state_root.join(".codex"),
         "cursor" => state_root.join(".cursor"),
-        _ => state_root,
+        _ => state_root.to_path_buf(),
     };
 
     if !agent_dir.exists() {
@@ -5187,11 +5193,15 @@ fn resume_session(
             .as_ref()
             .and_then(|pm| pm.worktree_base.as_ref())
         {
-            detect_agent_session_id_from_state(&agent_type, clone).map_err(|e| {
+            // Agent session state lives in the sandbox's dedicated state mounts
+            // (`<sandbox_dir>/state`), outside the untrusted workspace clone.
+            let _ = clone;
+            let state_root = sandbox_state_dir(&sp.config.sandbox.name);
+            detect_agent_session_id_from_state(&agent_type, &state_root).map_err(|e| {
                 format!(
                     "failed to detect session id for agent '{}' from '{}': {}",
                     agent_type,
-                    clone.display(),
+                    state_root.display(),
                     e
                 )
             })?
@@ -5382,17 +5392,18 @@ fn build_session_from_app(
         let selected_agent_session_id =
             if let Some(existing) = panel.selected_agent_session_id.clone() {
                 Some(existing)
-            } else if let Some(ref clone) = clone_path {
-                detect_agent_session_id_from_state(&panel.agent_name, clone).map_err(|e| {
+            } else {
+                // Agent session state lives in the sandbox's dedicated state
+                // mounts, not the untrusted workspace clone.
+                let state_root = sandbox_state_dir(&config.sandbox.name);
+                detect_agent_session_id_from_state(&panel.agent_name, &state_root).map_err(|e| {
                     format!(
                         "failed to detect session id for agent '{}' from '{}': {}",
                         panel.agent_name,
-                        clone.display(),
+                        state_root.display(),
                         e
                     )
                 })?
-            } else {
-                None
             };
 
         panels.push(SessionPanel {
@@ -5773,7 +5784,7 @@ mod tests {
     #[test]
     fn test_detect_agent_session_id_from_claude_session_id_camel_case() {
         let clone_dir = make_temp_dir("claude-session-detect");
-        let sessions_dir = clone_dir.join(".nanosb-state/.claude/sessions");
+        let sessions_dir = clone_dir.join(".claude/sessions");
         fs::create_dir_all(&sessions_dir).expect("failed to create claude sessions dir");
 
         let session_file = sessions_dir.join("280.json");
@@ -5803,7 +5814,7 @@ mod tests {
     #[test]
     fn test_detect_goose_session_id_from_sqlite_db() {
         let clone_dir = make_temp_dir("goose-session-db");
-        let db_dir = clone_dir.join(".nanosb-state/.config/goose/data/sessions");
+        let db_dir = clone_dir.join(".config_goose/data/sessions");
         fs::create_dir_all(&db_dir).expect("failed to create goose sessions dir");
         let db_path = db_dir.join("sessions.db");
 
@@ -5841,7 +5852,7 @@ mod tests {
     #[test]
     fn test_detect_goose_session_id_schema_error_fails() {
         let clone_dir = make_temp_dir("goose-bad-schema");
-        let db_dir = clone_dir.join(".nanosb-state/.config/goose/data/sessions");
+        let db_dir = clone_dir.join(".config_goose/data/sessions");
         fs::create_dir_all(&db_dir).expect("failed to create goose sessions dir");
         let db_path = db_dir.join("sessions.db");
 

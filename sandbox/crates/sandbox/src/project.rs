@@ -316,7 +316,6 @@ fn git_clone_local(repo_path: &Path, clone_path: &Path, branch_name: &str) -> Re
             msg
         })?;
 
-    ensure_nanosb_state_gitignored(clone_path);
     Ok(())
 }
 
@@ -381,30 +380,7 @@ fn git_clone_local_from_head(
             msg
         })?;
 
-    ensure_nanosb_state_gitignored(clone_path);
     Ok(())
-}
-
-/// Ensure `.nanosb-state` is excluded from git tracking in the clone.
-///
-/// Uses `.git/info/exclude` (local to the clone, not tracked by git) so that
-/// agent session data stored in `/workspace/.nanosb-state/` doesn't appear
-/// as uncommitted changes or get committed with user code.
-fn ensure_nanosb_state_gitignored(clone_path: &Path) {
-    let exclude_file = clone_path.join(".git/info/exclude");
-    let content = std::fs::read_to_string(&exclude_file).unwrap_or_default();
-    if !content.lines().any(|l| l.trim() == ".nanosb-state") {
-        let entry = if content.ends_with('\n') || content.is_empty() {
-            ".nanosb-state\n"
-        } else {
-            "\n.nanosb-state\n"
-        };
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&exclude_file)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()));
-    }
 }
 
 /// Snapshot a non-git source directory into a clone directory.
@@ -487,7 +463,6 @@ fn snapshot_source_to_clone(source: &Path, clone: &Path) -> Result<(), String> {
             msg
         })?;
 
-    ensure_nanosb_state_gitignored(clone);
     Ok(())
 }
 
