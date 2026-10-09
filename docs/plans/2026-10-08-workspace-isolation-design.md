@@ -181,14 +181,28 @@ verify). Maintenance: must rebase on every libkrun upgrade.
 
 Verdict: do it as **defense-in-depth**, not as the primary control.
 
-**Exact location (verified).** libkrun's virtiofs already uses `O_NOFOLLOW` on
-`openat` in the primary paths, but `open_inode`
-(`~/.cache/nanosandbox/libkrun/src/devices/src/virtio/fs/macos/passthrough.rs:744`)
-reopens by a **stored path string** and **clears `O_NOFOLLOW`** (line 769:
-`(flags | O_CLOEXEC) & (!O_NOFOLLOW) & (!O_EXLOCK)`) — the CVE-2026-77179
-("path-string reopen") class. The correct fix is to reopen via a **held fd**
-(fd-based `InodeHandle`, `openat(parent_fd, name, O_NOFOLLOW)`), not a path
-string. This is a multi-day upstream change; documented, not rushed.
+**Exact location (verified, corrected).** libkrun's macOS virtiofs is already
+structurally sound on the two points a naive audit flags. (a) The primary paths
+resolve **component-wise** with `openat(parent_fd, name, O_NOFOLLOW)` — held
+parent fds, no re-walk of a joined path string. (b) `open_inode`
+(`.../virtio/fs/macos/passthrough.rs:744`) does **not** reopen by a stored path
+string: `inode_to_handle` (line 695) returns the synthetic **`/.vol/{dev}/{ino}`**
+inode path, so the reopen is inode-addressed. The `O_NOFOLLOW` clear at line 769
+is therefore not the escape vector the earlier draft assumed.
+
+The real residual is the **inbound directory-entry name**: `name_to_path`
+interpolated the client-supplied name into `/.vol/{dev}/{ino}/{name}` without
+validating it, so a raw-FUSE client (bypassing the guest kernel — the
+CVE-2026-47243 class) could send `..`, `.`, `""`, or a name containing `/` and
+escape the shared directory.
+
+**Fix (landed).** `name_to_path` now rejects empty, `.`, `..`, and any name
+containing `/` before building the path, covering
+lookup/create/mkdir/unlink/open/rename/link/symlink. It is a commit on the fork
+`nanosandboxai/libkrun`, branch `nanosandbox` @ `a148cff4` (base `v1.19.5`), which
+also carries the next-mode init changes (`dbdc12a3`). `build-libkrun.sh` now
+builds that branch at the pinned SHA and no longer patches at build time. Linux
+still needs `openat2(RESOLVE_BENEATH)` per handler.
 
 ---
 
@@ -365,7 +379,7 @@ Everything the S5 work touches, in one place. **Bold = security-critical.**
 | 12 | Quota staging dir + inode cap + virtiofs queue cap | `runtime`/`config` | P4 |
 | 13 | Console-output escape sanitization; host bounds exec frames | `renderer`, `terminal.rs` | P0 |
 | 14 | Verify `~/.nanosandbox` mount is per-sandbox, never global | `mount_planner.rs` | P0 |
-| 15 | Patch libkrun virtiofs: per-component `O_NOFOLLOW` + inode lineage (Linux `openat2`) | `runtime/scripts/patches/` | P5 |
+| 15 | **Done** — harden libkrun virtiofs: reject traversal names in `name_to_path` (fork `nanosandbox` @ `a148cff4`); Linux `openat2` still pending | `nanosandboxai/libkrun` `nanosandbox` branch | P5 |
 
 ### Phase plan
 
@@ -374,7 +388,8 @@ Everything the S5 work touches, in one place. **Bold = security-critical.**
 - **P2 (medium) — the security win** — Seatbelt/Landlock confinement (#2) + the 10-vector escape tests. No feature change.
 - **P3 (medium)** — remove `/upload` `/paste-image` + Ctrl/Cmd+V consolidation (#5), exec-channel uploads (#6), `/discard` redesign (#7), remove `/edit`/`cleanup`/`sanitize` (#8).
 - **P4 (medium/large)** — host review repo (#9), rootfs CoW (#11), quotas (#12).
-- **P5 (large, optional)** — libkrun virtiofs patch (#15).
+- **P5 (large, optional)** — libkrun virtiofs patch (#15). macOS hardening
+  landed in the fork; the fork is now the build source of truth.
 
 ### Commands before → after
 
