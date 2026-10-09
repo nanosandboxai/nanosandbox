@@ -1572,6 +1572,24 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
                                 }
                             };
 
+                            // If the clipboard holds host file path(s) (Finder copy /
+                            // drag-and-drop pastes paths), upload them instead of
+                            // pasting the raw host path as text.
+                            let files = super::upload::detect_file_paths(&text);
+                            if !files.is_empty() {
+                                if let Some((panel_idx, mount_root)) = upload_info.clone() {
+                                    for f in files {
+                                        super::upload::spawn_file_upload(
+                                            mount_root.clone(),
+                                            f,
+                                            panel_idx,
+                                            tx.clone(),
+                                        );
+                                    }
+                                    return;
+                                }
+                            }
+
                             if !text.is_empty() {
                                 if let Some(ref wtx) = write_tx {
                                     let sent = send_bracketed_paste(wtx, &text);
@@ -2552,12 +2570,6 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
         }
         Command::AgentList => handle_agent_list(app),
         Command::AgentInfo { name } => handle_agent_info(app, &name),
-        Command::Upload { path } => {
-            handle_upload(app, &path, tx);
-        }
-        Command::PasteImage => {
-            handle_paste_image(app, tx);
-        }
         Command::Destroy => {
             // Full cleanup: teardown all projects, delete session, exit.
             // Mark for destroy so the shutdown path knows to do full teardown.
@@ -3213,127 +3225,6 @@ fn panel_mount_root(app: &App) -> Option<(usize, Option<std::path::PathBuf>)> {
         .as_ref()
         .and_then(|pm| pm.worktree_base.clone());
     Some((idx, mount_root))
-}
-
-/// Resolve a user-supplied path: strip quotes, expand `~`, resolve relative paths.
-fn resolve_upload_path(raw: &str) -> std::path::PathBuf {
-    // Strip surrounding quotes.
-    let trimmed = raw.trim().trim_matches('\'').trim_matches('"');
-
-    // Expand leading ~ to home directory.
-    let expanded = if trimmed == "~" {
-        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"))
-    } else if let Some(rest) = trimmed.strip_prefix("~/") {
-        match dirs::home_dir() {
-            Some(home) => home.join(rest),
-            None => std::path::PathBuf::from(trimmed),
-        }
-    } else {
-        std::path::PathBuf::from(trimmed)
-    };
-
-    // Resolve relative paths against the current working directory.
-    if expanded.is_relative() {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&expanded))
-            .unwrap_or(expanded)
-    } else {
-        expanded
-    }
-}
-
-/// Handle the `/upload <path>` command.
-fn handle_upload(app: &mut App, path: &str, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let (panel_idx, mount_root) = match panel_mount_root(app) {
-        Some(info) => info,
-        None => {
-            app.set_system_message(ChatMessage {
-                role: MessageRole::System,
-                content: "No panel to upload to. Use /add <agent> first.".to_string(),
-            });
-            return;
-        }
-    };
-    if mount_root.is_none() {
-        app.set_system_message(ChatMessage {
-            role: MessageRole::System,
-            content: "No project mount for this panel. Uploads require a mounted workspace."
-                .to_string(),
-        });
-        return;
-    }
-
-    let host_path = resolve_upload_path(path);
-    if !host_path.exists() {
-        app.set_system_message(ChatMessage {
-            role: MessageRole::System,
-            content: format!("File not found: {}", host_path.display()),
-        });
-        return;
-    }
-    if !host_path.is_file() {
-        app.set_system_message(ChatMessage {
-            role: MessageRole::System,
-            content: format!("Not a file: {}", host_path.display()),
-        });
-        return;
-    }
-
-    let filename = host_path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    app.set_status_message(format!("Uploading {}...", filename));
-
-    super::upload::spawn_file_upload(mount_root, host_path, panel_idx, tx.clone());
-}
-
-/// Handle the `/paste-image` command.
-fn handle_paste_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let (panel_idx, mount_root) = match panel_mount_root(app) {
-        Some(info) => info,
-        None => {
-            app.set_system_message(ChatMessage {
-                role: MessageRole::System,
-                content: "No panel to upload to. Use /add <agent> first.".to_string(),
-            });
-            return;
-        }
-    };
-    if mount_root.is_none() {
-        app.set_system_message(ChatMessage {
-            role: MessageRole::System,
-            content: "No project mount for this panel. Uploads require a mounted workspace."
-                .to_string(),
-        });
-        return;
-    }
-
-    app.set_status_message("Reading clipboard image...");
-    let tx = tx.clone();
-
-    tokio::spawn(async move {
-        // Clipboard access is blocking — run in spawn_blocking.
-        let result = tokio::task::spawn_blocking(super::upload::read_clipboard_image).await;
-
-        match result {
-            Ok(Ok((png_bytes, filename))) => {
-                super::upload::spawn_bytes_upload(mount_root, png_bytes, filename, panel_idx, tx);
-            }
-            Ok(Err(e)) => {
-                let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
-                    error: e,
-                });
-            }
-            Err(e) => {
-                let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
-                    error: format!("Clipboard task panicked: {}", e),
-                });
-            }
-        }
-    });
 }
 
 /// Handle a bracketed paste event.

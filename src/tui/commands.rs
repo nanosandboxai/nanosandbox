@@ -151,13 +151,6 @@ pub enum Command {
         /// Agent name.
         name: String,
     },
-    /// Upload a file from the host into the sandbox VM.
-    Upload {
-        /// Host file path.
-        path: String,
-    },
-    /// Paste an image from the system clipboard into the sandbox VM.
-    PasteImage,
     /// Destroy all sandboxes, remove session state, and exit.
     Destroy,
     /// Clear the command history.
@@ -227,14 +220,6 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
     CommandHelpEntry {
         pattern: "/copy",
         description: "Copy panel content to clipboard",
-    },
-    CommandHelpEntry {
-        pattern: "/upload <path>",
-        description: "Upload host file to sandbox",
-    },
-    CommandHelpEntry {
-        pattern: "/paste-image",
-        description: "Paste clipboard image to sandbox",
     },
     CommandHelpEntry {
         pattern: "/zoom",
@@ -392,7 +377,6 @@ const ALL_COMMANDS: &[&str] = &[
     "/mcp", "/mcp list",
     "/skills", "/skills list", "/skills show",
     "/agent list", "/agent show",
-    "/upload", "/paste-image",
     "/projects", "/projects forget",
     "/diff", "/diff --stat", "/status", "/sync", "/sync --dry-run", "/discard",
     "/mounts", "/exec", "/logs", "/stop", "/disk", "/gc", "/gc --dry-run",
@@ -461,8 +445,6 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/theme" => parse_theme(&parts),
         "/skills" => parse_skills(&parts),
         "/agent" => parse_agent(&parts),
-        "/upload" => parse_upload(&parts),
-        "/paste-image" => ParseResult::Ok(Command::PasteImage),
         "/projects" => parse_projects(&parts),
         "/disk" => ParseResult::Ok(Command::Disk),
         "/gc" => {
@@ -921,22 +903,6 @@ fn parse_agent(parts: &[&str]) -> ParseResult {
              Config is declarative — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
-    }
-}
-
-fn parse_upload(parts: &[&str]) -> ParseResult {
-    match parts.get(1) {
-        Some(_) => {
-            // Rejoin in case the path was split by whitespace (unlikely for absolute paths).
-            let path = parts[1..].join(" ");
-            ParseResult::Ok(Command::Upload { path })
-        }
-        None => ParseResult::Err(
-            "Usage: /upload <host-path>\n\
-             Uploads a file from the host into the sandbox at /workspace/.uploads/\n\
-             Example: /upload /Users/me/screenshot.png"
-                .to_string(),
-        ),
     }
 }
 
