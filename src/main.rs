@@ -756,7 +756,7 @@ mod cli {
             (false, None) => client.read_log_file(),
         }
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-        print!("{}", initial);
+        print!("{}", crate::strip_terminal_escapes(&initial));
         std::io::stdout().flush().ok();
 
         if !follow {
@@ -783,7 +783,7 @@ mod cli {
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf)?;
                 offset = len;
-                print!("{}", String::from_utf8_lossy(&buf));
+                print!("{}", crate::strip_terminal_escapes(&String::from_utf8_lossy(&buf)));
                 std::io::stdout().flush().ok();
             }
         }
@@ -2741,8 +2741,68 @@ mod cli {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    // Handle internal subprocess commands BEFORE starting the tokio runtime.
+/// Strip terminal escape strings a malicious guest could use to drive the host
+/// terminal: OSC (clipboard OSC 52, hyperlinks, window title) and DCS/APC/PM/SOS.
+/// Colour CSI is kept (it is the point of a console log).
+fn strip_terminal_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                Some(']') => {
+                    chars.next();
+                    while let Some(c2) = chars.next() {
+                        if c2 == '\u{7}' {
+                            break;
+                        }
+                        if c2 == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('P') | Some('X') | Some('^') | Some('_') => {
+                    chars.next();
+                    while let Some(c2) = chars.next() {
+                        if c2 == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::strip_terminal_escapes;
+
+    #[test]
+    fn strips_osc52_and_keeps_text() {
+        assert_eq!(
+            strip_terminal_escapes("hi\x1b]52;c;Zm9v\x07 there"),
+            "hi there"
+        );
+    }
+
+    #[test]
+    fn strips_dcs_and_keeps_csi_colour() {
+        assert_eq!(
+            strip_terminal_escapes("\x1b[31mred\x1b[0m\x1bPq#0\x1b\\x"),
+            "\x1b[31mred\x1b[0mx"
+        );
+    }
+}
+
+fn main() -> anyhow::Result<()> {    // Handle internal subprocess commands BEFORE starting the tokio runtime.
     //
     // This is critical on macOS: the TUI uses a multi-threaded tokio runtime,
     // and Hypervisor.framework's hv_vm_create() fails when called from a
