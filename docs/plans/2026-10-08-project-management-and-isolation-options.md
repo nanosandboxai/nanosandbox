@@ -1,6 +1,9 @@
 # Project Isolation & Management — Options Analysis
 
-Status: **DRAFT for discussion**
+Status: **IMPLEMENTED** (decisions 1–5 applied; worktrees rejected; explicit
+review/apply model; project registry + `/project` switch; reference-aware
+`cleanup --dry-run`; `nanosb gc`). Virtiofs confinement (§4/§A4) remains a
+platform-level deferral gating multi-tenant.
 Date: 2026-10-08
 Companion to: `docs/plans/2026-10-08-tui-command-security-refactor-plan.md`
 Question driving this: *can we improve project management + the host↔agent change model — securely, with low complexity and low breakage risk?*

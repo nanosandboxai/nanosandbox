@@ -1,6 +1,9 @@
 # TUI Command Surface & Change-Management Security Refactor — Plan
 
-Status: **DRAFT for discussion** (no code changed yet)
+Status: **IMPLEMENTED** (branch `feat/tui-command-security-refactor`).
+All P0 security fixes (S1–S4, S6–S12), the full command surface, project
+management, and tests/docs shipped; S5 (virtiofs confinement) remains a
+platform-level deferral. See the commit history for the per-task commits.
 Date: 2026-10-08
 Scope: `nanosb` TUI command surface (`src/tui/**`) + the project↔agent change-management path (`sandbox/crates/sandbox/src/project.rs`, `src/deploy.rs`, `src/supervisor/**`).
 

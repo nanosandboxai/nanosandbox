@@ -219,6 +219,12 @@ Housekeeping: `/disk` shows state usage, `/gc` reclaims dead supervisor dirs,
 and `nanosb gc` / `nanosb cleanup --dry-run` reclaim disk without touching
 session-referenced clones.
 
+Other TUI commands: `/logs [n]` (console tail), `/stop [n|name]` (stop a
+sandbox, keep the panel), `/exec <cmd>` (run in an exec-channel sandbox),
+`/mounts`, and `/apply` (fast-forward-merge `refs/nanosb/<id>` into your
+branch). Registered projects can be listed and switched with `/projects` and
+`/project <n|path>` — panels from different projects coexist in one TUI.
+
 ## License
 
 Apache-2.0
