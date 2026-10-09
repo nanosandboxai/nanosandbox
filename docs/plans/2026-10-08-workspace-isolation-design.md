@@ -142,7 +142,7 @@ the real project or any host-trusted path.
 | Feature | Today | Target | Rationale |
 |---|---|---|---|
 | `/diff` `/status` `/sync` `/branches` `/apply` | host git on agent clone | **Keep** — read the **host review repo** (Phase 4); interim: keep `gitcmd` + clean env | review/apply model preserved |
-| `/upload`, `/paste-image` | host writes clone `.uploads/` | **Remove `/paste-image`** (Ctrl/Cmd+V covers images); **redesign `/upload`** → exec-channel write or dedicated upload mount | removes host write into agent-writable state |
+| `/upload`, `/paste-image` | host writes clone `.uploads/` | **Remove both** → Ctrl/Cmd+V handles image + host-path paste over the exec channel (never a workspace write) | removes host write into agent-writable state; one paste entry point |
 | `/discard` | host `git reset --hard` on clone | **Redesign** → in-guest reset via exec, or re-seed staging | removes host write into agent-writable state |
 | `/edit` | host tools write clone | **Remove** (or copy-out to a review dir first) | fundamentally conflicts with the model |
 | `cleanup` auto-commit | host `git add/commit` on clone | **Remove** (or move in-guest) | explicit review/apply covers it |
@@ -302,27 +302,119 @@ the **clone** path (`run.rs:5190, 5386`). `ensure_nanosb_state_gitignored`
 
 ---
 
-## 11. Copy/paste vs `/upload` `/paste-image`
+## 11. Copy/paste vs `/upload` `/paste-image` — consolidate onto Ctrl/Cmd+V
 
 What the code already does:
 - **Text paste** — bracketed paste is forwarded to the guest terminal
   (`run.rs:580` `handle_paste_event`) → **already direct, no command needed**.
-- **Ctrl/Cmd+V image** — the key handler already reads the clipboard image and
-  uploads it (`run.rs:1591-1601`, via `spawn_bytes_upload`). So image paste is
-  **already keybinding-driven**; `/paste-image` (`run.rs:2551`) is a redundant
-  alias for the same action.
+- **Ctrl/Cmd+V image** — the key handler reads the clipboard image and uploads it
+  (`run.rs:1591-1601`, via `spawn_bytes_upload`). Image paste is **already
+  keybinding-driven**; `/paste-image` (`run.rs:2551`) is a redundant alias.
+- **Ctrl/Cmd+V with a host file path** — `detect_file_paths` (`upload.rs`) already
+  detects absolute existing file paths in pasted text, but it is **test-only
+  (dead in production)**. Wiring it makes path-paste a file transfer.
 
-**Decisions:**
-- **Remove `/paste-image`** — the Ctrl/Cmd+V keybinding is the direct path.
-- **Keep a host-file transfer, but not as a workspace write.** A keybinding cannot
-  supply an arbitrary host path, so `/upload <path>` (or drag-and-drop, which
-  pastes the path) is still needed for host→guest files. Under the secure model it
-  must write via the **exec channel** (or a dedicated upload mount), never into the
-  workspace clone.
-- **Copy (`Ctrl+C`)** stays as host-clipboard copy of panel text; the guest
-  interrupt path is unchanged.
+**Decision — remove BOTH `/upload` and `/paste-image`; make Ctrl/Cmd+V the single
+paste/upload entry point.** On Ctrl/Cmd+V:
+1. If the clipboard has an **image** → upload it (via the secure channel).
+2. Else if the clipboard text contains **host file path(s)** (`detect_file_paths`)
+   → upload them (via the secure channel) **and** also paste the text, with a
+   "Uploaded X" notification.
+3. Else → forward the text as a **bracketed paste** to the panel session (today's
+   behavior).
 
-**Net:** `/paste-image` → remove (keybinding covers it). `/upload` → keep, but
-redesign to the exec channel (not a workspace write). Text copy/paste is already
-command-free.
+Transport under the secure model: uploads go over the **exec channel** (vsock) to a
+guest path (`/workspace/.uploads/` or a dedicated upload dir), **never** as a host
+write into the workspace clone (Phase 3).
+
+**Caveat:** auto-uploading any pasted absolute path can surprise (text that merely
+*looks* like a path). Guard: only upload when the path exists **and** is a regular
+file; show a notification; consider requiring the panel to be focused. This is a
+UX judgement call to confirm.
+
+## 12. Consolidated change list (this plan, all workstreams)
+
+Everything the S5 work touches, in one place. **Bold = security-critical.**
+
+| # | Change | Files | Phase |
+|---|---|---|---|
+| 1 | `workspace.mode: isolated \| shared` flag (isolated default) | `config`, `deploy_plan_for`, `mount_planner` | P0 |
+| 2 | **Seatbelt (macOS) / Landlock+ns (Linux) confinement of `internal-boot-vm`** | `runtime/.../libkrun.rs` (`handle_boot_vm_subprocess`), new profile builder | P2 |
+| 3 | **Remove `.nanosb-state`**; point resume detection at the dedicated state mount | `project.rs` (`ensure_nanosb_state_gitignored`), `run.rs` (`detect_agent_session_id_from_state`, callers 5190/5386) | P1 |
+| 4 | Move any remaining agent session state to dedicated RW mounts | `deploy/mount_planner.rs` | P1 |
+| 5 | **`/upload` + `/paste-image` removed**; Ctrl/Cmd+V consolidates image + host-path paste | `commands.rs`, `run.rs`, `upload.rs` (wire `detect_file_paths`), help/tests | P3 |
+| 6 | Uploads over the **exec channel** (never a workspace write) | `upload.rs` + exec client | P3 |
+| 7 | `/discard` → in-guest reset or re-seed (no host git on clone) | `run.rs` | P3 |
+| 8 | Remove `/edit`; remove `cleanup` auto-commit; remove `sanitize_clone_config` | `run.rs`, `main.rs`, `gitcmd.rs` | P3 |
+| 9 | **Host review repo**: guest bundle/patch → host applies; `/diff`/`/status`/`/apply` read it | `project.rs`, `run.rs`, `app.rs` | P4 |
+| 10 | `gitcmd` clean env + strip `credential/merge/mergetool/difftool/gpg/pager/submodule/url/protocol` | `gitcmd.rs` | P0 |
+| 11 | Rootfs: fresh/CoW per boot (avoid host-rootfs persistence) | `runtime` | P4 |
+| 12 | Quota staging dir + inode cap + virtiofs queue cap | `runtime`/`config` | P4 |
+| 13 | Console-output escape sanitization; host bounds exec frames | `renderer`, `terminal.rs` | P0 |
+| 14 | Verify `~/.nanosandbox` mount is per-sandbox, never global | `mount_planner.rs` | P0 |
+| 15 | Patch libkrun virtiofs: per-component `O_NOFOLLOW` + inode lineage (Linux `openat2`) | `runtime/scripts/patches/` | P5 |
+
+### Phase plan
+
+- **P0 (quick)** — flag (#1), `gitcmd` hardening (#10), console/frame sanitization (#13), `~/.nanosandbox` scope check (#14). No feature loss.
+- **P1 (short)** — remove `.nanosb-state` (#3), state to dedicated mounts (#4). Fixes a latent resume bug.
+- **P2 (medium) — the security win** — Seatbelt/Landlock confinement (#2) + the 10-vector escape tests. No feature change.
+- **P3 (medium)** — remove `/upload` `/paste-image` + Ctrl/Cmd+V consolidation (#5), exec-channel uploads (#6), `/discard` redesign (#7), remove `/edit`/`cleanup`/`sanitize` (#8).
+- **P4 (medium/large)** — host review repo (#9), rootfs CoW (#11), quotas (#12).
+- **P5 (large, optional)** — libkrun virtiofs patch (#15).
+
+### Commands before → after
+
+```
+before: /upload /paste-image /edit /discard /sync /diff /status /gc /disk ...
+after : (Ctrl/Cmd+V: image | host-path | text)  /discard  /sync  /diff  /status  /apply  /gc  /disk ...
+removed: /upload  /paste-image  /edit
+redesigned: /discard (in-guest), /sync+/apply (host review repo)
+```
+
+---
+
+## 13. Detailed summary
+
+**Problem.** The agent is untrusted; the host project clone is shared RW into it
+via libkrun's **in-process, unconfined** virtiofs, and the host then runs git on
+that agent-writable clone. A symlink/`..`/hardlink/TOCTOU escape reaches host
+paths outside the share (the exact class of CVE-2026-77179 / CVE-2026-47243).
+
+**Hard constraints (verified).** (a) `krun_add_virtiofs` has no host-side
+read-only, so "RO-share" is not a boundary; (b) libkrun's virtiofs runs in the VMM
+process with no chroot/seccomp/userns; (c) the guest root is itself a share of the
+host rootfs dir; (d) `gitcmd` is mitigation, not a boundary.
+
+**Target model (best practice).** *Confined VM-private staging + host review repo*:
+the agent works in a VM-private staging tree (treated as untrusted); the VMM
+subprocess is confined by **Seatbelt (macOS) / Landlock + namespaces (Linux)** so
+the virtiofs server can only reach staging + rootfs + firmware + sockets; the host
+never runs git/editors/uploads on agent content — a host-owned review repo receives
+a guest bundle and `/diff` `/status` `/apply` operate there. This matches the
+industry (E2B/Modal/Fly/gVisor never share host dirs) and preserves the shipped
+review/apply commands.
+
+**Why Seatbelt/Landlock alone is not enough.** They confine the VMM, not the
+host-side nanosb process that *reads* agent-controlled data, and can't stop
+malicious content persisted for later host reads. So confinement **and**
+"never share host-trusted paths" are both required. macOS is the weak platform
+(Seatbelt only, no atomic path resolution); Linux can be made strictly stronger
+(Landlock + userns + `openat2(RESOLVE_IN_ROOT)`).
+
+**Decisions folded in.** Remove `.nanosb-state` (agent state already lives in
+dedicated RW mounts — also fixes a latent stale-path resume bug). Remove `/upload`
+and `/paste-image`; Ctrl/Cmd+V becomes the single paste/upload entry point (image →
+upload; pasted host path → upload; else → bracketed-paste text), with the secure
+exec-channel transport. Remove `/edit`, `cleanup` auto-commit, `sanitize_clone_config`.
+
+**Verification.** 10 escape vectors (symlink / `..` / absolute / hardlink / TOCTOU
+/ git-RCE / host-symlink-follow / session-injection / resource-exhaustion / rootfs)
+each must **fail**, via a guest-side harness over the exec channel, plus a host-side
+negative control so the tests can actually fail.
+
+**Effort.** P0–P2 = short–medium (the win, no feature loss); P3 = medium (feature
+removals); P4 = medium–large; P5 = large.
+
+
 
