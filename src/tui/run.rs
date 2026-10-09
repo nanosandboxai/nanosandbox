@@ -2223,8 +2223,33 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 });
             }
         }
-        Command::Sync { dry_run: _, action } => {
+        Command::Sync { dry_run, action } => {
             let panel_idx = app.focused_panel;
+            if dry_run {
+                let info = app
+                    .panels
+                    .get(panel_idx)
+                    .and_then(|p| p.project_mount.as_ref())
+                    .map(|pm| {
+                        match (pm.worktree_base.as_ref(), pm.created_branches.first()) {
+                            (Some(wt), Some((_src, branch))) => {
+                                let short_id = branch
+                                    .trim_start_matches("refs/heads/")
+                                    .trim_start_matches("nanosb/");
+                                format!(
+                                    "dry-run: would fetch {} -> refs/nanosb/{} (clone {})",
+                                    branch,
+                                    short_id,
+                                    wt.display()
+                                )
+                            }
+                            _ => "dry-run: nothing to sync (no clone/branch yet).".to_string(),
+                        }
+                    })
+                    .unwrap_or_else(|| "dry-run: no panel.".to_string());
+                push_panel_message(app, info);
+                return;
+            }
             match action.as_deref() {
                 None => {
                     // Show sync status
@@ -2316,7 +2341,7 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                                 if let Some((source, branch)) = pm.created_branches.first() {
                                     let short_id = branch.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
                                     let nanosb_ref = format!("refs/nanosb/{}", short_id);
-                                    let refspec = format!("+{}:{}", branch, nanosb_ref);
+                                    let refspec = format!("+refs/heads/{}:{}", branch, nanosb_ref);
                                     let wt = wt_base.clone();
                                     let src = source.clone();
                                     let ok = tokio::task::spawn_blocking(move || {
@@ -2599,15 +2624,282 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 }
             }
         }
-        Command::Diff { .. }
-        | Command::Status
-        | Command::Discard
-        | Command::Mounts
-        | Command::Exec { .. }
-        | Command::Logs { .. }
-        | Command::Stop { .. } => {
-            app.set_status_message("Not yet implemented.");
+        Command::Diff { stat } => {
+            handle_diff(app, stat);
         }
+        Command::Status => {
+            handle_git_status(app);
+        }
+        Command::Discard => {
+            handle_discard(app);
+        }
+        Command::Mounts => {
+            handle_mounts(app);
+        }
+        Command::Exec { args } => {
+            handle_exec(app, &args);
+        }
+        Command::Logs { count } => {
+            handle_logs(app, count);
+        }
+        Command::Stop { target } => {
+            let idx = match app.resolve_panel_target(target.as_deref()) {
+                Some(i) => i,
+                None => {
+                    app.set_status_message("No panel to stop.");
+                    return;
+                }
+            };
+            let name = app.panels[idx]
+                .display_name
+                .clone()
+                .unwrap_or_else(|| app.panels[idx].agent_name.clone());
+            if let Some(sname) = app.panels[idx].supervisor_name().map(str::to_string) {
+                spawn_supervisor_stop(sname);
+                app.set_status_message(format!("Stopped '{}'. Panel kept; use /kill to remove.", name));
+                app.panels[idx].mode = PanelMode::Loading;
+                app.panels[idx].loading_message = Some("Sandbox stopped.".into());
+            } else {
+                app.set_status_message(format!("'{}' has no supervised sandbox to stop.", name));
+            }
+        }
+    }
+}
+
+/// Focused panel's project clone + base commit, if usable for host git.
+fn focused_clone_and_base(app: &App) -> Option<(std::path::PathBuf, Option<String>)> {
+    let panel = app.panels.get(app.focused_panel)?;
+    let wt = panel
+        .project_mount
+        .as_ref()
+        .and_then(|pm| pm.worktree_base.clone())?;
+    Some((wt, panel.base_commit.clone()))
+}
+
+fn push_panel_message(app: &mut App, content: String) {
+    if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+        panel.chat_history.push(ChatMessage {
+            role: MessageRole::System,
+            content,
+        });
+    } else {
+        app.set_system_message(ChatMessage {
+            role: MessageRole::System,
+            content,
+        });
+    }
+}
+
+/// `/diff [--stat]` — show agent changes in the focused clone vs its base commit.
+fn handle_diff(app: &mut App, stat: bool) {
+    let Some((wt, base)) = focused_clone_and_base(app) else {
+        app.set_status_message("No project clone for this panel.");
+        return;
+    };
+    if !super::gitcmd::has_real_git_dir(&wt) {
+        app.set_status_message("Refusing: clone .git is not a real directory.");
+        return;
+    }
+    let base = match base {
+        Some(b) => b,
+        None => {
+            app.set_status_message("No base commit recorded yet; agent hasn't run.");
+            return;
+        }
+    };
+    let range = format!("{}..HEAD", base);
+    let mut cmd = super::gitcmd::host_git();
+    if stat {
+        cmd.args(["diff", "--stat", &range]);
+    } else {
+        cmd.args(["diff", "--name-status", &range]);
+    }
+    let out = cmd.current_dir(&wt).output();
+    let content = match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            if s.trim().is_empty() {
+                "No changes since base.".to_string()
+            } else {
+                s.to_string()
+            }
+        }
+        Ok(o) => format!("git diff failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("git diff failed: {}", e),
+    };
+    push_panel_message(app, content);
+}
+
+/// `/status` — branch, dirty files, and sync state for the focused panel.
+fn handle_git_status(app: &mut App) {
+    let Some((wt, base)) = focused_clone_and_base(app) else {
+        app.set_status_message("No project clone for this panel.");
+        return;
+    };
+    if !super::gitcmd::has_real_git_dir(&wt) {
+        app.set_status_message("Refusing: clone .git is not a real directory.");
+        return;
+    }
+    let branch = super::gitcmd::host_git()
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&wt)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let dirty = super::gitcmd::host_git()
+        .args(["status", "--porcelain"])
+        .current_dir(&wt)
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    let auto = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.sync_override)
+        .unwrap_or(app.settings.gitsync.auto_sync);
+    let content = format!(
+        "Branch: {}\nBase: {}\nDirty files: {}\nAuto-sync: {}\nApply with /apply after reviewing /diff.",
+        branch,
+        base.as_deref().unwrap_or("<none>"),
+        dirty,
+        if auto { "ON" } else { "OFF" },
+    );
+    push_panel_message(app, content);
+}
+
+/// `/discard` — reset the clone working tree to the recorded base commit.
+fn handle_discard(app: &mut App) {
+    let Some((wt, base)) = focused_clone_and_base(app) else {
+        app.set_status_message("No project clone for this panel.");
+        return;
+    };
+    if !super::gitcmd::has_real_git_dir(&wt) {
+        app.set_status_message("Refusing: clone .git is not a real directory.");
+        return;
+    }
+    let base = match base {
+        Some(b) => b,
+        None => {
+            app.set_status_message("No base commit to discard to.");
+            return;
+        }
+    };
+    let out = super::gitcmd::host_git()
+        .args(["reset", "--hard", &base])
+        .current_dir(&wt)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            push_panel_message(app, format!("Discarded agent changes; clone reset to {}.", &base[..7.min(base.len())]))
+        }
+        Ok(o) => app.set_status_message(format!("Discard failed: {}", String::from_utf8_lossy(&o.stderr))),
+        Err(e) => app.set_status_message(format!("Discard failed: {}", e)),
+    }
+}
+
+/// `/mounts` — show the virtiofs/mount surface for the focused panel.
+fn handle_mounts(app: &mut App) {
+    let panel = match app.panels.get(app.focused_panel) {
+        Some(p) => p,
+        None => {
+            app.set_status_message("No focused panel.");
+            return;
+        }
+    };
+    let mut lines = vec!["Mounts for this panel:".to_string()];
+    match panel.project_mount.as_ref().and_then(|pm| pm.worktree_base.as_ref()) {
+        Some(wt) => lines.push(format!("  RW  {}  ->  /workspace", wt.display())),
+        None => lines.push("  (no project mount; sandbox has its own rootfs only)".to_string()),
+    }
+    if let Some(pm) = panel.project_mount.as_ref() {
+        for (src, _branch) in &pm.created_branches {
+            lines.push(format!("  source repo: {}", src.display()));
+        }
+    }
+    lines.push("  agent config/state mounts are set up by the deploy planner (read-only + per-sandbox state).".to_string());
+    push_panel_message(app, lines.join("\n"));
+}
+
+/// `/exec <cmd...>` — run a command in the sandbox over the exec channel.
+fn handle_exec(app: &mut App, args: &[String]) {
+    if args.is_empty() {
+        app.set_status_message("Usage: /exec <command> [args...]");
+        return;
+    }
+    let sock = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.exec_pty.as_ref())
+        .map(|(sock, _, _)| sock.clone());
+    let sock = match sock {
+        Some(s) => s,
+        None => {
+            app.set_status_message(
+                "This sandbox has no exec channel (only interactive/`--exec` sandboxes do).",
+            );
+            return;
+        }
+    };
+    let program = args[0].clone();
+    let rest: Vec<String> = args[1..].to_vec();
+    let arg_refs: Vec<&str> = rest.iter().map(String::as_str).collect();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let client = runtime::exec::ExecClient::new(sock);
+        client.exec(&program, &arg_refs)
+    }));
+    match result {
+        Ok(Ok(res)) => {
+            let mut content = String::new();
+            if !res.stdout.is_empty() {
+                content.push_str(&res.stdout);
+            }
+            if !res.stderr.is_empty() {
+                content.push_str(&format!("\n[stderr]\n{}", res.stderr));
+            }
+            if content.trim().is_empty() {
+                content = format!("(exit {})", res.exit_code);
+            }
+            push_panel_message(app, content);
+        }
+        Ok(Err(e)) => app.set_status_message(format!("exec failed: {}", e)),
+        Err(_) => app.set_status_message("exec failed unexpectedly."),
+    }
+}
+
+/// `/logs [n]` — show the last `n` lines of the sandbox console log.
+fn handle_logs(app: &mut App, count: Option<usize>) {
+    let name = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.supervisor_name())
+        .map(str::to_string);
+    let name = match name {
+        Some(n) => n,
+        None => {
+            app.set_status_message("No supervised sandbox for this panel.");
+            return;
+        }
+    };
+    let client = crate::supervisor::client::SupervisorClient::new(&name);
+    let n = count.unwrap_or(50);
+    match client.read_log_tail(n) {
+        Ok(text) => {
+            let content = if text.trim().is_empty() {
+                "(console log is empty)".to_string()
+            } else {
+                text
+            };
+            push_panel_message(app, content);
+        }
+        Err(e) => app.set_status_message(format!("Failed to read logs: {}", e)),
     }
 }
 

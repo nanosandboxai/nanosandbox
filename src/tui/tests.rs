@@ -613,3 +613,91 @@ async fn event_loop_100_synthetic_events() {
         app.system_messages.len(),
     );
 }
+
+// ── New command handlers (security refactor) ─────────────────────────────────
+
+#[tokio::test]
+async fn handler_diff_no_project_reports() {
+    let mut app = App::new();
+    app.panels.push(AgentPanel::new("claude"));
+    app.focused_panel = 0;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(&mut app, Command::Diff { stat: false }, &tx).await;
+    assert!(app.status_message.is_some(), "/diff should report when no clone");
+}
+
+#[tokio::test]
+async fn handler_status_no_project_reports() {
+    let mut app = App::new();
+    app.panels.push(AgentPanel::new("claude"));
+    app.focused_panel = 0;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(&mut app, Command::Status, &tx).await;
+    assert!(app.status_message.is_some(), "/status should report when no clone");
+}
+
+#[tokio::test]
+async fn handler_mounts_lists_without_panic() {
+    let mut app = App::new();
+    app.panels.push(AgentPanel::new("claude"));
+    app.focused_panel = 0;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(&mut app, Command::Mounts, &tx).await;
+    assert!(
+        !app.panels[0].chat_history.is_empty(),
+        "/mounts should push a message"
+    );
+}
+
+#[tokio::test]
+async fn handler_logs_no_supervisor_reports() {
+    let mut app = App::new();
+    app.panels.push(AgentPanel::new("claude"));
+    app.focused_panel = 0;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(&mut app, Command::Logs { count: Some(10) }, &tx).await;
+    assert!(app.status_message.is_some(), "/logs should report with no sandbox");
+}
+
+#[tokio::test]
+async fn handler_exec_no_channel_reports() {
+    let mut app = App::new();
+    app.panels.push(AgentPanel::new("claude"));
+    app.focused_panel = 0;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(&mut app, Command::Exec { args: vec!["echo".into(), "hi".into()] }, &tx).await;
+    assert!(app.status_message.is_some(), "/exec should report with no exec channel");
+}
+
+#[tokio::test]
+async fn handler_stop_no_supervisor_reports() {
+    let mut app = App::new();
+    app.panels.push(AgentPanel::new("claude"));
+    app.focused_panel = 0;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(&mut app, Command::Stop { target: None }, &tx).await;
+    assert!(app.status_message.is_some(), "/stop should report with no supervisor");
+}
+
+#[tokio::test]
+async fn handler_discard_no_project_reports() {
+    let mut app = App::new();
+    app.panels.push(AgentPanel::new("claude"));
+    app.focused_panel = 0;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(&mut app, Command::Discard, &tx).await;
+    assert!(app.status_message.is_some(), "/discard should report when no clone");
+}
+
+#[tokio::test]
+async fn handler_sync_dry_run_reports() {
+    let mut app = App::new();
+    app.panels.push(AgentPanel::new("claude"));
+    app.focused_panel = 0;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(&mut app, Command::Sync { dry_run: true, action: None }, &tx).await;
+    assert!(
+        !app.panels[0].chat_history.is_empty(),
+        "/sync --dry-run should push a message"
+    );
+}
