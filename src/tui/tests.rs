@@ -701,3 +701,28 @@ async fn handler_sync_dry_run_reports() {
         "/sync --dry-run should push a message"
     );
 }
+
+#[tokio::test]
+async fn handler_project_lists_or_reports() {
+    let mut app = App::new();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    // No target => list registered projects (system message) or a notice.
+    handle_command(&mut app, Command::Project { target: None }, &tx).await;
+    assert!(
+        !app.system_messages.is_empty() || app.status_message.is_some(),
+        "/project with no target should list or notice"
+    );
+}
+
+#[tokio::test]
+async fn handler_project_missing_path_reports() {
+    let mut app = App::new();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    handle_command(
+        &mut app,
+        Command::Project { target: Some("/nonexistent/xyz".into()) },
+        &tx,
+    )
+    .await;
+    assert!(app.status_message.is_some(), "/project <bad path> should report");
+}

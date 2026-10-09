@@ -120,6 +120,11 @@ pub enum Command {
         /// Allow a non-fast-forward merge (creates a merge commit).
         force: bool,
     },
+    /// Switch the TUI's active project (index into the registry, or a path).
+    Project {
+        /// Registry index (1-based) or an absolute path, or None to list.
+        target: Option<String>,
+    },
     /// Open clone directory in an external tool.
     Edit {
         /// Tool override, or None for preferred/auto-detected.
@@ -340,6 +345,10 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
         description: "Fast-forward-merge agent commits into your branch",
     },
     CommandHelpEntry {
+        pattern: "/project [n|path]",
+        description: "Switch the active project (or list)",
+    },
+    CommandHelpEntry {
         pattern: "/quit",
         description: "Suspend session and exit",
     },
@@ -387,7 +396,7 @@ const ALL_COMMANDS: &[&str] = &[
     "/projects", "/projects forget",
     "/diff", "/diff --stat", "/status", "/sync", "/sync --dry-run", "/discard",
     "/mounts", "/exec", "/logs", "/stop", "/disk", "/gc", "/gc --dry-run",
-    "/apply", "/apply --force",
+    "/apply", "/apply --force", "/project",
 ];
 
 /// Parse a line of input into a Command, or None if it's a regular message.
@@ -463,6 +472,10 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/apply" => {
             let force = parts.iter().any(|p| *p == "--force");
             ParseResult::Ok(Command::Apply { force })
+        }
+        "/project" => {
+            let target = parts.get(1).map(|s| s.to_string());
+            ParseResult::Ok(Command::Project { target })
         }
 
         other => ParseResult::Err(format!(
@@ -1896,6 +1909,15 @@ mod tests {
         assert_eq!(
             parse_command("/apply --force"),
             Some(Command::Apply { force: true })
+        );
+    }
+
+    #[test]
+    fn test_parse_project() {
+        assert_eq!(parse_command("/project"), Some(Command::Project { target: None }));
+        assert_eq!(
+            parse_command("/project 2"),
+            Some(Command::Project { target: Some("2".to_string()) })
         );
     }
 

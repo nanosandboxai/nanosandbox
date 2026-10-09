@@ -2672,6 +2672,71 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
         Command::Apply { force } => {
             handle_apply(app, force);
         }
+        Command::Project { target } => {
+            handle_project_switch(app, target.as_deref());
+        }
+    }
+}
+
+/// `/project [n|path]` — switch the TUI's active project (list if no target).
+///
+/// Existing panels keep their own project mounts; new `/add` panels and session
+/// saves use the newly-active project, so panels from multiple projects coexist.
+fn handle_project_switch(app: &mut App, target: Option<&str>) {
+    let registry = sandbox::ProjectRegistry::load();
+    let projects = registry.list();
+
+    let resolved: Option<std::path::PathBuf> = match target {
+        None => None,
+        Some(t) => {
+            // Numeric => registry index (1-based).
+            if let Ok(n) = t.parse::<usize>() {
+                projects.get(n.saturating_sub(1)).map(|e| std::path::PathBuf::from(&e.path))
+            } else {
+                let p = std::path::PathBuf::from(t);
+                if p.is_dir() {
+                    Some(p)
+                } else {
+                    app.set_status_message(format!("Not a directory: {}", t));
+                    return;
+                }
+            }
+        }
+    };
+
+    match resolved {
+        Some(p) => {
+            let canonical = p.canonicalize().unwrap_or(p);
+            let mut reg = registry;
+            let name = reg.register(&canonical);
+            app.project_path = Some(canonical.clone());
+            app.set_status_message(format!("Active project: {} ({})", name, canonical.display()));
+        }
+        None => {
+            if projects.is_empty() {
+                app.set_system_message(ChatMessage {
+                    role: MessageRole::System,
+                    content: "No projects registered. Use /project <path> to add one.".to_string(),
+                });
+            } else {
+                let lines: Vec<String> = projects
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| format!("  {}  {}  {}", i + 1, e.display_name, e.path))
+                    .collect();
+                app.set_system_message(ChatMessage {
+                    role: MessageRole::System,
+                    content: format!(
+                        "Active project: {}\nRegistered projects:\n{}\nUse /project <n|path> to switch.",
+                        app.project_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(none)".to_string()),
+                        lines.join("\n")
+                    ),
+                });
+            }
+        }
     }
 }
 
