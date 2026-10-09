@@ -747,7 +747,19 @@ pub fn url_dedup_key(url: &str) -> String {
 }
 
 /// Open a URL in the host machine's default browser.
+///
+/// Only `http(s)` URLs are opened: URLs are scraped from the guest console, so
+/// handing arbitrary schemes (`javascript:`, `file:`, `data:`, custom app
+/// handlers) to the host opener would let guest output drive host actions.
 pub fn open_url_in_browser(url: &str) {
+    let scheme_ok = url
+        .get(..8)
+        .map(|_| url.starts_with("https://") || url.starts_with("http://"))
+        .unwrap_or(false);
+    if !scheme_ok {
+        tracing::warn!(url = %url, "refusing to open non-http(s) URL");
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
         match std::process::Command::new("open")

@@ -1293,7 +1293,9 @@ fn spawn_sandbox_destroy(sandbox_arc: Arc<Mutex<Sandbox>>) {
 fn spawn_supervisor_stop(name: String) {
     tokio::task::spawn_blocking(move || {
         let client = crate::supervisor::client::SupervisorClient::new(&name);
-        let _ = client.stop(false);
+        if let Err(e) = client.stop(false) {
+            tracing::warn!(sandbox = %name, error = %e, "supervisor stop failed");
+        }
     });
 }
 
@@ -2368,6 +2370,13 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                     return;
                 }
             };
+
+            // The clone's .git/config is agent-writable; strip dangerous keys
+            // (fsmonitor/pager/editor/sshCommand/hooksPath/diff drivers/…) before
+            // handing the clone to an external, git-aware tool.
+            if let Err(e) = super::gitcmd::sanitize_clone_config(&clone_path) {
+                tracing::warn!(clone = %clone_path.display(), error = %e, "sanitize_clone_config failed");
+            }
 
             // Use the explicit tool arg, or fall back to settings preference
             let editor_pref = tool.as_deref().unwrap_or(&app.settings.tools.editor);
@@ -4085,6 +4094,31 @@ fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
 }
 
 fn parse_runtime_env_file(path: &str) -> std::result::Result<Vec<(String, String)>, String> {
+    // Reject a symlinked path (a symlinked .env could point anywhere) and cap
+    // the size before reading, so `--env-file` can't be used to slurp an
+    // arbitrary host file into the sandbox's environment.
+    const MAX_ENV_FILE: u64 = 1 << 20; // 1 MiB
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(format!("env file '{}' is a symlink; refusing", path));
+        }
+        Ok(meta) if !meta.is_file() => {
+            return Err(format!("env file '{}' is not a regular file", path));
+        }
+        Ok(meta) if meta.len() > MAX_ENV_FILE => {
+            return Err(format!(
+                "env file '{}' is too large ({} bytes; max {})",
+                path,
+                meta.len(),
+                MAX_ENV_FILE
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(format!("failed to access env file '{}': {}", path, e));
+        }
+    }
+
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read env file '{}': {}", path, e))?;
 
@@ -4720,7 +4754,8 @@ fn handle_env(app: &mut App, assignment: Option<(String, String)>) {
         }
         Some((key, value)) => {
             if let Some(panel) = app.focused_panel_mut() {
-                panel.runtime_env_keys.remove(&key);
+                // Do not un-mark a runtime key: doing so would let a runtime-only
+                // key name leak into the persisted session file.
                 panel.env.insert(key.clone(), value);
                 panel.chat_history.push(ChatMessage {
                     role: MessageRole::System,
