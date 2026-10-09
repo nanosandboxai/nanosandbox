@@ -1,7 +1,15 @@
 # libkrun init patch series — next-mode (zero-image-customization)
 
-This directory contains patches against the pinned upstream libkrun v1.19.5
-checkout at `~/.cache/nanosandbox/libkrun` (SHA `fb988873026120e0e81b31295aaa4a05d27921f2`).
+**Status: archived.** These changes now live as commits on the fork
+[`nanosandboxai/libkrun`](https://github.com/nanosandboxai/libkrun) branch
+`nanosandbox` (base `v1.19.5`):
+
+- `dbdc12a3` — next-mode init (extra virtiofs mounts + static network)
+- `a148cff4` — macOS virtiofs raw-FUSE traversal hardening
+
+`runtime/scripts/build-libkrun.sh` builds that branch at the pinned SHA
+(`a148cff4`) and no longer applies patches at build time. The patch file below
+is kept only as a historical record of the original next-mode change.
 
 ## Purpose
 
@@ -28,16 +36,17 @@ A single canonical patch is maintained:
 
 ## Integration with `runtime/scripts/build-libkrun.sh`
 
-The build script now applies the combined patch (`0003-combined-next-mode-init-changes.patch`)
-automatically after the checkout/SHA verification step and before the cargo build.
-The application is idempotent: if the patch is already applied, it skips cleanly.
-
-To apply manually (e.g., for testing):
+The build script clones the fork branch `nanosandbox` at the pinned SHA and
+builds it directly; no patch is applied. To build from a local fork checkout:
 
 ```bash
-cd ~/.cache/nanosandbox/libkrun
-git checkout v1.19.5
-git apply /path/to/nanosandbox/runtime/scripts/patches/0003-combined-next-mode-init-changes.patch
+LIBKRUN_CACHE_DIR=/path/to/libkrun ./runtime/scripts/build-libkrun.sh
+```
+
+To inspect a change without rebuilding, build the fork checkout directly:
+
+```bash
+cd /path/to/libkrun && cargo build --release -p krun
 ```
 
 To build with the patches to a custom output directory:
