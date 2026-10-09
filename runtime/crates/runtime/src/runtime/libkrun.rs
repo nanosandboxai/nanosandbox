@@ -202,6 +202,40 @@ pub fn handle_boot_vm_subprocess() -> ! {
         }
     };
 
+    // Confine the in-process virtiofs server (defense-in-depth): the guest is
+    // untrusted and libkrun's virtiofs has no path confinement of its own.
+    // Applied before any mount is served. Best-effort — see `sandbox.rs`.
+    #[cfg(target_os = "macos")]
+    {
+        let firmware_dir = std::env::var("HOME")
+            .ok()
+            .map(|h| format!("{}/.nanosandbox/libs", h));
+        let mut writable: Vec<String> = Vec::new();
+        if let Some(sock) = config.gvproxy_socket.as_ref() {
+            writable.push(sock.clone());
+        }
+        if let Some(sock) = config.vsock_socket.as_ref() {
+            writable.push(sock.clone());
+        }
+        let mounts = config
+            .mounts
+            .iter()
+            .map(|(host, _container)| (host.clone(), false))
+            .chain(
+                config
+                    .extra_mounts
+                    .iter()
+                    .map(|m| (m.host_path.clone(), m.readonly)),
+            );
+        let paths = super::sandbox::VmSandboxPaths::from_parts(
+            &config.rootfs_path,
+            mounts,
+            firmware_dir,
+            writable.into_iter(),
+        );
+        paths.apply();
+    }
+
     // macOS dlopen workaround: chdir to the directory containing libkrunfw
     preload_libkrunfw();
 
