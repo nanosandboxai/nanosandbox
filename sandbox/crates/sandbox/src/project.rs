@@ -733,6 +733,31 @@ fn branch_to_nanosb_ref(branch_name: &str) -> String {
     format!("refs/nanosb/{}", short_id)
 }
 
+/// True when `dir` has a real `.git` directory, or a `.git` file whose gitdir
+/// resolves inside `dir`. Rejects a symlinked `.git` (agent redirection of host
+/// git into an arbitrary repository). Mirrors the TUI's `gitcmd::has_real_git_dir`
+/// so the sandbox crate need not depend on the binary crate.
+fn has_real_git_dir(dir: &Path) -> bool {
+    let dot_git = dir.join(".git");
+    match std::fs::symlink_metadata(&dot_git) {
+        Ok(meta) if meta.file_type().is_symlink() => false,
+        Ok(meta) if meta.is_dir() => true,
+        Ok(meta) if meta.is_file() => std::fs::read_to_string(&dot_git)
+            .ok()
+            .and_then(|c| {
+                c.lines()
+                    .find_map(|l| l.strip_prefix("gitdir:"))
+                    .map(|t| dir.join(t.trim()))
+            })
+            .and_then(|target| match (dir.canonicalize(), target.canonicalize()) {
+                (Ok(root), Ok(t)) => Some(t.starts_with(&root)),
+                _ => None,
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 /// Auto-commit any changes in a clone and fetch the branch back to source
 /// under a namespaced ref (`refs/nanosb/<short-id>`).
 ///
@@ -747,6 +772,12 @@ fn auto_commit_and_sync(
     branch_name: &str,
     nanosb_ref: &str,
 ) -> Result<(), String> {
+    if !has_real_git_dir(clone_path) {
+        return Err(format!(
+            "refusing to run git on {}: .git is not a real directory",
+            clone_path.display()
+        ));
+    }
     let clone_repo = git2::Repository::open(clone_path).map_err(|e| {
         let msg = format!("git2 open clone failed: {}", e);
         warn!(
@@ -1706,6 +1737,23 @@ impl ProjectMount {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn has_real_git_dir_accepts_real_dir() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        assert!(has_real_git_dir(tmp.path()));
+    }
+
+    #[test]
+    fn has_real_git_dir_rejects_symlinked_dot_git() {
+        let tmp = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        std::fs::create_dir(elsewhere.path().join(".git")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path().join(".git"), tmp.path().join(".git"))
+            .unwrap();
+        assert!(!has_real_git_dir(tmp.path()));
+    }
 
     /// Helper: initialize a git repo in the given directory with an initial commit.
     fn git_init(path: &Path) {

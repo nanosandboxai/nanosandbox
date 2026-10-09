@@ -605,9 +605,18 @@ impl App {
             .and_then(|p| p.project_mount.as_ref())
             .and_then(|pm| pm.worktree_base.as_ref());
 
+        // Guard: refuse if .git is not a real directory.
+        if let Some(wt) = worktree_path {
+            if !super::gitcmd::has_real_git_dir(wt) {
+                self.sidebar_modified_files = Vec::new();
+                self.set_status_message("Refusing: clone .git is not a real directory");
+                return;
+            }
+        }
+
         self.sidebar_modified_files = match worktree_path {
             Some(wt) => {
-                let output = std::process::Command::new("git")
+                let output = super::gitcmd::host_git()
                     .args(["status", "--porcelain"])
                     .current_dir(wt)
                     .output();
@@ -646,10 +655,17 @@ impl App {
             None => (None, None),
         };
 
+        if let Some(wt) = worktree_path {
+            if !super::gitcmd::has_real_git_dir(wt) {
+                self.sidebar_committed_files = Vec::new();
+                return;
+            }
+        }
+
         self.sidebar_committed_files = match (worktree_path, base) {
             (Some(wt), Some(base_sha)) => {
                 let range = format!("{}..HEAD", base_sha);
-                let output = std::process::Command::new("git")
+                let output = super::gitcmd::host_git()
                     .args(["diff", "--name-only", &range])
                     .current_dir(wt)
                     .output();
@@ -691,8 +707,13 @@ impl App {
                 None => continue,
             };
 
+            // Refuse to run host git on a clone whose .git is not a real dir.
+            if !super::gitcmd::has_real_git_dir(wt_base) {
+                continue;
+            }
+
             // Get current HEAD SHA in clone.
-            let output = match std::process::Command::new("git")
+            let output = match super::gitcmd::host_git()
                 .args(["rev-parse", "HEAD"])
                 .current_dir(wt_base)
                 .output()
@@ -721,7 +742,7 @@ impl App {
             let auto_sync = panel.sync_override.unwrap_or(global_auto_sync);
 
             // Get commit info for notification.
-            let subject = std::process::Command::new("git")
+            let subject = super::gitcmd::host_git()
                 .args(["log", "--format=%s", "-1"])
                 .current_dir(wt_base)
                 .output()
@@ -751,10 +772,12 @@ impl App {
                 };
 
                 // Fetch clone branch to namespaced ref in source (no --force needed).
-                let short_id = branch_name.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
+                let short_id = branch_name
+                    .trim_start_matches("refs/heads/")
+                    .trim_start_matches("nanosb/");
                 let nanosb_ref = format!("refs/nanosb/{}", short_id);
-                let refspec = format!("+{}:{}", branch_name, nanosb_ref);
-                let fetch_ok = std::process::Command::new("git")
+                let refspec = format!("+refs/heads/{}:{}", branch_name, nanosb_ref);
+                let fetch_ok = super::gitcmd::host_git()
                     .args(["fetch", &wt_base.to_string_lossy(), &refspec])
                     .current_dir(&source_path)
                     .output()

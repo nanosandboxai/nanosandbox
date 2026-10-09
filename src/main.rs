@@ -2281,7 +2281,7 @@ mod cli {
                     let clone_path = entry.path();
 
                     // Detect the branch name from the clone
-                    let branch_output = std::process::Command::new("git")
+                    let branch_output = nanosb_cli::tui::gitcmd::host_git()
                         .args(["rev-parse", "--abbrev-ref", "HEAD"])
                         .current_dir(&clone_path)
                         .output();
@@ -2291,7 +2291,7 @@ mod cli {
                         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
                     // Auto-commit any uncommitted changes
-                    let status_output = std::process::Command::new("git")
+                    let status_output = nanosb_cli::tui::gitcmd::host_git()
                         .args(["status", "--porcelain"])
                         .current_dir(&clone_path)
                         .output();
@@ -2299,11 +2299,11 @@ mod cli {
                         let status_text = String::from_utf8_lossy(&status_out.stdout);
                         if !status_text.trim().is_empty() {
                             println!("  Auto-committing uncommitted changes...");
-                            let _ = std::process::Command::new("git")
+                            let _ = nanosb_cli::tui::gitcmd::host_git()
                                 .args(["add", "-A"])
                                 .current_dir(&clone_path)
                                 .output();
-                            let _ = std::process::Command::new("git")
+                            let _ = nanosb_cli::tui::gitcmd::host_git()
                                 .args(["commit", "-m", "nanosb: auto-save on cleanup"])
                                 .current_dir(&clone_path)
                                 .env("GIT_AUTHOR_NAME", "nanosandbox")
@@ -2314,11 +2314,16 @@ mod cli {
                         }
                     }
 
-                    // Fetch the branch back to source repo
+                    // Fetch the clone branch back to the source under a namespaced
+                    // ref (never refs/heads/*, so user branches are not clobbered).
                     if let Some(ref branch) = branch_name {
-                        let refspec = format!("{}:{}", branch, branch);
-                        let _ = std::process::Command::new("git")
-                            .args(["fetch", &clone_path.to_string_lossy(), &refspec, "--force"])
+                        let short_id = branch
+                            .trim_start_matches("refs/heads/")
+                            .trim_start_matches("nanosb/");
+                        let nanosb_ref = format!("refs/nanosb/{}", short_id);
+                        let refspec = format!("+refs/heads/{}:{}", branch, nanosb_ref);
+                        let _ = nanosb_cli::tui::gitcmd::host_git()
+                            .args(["fetch", &clone_path.to_string_lossy(), &refspec])
                             .current_dir(&project_path)
                             .output();
                     }
@@ -2339,7 +2344,7 @@ mod cli {
         }
 
         // List nanosb branches
-        let output = std::process::Command::new("git")
+        let output = nanosb_cli::tui::gitcmd::host_git()
             .args(["branch", "--list", "nanosb/*"])
             .current_dir(&project_path)
             .output();

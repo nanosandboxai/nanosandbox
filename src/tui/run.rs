@@ -2190,7 +2190,7 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
             if let Some(dir) = project_dir {
                 let dir = dir.clone();
                 let msg = tokio::task::spawn_blocking(move || {
-                    let output = std::process::Command::new("git")
+                    let output = super::gitcmd::host_git()
                         .args(["branch", "--list", "nanosb/*"])
                         .current_dir(&dir)
                         .output();
@@ -2318,7 +2318,7 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                                     let wt = wt_base.clone();
                                     let src = source.clone();
                                     let ok = tokio::task::spawn_blocking(move || {
-                                        std::process::Command::new("git")
+                                        super::gitcmd::host_git()
                                             .args([
                                                 "fetch",
                                                 &wt.to_string_lossy(),
