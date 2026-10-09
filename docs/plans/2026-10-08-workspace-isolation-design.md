@@ -1,6 +1,13 @@
 # Workspace Isolation — Target Design (S5)
 
-Status: **DESIGN for review** (no code changed)
+Status: **PARTIALLY IMPLEMENTED** (branch `feat/workspace-isolation`).
+Shipped + tested: `gitcmd` hardening (#10), `nanosb logs` escape stripping (#13),
+`~/.nanosandbox` mount verified per-sandbox (#14), `.nanosb-state` removal (#3),
+macOS Seatbelt confinement of the VM subprocess (#2, denylist — verified boot +
+credential deny), `/upload` + `/paste-image` removal + Ctrl/Cmd+V consolidation
+(#5). Remaining (larger): `workspace.mode` flag (#1), `/discard`-in-guest (#7),
+remove `/edit`/`cleanup`/`sanitize` (#8, gated on #9), host review repo (#9),
+rootfs CoW (#11), quotas (#12), libkrun virtiofs patch (#15), Linux Landlock.
 Date: 2026-10-08
 Scope: how the host project workspace is exposed to an untrusted agent microVM.
 Companion: `docs/plans/2026-10-08-project-management-and-isolation-options.md`.
