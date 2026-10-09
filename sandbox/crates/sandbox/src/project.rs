@@ -257,66 +257,64 @@ fn git_current_branch(repo_path: &Path) -> Result<String, String> {
 
 /// Create a local clone of a repository on a new branch.
 ///
-/// 1. Creates the branch in the source repo (`git branch <name>`)
-/// 2. Clones locally with hardlinks (`git clone --local --branch <name>`)
+/// 1. Clones from HEAD (no branch created in source repo)
+/// 2. Creates the branch locally in the clone
 ///
 /// The clone has a real `.git` directory (not a gitdir file), so git works
 /// correctly even when mounted into a VM via VirtioFS.
+///
+/// The source repo is NEVER modified — no branch is created there.
 fn git_clone_local(repo_path: &Path, clone_path: &Path, branch_name: &str) -> Result<(), String> {
-    // Open source repo and create the branch at HEAD.
-    let source = git2::Repository::open(repo_path).map_err(|e| {
-        let msg = format!("git2 open failed: {}", e);
-        warn!("git_clone_local: {} (repo={})", msg, repo_path.display());
-        msg
-    })?;
-    let head_commit = source
-        .head()
-        .and_then(|h| h.peel_to_commit())
+    // Clone from current HEAD (default branch) — no source branch created.
+    let cloned = git2::build::RepoBuilder::new()
+        .clone(repo_path.to_string_lossy().as_ref(), clone_path)
         .map_err(|e| {
-            let msg = format!("git2 head commit failed: {}", e);
-            warn!("git_clone_local: {} (repo={})", msg, repo_path.display());
-            msg
-        })?;
-    source
-        .branch(branch_name, &head_commit, false)
-        .map_err(|e| {
-            let msg = format!("git2 branch create failed: {}", e);
+            let msg = format!("git2 clone failed: {}", e);
             warn!(
-                "git_clone_local: {} (repo={}, branch={})",
+                "git_clone_local: {} (repo={}, clone={})",
                 msg,
                 repo_path.display(),
-                branch_name
+                clone_path.display()
             );
             msg
         })?;
 
-    // Clone locally using git2. RepoBuilder with local clone (no hardlinks
-    // for cross-device compat). Checkout the named branch.
-    let mut builder = git2::build::RepoBuilder::new();
-    builder.branch(branch_name);
-    // Use local clone (copies objects, no hardlinks) for cross-device compat.
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.download_tags(git2::AutotagOption::All);
-    builder.fetch_options(fetch_opts);
-
-    let clone_result = builder.clone(
-        repo_path.to_string_lossy().as_ref(),
-        clone_path,
-    );
-    if let Err(e) = clone_result {
-        // Clean up the branch we created since clone failed.
-        let _ = source.find_branch(branch_name, git2::BranchType::Local)
-            .and_then(|mut b| b.delete());
-        let msg = format!("git2 clone failed: {}", e);
-        warn!(
-            "git_clone_local: {} (repo={}, clone={}, branch={})",
-            msg,
-            repo_path.display(),
-            clone_path.display(),
-            branch_name
-        );
-        return Err(msg);
-    }
+    // Create and checkout a new branch in the clone.
+    let head_commit = cloned
+        .head()
+        .and_then(|h| h.peel_to_commit())
+        .map_err(|e| {
+            let msg = format!("git2 head commit failed: {}", e);
+            warn!("git_clone_local: {} (clone={})", msg, clone_path.display());
+            msg
+        })?;
+    let branch = cloned
+        .branch(branch_name, &head_commit, false)
+        .map_err(|e| {
+            let msg = format!("git2 branch create failed: {}", e);
+            warn!(
+                "git_clone_local: {} (clone={}, branch={})",
+                msg,
+                clone_path.display(),
+                branch_name
+            );
+            msg
+        })?;
+    let branch_ref = branch.into_reference();
+    cloned
+        .set_head(branch_ref.name().unwrap_or("refs/heads/main"))
+        .map_err(|e| {
+            let msg = format!("git2 set_head failed: {}", e);
+            warn!("git_clone_local: {} (branch={})", msg, branch_name);
+            msg
+        })?;
+    cloned
+        .checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+        .map_err(|e| {
+            let msg = format!("git2 checkout failed: {}", e);
+            warn!("git_clone_local: {} (branch={})", msg, branch_name);
+            msg
+        })?;
 
     ensure_nanosb_state_gitignored(clone_path);
     Ok(())
@@ -723,7 +721,23 @@ fn resolve_branch_name(repo_path: &Path, desired: &str) -> String {
     desired.to_string()
 }
 
-/// Auto-commit any changes in a clone and fetch the branch back to source.
+/// Convert a clone branch name to the namespaced ref in the source repo.
+///
+/// The clone branch `nanosb/abc12345` is fetched to `refs/nanosb/abc12345`
+/// in the source, keeping `refs/heads/` untouched.
+fn branch_to_nanosb_ref(branch_name: &str) -> String {
+    // Strip `refs/heads/` prefix if present, then strip `nanosb/` prefix
+    // to get the short-id, then place under `refs/nanosb/`.
+    let name = branch_name.trim_start_matches("refs/heads/");
+    let short_id = name.trim_start_matches("nanosb/");
+    format!("refs/nanosb/{}", short_id)
+}
+
+/// Auto-commit any changes in a clone and fetch the branch back to source
+/// under a namespaced ref (`refs/nanosb/<short-id>`).
+///
+/// The clone branch is fetched to `nanosb_ref` in the source repo, keeping
+/// the source's `refs/heads/` namespace untouched.
 ///
 /// This does NOT remove the clone directory. Use `auto_commit_fetch_and_remove`
 /// if you also want to delete the clone.
@@ -731,6 +745,7 @@ fn auto_commit_and_sync(
     source_repo_path: &Path,
     clone_path: &Path,
     branch_name: &str,
+    nanosb_ref: &str,
 ) -> Result<(), String> {
     let clone_repo = git2::Repository::open(clone_path).map_err(|e| {
         let msg = format!("git2 open clone failed: {}", e);
@@ -852,17 +867,20 @@ fn auto_commit_and_sync(
             warn!("auto_commit_and_sync: {} (source={})", msg, source_repo_path.display());
             msg
         })?;
-    let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+    // Fetch clone branch to namespaced ref in source (no force needed —
+    // namespaced refs don't clobber user branches).
+    let refspec = format!("+refs/heads/{}:{}", branch_name, nanosb_ref);
     remote
         .fetch(&[&refspec], None, None)
         .map_err(|e| {
             let msg = format!("git2 fetch from clone failed: {}", e);
             warn!(
-                "auto_commit_and_sync: {} (source={}, clone={}, branch={})",
+                "auto_commit_and_sync: {} (source={}, clone={}, branch={}, ref={})",
                 msg,
                 source_repo_path.display(),
                 clone_path.display(),
-                branch_name
+                branch_name,
+                nanosb_ref
             );
             msg
         })?;
@@ -870,13 +888,14 @@ fn auto_commit_and_sync(
     Ok(())
 }
 
-/// Auto-commit, fetch branch to source, and remove the clone directory.
+/// Auto-commit, fetch branch to source under namespaced ref, and remove the clone directory.
 fn auto_commit_and_fetch(
     source_repo_path: &Path,
     clone_path: &Path,
     branch_name: &str,
+    nanosb_ref: &str,
 ) -> Result<(), String> {
-    auto_commit_and_sync(source_repo_path, clone_path, branch_name)?;
+    auto_commit_and_sync(source_repo_path, clone_path, branch_name, nanosb_ref)?;
     let _ = std::fs::remove_dir_all(clone_path);
     Ok(())
 }
@@ -1358,12 +1377,13 @@ impl ProjectMount {
         };
 
         if !self.created_branches.is_empty() {
-            // Already created — just do a fetch
+            // Already created — just do a fetch to namespaced ref
             for (source_path, branch_name) in &self.created_branches {
                 if let Ok(source) = git2::Repository::open(source_path) {
                     let clone_url = clone_base.to_string_lossy();
                     if let Ok(mut remote) = source.remote_anonymous(&clone_url) {
-                        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+                        let nanosb_ref = branch_to_nanosb_ref(branch_name);
+                        let refspec = format!("+refs/heads/{}:{}", branch_name, nanosb_ref);
                         let _ = remote.fetch(&[&refspec], None, None);
                     }
                 }
@@ -1402,19 +1422,20 @@ impl ProjectMount {
                     msg
                 })?;
 
-                // Fetch from clone to source
+                // Fetch from clone to namespaced ref in source
+                let nanosb_ref = branch_to_nanosb_ref(&branch_name);
                 let clone_url = clone_base.to_string_lossy();
                 let mut remote = source.remote_anonymous(&clone_url).map_err(|e| {
                     let msg = format!("git2 remote_anonymous failed: {}", e);
                     warn!("create_source_branch_and_fetch: {}", msg);
                     msg
                 })?;
-                let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+                let refspec = format!("+refs/heads/{}:{}", branch_name, nanosb_ref);
                 remote.fetch(&[&refspec], None, None).map_err(|e| {
                     let msg = format!("git2 fetch failed: {}", e);
                     warn!(
-                        "create_source_branch_and_fetch: {} (repo={}, branch={})",
-                        msg, repo_path.display(), branch_name
+                        "create_source_branch_and_fetch: {} (repo={}, branch={}, ref={})",
+                        msg, repo_path.display(), branch_name, nanosb_ref
                     );
                     msg
                 })?;
@@ -1455,9 +1476,10 @@ impl ProjectMount {
                         msg
                     })?;
 
+                    let nanosb_ref = branch_to_nanosb_ref(&branch_name);
                     let clone_url = clone_path.to_string_lossy();
                     if let Ok(mut remote) = source.remote_anonymous(&clone_url) {
-                        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+                        let refspec = format!("+refs/heads/{}:{}", branch_name, nanosb_ref);
                         let _ = remote.fetch(&[&refspec], None, None);
                     }
 
@@ -1488,10 +1510,12 @@ impl ProjectMount {
                     .map(|(_, b)| b.clone())
                     .unwrap_or_default();
                 if !branch.is_empty() {
-                    auto_commit_and_fetch(repo_path, &clone_base, &branch)?;
+                    let nanosb_ref = branch_to_nanosb_ref(&branch);
+                    auto_commit_and_fetch(repo_path, &clone_base, &branch, &nanosb_ref)?;
                 } else if let Some((deferred_repo, deferred_branch)) = self.deferred_branch.take() {
                     // Deferred setup: auto-commit, create branch via fetch, then remove clone
-                    auto_commit_and_fetch(&deferred_repo, &clone_base, &deferred_branch)?;
+                    let nanosb_ref = branch_to_nanosb_ref(&deferred_branch);
+                    auto_commit_and_fetch(&deferred_repo, &clone_base, &deferred_branch, &nanosb_ref)?;
                 } else {
                     let _ = std::fs::remove_dir_all(&clone_base);
                 }
@@ -1508,12 +1532,14 @@ impl ProjectMount {
                                 .map(|(_, b)| b.clone())
                                 .unwrap_or_default();
                             if !branch.is_empty() {
-                                auto_commit_and_fetch(&repo.absolute_path, &clone_path, &branch)?;
+                                let nanosb_ref = branch_to_nanosb_ref(&branch);
+                                auto_commit_and_fetch(&repo.absolute_path, &clone_path, &branch, &nanosb_ref)?;
                             }
                         }
                     }
                 } else if let Some((_, deferred_branch)) = self.deferred_branch.take() {
                     // Deferred setup: auto-commit and create branch for each sub-repo
+                    let nanosb_ref = branch_to_nanosb_ref(&deferred_branch);
                     for repo in repos {
                         let clone_path = clone_base.join(&repo.relative_path);
                         if clone_path.exists() {
@@ -1521,6 +1547,7 @@ impl ProjectMount {
                                 &repo.absolute_path,
                                 &clone_path,
                                 &deferred_branch,
+                                &nanosb_ref,
                             )?;
                         }
                     }
@@ -1562,12 +1589,14 @@ impl ProjectMount {
                     .map(|(_, b)| b.clone())
                     .unwrap_or_default();
                 if !branch.is_empty() {
-                    auto_commit_and_sync(repo_path, &clone_base, &branch)?;
+                    let nanosb_ref = branch_to_nanosb_ref(&branch);
+                    auto_commit_and_sync(repo_path, &clone_base, &branch, &nanosb_ref)?;
                 } else if let Some((deferred_repo, deferred_branch)) = self.deferred_branch.take() {
                     // Deferred setup: auto-commit changes and create branch in source via fetch.
                     // The clone has a local branch; auto_commit_and_sync will commit uncommitted
                     // changes and `git fetch` will create the branch in the source repo.
-                    auto_commit_and_sync(&deferred_repo, &clone_base, &deferred_branch)?;
+                    let nanosb_ref = branch_to_nanosb_ref(&deferred_branch);
+                    auto_commit_and_sync(&deferred_repo, &clone_base, &deferred_branch, &nanosb_ref)?;
                     self.created_branches.push((deferred_repo, deferred_branch));
                 }
             }
@@ -1583,12 +1612,14 @@ impl ProjectMount {
                                 .map(|(_, b)| b.clone())
                                 .unwrap_or_default();
                             if !branch.is_empty() {
-                                auto_commit_and_sync(&repo.absolute_path, &clone_path, &branch)?;
+                                let nanosb_ref = branch_to_nanosb_ref(&branch);
+                                auto_commit_and_sync(&repo.absolute_path, &clone_path, &branch, &nanosb_ref)?;
                             }
                         }
                     }
                 } else if let Some((_, deferred_branch)) = self.deferred_branch.take() {
                     // Deferred setup: auto-commit and create branch for each sub-repo
+                    let nanosb_ref = branch_to_nanosb_ref(&deferred_branch);
                     for repo in repos {
                         let clone_path = clone_base.join(&repo.relative_path);
                         if clone_path.exists() {
@@ -1596,6 +1627,7 @@ impl ProjectMount {
                                 &repo.absolute_path,
                                 &clone_path,
                                 &deferred_branch,
+                                &nanosb_ref,
                             )?;
                             self.created_branches
                                 .push((repo.absolute_path.clone(), deferred_branch.clone()));
@@ -1905,6 +1937,19 @@ mod tests {
         assert_eq!(pm.created_branches.len(), 1);
         assert_eq!(pm.created_branches[0].1, "nanosb/abc12345");
 
+        // Source repo must NOT have any refs/heads/nanosb/* branch
+        let output = Command::new("git")
+            .args(["branch", "--list", "nanosb/*"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let branches = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !branches.contains("nanosb/"),
+            "Source repo must not have nanosb/* branches after setup, got: {}",
+            branches
+        );
+
         // Cleanup
         pm.teardown().unwrap();
     }
@@ -1924,7 +1969,20 @@ mod tests {
 
         assert_eq!(pm.created_branches[0].1, "feat/my-feature");
 
-        // Verify the branch exists
+        // The branch exists in the CLONE (not source)
+        let output = Command::new("git")
+            .args(["branch", "--list", "feat/my-feature"])
+            .current_dir(&_worktree)
+            .output()
+            .unwrap();
+        let branch_list = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            branch_list.contains("feat/my-feature"),
+            "Branch feat/my-feature not found in clone: {}",
+            branch_list
+        );
+
+        // Source must NOT have the branch
         let output = Command::new("git")
             .args(["branch", "--list", "feat/my-feature"])
             .current_dir(tmp.path())
@@ -1932,8 +1990,8 @@ mod tests {
             .unwrap();
         let branch_list = String::from_utf8_lossy(&output.stdout);
         assert!(
-            branch_list.contains("feat/my-feature"),
-            "Branch feat/my-feature not found in: {}",
+            !branch_list.contains("feat/my-feature"),
+            "Source must not have branch feat/my-feature, got: {}",
             branch_list
         );
 
@@ -2044,17 +2102,27 @@ mod tests {
         // Clone directory should be gone
         assert!(!clone_dir.exists());
 
-        // Check the branch in source has the auto-save commit (fetched back from clone)
+        // Check the namespaced ref in source has the auto-save commit (fetched back from clone)
         let output = Command::new("git")
-            .args(["log", "--oneline", "nanosb/teardown"])
+            .args(["log", "--oneline", "refs/nanosb/teardown"])
             .current_dir(tmp.path())
             .output()
             .unwrap();
         let log = String::from_utf8_lossy(&output.stdout);
         assert!(
             log.contains("auto-save"),
-            "Expected auto-save commit, got: {}",
+            "Expected auto-save commit in refs/nanosb/teardown, got: {}",
             log
+        );
+        // Also verify the ref exists
+        let output = Command::new("git")
+            .args(["show-ref", "refs/nanosb/teardown"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "refs/nanosb/teardown should exist in source"
         );
     }
 
@@ -2071,9 +2139,9 @@ mod tests {
 
         assert!(!clone_dir.exists());
 
-        // Check the branch does NOT have an auto-save commit
+        // Check the namespaced ref does NOT have an auto-save commit
         let output = Command::new("git")
-            .args(["log", "--oneline", "nanosb/nochange"])
+            .args(["log", "--oneline", "refs/nanosb/nochange"])
             .current_dir(tmp.path())
             .output()
             .unwrap();
@@ -2108,10 +2176,10 @@ mod tests {
         // Base directory should be gone
         assert!(!base.exists());
 
-        // Both source repos should have auto-save commits (fetched back from clones)
+        // Both source repos should have auto-save commits (fetched to namespaced refs)
         for repo in &[&repo_a, &repo_b] {
             let output = Command::new("git")
-                .args(["log", "--oneline", "nanosb/multitr1"])
+                .args(["log", "--oneline", "refs/nanosb/multitr1"])
                 .current_dir(repo)
                 .output()
                 .unwrap();
@@ -2237,15 +2305,22 @@ mod tests {
         // Now create the branch and fetch
         pm.create_source_branch_and_fetch().unwrap();
 
-        // Branch should now exist in source
+        // Branch should now exist in source (created at HEAD)
         assert!(!pm.created_branches.is_empty());
+        // The clone content is fetched to the namespaced ref
+        let short_id = pm.created_branches[0].1.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
+        let nanosb_ref = format!("refs/nanosb/{}", short_id);
         let output = Command::new("git")
-            .args(["log", "--oneline", &pm.created_branches[0].1])
+            .args(["log", "--oneline", &nanosb_ref])
             .current_dir(tmp.path())
             .output()
             .unwrap();
         let log = String::from_utf8_lossy(&output.stdout);
-        assert!(log.contains("agent commit"));
+        assert!(
+            log.contains("agent commit"),
+            "Expected 'agent commit' in refs/nanosb/synctest1, got: {}",
+            log
+        );
 
         pm.teardown().unwrap();
     }
@@ -2282,16 +2357,19 @@ mod tests {
         // deferred_branch should be consumed
         assert!(pm.deferred_branch.is_none());
 
-        // Branch should exist in source with the auto-committed file
+        // Namespaced ref should exist in source with the auto-committed file
+        let short_id = pm.created_branches[0].1.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
+        let nanosb_ref = format!("refs/nanosb/{}", short_id);
         let output = Command::new("git")
-            .args(["log", "--oneline", &pm.created_branches[0].1])
+            .args(["log", "--oneline", &nanosb_ref])
             .current_dir(tmp.path())
             .output()
             .unwrap();
         let log = String::from_utf8_lossy(&output.stdout);
         assert!(
             log.contains("auto-save"),
-            "Expected auto-save commit in source, got: {}",
+            "Expected auto-save commit in source at {}, got: {}",
+            nanosb_ref,
             log
         );
 
@@ -2321,16 +2399,16 @@ mod tests {
         // Clone should be gone
         assert!(!clone_dir.exists());
 
-        // Branch should exist in source with the auto-committed file
+        // Namespaced ref should exist in source with the auto-committed file
         let output = Command::new("git")
-            .args(["log", "--oneline", "nanosb/teardef1"])
+            .args(["log", "--oneline", "refs/nanosb/teardef1"])
             .current_dir(tmp.path())
             .output()
             .unwrap();
         let log = String::from_utf8_lossy(&output.stdout);
         assert!(
             log.contains("auto-save"),
-            "Expected auto-save commit in source, got: {}",
+            "Expected auto-save commit in source at refs/nanosb/teardef1, got: {}",
             log
         );
     }

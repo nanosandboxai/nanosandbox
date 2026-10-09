@@ -750,9 +750,12 @@ impl App {
                     }
                 };
 
-                let refspec = format!("{}:{}", branch_name, branch_name);
+                // Fetch clone branch to namespaced ref in source (no --force needed).
+                let short_id = branch_name.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
+                let nanosb_ref = format!("refs/nanosb/{}", short_id);
+                let refspec = format!("+{}:{}", branch_name, nanosb_ref);
                 let fetch_ok = std::process::Command::new("git")
-                    .args(["fetch", &wt_base.to_string_lossy(), &refspec, "--force"])
+                    .args(["fetch", &wt_base.to_string_lossy(), &refspec])
                     .current_dir(&source_path)
                     .output()
                     .map(|o| o.status.success())
@@ -761,7 +764,7 @@ impl App {
                 if fetch_ok {
                     notifications.push((
                         panel_idx,
-                        format!("Synced {} to {}: {}", short_sha, branch_name, subject),
+                        format!("Synced {} to {}: {}", short_sha, nanosb_ref, subject),
                     ));
                 }
             } else if notify_on_commit {
