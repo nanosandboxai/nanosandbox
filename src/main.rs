@@ -2309,6 +2309,13 @@ mod cli {
                         );
                         continue;
                     }
+                    if !nanosb_cli::tui::gitcmd::has_real_git_dir(&clone_path) {
+                        println!(
+                            "Skipping clone with non-real .git (symlink/corrupt): {}",
+                            entry.file_name().to_string_lossy()
+                        );
+                        continue;
+                    }
                     println!(
                         "Cleaning up stale clone: {}",
                         entry.file_name().to_string_lossy()

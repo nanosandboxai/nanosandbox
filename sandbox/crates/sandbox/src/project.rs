@@ -1433,23 +1433,11 @@ impl ProjectMount {
                 })?;
                 let branch_name = resolve_branch_name(repo_path, branch_name);
 
-                // Create branch in source
+                // Never create a branch in the user's source repo (read-only to
+                // nanosb). Fetch the clone's commits straight to refs/nanosb/<id>.
                 let source = git2::Repository::open(repo_path).map_err(|e| {
                     let msg = format!("git2 open failed: {}", e);
                     warn!("create_source_branch_and_fetch: {} (repo={})", msg, repo_path.display());
-                    msg
-                })?;
-                let head_commit = source.head().and_then(|h| h.peel_to_commit()).map_err(|e| {
-                    let msg = format!("git2 head commit failed: {}", e);
-                    warn!("create_source_branch_and_fetch: {} (repo={})", msg, repo_path.display());
-                    msg
-                })?;
-                source.branch(&branch_name, &head_commit, false).map_err(|e| {
-                    let msg = format!("git2 branch create failed: {}", e);
-                    warn!(
-                        "create_source_branch_and_fetch: {} (repo={}, branch={})",
-                        msg, repo_path.display(), branch_name
-                    );
                     msg
                 })?;
 
@@ -1487,23 +1475,13 @@ impl ProjectMount {
                 for repo in repos {
                     let branch_name = resolve_branch_name(&repo.absolute_path, &base_branch);
                     let clone_path = clone_base.join(&repo.relative_path);
-
                     let source = git2::Repository::open(&repo.absolute_path).map_err(|e| {
                         let msg = format!("git2 open failed: {}", e);
                         warn!(
                             "create_source_branch_and_fetch: {} (repo={})",
-                            msg, repo.absolute_path.display()
+                            msg,
+                            repo.absolute_path.display()
                         );
-                        msg
-                    })?;
-                    let head_commit = source.head().and_then(|h| h.peel_to_commit()).map_err(|e| {
-                        let msg = format!("git2 head commit failed: {}", e);
-                        warn!("create_source_branch_and_fetch: {} (repo={})", msg, repo.absolute_path.display());
-                        msg
-                    })?;
-                    source.branch(&branch_name, &head_commit, false).map_err(|e| {
-                        let msg = format!("git2 branch create failed in {}: {}", repo.relative_path.display(), e);
-                        warn!("create_source_branch_and_fetch: {} (branch={})", msg, branch_name);
                         msg
                     })?;
 

@@ -2669,7 +2669,51 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
         Command::Gc { dry_run } => {
             handle_gc(app, dry_run);
         }
+        Command::Apply { force } => {
+            handle_apply(app, force);
+        }
     }
+}
+
+/// `/apply [--force]` — merge synced agent commits (`refs/nanosb/<id>`) from the
+/// source repo into the user's current branch (fast-forward-only unless forced).
+fn handle_apply(app: &mut App, force: bool) {
+    let info = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.project_mount.as_ref())
+        .and_then(|pm| pm.created_branches.first())
+        .map(|(src, branch)| {
+            let short = branch
+                .trim_start_matches("refs/heads/")
+                .trim_start_matches("nanosb/");
+            (src.clone(), format!("refs/nanosb/{}", short))
+        });
+    let (source, nanosb_ref) = match info {
+        Some(v) => v,
+        None => {
+            app.set_status_message("Nothing to apply yet; run /sync first.");
+            return;
+        }
+    };
+    let mut cmd = super::gitcmd::host_git();
+    if force {
+        cmd.args(["merge", &nanosb_ref]);
+    } else {
+        cmd.args(["merge", "--ff-only", &nanosb_ref]);
+    }
+    let out = cmd.current_dir(&source).output();
+    let content = match out {
+        Ok(o) if o.status.success() => {
+            format!("Applied {} into your branch (fast-forward).", nanosb_ref)
+        }
+        Ok(o) => format!(
+            "Apply failed (non-fast-forward?): {}\nReview with /diff, then /apply --force or rebase manually.",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => format!("Apply failed: {}", e),
+    };
+    push_panel_message(app, content);
 }
 
 /// Sum the byte size of a directory tree (best-effort).

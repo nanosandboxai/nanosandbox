@@ -115,6 +115,11 @@ pub enum Command {
         /// Show what would be removed without deleting.
         dry_run: bool,
     },
+    /// Apply synced agent commits (refs/nanosb/<id>) to the user's current branch.
+    Apply {
+        /// Allow a non-fast-forward merge (creates a merge commit).
+        force: bool,
+    },
     /// Open clone directory in an external tool.
     Edit {
         /// Tool override, or None for preferred/auto-detected.
@@ -331,6 +336,10 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
         description: "Reclaim disk (dead dirs, orphan clones)",
     },
     CommandHelpEntry {
+        pattern: "/apply [--force]",
+        description: "Fast-forward-merge agent commits into your branch",
+    },
+    CommandHelpEntry {
         pattern: "/quit",
         description: "Suspend session and exit",
     },
@@ -378,6 +387,7 @@ const ALL_COMMANDS: &[&str] = &[
     "/projects", "/projects forget",
     "/diff", "/diff --stat", "/status", "/sync", "/sync --dry-run", "/discard",
     "/mounts", "/exec", "/logs", "/stop", "/disk", "/gc", "/gc --dry-run",
+    "/apply", "/apply --force",
 ];
 
 /// Parse a line of input into a Command, or None if it's a regular message.
@@ -449,6 +459,10 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/gc" => {
             let dry_run = parts.iter().any(|p| *p == "--dry-run");
             ParseResult::Ok(Command::Gc { dry_run })
+        }
+        "/apply" => {
+            let force = parts.iter().any(|p| *p == "--force");
+            ParseResult::Ok(Command::Apply { force })
         }
 
         other => ParseResult::Err(format!(
@@ -1874,6 +1888,15 @@ mod tests {
     #[test]
     fn test_parse_destroy() {
         assert_eq!(parse_command("/destroy"), Some(Command::Destroy));
+    }
+
+    #[test]
+    fn test_parse_apply() {
+        assert_eq!(parse_command("/apply"), Some(Command::Apply { force: false }));
+        assert_eq!(
+            parse_command("/apply --force"),
+            Some(Command::Apply { force: true })
+        );
     }
 
     #[test]

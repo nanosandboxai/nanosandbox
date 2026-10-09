@@ -183,12 +183,14 @@ pub fn sanitize_clone_config(clone_path: &Path) -> Result<(), String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Track section boundaries.
+        // Track section boundaries. Git section names are case-insensitive, so
+        // compare lowercased (a `[CORE]` header must match `[core`).
+        let lowered = trimmed.to_ascii_lowercase();
         if trimmed.starts_with('[') {
             in_dangerous_section = dangerous_section_prefixes
                 .iter()
-                .any(|p| trimmed.starts_with(p));
-            in_core_section = trimmed.starts_with("[core");
+                .any(|p| lowered.starts_with(p));
+            in_core_section = lowered.starts_with("[core");
             if in_dangerous_section {
                 // Skip the section header itself.
                 continue;
@@ -366,6 +368,22 @@ mod tests {
         assert!(
             sanitised.contains("Test User"),
             "benign [user] section should survive, got: {sanitised}"
+        );
+    }
+
+    #[test]
+    fn sanitize_clone_config_is_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        let git_dir = tmp.path().join(".git");
+        fs::create_dir(&git_dir).unwrap();
+        let config_path = git_dir.join("config");
+        // Uppercase section name must still be recognised (git is case-insensitive).
+        fs::write(&config_path, "[CORE]\n\tfsmonitor = /tmp/evil\n").unwrap();
+        sanitize_clone_config(tmp.path()).unwrap();
+        let sanitised = fs::read_to_string(&config_path).unwrap();
+        assert!(
+            !sanitised.to_ascii_lowercase().contains("fsmonitor"),
+            "uppercase [CORE] fsmonitor should be removed, got: {sanitised}"
         );
     }
 
