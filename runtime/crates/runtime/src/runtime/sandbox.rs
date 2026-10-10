@@ -222,7 +222,6 @@ unsafe fn sandbox_init(
 mod landlock {
     use super::VmSandboxPaths;
     use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
 
     const NR_CREATE_RULESET: libc::c_long = 444;
     const NR_ADD_RULE: libc::c_long = 445;
