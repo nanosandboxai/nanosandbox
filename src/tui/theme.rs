@@ -278,7 +278,7 @@ mod tests {
     fn test_resolve_invalid_falls_back() {
         let (theme, name) = Theme::resolve("garbage");
         assert_eq!(name, ThemeName::Nanosandbox);
-        assert_eq!(theme.accent, Color::Indexed(167));
+        assert_eq!(theme.accent, Color::Rgb(228, 88, 74));
     }
 
     #[test]
