@@ -2928,10 +2928,6 @@ fn handle_discard(app: &mut App) {
         app.set_status_message("No project clone for this panel.");
         return;
     };
-    if !super::gitcmd::has_real_git_dir(&wt) {
-        app.set_status_message("Refusing: clone .git is not a real directory.");
-        return;
-    }
     let base = match base {
         Some(b) => b,
         None => {
@@ -2939,13 +2935,43 @@ fn handle_discard(app: &mut App) {
             return;
         }
     };
+    let short = base[..7.min(base.len())].to_string();
+
+    // Prefer resetting inside the guest (never run host git on agent-writable
+    // state). Fall back to a hardened host reset only when the exec channel or
+    // guest git is unavailable.
+    let exec_sock = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.supervisor_name())
+        .map(|n| supervisor_sandbox_dir(n).join("exec.sock"))
+        .filter(|p| p.exists());
+    if let Some(sock) = exec_sock {
+        let client = runtime::exec::ExecClient::new(sock);
+        if client.is_available() {
+            if let Ok(r) = client.exec("git", &["-C", "/workspace", "reset", "--hard", &base]) {
+                if r.exit_code == 0 {
+                    push_panel_message(
+                        app,
+                        format!("Discarded agent changes (in-guest reset to {}).", short),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    if !super::gitcmd::has_real_git_dir(&wt) {
+        app.set_status_message("Refusing: clone .git is not a real directory.");
+        return;
+    }
     let out = super::gitcmd::host_git()
         .args(["reset", "--hard", &base])
         .current_dir(&wt)
         .output();
     match out {
         Ok(o) if o.status.success() => {
-            push_panel_message(app, format!("Discarded agent changes; clone reset to {}.", &base[..7.min(base.len())]))
+            push_panel_message(app, format!("Discarded agent changes; clone reset to {}.", short))
         }
         Ok(o) => app.set_status_message(format!("Discard failed: {}", String::from_utf8_lossy(&o.stderr))),
         Err(e) => app.set_status_message(format!("Discard failed: {}", e)),
