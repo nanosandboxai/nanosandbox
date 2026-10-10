@@ -109,8 +109,22 @@ info "Building libkrun (staticlib) with features: ${LIBKRUN_FEATURES}..."
 CARGO_TOML="$LIBKRUN_CACHE_DIR/src/libkrun/Cargo.toml"
 sed -i.bak 's/crate-type = \["cdylib", "lib"\]/crate-type = ["staticlib"]/' "$CARGO_TOML"
 
-# Set up environment for cross-compilation
-export LIBCLANG_PATH="${LIBCLANG_PATH:-$(brew --prefix llvm 2>/dev/null || echo "")/lib}"
+# Set up environment for cross-compilation.
+# clang-sys (used by bindgen for the KVM bindings) needs LIBCLANG_PATH. macOS:
+# Homebrew llvm. Linux: the distro's llvm dir — Ubuntu ships libclang-*.so.1
+# under /usr/lib/llvm-*/lib, which is off clang-sys's default search path.
+if [ -z "${LIBCLANG_PATH:-}" ]; then
+    if [ "$(uname)" = "Darwin" ]; then
+        export LIBCLANG_PATH="$(brew --prefix llvm 2>/dev/null)/lib"
+    else
+        for d in /usr/lib/llvm-*/lib /usr/lib/llvm*/lib /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu; do
+            if ls "$d"/libclang*.so* >/dev/null 2>&1; then
+                export LIBCLANG_PATH="$d"
+                break
+            fi
+        done
+    fi
+fi
 export NET=1
 export BLK=1
 export INIT_BLOB=1
