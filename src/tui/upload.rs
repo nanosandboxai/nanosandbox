@@ -558,7 +558,7 @@ mod tests {
         let mount_root = dir.path().to_path_buf();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        spawn_file_upload(Some(mount_root), link, 0, tx);
+        spawn_file_upload(Some(mount_root), link, None, 0, tx);
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let event = rx.try_recv().unwrap();
@@ -576,7 +576,7 @@ mod tests {
         let (_dir, path) = make_temp_file(&[0u8; (MAX_UPLOAD_SIZE + 1) as usize]);
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        spawn_file_upload(Some(mount_dir.path().to_path_buf()), path, 0, tx);
+        spawn_file_upload(Some(mount_dir.path().to_path_buf()), path, None, 0, tx);
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let event = rx.try_recv().unwrap();
@@ -594,7 +594,7 @@ mod tests {
         let (_dir, path) = make_temp_file(b"hello world");
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        spawn_file_upload(Some(mount_dir.path().to_path_buf()), path, 0, tx);
+        spawn_file_upload(Some(mount_dir.path().to_path_buf()), path, None, 0, tx);
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         // Drain all events — expect UploadStarted then UploadComplete.
