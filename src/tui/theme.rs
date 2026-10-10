@@ -134,9 +134,9 @@ impl Theme {
 
 /// Nanosandbox brand dark — coral red accent on dark background.
 ///
-/// Uses only 256-color indexed palette so the theme renders correctly on all
-/// terminals, including macOS Terminal.app (no truecolor), PuTTY, GNU screen,
-/// and tmux without truecolor config.
+/// The accent is the **exact** brand coral (`#E4584A`, truecolor). All other
+/// colours use the 256-color indexed palette so the theme still renders on
+/// terminals without truecolor (there the terminal approximates the accent).
 ///
 /// Background uses `Indexed(16)` (fixed #000000 from the 6×6×6 cube) instead
 /// of ANSI `Color::Black` because ANSI colors 0-15 can be remapped by terminal
@@ -144,7 +144,7 @@ impl Theme {
 /// into dark gray or blue.  Indexed 16-231 are guaranteed fixed values.
 static NANOSANDBOX: Theme = Theme {
     background: Color::Indexed(16),    // #000000 — fixed pure black (not remappable)
-    accent: Color::Indexed(167),       // #D75F5F — closest 256-color to coral #E4584A
+    accent: Color::Rgb(228, 88, 74),   // #E4584A — exact brand coral (truecolor)
     text: Color::Indexed(231),         // #FFFFFF — fixed pure white (not remappable)
     text_muted: Color::Indexed(245),   // #8A8A8A — fixed medium gray
     success: Color::Green,
@@ -153,16 +153,16 @@ static NANOSANDBOX: Theme = Theme {
     info: Color::Blue,
     status_bar_bg: Color::Indexed(238),// #444444 — fixed dark gray
     selection_fg: Color::Indexed(16),  // #000000
-    selection_bg: Color::Indexed(167),
+    selection_bg: Color::Rgb(228, 88, 74),
 };
 
 /// Nanosandbox brand light — coral red accent for light terminal backgrounds.
 ///
-/// Uses fixed 256-color indexed palette like the dark theme for maximum
-/// terminal compatibility.
+/// Accent is the exact brand coral (`#D4463A`, truecolor); other colours use the
+/// fixed 256-color indexed palette like the dark theme for compatibility.
 static NANOSANDBOX_LIGHT: Theme = Theme {
     background: Color::Indexed(231),   // #FFFFFF — fixed pure white (not remappable)
-    accent: Color::Indexed(167),       // #D75F5F — closest 256-color to coral #D4463A
+    accent: Color::Rgb(212, 70, 58),   // #D4463A — exact brand coral (truecolor)
     text: Color::Indexed(16),          // #000000 — fixed pure black
     text_muted: Color::Indexed(245),   // #8A8A8A — fixed medium gray
     success: Color::Green,
@@ -171,7 +171,7 @@ static NANOSANDBOX_LIGHT: Theme = Theme {
     info: Color::Blue,
     status_bar_bg: Color::Indexed(252),// #D0D0D0 — fixed light gray
     selection_fg: Color::Indexed(231), // #FFFFFF
-    selection_bg: Color::Indexed(167),
+    selection_bg: Color::Rgb(212, 70, 58),
 };
 
 /// Dracula — purple accent, vivid colours on dark background.
@@ -258,6 +258,13 @@ mod tests {
         assert!(msg.contains("Unknown theme"));
         assert!(msg.contains("nonexistent"));
         assert!(msg.contains("nanosandbox"));
+    }
+
+    #[test]
+    fn brand_accent_is_exact_coral_truecolor() {
+        assert_eq!(NANOSANDBOX.accent, Color::Rgb(228, 88, 74));
+        assert_eq!(NANOSANDBOX.selection_bg, Color::Rgb(228, 88, 74));
+        assert_eq!(NANOSANDBOX_LIGHT.accent, Color::Rgb(212, 70, 58));
     }
 
     #[test]
