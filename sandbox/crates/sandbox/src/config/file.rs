@@ -6,7 +6,7 @@ use std::path::Path;
 
 use runtime::{
     Mount, MountType, NetworkConfig, NetworkMode, NetworkScope, PortMapping, ProjectConfig,
-    SandboxConfig,
+    SandboxConfig, WorkspaceMode,
 };
 
 use super::{AgentSandboxConfig, ClaudeSettings, McpServerConfig};
@@ -57,6 +57,8 @@ pub struct SandboxDefaults {
     pub model: Option<String>,
     /// Claude-specific settings (theme, etc.).
     pub claude: Option<ClaudeSettingsDef>,
+    /// Host project sharing mode (`isolated` default, `shared` legacy).
+    pub workspace: Option<WorkspaceDef>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -99,6 +101,14 @@ pub struct SandboxDefinition {
     pub model: Option<String>,
     /// Claude-specific settings (theme, etc.).
     pub claude: Option<ClaudeSettingsDef>,
+    /// Host project sharing mode (`isolated` default, `shared` legacy).
+    pub workspace: Option<WorkspaceDef>,
+}
+
+/// Host project sharing mode in YAML.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkspaceDef {
+    pub mode: Option<WorkspaceMode>,
 }
 
 /// Network configuration in YAML.
@@ -275,6 +285,14 @@ pub fn resolve_sandbox_configs(
         }
         if let Some(run_as_root) = def.run_as_root.or(defaults.run_as_root) {
             config.run_as_root = run_as_root;
+        }
+        if let Some(mode) = def
+            .workspace
+            .as_ref()
+            .and_then(|w| w.mode)
+            .or_else(|| defaults.workspace.as_ref().and_then(|w| w.mode))
+        {
+            config.workspace_mode = mode;
         }
 
         // Env vars merge order: defaults env_file → defaults env → per-sandbox env_file → per-sandbox env
@@ -741,6 +759,29 @@ sandboxes:
 
         assert!(a.sandbox.run_as_root);
         assert!(!b.sandbox.run_as_root);
+    }
+
+    #[test]
+    fn test_parse_workspace_mode() {
+        let yaml = r#"
+defaults:
+  workspace:
+    mode: shared
+
+sandboxes:
+  a:
+    image: t:latest
+  b:
+    image: t:latest
+    workspace:
+      mode: isolated
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        let a = configs.iter().find(|(k, _)| k == "a").map(|(_, c)| c).unwrap();
+        let b = configs.iter().find(|(k, _)| k == "b").map(|(_, c)| c).unwrap();
+        assert_eq!(a.sandbox.workspace_mode, WorkspaceMode::Shared);
+        assert_eq!(b.sandbox.workspace_mode, WorkspaceMode::Isolated);
     }
 
     #[test]
