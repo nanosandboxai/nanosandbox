@@ -168,6 +168,16 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub workspace_mode: WorkspaceMode,
 
+    /// Max inodes the guest may create (0 = unlimited). Opt-in.
+    #[serde(default)]
+    pub max_inodes: u64,
+    /// Max processes the guest may run (0 = unlimited). Opt-in.
+    #[serde(default)]
+    pub max_pids: u32,
+    /// Guest disk I/O limit in bytes/sec (0 = unlimited). Opt-in.
+    #[serde(default)]
+    pub io_bps: u64,
+
     /// Console I/O specification for next mode.
     /// Ignored in legacy mode.
     #[serde(default, skip_serializing)]
@@ -229,6 +239,9 @@ impl Default for SandboxConfig {
             command_args: Vec::new(),
             runtime_mode: RuntimeMode::default(),
             workspace_mode: WorkspaceMode::default(),
+            max_inodes: 0,
+            max_pids: 0,
+            io_bps: 0,
             console: None,
             extra_mounts: Vec::new(),
             vsock_socket: None,
@@ -836,6 +849,21 @@ mod tests {
         let json = r#"{"name": "t", "image": "alpine", "workspace_mode": "isolated"}"#;
         let config: SandboxConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.workspace_mode, WorkspaceMode::Isolated);
+    }
+
+    #[test]
+    fn test_quota_defaults_are_unlimited() {
+        let config = SandboxConfig::builder().name("t").image("alpine").build();
+        assert_eq!(config.max_inodes, 0);
+        assert_eq!(config.max_pids, 0);
+        assert_eq!(config.io_bps, 0);
+    }
+
+    #[test]
+    fn test_quota_serde() {
+        let json = r#"{"name": "t", "image": "a", "max_inodes": 10000, "max_pids": 512, "io_bps": 1048576}"#;
+        let c: SandboxConfig = serde_json::from_str(json).unwrap();
+        assert_eq!((c.max_inodes, c.max_pids, c.io_bps), (10000, 512, 1048576));
     }
 
     // ── ConsoleSpec tests ───────────────────────────────────────────────
