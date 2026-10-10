@@ -431,6 +431,42 @@ fn has_hypervisor_entitlement(exe_path: &Path) -> bool {
 }
 
 /// State tracked per sandbox for the libkrun backend
+/// Clone `src` to `dst`, preferring an APFS copy-on-write clone (instant, no
+/// extra disk) and falling back to a recursive copy.
+fn clone_rootfs(src: &std::path::Path, dst: &std::path::Path) -> std::result::Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c_src = std::ffi::CString::new(src.as_os_str().as_bytes())
+            .map_err(|_| "src path contains NUL".to_string())?;
+        let c_dst = std::ffi::CString::new(dst.as_os_str().as_bytes())
+            .map_err(|_| "dst path contains NUL".to_string())?;
+        if unsafe { libc::clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) } == 0 {
+            return Ok(());
+        }
+    }
+    copy_dir_recursive(src, dst)
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::result::Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let ty = entry.file_type().map_err(|e| e.to_string())?;
+        let to = dst.join(entry.file_name());
+        if ty.is_symlink() {
+            let target = std::fs::read_link(entry.path()).map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(&to);
+            std::os::unix::fs::symlink(&target, &to).map_err(|e| e.to_string())?;
+        } else if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), &to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 struct SandboxState {
     /// Path to the rootfs directory (derived from bundle_path/rootfs)
     rootfs_path: PathBuf,
@@ -933,13 +969,22 @@ impl LibkrunRuntime {
                     .to_string(),
             )
         })?;
-        let rootfs_path = bundle.join("rootfs");
+        let mut rootfs_path = bundle.join("rootfs");
 
         if !rootfs_path.exists() {
             return Err(Error::SandboxCreationFailed(format!(
                 "rootfs not found at {}",
                 rootfs_path.display()
             )));
+        }
+
+        if config.fresh_rootfs {
+            let boot_rootfs = bundle.join(format!("rootfs.boot-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&boot_rootfs);
+            clone_rootfs(&rootfs_path, &boot_rootfs).map_err(|e| {
+                Error::SandboxCreationFailed(format!("failed to clone rootfs: {}", e))
+            })?;
+            rootfs_path = boot_rootfs;
         }
 
         // Collect mount info (canonicalize paths to prevent symlink escape / path traversal)
@@ -1826,6 +1871,15 @@ impl LibkrunRuntime {
             }
 
 
+            if state
+                .rootfs_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("rootfs.boot-"))
+            {
+                let _ = std::fs::remove_dir_all(&state.rootfs_path);
+            }
+
             info!(
                 "Destroyed libkrun sandbox '{}' (rootfs was: {})",
                 id,
@@ -1945,5 +1999,30 @@ mod tests {
         assert_eq!(uid, "1000");
         assert_eq!(gid, None);
         assert_eq!(home, None);
+    }
+
+    #[test]
+    fn clone_rootfs_copies_files_and_symlinks() {
+        let base = std::env::temp_dir().join(format!(
+            "nanosb-clone-{}-{}",
+            std::process::id(),
+            unique_nonce()
+        ));
+        let src = base.join("src");
+        let dst = base.join("dst");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("f.txt"), b"hi").unwrap();
+        std::fs::write(src.join("sub/g.txt"), b"there").unwrap();
+        std::os::unix::fs::symlink("f.txt", src.join("link")).unwrap();
+
+        clone_rootfs(&src, &dst).unwrap();
+
+        assert_eq!(std::fs::read(dst.join("f.txt")).unwrap(), b"hi");
+        assert_eq!(std::fs::read(dst.join("sub/g.txt")).unwrap(), b"there");
+        assert!(std::fs::symlink_metadata(dst.join("link"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

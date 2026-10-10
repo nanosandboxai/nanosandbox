@@ -109,6 +109,8 @@ pub struct SandboxDefinition {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkspaceDef {
     pub mode: Option<WorkspaceMode>,
+    /// Give each boot a CoW clone of the rootfs (default false).
+    pub fresh_rootfs: Option<bool>,
 }
 
 /// Network configuration in YAML.
@@ -293,6 +295,14 @@ pub fn resolve_sandbox_configs(
             .or_else(|| defaults.workspace.as_ref().and_then(|w| w.mode))
         {
             config.workspace_mode = mode;
+        }
+        if let Some(fr) = def
+            .workspace
+            .as_ref()
+            .and_then(|w| w.fresh_rootfs)
+            .or_else(|| defaults.workspace.as_ref().and_then(|w| w.fresh_rootfs))
+        {
+            config.fresh_rootfs = fr;
         }
 
         // Env vars merge order: defaults env_file → defaults env → per-sandbox env_file → per-sandbox env
@@ -775,6 +785,7 @@ sandboxes:
     image: t:latest
     workspace:
       mode: isolated
+      fresh_rootfs: true
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
@@ -782,6 +793,8 @@ sandboxes:
         let b = configs.iter().find(|(k, _)| k == "b").map(|(_, c)| c).unwrap();
         assert_eq!(a.sandbox.workspace_mode, WorkspaceMode::Shared);
         assert_eq!(b.sandbox.workspace_mode, WorkspaceMode::Isolated);
+        assert!(!a.sandbox.fresh_rootfs);
+        assert!(b.sandbox.fresh_rootfs);
     }
 
     #[test]

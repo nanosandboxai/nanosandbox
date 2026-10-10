@@ -178,6 +178,11 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub io_bps: u64,
 
+    /// Give each boot a copy-on-write clone of the rootfs so guest writes never
+    /// dirty the pristine template (default false = the template is the boot root).
+    #[serde(default)]
+    pub fresh_rootfs: bool,
+
     /// Console I/O specification for next mode.
     /// Ignored in legacy mode.
     #[serde(default, skip_serializing)]
@@ -242,6 +247,7 @@ impl Default for SandboxConfig {
             max_inodes: 0,
             max_pids: 0,
             io_bps: 0,
+            fresh_rootfs: false,
             console: None,
             extra_mounts: Vec::new(),
             vsock_socket: None,
