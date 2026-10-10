@@ -501,8 +501,8 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
             }
         }
 
-        // Wait for all sandbox cleanups to complete (with timeout).
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+        // Wait for all sandbox cleanups to complete (with a short cap).
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
         for handle in handles {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let _ = tokio::time::timeout(remaining, handle).await;
@@ -511,12 +511,10 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
         eprintln!("All sandboxes stopped.");
     }
 
-    // Windows safety net: even with spawn_blocking on the HvSocket SSE reader,
-    // a blocking-pool thread parked in recv() cannot be cancelled. The tokio
-    // runtime drop will skip it (because blocking-pool threads are detached),
-    // but belt-and-suspenders — explicitly exit so the process never lingers
-    // after /quit or /destroy.
-    Ok(())
+    // Exit immediately: a parked blocking reader (exec-PTY SSE / terminal event
+    // thread) cannot be cancelled, so the tokio runtime drop would otherwise keep
+    // the process alive. Exiting explicitly makes /quit and /destroy immediate.
+    std::process::exit(0);
 }
 
 /// Process a single [`AppEvent`], mutating `app` and possibly spawning work
