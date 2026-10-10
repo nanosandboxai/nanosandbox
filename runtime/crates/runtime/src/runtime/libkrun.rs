@@ -258,7 +258,18 @@ pub fn handle_boot_vm_subprocess() -> ! {
         env.insert("HOME".to_string(), "/root".to_string());
     }
     if !env.contains_key("TERM") {
-        env.insert("TERM".to_string(), "dumb".to_string());
+        // The interactive/next path drives a real 256-color PTY, so a color-capable
+        // TERM is required for the agent's native colors; the legacy console is not
+        // a full terminal, so it keeps `dumb`.
+        let term = if config.runtime_mode == "next" {
+            "xterm-256color"
+        } else {
+            "dumb"
+        };
+        env.insert("TERM".to_string(), term.to_string());
+    }
+    if config.runtime_mode == "next" && !env.contains_key("COLORTERM") {
+        env.insert("COLORTERM".to_string(), "truecolor".to_string());
     }
     if !config.dns.is_empty() && !env.contains_key("NANOSANDBOX_DNS") {
         env.insert("NANOSANDBOX_DNS".to_string(), config.dns.join(","));
