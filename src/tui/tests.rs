@@ -726,3 +726,132 @@ async fn handler_project_missing_path_reports() {
     .await;
     assert!(app.status_message.is_some(), "/project <bad path> should report");
 }
+
+// ── /diff + /discard against host-owned review state (no VM, no TTY) ────────
+
+/// Build a source repo with a base commit plus an agent commit reachable via
+/// `refs/nanosb/<id>`, and a clone of the source. Returns (source, clone, base).
+fn make_review_fixture(
+    root: &std::path::Path,
+    id: &str,
+) -> (std::path::PathBuf, std::path::PathBuf, String) {
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q"]);
+    git(&src, &["config", "user.email", "a@b.c"]);
+    git(&src, &["config", "user.name", "t"]);
+    std::fs::write(src.join("f.txt"), "one\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-qm", "base"]);
+    let base = String::from_utf8(git(&src, &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    std::fs::write(src.join("f.txt"), "two\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-qm", "agent change"]);
+    git(&src, &["update-ref", &format!("refs/nanosb/{id}"), "HEAD"]);
+    git(&src, &["reset", "--hard", &base]);
+
+    let clone = root.join("clone");
+    git(
+        root,
+        &["clone", "-q", src.to_str().unwrap(), clone.to_str().unwrap()],
+    );
+    (src, clone, base)
+}
+
+fn panel_with_review(
+    src: &std::path::Path,
+    clone: &std::path::Path,
+    id: &str,
+    base: &str,
+) -> AgentPanel {
+    let mut panel = AgentPanel::new("claude");
+    panel.sandbox_id_short = id.to_string();
+    panel.base_commit = Some(base.to_string());
+    panel.project_mount = Some(sandbox::ProjectMount {
+        source_path: src.to_path_buf(),
+        layout: sandbox::ProjectLayout::SingleRepo {
+            repo_path: src.to_path_buf(),
+            current_branch: "main".to_string(),
+        },
+        worktree_base: Some(clone.to_path_buf()),
+        created_branches: vec![(src.to_path_buf(), format!("nanosb/{id}"))],
+        deferred_branch: None,
+    });
+    panel
+}
+
+#[tokio::test]
+async fn handler_diff_reads_host_owned_review_ref() {
+    let tmp = tempfile::tempdir().unwrap();
+    let id = "sbx";
+    let (src, clone, base) = make_review_fixture(tmp.path(), id);
+    let mut app = App::new();
+    let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+    app.panels.push(panel_with_review(&src, &clone, id, &base));
+    app.focused_panel = 0;
+
+    handle_command(&mut app, Command::Diff { stat: false }, &tx).await;
+
+    let msg = app.panels[0]
+        .chat_history
+        .last()
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("f.txt"),
+        "expected the host-owned review diff to list f.txt, got: {msg:?}"
+    );
+}
+
+#[tokio::test]
+async fn handler_discard_falls_back_to_host_reset() {
+    let tmp = tempfile::tempdir().unwrap();
+    let id = "sbx";
+    let (src, clone, base) = make_review_fixture(tmp.path(), id);
+    std::fs::write(clone.join("f.txt"), "dirty\n").unwrap();
+
+    let mut app = App::new();
+    let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+    app.panels.push(panel_with_review(&src, &clone, id, &base));
+    app.focused_panel = 0;
+
+    handle_command(&mut app, Command::Discard, &tx).await;
+
+    let msg = app.panels[0]
+        .chat_history
+        .last()
+        .map(|m| m.content.clone())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        msg.contains("discard") || msg.contains("reset"),
+        "unexpected /discard message"
+    );
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&clone)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "clone working tree should be clean after /discard"
+    );
+}
