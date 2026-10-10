@@ -125,11 +125,6 @@ pub enum Command {
         /// Registry index (1-based) or an absolute path, or None to list.
         target: Option<String>,
     },
-    /// Open clone directory in an external tool.
-    Edit {
-        /// Tool override, or None for preferred/auto-detected.
-        tool: Option<String>,
-    },
     /// Switch or list TUI colour themes.
     Theme {
         /// Theme name to switch to, or None to list available themes.
@@ -270,10 +265,6 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
         description: "Show agent details",
     },
     CommandHelpEntry {
-        pattern: "/edit [tool]",
-        description: "Open clone in external tool",
-    },
-    CommandHelpEntry {
         pattern: "/clearhistory",
         description: "Clear command history",
     },
@@ -370,7 +361,7 @@ const ALL_COMMANDS: &[&str] = &[
     "/add", "/focus", "/kill", "/reconnect", "/env",
     "/zoom", "/branches",
     "/gitsync", "/gitsync on", "/gitsync off", "/gitsync now",
-    "/open", "/edit",
+    "/open",
     "/sandboxes",
     "/theme", "/theme nanosandbox", "/theme nanosandbox-light",
     "/theme dracula", "/theme catppuccin", "/theme tokyo-night", "/theme nord",
@@ -437,10 +428,6 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/open" => {
             let target = parts.get(1).map(|s| s.to_string());
             ParseResult::Ok(Command::Open { target })
-        }
-        "/edit" => {
-            let tool = parts.get(1).map(|s| s.to_string());
-            ParseResult::Ok(Command::Edit { tool })
         }
         "/theme" => parse_theme(&parts),
         "/skills" => parse_skills(&parts),
@@ -1665,16 +1652,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_edit_default() {
-        assert_eq!(parse_command("/edit"), Some(Command::Edit { tool: None }));
-    }
-
-    #[test]
-    fn test_parse_edit_specific_tool() {
-        assert_eq!(
-            parse_command("/edit gitui"),
-            Some(Command::Edit { tool: Some("gitui".to_string()) })
-        );
+    fn test_parse_edit_removed() {
+        assert_eq!(parse_command("/edit"), None);
+        assert_eq!(parse_command("/edit gitui"), None);
     }
 
     #[test]
