@@ -909,6 +909,14 @@ fn auto_commit_and_fetch(
 // ── ProjectMount implementation ──────────────────────────────────────
 
 impl ProjectMount {
+    /// The host-owned review location for this mount: the source repository plus
+    /// the namespaced ref (`refs/nanosb/<id>`) the agent's commits are fetched to.
+    /// Diff/status run against this, never inside the agent-writable clone.
+    pub fn review_target(&self) -> Option<(PathBuf, String)> {
+        let (source, branch) = self.created_branches.first()?;
+        Some((source.clone(), branch_to_nanosb_ref(branch)))
+    }
+
     /// Detect the git layout of a project directory.
     ///
     /// Returns a `ProjectMount` describing whether the path is a single git repo,

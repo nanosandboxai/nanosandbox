@@ -2851,30 +2851,40 @@ fn handle_diff(app: &mut App, stat: bool) {
             return;
         }
     };
-    let range = format!("{}..HEAD", base);
-    let mut cmd = super::gitcmd::host_git();
     // Never let the agent-writable clone run an external diff or `textconv`
-    // driver: `diff.<driver>.textconv` in the clone's config executes an
-    // agent-controlled command on the host (verified). `-c` cannot preempt it
-    // (the driver name is arbitrary), so pass the disabling flags explicitly.
-    if stat {
-        cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--stat", &range]);
-    } else {
-        cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--name-status", &range]);
-    }
-    let out = cmd.current_dir(&wt).output();
-    let content = match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout);
+    // driver (`diff.<driver>.textconv` executes an agent-controlled command).
+    let run_diff = |repo: &std::path::Path, range: &str| -> Option<String> {
+        let mut cmd = super::gitcmd::host_git();
+        if stat {
+            cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--stat", range]);
+        } else {
+            cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--name-status", range]);
+        }
+        let out = cmd.current_dir(repo).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    };
+
+    // Host-owned review state first: the source repo's `refs/nanosb/<id>`.
+    // Fall back to the (hardened) clone-local diff only when it is absent.
+    let review = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.project_mount.as_ref())
+        .and_then(|pm| pm.review_target());
+    let content = review
+        .as_ref()
+        .and_then(|(src, ref_name)| run_diff(src, &format!("{}..{}", base, ref_name)))
+        .or_else(|| run_diff(&wt, &format!("{}..HEAD", base)))
+        .map(|s| {
             if s.trim().is_empty() {
                 "No changes since base.".to_string()
             } else {
-                s.to_string()
+                s
             }
-        }
-        Ok(o) => format!("git diff failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("git diff failed: {}", e),
-    };
+        })
+        .unwrap_or_else(|| "git diff failed.".to_string());
     push_panel_message(app, content);
 }
 
