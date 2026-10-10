@@ -511,6 +511,30 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
         eprintln!("All sandboxes stopped.");
     }
 
+    // Stop supervisor-backed sandboxes too: /quit used to leave the supervisor
+    // (and its VM + gvproxy) running, so `ps` still showed a live sandbox. The
+    // session is saved above, so `nanosb -r` can redeploy.
+    let supervisor_names: Vec<String> = app
+        .panels
+        .iter()
+        .filter_map(|p| p.supervisor_name().map(str::to_string))
+        .collect();
+    if !supervisor_names.is_empty() {
+        eprintln!("Stopping {} sandbox(es)...", supervisor_names.len());
+        let mut handles = Vec::new();
+        for name in supervisor_names {
+            handles.push(tokio::task::spawn_blocking(move || {
+                let _ = crate::supervisor::client::SupervisorClient::new(&name).stop(true);
+            }));
+        }
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        for handle in handles {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let _ = tokio::time::timeout(remaining, handle).await;
+        }
+        eprintln!("All sandboxes stopped.");
+    }
+
     // Exit immediately: a parked blocking reader (exec-PTY SSE / terminal event
     // thread) cannot be cancelled, so the tokio runtime drop would otherwise keep
     // the process alive. Exiting explicitly makes /quit and /destroy immediate.
