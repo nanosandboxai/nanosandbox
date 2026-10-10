@@ -136,9 +136,28 @@ impl VmSandboxPaths {
         }
     }
 
-    /// No-op off macOS (Linux uses Landlock, added separately).
-    #[cfg(not(target_os = "macos"))]
+    /// No-op on platforms without a confinement backend.
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     pub fn apply(&self) {}
+
+    /// Apply Landlock confinement on Linux: restrict this process (the VM-boot
+    /// subprocess, which hosts libkrun's virtiofs server) to the guest rootfs,
+    /// declared mounts, and firmware directory. Best-effort — a failure is
+    /// logged and the process continues. Requires kernel Landlock (5.13+) with
+    /// the ABI reported by `landlock_create_ruleset(NULL, 0, VERSION)`.
+    ///
+    /// NOTE: not yet validated on a Linux host (see the tracking issue).
+    #[cfg(target_os = "linux")]
+    pub fn apply(&self) {
+        if std::env::var("NANOSB_SEATBELT").as_deref() == Ok("0") {
+            eprintln!("nanosb-landlock: disabled via NANOSB_SEATBELT=0");
+            return;
+        }
+        match landlock::restrict(self) {
+            Ok(()) => eprintln!("nanosb-landlock: confinement applied"),
+            Err(e) => eprintln!("nanosb-landlock: confinement NOT applied: {e}"),
+        }
+    }
 
     /// Build these paths from a boot request's rootfs/mounts/sockets.
     pub fn from_parts(
@@ -188,6 +207,169 @@ unsafe fn sandbox_init(
             s
         };
         Err(msg)
+    }
+}
+
+// Linux confinement via Landlock using raw syscalls (no external crate).
+// Access-flag values and syscall numbers are from the kernel UAPI
+// (`linux/landlock.h`); the ABI version gates which bits the kernel accepts.
+#[cfg(target_os = "linux")]
+mod landlock {
+    use super::VmSandboxPaths;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    const NR_CREATE_RULESET: libc::c_long = 444;
+    const NR_ADD_RULE: libc::c_long = 445;
+    const NR_RESTRICT_SELF: libc::c_long = 446;
+    const CREATE_RULESET_VERSION: u32 = 1;
+    const RULE_PATH_BENEATH: u32 = 1;
+
+    const ACCESS_FS_EXECUTE: u64 = 1 << 0;
+    const ACCESS_FS_WRITE_FILE: u64 = 1 << 1;
+    const ACCESS_FS_READ_FILE: u64 = 1 << 2;
+    const ACCESS_FS_READ_DIR: u64 = 1 << 3;
+    const ACCESS_FS_REMOVE_DIR: u64 = 1 << 4;
+    const ACCESS_FS_REMOVE_FILE: u64 = 1 << 5;
+    const ACCESS_FS_MAKE_CHAR: u64 = 1 << 6;
+    const ACCESS_FS_MAKE_DIR: u64 = 1 << 7;
+    const ACCESS_FS_MAKE_REG: u64 = 1 << 8;
+    const ACCESS_FS_MAKE_SOCK: u64 = 1 << 9;
+    const ACCESS_FS_MAKE_FIFO: u64 = 1 << 10;
+    const ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
+    const ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
+    const ACCESS_FS_REFER: u64 = 1 << 13;
+    const ACCESS_FS_TRUNCATE: u64 = 1 << 14;
+
+    const FS_ALL: u64 = ACCESS_FS_EXECUTE
+        | ACCESS_FS_WRITE_FILE
+        | ACCESS_FS_READ_FILE
+        | ACCESS_FS_READ_DIR
+        | ACCESS_FS_REMOVE_DIR
+        | ACCESS_FS_REMOVE_FILE
+        | ACCESS_FS_MAKE_CHAR
+        | ACCESS_FS_MAKE_DIR
+        | ACCESS_FS_MAKE_REG
+        | ACCESS_FS_MAKE_SOCK
+        | ACCESS_FS_MAKE_FIFO
+        | ACCESS_FS_MAKE_BLOCK
+        | ACCESS_FS_MAKE_SYM
+        | ACCESS_FS_REFER
+        | ACCESS_FS_TRUNCATE;
+
+    const FS_READ: u64 = ACCESS_FS_EXECUTE | ACCESS_FS_READ_FILE | ACCESS_FS_READ_DIR;
+
+    #[repr(C)]
+    struct RulesetAttr {
+        handled_access_fs: u64,
+    }
+
+    #[repr(C)]
+    struct PathBeneathAttr {
+        allowed_access: u64,
+        parent_fd: i32,
+    }
+
+    fn create_ruleset(handled: u64) -> Result<i32, String> {
+        let attr = RulesetAttr {
+            handled_access_fs: handled,
+        };
+        let fd = unsafe {
+            libc::syscall(
+                NR_CREATE_RULESET,
+                &attr as *const RulesetAttr,
+                std::mem::size_of::<RulesetAttr>(),
+                0u32,
+            )
+        };
+        if fd < 0 {
+            return Err(format!(
+                "create_ruleset: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(fd as i32)
+    }
+
+    fn add_path_rule(ruleset_fd: i32, path: &str, allowed: u64) -> Result<(), String> {
+        let c = CString::new(path.as_bytes()).map_err(|_| "path has NUL".to_string())?;
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(format!("open {path}: {}", std::io::Error::last_os_error()));
+        }
+        let attr = PathBeneathAttr {
+            allowed_access: allowed,
+            parent_fd: fd,
+        };
+        let rc = unsafe {
+            libc::syscall(
+                NR_ADD_RULE,
+                ruleset_fd,
+                RULE_PATH_BENEATH,
+                &attr as *const PathBeneathAttr,
+                0u32,
+            )
+        };
+        unsafe { libc::close(fd) };
+        if rc < 0 {
+            return Err(format!(
+                "add_rule {path}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn restrict(paths: &VmSandboxPaths) -> Result<(), String> {
+        let v = unsafe {
+            libc::syscall(
+                NR_CREATE_RULESET,
+                std::ptr::null::<RulesetAttr>(),
+                0usize,
+                CREATE_RULESET_VERSION,
+            )
+        };
+        if v < 0 {
+            return Err(format!(
+                "landlock unsupported: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        // Mask handled bits the running kernel's ABI does not know.
+        let mut handled = FS_ALL;
+        if v < 3 {
+            handled &= !ACCESS_FS_TRUNCATE;
+        }
+        if v < 2 {
+            handled &= !ACCESS_FS_REFER;
+        }
+
+        let ruleset = create_ruleset(handled)?;
+        for ro in [
+            "/usr", "/lib", "/lib64", "/etc", "/proc", "/sys", "/dev", "/tmp", "/run",
+        ] {
+            let _ = add_path_rule(ruleset, ro, FS_READ);
+        }
+        let _ = add_path_rule(ruleset, &paths.rootfs, handled);
+        for (p, readonly) in &paths.mounts {
+            let acc = if *readonly { FS_READ } else { handled };
+            let _ = add_path_rule(ruleset, p, acc);
+        }
+        if let Some(dir) = &paths.firmware_dir {
+            let _ = add_path_rule(ruleset, dir, FS_READ);
+        }
+        for w in &paths.writable_paths {
+            let _ = add_path_rule(ruleset, w, FS_READ | ACCESS_FS_WRITE_FILE);
+        }
+
+        let rc = unsafe { libc::syscall(NR_RESTRICT_SELF, ruleset, 0u32) };
+        let err = std::io::Error::last_os_error();
+        unsafe { libc::close(ruleset) };
+        if rc < 0 {
+            return Err(format!("restrict_self: {err}"));
+        }
+        Ok(())
     }
 }
 
