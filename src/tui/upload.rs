@@ -616,4 +616,59 @@ mod tests {
         assert!(started, "expected UploadStarted");
         assert!(completed, "expected UploadComplete");
     }
+
+    #[tokio::test]
+    async fn exec_upload_sends_base64_then_closes_stdin() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("exec.sock");
+        let out = dir.path().join("out.bin");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let out_c = out.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let read_frame = |s: &mut std::os::unix::net::UnixStream| -> Option<Vec<u8>> {
+                let mut len = [0u8; 4];
+                s.read_exact(&mut len).ok()?;
+                let mut buf = vec![0u8; u32::from_le_bytes(len) as usize];
+                s.read_exact(&mut buf).ok()?;
+                Some(buf)
+            };
+            let write_frame = |s: &mut std::os::unix::net::UnixStream, body: &[u8]| {
+                s.write_all(&(body.len() as u32).to_le_bytes()).unwrap();
+                s.write_all(body).unwrap();
+                s.flush().unwrap();
+            };
+
+            let _req = read_frame(&mut stream).expect("request frame");
+            let mut b64 = String::new();
+            loop {
+                let Some(frame) = read_frame(&mut stream) else { break };
+                let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+                match v.get("type").and_then(|t| t.as_str()) {
+                    Some("stdin") => {
+                        b64.push_str(v.get("data").and_then(|d| d.as_str()).unwrap())
+                    }
+                    Some("stdin_close") => {
+                        use base64::Engine;
+                        let data =
+                            base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
+                        std::fs::write(&out_c, &data).unwrap();
+                        write_frame(&mut stream, br#"{"type":"exit","code":0}"#);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let payload = b"binary\x00payload\xff";
+        let n = exec_upload(&sock, out.to_str().unwrap(), payload).unwrap();
+        assert_eq!(n as usize, payload.len());
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), payload);
+    }
 }
