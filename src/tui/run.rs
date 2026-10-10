@@ -2852,10 +2852,14 @@ fn handle_diff(app: &mut App, stat: bool) {
     };
     let range = format!("{}..HEAD", base);
     let mut cmd = super::gitcmd::host_git();
+    // Never let the agent-writable clone run an external diff or `textconv`
+    // driver: `diff.<driver>.textconv` in the clone's config executes an
+    // agent-controlled command on the host (verified). `-c` cannot preempt it
+    // (the driver name is arbitrary), so pass the disabling flags explicitly.
     if stat {
-        cmd.args(["diff", "--stat", &range]);
+        cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--stat", &range]);
     } else {
-        cmd.args(["diff", "--name-status", &range]);
+        cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--name-status", &range]);
     }
     let out = cmd.current_dir(&wt).output();
     let content = match out {

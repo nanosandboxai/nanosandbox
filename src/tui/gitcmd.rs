@@ -282,4 +282,52 @@ mod tests {
         assert_eq!(clone_namespaced_ref("sb-abc"), "refs/nanosb/sb-abc");
     }
 
+    // ── diff hardening: a clone-local textconv driver cannot execute ─────────
+
+    #[test]
+    fn diff_no_textconv_blocks_driver_execution() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("r");
+        let marker = tmp.path().join("PWNED");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "a@b.c"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("f.bin"), b"x\0y").unwrap();
+        std::fs::write(repo.join(".gitattributes"), "*.bin diff=evil\n").unwrap();
+        let driver = tmp.path().join("evil.sh");
+        std::fs::write(
+            &driver,
+            format!("#!/bin/sh\ntouch {}\ncat \"$1\"\n", marker.display()),
+        )
+        .unwrap();
+        let mut perm = std::fs::metadata(&driver).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&driver, perm).unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "init"]);
+        run(&["config", "diff.evil.textconv", driver.to_str().unwrap()]);
+        std::fs::write(repo.join("f.bin"), b"x\0z").unwrap();
+
+        // Baseline: plain `git diff` runs the driver (proves the test can fail).
+        let _ = run(&["diff", "f.bin"]);
+        assert!(marker.exists(), "baseline textconv did not execute");
+        std::fs::remove_file(&marker).unwrap();
+
+        // The flags handle_diff uses must prevent execution.
+        let out = run(&["diff", "--no-ext-diff", "--no-textconv", "f.bin"]);
+        assert!(out.status.success());
+        assert!(!marker.exists(), "textconv driver executed despite --no-textconv");
+    }
+
 }
