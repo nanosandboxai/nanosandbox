@@ -28,51 +28,89 @@ pub struct VmSandboxPaths {
 
 impl VmSandboxPaths {
     /// Build the deny-default Seatbelt profile (Scheme source) for these paths.
+    ///
+    /// This is a **deny-default** profile: only the paths/operations a VM
+    /// genuinely needs are granted. A deny-list layered on `(allow default)` is
+    /// not a sandbox (a single missed rule — e.g. `file-mount` — enables the
+    /// devfs/LaunchServices escape class), so `(allow default)` must never
+    /// reappear here.
     #[cfg(target_os = "macos")]
     pub fn to_seatbelt_profile(&self) -> String {
         fn esc(s: &str) -> String {
             s.replace('\\', "\\\\").replace('"', "\\\"")
         }
-        let home = std::env::var("HOME").unwrap_or_default();
-        // macOS Seatbelt cannot run libkrun's virtio-net/vfkit path under a fully
-        // deny-by-default file policy without breaking VM networking, so this is a
-        // DENY-LIST: allow broadly, but deny the high-value host paths an escaped
-        // guest must never reach (credentials/keys). Linux uses Landlock + openat2
-        // for the stronger deny-by-default equivalent.
-        let mut p = String::from(
-            "(version 1)\n(deny default)\n(import \"system.sb\")\n(allow default)\n",
-        );
-        let mut secrets: Vec<String> = vec![
-            "/private/etc/master.passwd".to_string(),
-            "/private/var/db/dslocal".to_string(),
-            "/Library/Keychains".to_string(),
-        ];
-        if !home.is_empty() {
-            for sub in [
-                ".ssh",
-                ".aws",
-                ".gnupg",
-                ".kube",
-                ".docker",
-                ".config/gh",
-                ".config/gcloud",
-                ".config/op",
-                ".netrc",
-                ".npmrc",
-                ".pypirc",
-                ".zsh_history",
-                ".bash_history",
-                "Library/Keychains",
-            ] {
-                secrets.push(format!("{home}/{sub}"));
+        // `system.sb` supplies the baseline system operations libkrun needs
+        // (mach services, dyld lookups). `(deny default)` governs everything else.
+        let mut p = String::from("(version 1)\n(deny default)\n(import \"system.sb\")\n");
+
+        // In-process VMM/virtiofs: threads + shared memory + sysctl + signals to self.
+        p.push_str("(allow process-fork)\n");
+        p.push_str("(allow sysctl-read)\n");
+        p.push_str("(allow ipc-posix-shm)\n");
+        p.push_str("(allow file-read-metadata)\n");
+        p.push_str("(allow signal (target self))\n");
+
+        // System libraries loaded by dyld / libkrunfw.
+        for sys in [
+            "/System/Library",
+            "/usr/lib",
+            "/usr/share",
+            "/Library/Apple",
+            "/private/var/db/dyld",
+        ] {
+            p.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", esc(sys)));
+        }
+
+        // Guest root filesystem: guest writes to `/` land here.
+        p.push_str(&format!(
+            "(allow file-read* file-write* (subpath \"{}\"))\n",
+            esc(&self.rootfs)
+        ));
+
+        // Declared mounts: RW unless declared read-only.
+        for (path, ro) in &self.mounts {
+            if *ro {
+                p.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", esc(path)));
+            } else {
+                p.push_str(&format!(
+                    "(allow file-read* file-write* (subpath \"{}\"))\n",
+                    esc(path)
+                ));
             }
         }
-        for s in &secrets {
+
+        // Firmware directory (libkrunfw dylib).
+        if let Some(dir) = &self.firmware_dir {
+            p.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", esc(dir)));
+        }
+
+        // Control/console sockets and log (file access).
+        for w in &self.writable_paths {
             p.push_str(&format!(
-                "(deny file-read* file-write* (subpath \"{}\"))\n",
-                esc(s)
+                "(allow file-read* file-write* (literal \"{}\"))\n",
+                esc(w)
             ));
         }
+        // `bind()`-ing a unix socket creates its node, which needs write on the
+        // containing directory. libkrun binds its net socket under $TMPDIR
+        // (`/private/var/folders/...`) and the control sockets live under /tmp.
+        for tmp in ["/private/tmp", "/tmp", "/private/var/folders"] {
+            p.push_str(&format!(
+                "(allow file-read* file-write* (subpath \"{}\"))\n",
+                esc(tmp)
+            ));
+        }
+        // The VMM relays guest traffic to gvproxy over AF_UNIX datagram sockets.
+        // Seatbelt's `(local unix-socket)` filter does not cover the datagram
+        // bind, so grant network ops broadly: the VM's own network stack is the
+        // network boundary here — Seatbelt's job is the *file* confinement above.
+        p.push_str("(allow network*)\n");
+
+        // Character devices libkrun touches.
+        for dev in ["/dev/null", "/dev/urandom", "/dev/random", "/dev/dtracehelper"] {
+            p.push_str(&format!("(allow file-read* (literal \"{}\"))\n", esc(dev)));
+        }
+        p.push_str("(allow file-write* (literal \"/dev/null\"))\n");
         p
     }
 
@@ -158,13 +196,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn profile_denies_credentials() {
-        std::env::set_var("HOME", "/Users/testuser");
-        let paths = VmSandboxPaths::default();
+    fn profile_is_deny_default_and_scoped() {
+        let paths = VmSandboxPaths {
+            rootfs: "/tmp/rootfs".to_string(),
+            mounts: vec![
+                ("/tmp/ws".to_string(), false),
+                ("/tmp/ro".to_string(), true),
+            ],
+            firmware_dir: Some("/Users/testuser/.nanosandbox/libs".to_string()),
+            writable_paths: vec!["/tmp/gvproxy.sock".to_string()],
+        };
         let p = paths.to_seatbelt_profile();
-        assert!(p.contains("(allow default)"));
-        assert!(p.contains("(deny file-read* file-write* (subpath \"/Users/testuser/.ssh\"))"));
-        assert!(p.contains("(deny file-read* file-write* (subpath \"/Users/testuser/.aws\"))"));
-        assert!(p.contains("(deny file-read* file-write* (subpath \"/Library/Keychains\"))"));
+        assert!(p.contains("(deny default)"));
+        assert!(
+            !p.contains("(allow default)"),
+            "a deny-list on (allow default) is not a sandbox"
+        );
+        assert!(p.contains("(allow file-read* file-write* (subpath \"/tmp/rootfs\"))"));
+        assert!(p.contains("(allow file-read* file-write* (subpath \"/tmp/ws\"))"));
+        assert!(p.contains("(allow file-read* (subpath \"/tmp/ro\"))"));
+        assert!(!p.contains("file-write* (subpath \"/tmp/ro\")"));
+        assert!(p.contains("(allow file-read* (subpath \"/Users/testuser/.nanosandbox/libs\"))"));
+        assert!(p.contains("(allow network*)"));
     }
 }
