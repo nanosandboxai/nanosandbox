@@ -107,7 +107,12 @@ impl VmSandboxPaths {
         p.push_str("(allow network*)\n");
 
         // Character devices libkrun touches.
-        for dev in ["/dev/null", "/dev/urandom", "/dev/random", "/dev/dtracehelper"] {
+        for dev in [
+            "/dev/null",
+            "/dev/urandom",
+            "/dev/random",
+            "/dev/dtracehelper",
+        ] {
             p.push_str(&format!("(allow file-read* (literal \"{}\"))\n", esc(dev)));
         }
         p.push_str("(allow file-write* (literal \"/dev/null\"))\n");
@@ -126,8 +131,8 @@ impl VmSandboxPaths {
             return;
         }
         let profile = self.to_seatbelt_profile();
-        let c_profile = std::ffi::CString::new(profile)
-            .expect("seatbelt profile has no interior NUL");
+        let c_profile =
+            std::ffi::CString::new(profile).expect("seatbelt profile has no interior NUL");
         match unsafe { sandbox_init(c_profile.as_ptr(), 0, std::ptr::null_mut()) } {
             Ok(()) => eprintln!("nanosb-seatbelt: confinement applied"),
             Err(msg) => {
