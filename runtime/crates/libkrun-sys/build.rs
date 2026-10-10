@@ -41,15 +41,6 @@ fn main() {
     println!("cargo:rustc-link-lib=static=krun");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
-    // libkrun.a is a Rust `staticlib`: it carries its OWN copy of the Rust std
-    // runtime symbols (e.g. `rust_eh_personality`), which collide with the std
-    // of any Rust artifact that links it (rust-lld: "duplicate symbol:
-    // rust_eh_personality" when building test/bin objects). Let the linker pick
-    // one copy and tolerate the overlap. macOS's default ld already resolves
-    // this; this makes Linux (rust-lld) behave the same.
-    println!("cargo:rustc-link-arg=-Wl,--allow-multiple-definition");
-    println!("cargo:rustc-link-arg=-Wl,--eh-frame-hdr");
-
     // On macOS, libkrun uses Hypervisor.framework
     #[cfg(target_os = "macos")]
     println!("cargo:rustc-link-lib=framework=Hypervisor");
