@@ -363,6 +363,9 @@ impl Session {
                     si.flush().ok();
                 }
             }
+            ExecControl::StdinClose => {
+                self.stdin = None;
+            }
             ExecControl::Signal { signal } => {
                 unsafe { libc::kill(self.pid as i32, signal) };
             }

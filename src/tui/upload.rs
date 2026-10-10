@@ -155,6 +155,46 @@ pub async fn fs_upload(
     Ok(local_data.len() as u64)
 }
 
+/// Upload bytes to the guest over the exec channel (never a host workspace
+/// write). The payload is base64-encoded and piped to `base64 -d` inside the
+/// guest, then stdin is closed to signal EOF. Returns the byte count.
+pub fn exec_upload(sock: &Path, remote_path: &str, data: &[u8]) -> Result<u64, String> {
+    use base64::Engine;
+
+    let client = runtime::exec::ExecClient::new(sock.to_path_buf());
+    if !client.is_available() {
+        return Err("exec channel unavailable".to_string());
+    }
+    let dir = Path::new(remote_path)
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or(UPLOAD_DIR);
+    let script = format!("mkdir -p '{dir}' && base64 -d > '{remote_path}'");
+    let mut handle = client
+        .start("sh", &["-c", &script], runtime::exec::ExecOptions::default())
+        .map_err(|e| format!("exec start: {e}"))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    handle.write_stdin(&b64).map_err(|e| format!("exec stdin: {e}"))?;
+    handle.close_stdin().map_err(|e| format!("exec close stdin: {e}"))?;
+    loop {
+        match handle
+            .next_event(None)
+            .map_err(|e| format!("exec event: {e}"))?
+        {
+            Some(runtime::exec::ExecEvent::Exit { code }) => {
+                return if code == 0 {
+                    Ok(data.len() as u64)
+                } else {
+                    Err(format!("guest decode exited {code}"))
+                };
+            }
+            Some(runtime::exec::ExecEvent::Error { message }) => return Err(message),
+            Some(_) => {}
+            None => return Err("exec connection closed".to_string()),
+        }
+    }
+}
+
 /// Spawn an async upload task for a host file.
 ///
 /// Checks file size BEFORE reading, rejects symlink sources, and ensures the
@@ -162,6 +202,7 @@ pub async fn fs_upload(
 pub fn spawn_file_upload(
     mount_root: Option<PathBuf>,
     host_path: PathBuf,
+    exec_sock: Option<PathBuf>,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
@@ -243,7 +284,13 @@ pub fn spawn_file_upload(
             filename: filename.clone(),
         });
 
-        match fs_upload(&mount_root, &remote_path, &data).await {
+        // Prefer the exec channel (no host write into the agent-writable
+        // workspace); fall back to the guarded host write if it is unavailable.
+        let size = match try_exec_upload(&exec_sock, &remote_path, &data).await {
+            Some(r) => r,
+            None => fs_upload(&mount_root, &remote_path, &data).await,
+        };
+        match size {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
                     panel_idx,
@@ -262,11 +309,29 @@ pub fn spawn_file_upload(
     });
 }
 
+/// Send `data` over the exec channel when a socket is available. Returns `None`
+/// when there is no socket or the channel is unusable (caller falls back).
+async fn try_exec_upload(
+    exec_sock: &Option<PathBuf>,
+    remote_path: &str,
+    data: &[u8],
+) -> Option<Result<u64, String>> {
+    let sock = exec_sock.clone()?;
+    let rp = remote_path.to_string();
+    let d = data.to_vec();
+    tokio::task::spawn_blocking(move || exec_upload(&sock, &rp, &d))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(Ok)
+}
+
 /// Spawn an async upload task for raw bytes (e.g. clipboard image).
 pub fn spawn_bytes_upload(
     mount_root: Option<PathBuf>,
     data: Vec<u8>,
     filename: String,
+    exec_sock: Option<PathBuf>,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
@@ -300,7 +365,11 @@ pub fn spawn_bytes_upload(
             filename: filename.clone(),
         });
 
-        match fs_upload(&mount_root, &remote_path, &data).await {
+        let size = match try_exec_upload(&exec_sock, &remote_path, &data).await {
+            Some(r) => r,
+            None => fs_upload(&mount_root, &remote_path, &data).await,
+        };
+        match size {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
                     panel_idx,

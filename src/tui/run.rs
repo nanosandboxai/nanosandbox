@@ -1577,11 +1577,12 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
                             // pasting the raw host path as text.
                             let files = super::upload::detect_file_paths(&text);
                             if !files.is_empty() {
-                                if let Some((panel_idx, mount_root)) = upload_info.clone() {
+                                if let Some((panel_idx, mount_root, exec_sock)) = upload_info.clone() {
                                     for f in files {
                                         super::upload::spawn_file_upload(
                                             mount_root.clone(),
                                             f,
+                                            exec_sock.clone(),
                                             panel_idx,
                                             tx.clone(),
                                         );
@@ -1607,7 +1608,7 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
                                 return;
                             }
 
-                            if let Some((panel_idx, mount_root)) = upload_info {
+                            if let Some((panel_idx, mount_root, exec_sock)) = upload_info {
                                 if mount_root.is_none() {
                                     tracing::debug!("Clipboard paste produced empty text and no mount");
                                     return;
@@ -1624,7 +1625,7 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
                                         "Clipboard image detected; starting upload"
                                     );
                                     super::upload::spawn_bytes_upload(
-                                        mount_root, png_bytes, filename,
+                                        mount_root, png_bytes, filename, exec_sock,
                                         panel_idx, tx,
                                     );
                                     return;
@@ -3153,14 +3154,20 @@ fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
 }
 
 /// Get the SSH port and key path from the focused panel, if available.
-fn panel_mount_root(app: &App) -> Option<(usize, Option<std::path::PathBuf>)> {
+fn panel_mount_root(
+    app: &App,
+) -> Option<(usize, Option<std::path::PathBuf>, Option<std::path::PathBuf>)> {
     let idx = app.focused_panel;
     let panel = app.panels.get(idx)?;
     let mount_root = panel
         .project_mount
         .as_ref()
         .and_then(|pm| pm.worktree_base.clone());
-    Some((idx, mount_root))
+    let exec_sock = panel
+        .supervisor_name()
+        .map(|n| supervisor_sandbox_dir(n).join("exec.sock"))
+        .filter(|p| p.exists());
+    Some((idx, mount_root, exec_sock))
 }
 
 /// Handle a bracketed paste event.
@@ -3187,7 +3194,7 @@ fn handle_paste_event(app: &mut App, text: String, tx: &mpsc::UnboundedSender<Ap
     // In Terminal mode: if the paste is empty (image-only clipboard via Cmd+V),
     // check the clipboard for an image to upload.
     if text.is_empty() {
-        if let Some((panel_idx, mount_root)) = panel_mount_root(app) {
+        if let Some((panel_idx, mount_root, exec_sock)) = panel_mount_root(app) {
             if mount_root.is_none() {
                 tracing::debug!("Empty paste ignored: no project mount for panel");
                 return;
@@ -3205,7 +3212,7 @@ fn handle_paste_event(app: &mut App, text: String, tx: &mpsc::UnboundedSender<Ap
                             "Empty paste resolved to clipboard image upload"
                         );
                         super::upload::spawn_bytes_upload(
-                            mount_root, png_bytes, filename, panel_idx, tx,
+                            mount_root, png_bytes, filename, exec_sock, panel_idx, tx,
                         );
                     }
                     Ok(Err(e)) => {

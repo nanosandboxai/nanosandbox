@@ -43,6 +43,8 @@ pub struct ExecRequest {
 pub enum ExecControl {
     /// Write bytes to the process stdin.
     Stdin { data: String },
+    /// Close the process stdin (signal EOF to the child).
+    StdinClose,
     /// Send a POSIX signal number to the process.
     Signal { signal: i32 },
     /// Resize the PTY.

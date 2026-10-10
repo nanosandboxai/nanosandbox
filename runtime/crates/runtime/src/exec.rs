@@ -358,6 +358,12 @@ impl ExecHandle {
         self.write_frame(&serde_json::to_vec(&ctl).unwrap())
     }
 
+    /// Close the process's stdin (signal EOF to the child).
+    pub fn close_stdin(&mut self) -> ExecResultT<()> {
+        let ctl = serde_json::json!({ "type": "stdin_close" });
+        self.write_frame(&serde_json::to_vec(&ctl).unwrap())
+    }
+
     /// Send a POSIX signal number to the process.
     pub fn signal(&mut self, signal: i32) -> ExecResultT<()> {
         let ctl = serde_json::json!({ "type": "signal", "signal": signal });
