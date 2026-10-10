@@ -1,7 +1,7 @@
 //! Renderer that draws the TUI frames.
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use ratatui::Frame;
@@ -1031,6 +1031,25 @@ fn render_panel(
         if let Some(ref mut term) = panel.terminal {
             let pseudo_term = tui_term::widget::PseudoTerminal::new(term.screen());
             frame.render_widget(pseudo_term, inner_area);
+
+            // The vt100 default colours (SGR reset) render as the host terminal's
+            // default, which can be light. Force the panel's default background to
+            // the theme's black (and default fg to the theme text) so agent UIs that
+            // rely on the terminal default stay dark.
+            {
+                let buf = frame.buffer_mut();
+                for y in inner_area.top()..inner_area.bottom() {
+                    for x in inner_area.left()..inner_area.right() {
+                        let cell = &mut buf[(x, y)];
+                        if cell.bg == Color::Reset {
+                            cell.bg = theme.background;
+                        }
+                        if cell.fg == Color::Reset {
+                            cell.fg = theme.text;
+                        }
+                    }
+                }
+            }
 
             // Show scrollbar when scrolled up from live view.
             if term.is_scrolled_up() {

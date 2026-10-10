@@ -265,7 +265,8 @@ pub async fn connect_exec_pty(
         .tty(true)
         .size(cols.max(1), rows.max(1))
         .env("TERM", "xterm-256color")
-        .env("COLORTERM", "truecolor");
+        .env("COLORTERM", "truecolor")
+        .env("COLORFGBG", "15;0");
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let handle = client
         .start(&program, &arg_refs, opts)

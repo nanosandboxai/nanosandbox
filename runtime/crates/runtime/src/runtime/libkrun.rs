@@ -271,6 +271,10 @@ pub fn handle_boot_vm_subprocess() -> ! {
     if config.runtime_mode == "next" && !env.contains_key("COLORTERM") {
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
     }
+    if config.runtime_mode == "next" && !env.contains_key("COLORFGBG") {
+        // Signal a black background so agent UIs that probe it pick dark colours.
+        env.insert("COLORFGBG".to_string(), "15;0".to_string());
+    }
     if !config.dns.is_empty() && !env.contains_key("NANOSANDBOX_DNS") {
         env.insert("NANOSANDBOX_DNS".to_string(), config.dns.join(","));
     }

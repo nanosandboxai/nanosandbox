@@ -133,6 +133,44 @@ fn frame_panel_terminal() {
 }
 
 #[test]
+fn terminal_panel_default_background_is_theme_black() {
+    let mut app = App::new();
+    let mut panel = AgentPanel::new("claude");
+    panel.mode = PanelMode::Terminal;
+    let mut term = SshTerminal::new(80, 24);
+    term.process_bytes(b"hello-term");
+    panel.terminal = Some(term);
+    app.panels.push(panel);
+    app.focused_panel = 0;
+    app.show_welcome = false;
+
+    let bg = app.theme.background;
+    let backend = render_backend(&mut app, 80, 40);
+    let buf = backend.buffer();
+
+    let mut first_terminal_cell = None;
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            if let Some(c) = buf.cell((x, y)) {
+                assert_ne!(
+                    c.bg,
+                    ratatui::style::Color::Reset,
+                    "cell at ({x},{y}) uses the host default bg"
+                );
+                if c.symbol() == "h" && first_terminal_cell.is_none() {
+                    first_terminal_cell = Some(c.bg);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        first_terminal_cell,
+        Some(bg),
+        "terminal default bg should be the theme background"
+    );
+}
+
+#[test]
 fn frame_multi_panel_grid() {
     let mut app = App::new();
     // Distinct multi-char names so a title match cannot be a substring of
