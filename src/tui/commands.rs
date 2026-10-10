@@ -33,6 +33,8 @@ pub enum Command {
         name: Option<String>,
         /// Run in headless/autonomous mode.
         auto_mode: bool,
+        /// Run the agent interactively on a TTY console.
+        interactive: bool,
         /// Task prompt for headless mode (required with --auto-mode).
         prompt: Option<String>,
         /// Optional model identifier (e.g., "claude-sonnet-4-5-20250929").
@@ -53,29 +55,6 @@ pub enum Command {
     McpToggle,
     /// List configured MCP servers.
     McpList,
-    /// Add a new MCP server configuration.
-    McpAdd {
-        name: String,
-        command: String,
-        args: Vec<String>,
-        /// Target scope: None = focused, Some("all") = all, Some(name) = specific sandbox.
-        target: Option<String>,
-    },
-    /// Remove an MCP server by name.
-    McpRemove {
-        name: String,
-        target: Option<String>,
-    },
-    /// Enable an MCP server by name.
-    McpEnable {
-        name: String,
-        target: Option<String>,
-    },
-    /// Disable an MCP server by name.
-    McpDisable {
-        name: String,
-        target: Option<String>,
-    },
     /// Set or list environment variables for the focused panel.
     Env {
         /// KEY=VALUE pair to set, or None to list current env vars.
@@ -97,14 +76,54 @@ pub enum Command {
     /// List git branches created by nanosb sandboxes.
     Branches,
     /// Git sync control: show status, enable, disable, or manual sync.
-    GitSync {
+    Sync {
+        /// Whether to perform a dry-run (show what would be synced).
+        dry_run: bool,
         /// Subcommand: None (status), "on", "off", "now"
         action: Option<String>,
     },
-    /// Open clone directory in an external tool.
-    Edit {
-        /// Tool override, or None for preferred/auto-detected.
-        tool: Option<String>,
+    /// Show diff of sandbox changes.
+    Diff {
+        /// Whether to show a summary stat instead of the full diff.
+        stat: bool,
+    },
+    /// Show git status of sandbox clones.
+    Status,
+    /// Discard sandbox changes.
+    Discard,
+    /// List mounted volumes.
+    Mounts,
+    /// Execute a command inside a sandbox.
+    Exec {
+        /// Command and arguments to run.
+        args: Vec<String>,
+    },
+    /// Show sandbox logs.
+    Logs {
+        /// Number of recent log lines to show, or None for all.
+        count: Option<usize>,
+    },
+    /// Stop a sandbox.
+    Stop {
+        /// Target: panel index or name, or None for focused panel.
+        target: Option<String>,
+    },
+    /// Show disk usage of nanosb state (clones, sandboxes, sessions).
+    Disk,
+    /// Reclaim disk: dead supervisor dirs and unreferenced clones.
+    Gc {
+        /// Show what would be removed without deleting.
+        dry_run: bool,
+    },
+    /// Apply synced agent commits (refs/nanosb/<id>) to the user's current branch.
+    Apply {
+        /// Allow a non-fast-forward merge (creates a merge commit).
+        force: bool,
+    },
+    /// Switch the TUI's active project (index into the registry, or a path).
+    Project {
+        /// Registry index (1-based) or an absolute path, or None to list.
+        target: Option<String>,
     },
     /// Switch or list TUI colour themes.
     Theme {
@@ -113,16 +132,6 @@ pub enum Command {
     },
     /// Toggle the skills sidebar / list skills.
     SkillsList,
-    /// Add a skill by name.
-    SkillsAdd {
-        /// Skill name from registry.
-        name: String,
-    },
-    /// Remove a skill by name.
-    SkillsRemove {
-        /// Skill name.
-        name: String,
-    },
     /// Show details of a skill.
     SkillsShow {
         /// Skill name.
@@ -130,11 +139,6 @@ pub enum Command {
     },
     /// Show current agent definition.
     AgentShow,
-    /// Set the agent definition from registry.
-    AgentSet {
-        /// Agent name from registry.
-        name: String,
-    },
     /// List available agents in the registry.
     AgentList,
     /// Show details of a registry agent.
@@ -142,17 +146,15 @@ pub enum Command {
         /// Agent name.
         name: String,
     },
-    /// Upload a file from the host into the sandbox VM.
-    Upload {
-        /// Host file path.
-        path: String,
-    },
-    /// Paste an image from the system clipboard into the sandbox VM.
-    PasteImage,
     /// Destroy all sandboxes, remove session state, and exit.
     Destroy,
     /// Clear the command history.
     ClearHistory,
+    /// List registered projects or forget one.
+    Projects {
+        /// Path to forget, or None to list.
+        forget: Option<String>,
+    },
 }
 
 /// Result of parsing a slash command.
@@ -169,19 +171,207 @@ pub enum ParseResult {
 /// Supported agent names for `/add`.
 const SUPPORTED_AGENTS: &[&str] = &["claude", "goose", "codex", "cursor"];
 
+/// A single line of `/help` output: a command pattern and its description.
+///
+/// This is the **single source of truth** for the advertised command surface.
+/// `format_help()` renders it and `HELP_ENTRIES` is asserted against the parser
+/// so no advertised command can be a dead stub.
+pub struct CommandHelpEntry {
+    /// Usage pattern, e.g. `"/focus <n>"`, or empty for a free-form note.
+    pub pattern: &'static str,
+    /// Human-readable description shown to the right of the pattern.
+    pub description: &'static str,
+}
+
+/// The advertised command surface, rendered by [`format_help`].
+///
+/// Ordering is intentional: core panel lifecycle first, then environment,
+/// registry introspection, git, and finally session control.
+pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
+    CommandHelpEntry {
+        pattern: "/add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
+        description: "Add a new agent panel",
+    },
+    CommandHelpEntry {
+        pattern: "/sandboxes",
+        description: "Toggle sandbox sidebar",
+    },
+    CommandHelpEntry {
+        pattern: "/focus <n>",
+        description: "Focus panel n (0-indexed)",
+    },
+    CommandHelpEntry {
+        pattern: "/close [n|name]",
+        description: "Hide panel (sandbox keeps running)",
+    },
+    CommandHelpEntry {
+        pattern: "/open [n|name]",
+        description: "Show a hidden panel",
+    },
+    CommandHelpEntry {
+        pattern: "/kill [n|name]",
+        description: "Kill sandbox & remove panel",
+    },
+    CommandHelpEntry {
+        pattern: "/copy",
+        description: "Copy panel content to clipboard",
+    },
+    CommandHelpEntry {
+        pattern: "/zoom",
+        description: "Toggle panel zoom (Ctrl+F)",
+    },
+    CommandHelpEntry {
+        pattern: "/theme [name]",
+        description: "Switch colour theme",
+    },
+    CommandHelpEntry {
+        pattern: "/env [KEY=VALUE]",
+        description: "Set/list panel env vars",
+    },
+    CommandHelpEntry {
+        pattern: "/reconnect",
+        description: "Reconnect SSH terminal",
+    },
+    CommandHelpEntry {
+        pattern: "/branches",
+        description: "List nanosb branches in project",
+    },
+    CommandHelpEntry {
+        pattern: "/sync [on|off|now]",
+        description: "Sync sandbox commits to refs/nanosb/<id>",
+    },
+    CommandHelpEntry {
+        pattern: "/mcp",
+        description: "Toggle MCP sidebar",
+    },
+    CommandHelpEntry {
+        pattern: "/mcp list",
+        description: "List MCP servers (from sandbox.yml)",
+    },
+    CommandHelpEntry {
+        pattern: "/skills [list]",
+        description: "List skills (from sandbox.yml)",
+    },
+    CommandHelpEntry {
+        pattern: "/skills show <name>",
+        description: "Show skill details",
+    },
+    CommandHelpEntry {
+        pattern: "/agent list",
+        description: "List available agents",
+    },
+    CommandHelpEntry {
+        pattern: "/agent show <name>",
+        description: "Show agent details",
+    },
+    CommandHelpEntry {
+        pattern: "/clearhistory",
+        description: "Clear command history",
+    },
+    CommandHelpEntry {
+        pattern: "/projects",
+        description: "List registered projects",
+    },
+    CommandHelpEntry {
+        pattern: "/projects forget <path>",
+        description: "Remove a project from the registry",
+    },
+    CommandHelpEntry {
+        pattern: "/diff [--stat]",
+        description: "Show agent changes vs base commit",
+    },
+    CommandHelpEntry {
+        pattern: "/status",
+        description: "Show clone branch, dirty files, sync state",
+    },
+    CommandHelpEntry {
+        pattern: "/sync [--dry-run] [on|off|now]",
+        description: "Sync agent changes to refs/nanosb/<id>",
+    },
+    CommandHelpEntry {
+        pattern: "/discard",
+        description: "Reset the clone to its base commit",
+    },
+    CommandHelpEntry {
+        pattern: "/mounts",
+        description: "Show the panel's mounts",
+    },
+    CommandHelpEntry {
+        pattern: "/exec <command>",
+        description: "Run a command in the sandbox (exec channel)",
+    },
+    CommandHelpEntry {
+        pattern: "/logs [n]",
+        description: "Show the sandbox console log tail",
+    },
+    CommandHelpEntry {
+        pattern: "/stop [n|name]",
+        description: "Stop a sandbox (keeps the panel)",
+    },
+    CommandHelpEntry {
+        pattern: "/disk",
+        description: "Show nanosb state disk usage",
+    },
+    CommandHelpEntry {
+        pattern: "/gc [--dry-run]",
+        description: "Reclaim disk (dead dirs, orphan clones)",
+    },
+    CommandHelpEntry {
+        pattern: "/apply [--force]",
+        description: "Fast-forward-merge agent commits into your branch",
+    },
+    CommandHelpEntry {
+        pattern: "/project [n|path]",
+        description: "Switch the active project (or list)",
+    },
+    CommandHelpEntry {
+        pattern: "/quit",
+        description: "Suspend session and exit",
+    },
+    CommandHelpEntry {
+        pattern: "/destroy",
+        description: "Full cleanup and exit",
+    },
+    CommandHelpEntry {
+        pattern: "",
+        description: "Config is declarative: edit sandbox.yml and run `nanosb apply`.",
+    },
+];
+
+/// Render the `/help` overlay text from [`HELP_ENTRIES`].
+///
+/// Kept in sync with the parser by `test_help_entries_are_all_recognized_commands`.
+pub fn format_help() -> String {
+    let mut lines = vec!["Available commands:".to_string()];
+    for entry in HELP_ENTRIES {
+        if entry.pattern.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("  {}", entry.description));
+        } else {
+            lines.push(format!("  {:<74}{}", entry.pattern, entry.description));
+        }
+    }
+    lines.push(String::new());
+    lines.push("  Press Esc to dismiss.".to_string());
+    lines.join("\n")
+}
+
 const ALL_COMMANDS: &[&str] = &[
     "/quit", "/q", "/destroy", "/help", "/clearhistory", "/close", "/copy",
     "/add", "/focus", "/kill", "/reconnect", "/env",
     "/zoom", "/branches",
     "/gitsync", "/gitsync on", "/gitsync off", "/gitsync now",
-    "/open", "/edit",
+    "/open",
     "/sandboxes",
     "/theme", "/theme nanosandbox", "/theme nanosandbox-light",
     "/theme dracula", "/theme catppuccin", "/theme tokyo-night", "/theme nord",
     "/mcp", "/mcp list",
     "/skills", "/skills list", "/skills show",
     "/agent list", "/agent show",
-    "/upload", "/paste-image",
+    "/projects", "/projects forget",
+    "/diff", "/diff --stat", "/status", "/sync", "/sync --dry-run", "/discard",
+    "/mounts", "/exec", "/logs", "/stop", "/disk", "/gc", "/gc --dry-run",
+    "/apply", "/apply --force", "/project",
 ];
 
 /// Parse a line of input into a Command, or None if it's a regular message.
@@ -227,20 +417,35 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/copy" => ParseResult::Ok(Command::Copy),
         "/zoom" => ParseResult::Ok(Command::Zoom),
         "/branches" => ParseResult::Ok(Command::Branches),
-        "/gitsync" => parse_gitsync(&parts),
+        "/gitsync" | "/sync" => parse_sync(&parts),
+        "/diff" => parse_diff(&parts),
+        "/status" => parse_no_arg("/status", &parts),
+        "/discard" => parse_no_arg("/discard", &parts),
+        "/mounts" => parse_no_arg("/mounts", &parts),
+        "/exec" => parse_exec(&parts),
+        "/logs" => parse_logs(&parts),
+        "/stop" => parse_stop(&parts),
         "/open" => {
             let target = parts.get(1).map(|s| s.to_string());
             ParseResult::Ok(Command::Open { target })
         }
-        "/edit" => {
-            let tool = parts.get(1).map(|s| s.to_string());
-            ParseResult::Ok(Command::Edit { tool })
-        }
         "/theme" => parse_theme(&parts),
         "/skills" => parse_skills(&parts),
         "/agent" => parse_agent(&parts),
-        "/upload" => parse_upload(&parts),
-        "/paste-image" => ParseResult::Ok(Command::PasteImage),
+        "/projects" => parse_projects(&parts),
+        "/disk" => ParseResult::Ok(Command::Disk),
+        "/gc" => {
+            let dry_run = parts.iter().any(|p| *p == "--dry-run");
+            ParseResult::Ok(Command::Gc { dry_run })
+        }
+        "/apply" => {
+            let force = parts.iter().any(|p| *p == "--force");
+            ParseResult::Ok(Command::Apply { force })
+        }
+        "/project" => {
+            let target = parts.get(1).map(|s| s.to_string());
+            ParseResult::Ok(Command::Project { target })
+        }
 
         other => ParseResult::Err(format!(
             "Unknown command: {}\nType /help for available commands.",
@@ -254,7 +459,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         Some(a) => *a,
         None => {
             return ParseResult::Err(format!(
-                "Usage: /add <agent> [--tag <version>] [--model <model>] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...\n\
+                "Usage: /add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...\n\
                  Supported agents: {}\n\
                  Example: /add claude\n\
                  With tag: /add claude --tag rc11\n\
@@ -273,6 +478,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
     let mut branch = None;
     let mut name = None;
     let mut auto_mode = false;
+    let mut interactive = false;
     let mut prompt = None;
     let mut model = None;
     let mut use_env: Vec<String> = Vec::new();
@@ -397,6 +603,10 @@ fn parse_add(parts: &[&str]) -> ParseResult {
                 auto_mode = true;
                 i += 1;
             }
+            "--interactive" => {
+                interactive = true;
+                i += 1;
+            }
             "--run-as-root" => {
                 run_as_root = true;
                 i += 1;
@@ -420,7 +630,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
             other => {
                 return ParseResult::Err(format!(
                     "Unknown option: {}\n\
-                     Usage: /add <agent> [--tag <version>] [--model <model>] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
+                     Usage: /add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
                     other,
                 ));
             }
@@ -432,6 +642,14 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         return ParseResult::Err(
             "--prompt is required with --auto-mode\n\
              Usage: /add <agent> --auto-mode -p \"your task\"".to_string(),
+        );
+    }
+
+    // Validate: interactive and auto-mode are mutually exclusive.
+    if interactive && auto_mode {
+        return ParseResult::Err(
+            "--interactive and --auto-mode are mutually exclusive\n\
+             Interactive runs the agent TUI; auto-mode is headless.".to_string(),
         );
     }
 
@@ -454,6 +672,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         branch,
         name,
         auto_mode,
+        interactive,
         prompt,
         model,
         use_env,
@@ -488,7 +707,7 @@ fn parse_mcp(parts: &[&str]) -> ParseResult {
         Some(sub) => ParseResult::Err(format!(
             "Unknown MCP subcommand: '{}'\n\
              Available: /mcp list\n\
-             Note: MCP hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
+             Config is declarative — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
@@ -530,26 +749,90 @@ fn parse_kill(parts: &[&str]) -> ParseResult {
     }
 }
 
-fn parse_gitsync(parts: &[&str]) -> ParseResult {
-    match parts.get(1).copied() {
-        None => ParseResult::Ok(Command::GitSync { action: None }),
-        Some("on") | Some("off") | Some("now") => {
-            ParseResult::Ok(Command::GitSync {
-                action: Some(parts[1].to_string()),
-            })
-        }
-        Some(other) => ParseResult::Err(format!(
-            "Unknown gitsync action: '{}'\n\
-             Usage: /gitsync [on|off|now]\n\
-             - /gitsync     Show current sync status\n\
-             - /gitsync on  Auto-sync sandbox commits to your local repo branches\n\
-             - /gitsync off Stop syncing (changes stay in sandbox clone only)\n\
-             - /gitsync now Sync sandbox commits to local repo once",
-            other,
-        )),
+fn parse_no_arg(cmd: &str, parts: &[&str]) -> ParseResult {
+    if parts.len() > 1 {
+        return ParseResult::Err(format!(
+            "{} does not take arguments.
+Usage: {}",
+            cmd, cmd,
+        ));
+    }
+    match cmd {
+        "/status" => ParseResult::Ok(Command::Status),
+        "/discard" => ParseResult::Ok(Command::Discard),
+        "/mounts" => ParseResult::Ok(Command::Mounts),
+        _ => unreachable!(),
     }
 }
 
+fn parse_sync(parts: &[&str]) -> ParseResult {
+    let mut dry_run = false;
+    let mut action = None;
+
+    let mut i = 1;
+    while i < parts.len() {
+        match parts[i] {
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            "on" | "off" | "now" => {
+                action = Some(parts[i].to_string());
+                i += 1;
+            }
+            other => {
+                return ParseResult::Err(format!(
+                    "Unknown sync action: '{}'\n                     Usage: /sync [--dry-run] [on|off|now]\n                     - /sync         Show current sync status\n                     - /sync on      Auto-sync sandbox commits to your local repo branches\n                     - /sync off     Stop syncing (changes stay in sandbox clone only)\n                     - /sync now     Sync sandbox commits to local repo once\n                     - /sync --dry-run  Show what would be synced without syncing",
+                    other,
+                ));
+            }
+        }
+    }
+
+    ParseResult::Ok(Command::Sync { dry_run, action })
+}
+
+fn parse_diff(parts: &[&str]) -> ParseResult {
+    let stat = parts.get(1).copied() == Some("--stat");
+    if parts.len() > 1 && !stat {
+        return ParseResult::Err(format!(
+            "Unknown diff option: '{}'\n             Usage: /diff [--stat]\n             - /diff       Show full diff of sandbox changes\n             - /diff --stat  Show summary stat only",
+            parts[1],
+        ));
+    }
+    ParseResult::Ok(Command::Diff { stat })
+}
+
+fn parse_exec(parts: &[&str]) -> ParseResult {
+    if parts.len() < 2 {
+        return ParseResult::Err(
+            "Usage: /exec <command> [args...]\n             Example: /exec ls -la /workspace\n             Example: /exec git log --oneline -5"
+                .to_string(),
+        );
+    }
+    let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+    ParseResult::Ok(Command::Exec { args })
+}
+
+fn parse_logs(parts: &[&str]) -> ParseResult {
+    match parts.get(1).copied() {
+        None => ParseResult::Ok(Command::Logs { count: None }),
+        Some(n) => match n.parse::<usize>() {
+            Ok(count) => ParseResult::Ok(Command::Logs {
+                count: Some(count),
+            }),
+            Err(_) => ParseResult::Err(format!(
+                "'{}' is not a valid log line count.\n                 Usage: /logs [<n>]\n                 - /logs     Show all logs\n                 - /logs 50  Show last 50 lines",
+                n,
+            )),
+        },
+    }
+}
+
+fn parse_stop(parts: &[&str]) -> ParseResult {
+    let target = parts.get(1).map(|s| s.to_string());
+    ParseResult::Ok(Command::Stop { target })
+}
 fn parse_theme(parts: &[&str]) -> ParseResult {
     match parts.get(1) {
         None => ParseResult::Ok(Command::Theme { name: None }),
@@ -568,26 +851,6 @@ fn parse_theme(parts: &[&str]) -> ParseResult {
 fn parse_skills(parts: &[&str]) -> ParseResult {
     match parts.get(1).copied() {
         None | Some("list") => ParseResult::Ok(Command::SkillsList),
-        Some("add") => match parts.get(2) {
-            Some(name) => ParseResult::Ok(Command::SkillsAdd {
-                name: name.to_string(),
-            }),
-            None => ParseResult::Err(
-                "Usage: /skills add <name>\n\
-                 Note: Skill hot-reload was removed — add skills to sandbox.yml and redeploy (nanosb apply)."
-                    .to_string(),
-            ),
-        },
-        Some("remove") => match parts.get(2) {
-            Some(name) => ParseResult::Ok(Command::SkillsRemove {
-                name: name.to_string(),
-            }),
-            None => ParseResult::Err(
-                "Usage: /skills remove <name>\n\
-                 Note: Skill hot-reload was removed — remove skills from sandbox.yml and redeploy (nanosb apply)."
-                    .to_string(),
-            ),
-        },
         Some("show") => match parts.get(2) {
             Some(name) => ParseResult::Ok(Command::SkillsShow {
                 name: name.to_string(),
@@ -601,7 +864,7 @@ fn parse_skills(parts: &[&str]) -> ParseResult {
         Some(sub) => ParseResult::Err(format!(
             "Unknown skills subcommand: '{}'\n\
              Available: /skills [list], /skills show\n\
-             Note: Skill hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
+             Config is declarative — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
@@ -624,25 +887,33 @@ fn parse_agent(parts: &[&str]) -> ParseResult {
         Some(sub) => ParseResult::Err(format!(
             "Unknown agent subcommand: '{}'\n\
              Available: /agent, /agent list, /agent show\n\
-             Note: Agent hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).",
+             Config is declarative — edit sandbox.yml and redeploy (nanosb apply).",
             sub,
         )),
     }
 }
 
-fn parse_upload(parts: &[&str]) -> ParseResult {
-    match parts.get(1) {
-        Some(_) => {
-            // Rejoin in case the path was split by whitespace (unlikely for absolute paths).
-            let path = parts[1..].join(" ");
-            ParseResult::Ok(Command::Upload { path })
+fn parse_projects(parts: &[&str]) -> ParseResult {
+    match parts.get(1).copied() {
+        None => ParseResult::Ok(Command::Projects { forget: None }),
+        Some("forget") => {
+            let path = parts.get(2).map(|s| s.to_string());
+            match path {
+                Some(p) => ParseResult::Ok(Command::Projects {
+                    forget: Some(p),
+                }),
+                None => ParseResult::Err(
+                    "Usage: /projects forget <path>\n\
+                     Example: /projects forget /Users/me/my-project"
+                        .to_string(),
+                ),
+            }
         }
-        None => ParseResult::Err(
-            "Usage: /upload <host-path>\n\
-             Uploads a file from the host into the sandbox at /workspace/.uploads/\n\
-             Example: /upload /Users/me/screenshot.png"
-                .to_string(),
-        ),
+        Some(other) => ParseResult::Err(format!(
+            "Unknown projects subcommand: '{}'\n\
+             Available: /projects, /projects forget <path>",
+            other,
+        )),
     }
 }
 
@@ -681,6 +952,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -702,6 +974,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -723,6 +996,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -743,26 +1017,21 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_mcp_add() {
-        let result = parse_command_verbose("/mcp add github npx @github/mcp-server");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
+    fn test_removed_mcp_subcommands_are_not_commands() {
+        for sub in ["add", "remove", "enable", "disable"] {
+            let input = format!("/mcp {} github", sub);
+            let result = parse_command_verbose(&input);
+            match result {
+                ParseResult::Err(msg) => {
+                    assert!(
+                        msg.contains("Unknown MCP subcommand"),
+                        "{} should be rejected as an unknown subcommand, got: {}",
+                        sub,
+                        msg
+                    );
+                }
+                other => panic!("expected Err for {}, got {:?}", sub, other),
             }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_mcp_remove() {
-        let result = parse_command_verbose("/mcp remove github");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
-            }
-            other => panic!("expected Err, got {:?}", other),
         }
     }
 
@@ -824,6 +1093,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -858,66 +1128,6 @@ mod tests {
             ParseResult::Err(msg) => {
                 assert!(msg.contains("abc"));
                 assert!(msg.contains("not a valid panel number"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_add_missing_args_shows_help() {
-        let result = parse_command_verbose("/mcp add");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("Available: /mcp list"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_add_missing_command_shows_help() {
-        let result = parse_command_verbose("/mcp add github");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("add"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_remove_missing_name_shows_help() {
-        let result = parse_command_verbose("/mcp remove");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_enable_missing_name_shows_help() {
-        let result = parse_command_verbose("/mcp enable");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
-            }
-            other => panic!("expected Err, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mcp_disable_missing_name_shows_help() {
-        let result = parse_command_verbose("/mcp disable");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown MCP subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
             }
             other => panic!("expected Err, got {:?}", other),
         }
@@ -1024,6 +1234,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -1045,6 +1256,7 @@ mod tests {
                 branch: Some("feat/auth".to_string()),
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -1085,6 +1297,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: true,
+                interactive: false,
                 prompt: Some("list files".to_string()),
                 model: None,
                 use_env: vec![],
@@ -1107,6 +1320,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: true,
+                interactive: false,
                 prompt: Some("analyse project".to_string()),
                 model: None,
                 use_env: vec![],
@@ -1139,6 +1353,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec!["OPENAI_API_KEY".to_string(), "GITHUB_TOKEN".to_string()],
@@ -1166,6 +1381,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: None,
                 use_env: vec![],
@@ -1193,6 +1409,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: true,
+                interactive: false,
                 prompt: Some("fix the bug".to_string()),
                 model: None,
                 use_env: vec![],
@@ -1209,14 +1426,17 @@ mod tests {
 
     #[test]
     fn test_parse_gitsync_status() {
-        assert_eq!(parse_command("/gitsync"), Some(Command::GitSync { action: None }));
+        assert_eq!(
+            parse_command("/gitsync"),
+            Some(Command::Sync { dry_run: false, action: None })
+        );
     }
 
     #[test]
     fn test_parse_gitsync_on() {
         assert_eq!(
             parse_command_verbose("/gitsync on"),
-            ParseResult::Ok(Command::GitSync { action: Some("on".to_string()) })
+            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("on".to_string()) })
         );
     }
 
@@ -1224,7 +1444,7 @@ mod tests {
     fn test_parse_gitsync_off() {
         assert_eq!(
             parse_command_verbose("/gitsync off"),
-            ParseResult::Ok(Command::GitSync { action: Some("off".to_string()) })
+            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("off".to_string()) })
         );
     }
 
@@ -1232,7 +1452,7 @@ mod tests {
     fn test_parse_gitsync_now() {
         assert_eq!(
             parse_command_verbose("/gitsync now"),
-            ParseResult::Ok(Command::GitSync { action: Some("now".to_string()) })
+            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("now".to_string()) })
         );
     }
 
@@ -1242,6 +1462,182 @@ mod tests {
         assert!(matches!(result, ParseResult::Err(_)));
     }
 
+    #[test]
+    fn test_parse_sync_alias() {
+        assert_eq!(
+            parse_command_verbose("/sync"),
+            ParseResult::Ok(Command::Sync { dry_run: false, action: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_dry_run() {
+        assert_eq!(
+            parse_command_verbose("/sync --dry-run"),
+            ParseResult::Ok(Command::Sync { dry_run: true, action: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_dry_run_with_action() {
+        assert_eq!(
+            parse_command_verbose("/sync --dry-run now"),
+            ParseResult::Ok(Command::Sync { dry_run: true, action: Some("now".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_dry_run_after_action() {
+        assert_eq!(
+            parse_command_verbose("/sync on --dry-run"),
+            ParseResult::Ok(Command::Sync { dry_run: true, action: Some("on".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_invalid_action() {
+        let result = parse_command_verbose("/sync foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Diff command tests =====
+
+    #[test]
+    fn test_parse_diff() {
+        assert_eq!(
+            parse_command("/diff"),
+            Some(Command::Diff { stat: false })
+        );
+    }
+
+    #[test]
+    fn test_parse_diff_stat() {
+        assert_eq!(
+            parse_command("/diff --stat"),
+            Some(Command::Diff { stat: true })
+        );
+    }
+
+    #[test]
+    fn test_parse_diff_unknown_option() {
+        let result = parse_command_verbose("/diff --foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Status command tests =====
+
+    #[test]
+    fn test_parse_status() {
+        assert_eq!(parse_command("/status"), Some(Command::Status));
+    }
+
+    #[test]
+    fn test_parse_status_with_args_is_unknown() {
+        let result = parse_command_verbose("/status foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Discard command tests =====
+
+    #[test]
+    fn test_parse_discard() {
+        assert_eq!(parse_command("/discard"), Some(Command::Discard));
+    }
+
+    #[test]
+    fn test_parse_discard_with_args_is_unknown() {
+        let result = parse_command_verbose("/discard foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Mounts command tests =====
+
+    #[test]
+    fn test_parse_mounts() {
+        assert_eq!(parse_command("/mounts"), Some(Command::Mounts));
+    }
+
+    #[test]
+    fn test_parse_mounts_with_args_is_unknown() {
+        let result = parse_command_verbose("/mounts foo");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Exec command tests =====
+
+    #[test]
+    fn test_parse_exec_single_arg() {
+        assert_eq!(
+            parse_command("/exec ls"),
+            Some(Command::Exec { args: vec!["ls".to_string()] })
+        );
+    }
+
+    #[test]
+    fn test_parse_exec_multiple_args() {
+        assert_eq!(
+            parse_command("/exec ls -la /workspace"),
+            Some(Command::Exec {
+                args: vec!["ls".to_string(), "-la".to_string(), "/workspace".to_string()]
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_exec_no_args_fails() {
+        let result = parse_command_verbose("/exec");
+        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("Usage:")));
+    }
+
+    // ===== Logs command tests =====
+
+    #[test]
+    fn test_parse_logs_no_count() {
+        assert_eq!(
+            parse_command("/logs"),
+            Some(Command::Logs { count: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_logs_with_count() {
+        assert_eq!(
+            parse_command("/logs 50"),
+            Some(Command::Logs { count: Some(50) })
+        );
+    }
+
+    #[test]
+    fn test_parse_logs_invalid_count() {
+        let result = parse_command_verbose("/logs abc");
+        assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Stop command tests =====
+
+    #[test]
+    fn test_parse_stop_no_target() {
+        assert_eq!(
+            parse_command("/stop"),
+            Some(Command::Stop { target: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_stop_with_number() {
+        assert_eq!(
+            parse_command("/stop 2"),
+            Some(Command::Stop { target: Some("2".to_string()) })
+        );
+    }
+
+    #[test]
+    fn test_parse_stop_with_name() {
+        assert_eq!(
+            parse_command("/stop claude"),
+            Some(Command::Stop { target: Some("claude".to_string()) })
+        );
+    }
     #[test]
     fn test_parse_open_no_arg() {
         assert_eq!(parse_command("/open"), Some(Command::Open { target: None }));
@@ -1256,16 +1652,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_edit_default() {
-        assert_eq!(parse_command("/edit"), Some(Command::Edit { tool: None }));
-    }
-
-    #[test]
-    fn test_parse_edit_specific_tool() {
-        assert_eq!(
-            parse_command("/edit gitui"),
-            Some(Command::Edit { tool: Some("gitui".to_string()) })
-        );
+    fn test_parse_edit_removed() {
+        assert_eq!(parse_command("/edit"), None);
+        assert_eq!(parse_command("/edit gitui"), None);
     }
 
     #[test]
@@ -1293,31 +1682,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_skills_add() {
-        assert_eq!(
-            parse_command("/skills add tdd"),
-            Some(Command::SkillsAdd { name: "tdd".to_string() })
-        );
-    }
-
-    #[test]
-    fn test_parse_skills_add_missing_name() {
-        let result = parse_command_verbose("/skills add");
-        assert!(matches!(result, ParseResult::Err(_)));
-    }
-
-    #[test]
-    fn test_parse_skills_remove() {
-        assert_eq!(
-            parse_command("/skills remove tdd"),
-            Some(Command::SkillsRemove { name: "tdd".to_string() })
-        );
-    }
-
-    #[test]
-    fn test_parse_skills_remove_missing_name() {
-        let result = parse_command_verbose("/skills remove");
-        assert!(matches!(result, ParseResult::Err(_)));
+    fn test_removed_skills_subcommands_are_not_commands() {
+        for input in ["/skills add tdd", "/skills remove tdd"] {
+            let result = parse_command_verbose(input);
+            match result {
+                ParseResult::Err(msg) => assert!(
+                    msg.contains("Unknown skills subcommand"),
+                    "{} should be rejected as an unknown subcommand, got: {}",
+                    input,
+                    msg
+                ),
+                other => panic!("expected Err for {}, got {:?}", input, other),
+            }
+        }
     }
 
     #[test]
@@ -1354,21 +1731,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_agent_set() {
-        let result = parse_command_verbose("/agent set python-developer");
-        match result {
-            ParseResult::Err(msg) => {
-                assert!(msg.contains("Unknown agent subcommand"));
-                assert!(msg.contains("hot-reload was removed"));
+    fn test_removed_agent_set_is_not_a_command() {
+        for input in ["/agent set python-developer", "/agent set"] {
+            let result = parse_command_verbose(input);
+            match result {
+                ParseResult::Err(msg) => assert!(
+                    msg.contains("Unknown agent subcommand"),
+                    "{} should be rejected as an unknown subcommand, got: {}",
+                    input,
+                    msg
+                ),
+                other => panic!("expected Err for {}, got {:?}", input, other),
             }
-            other => panic!("expected Err, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_parse_agent_set_missing_name() {
-        let result = parse_command_verbose("/agent set");
-        assert!(matches!(result, ParseResult::Err(_)));
     }
 
     #[test]
@@ -1426,6 +1801,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
+                interactive: false,
                 prompt: None,
                 model: Some("claude-sonnet-4-5-20250929".to_string()),
                 use_env: vec![],
@@ -1458,6 +1834,7 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: true,
+                interactive: false,
                 prompt: Some("do stuff".to_string()),
                 model: Some("claude-opus-4-20250514".to_string()),
                 use_env: vec![],
@@ -1473,8 +1850,215 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_apply() {
+        assert_eq!(parse_command("/apply"), Some(Command::Apply { force: false }));
+        assert_eq!(
+            parse_command("/apply --force"),
+            Some(Command::Apply { force: true })
+        );
+    }
+
+    #[test]
+    fn test_parse_project() {
+        assert_eq!(parse_command("/project"), Some(Command::Project { target: None }));
+        assert_eq!(
+            parse_command("/project 2"),
+            Some(Command::Project { target: Some("2".to_string()) })
+        );
+    }
+
+    #[test]
     fn test_autocomplete_destroy() {
         let suggestions = autocomplete("/des");
         assert!(suggestions.iter().any(|s| s == "/destroy"));
+    }
+
+    #[test]
+    fn test_parse_add_interactive() {
+        assert_eq!(
+            parse_command_verbose("/add claude --interactive"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                tag: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: false,
+                interactive: true,
+                prompt: None,
+                model: None,
+                use_env: vec![],
+                env_file: None,
+                run_as_root: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_defaults_interactive_false() {
+        let parsed = parse_command_verbose("/add claude");
+        assert!(matches!(
+            parsed,
+            ParseResult::Ok(Command::AddAgent { interactive: false, .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_add_interactive_and_auto_mode_rejected() {
+        let result = parse_command_verbose("/add claude --interactive --auto-mode -p hi");
+        match result {
+            ParseResult::Err(msg) => assert!(msg.contains("mutually exclusive")),
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    // ===== Help/parser parity (Epic 2 AC1) =====
+
+    /// Materialize a help pattern into a concrete command string by replacing
+    /// each `<...>`/`[--flag ...]` placeholder with a plausible token, so the
+    /// parser is exercised at the SUBCOMMAND level (not just the base token).
+    fn concrete_command(pattern: &str) -> String {
+        let mut out = String::new();
+        for tok in pattern.split_whitespace() {
+            if out.is_empty() {
+                out.push_str(tok);
+            } else if tok.starts_with('<') {
+                out.push_str(" X");
+            } else if tok.starts_with('[') {
+                // Optional-arg groups: keep only the bare subcommand forms we
+                // can feed (e.g. "[on|off|now]" -> "on"); skip flag groups.
+                if tok.contains('|') && !tok.contains("--") {
+                    let first = tok
+                        .trim_matches(|c| c == '[' || c == ']')
+                        .split('|')
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    if !first.is_empty() {
+                        out.push(' ');
+                        out.push_str(first);
+                    }
+                }
+            } else if !tok.starts_with("--") {
+                out.push(' ');
+                out.push_str(tok);
+            }
+        }
+        out
+    }
+
+    /// True if `input` is recognized by the parser: an `Ok`, or an `Err` that is
+    /// NOT "Unknown command"/"Unknown <x> subcommand" (i.e. not a rejected verb).
+    fn command_is_recognized(input: &str) -> bool {
+        match parse_command_verbose(input) {
+            ParseResult::Ok(_) => true,
+            ParseResult::Err(msg) => {
+                !msg.contains("Unknown command") && !msg.contains("subcommand")
+            }
+            ParseResult::NotACommand => false,
+        }
+    }
+
+    #[test]
+    fn test_help_entries_are_all_recognized_commands() {
+        for entry in HELP_ENTRIES {
+            if !entry.pattern.starts_with('/') {
+                continue;
+            }
+            let concrete = concrete_command(entry.pattern);
+            assert!(
+                command_is_recognized(&concrete),
+                "help advertises '{}' (as '{}') but it is not a recognized command",
+                entry.pattern,
+                concrete
+            );
+        }
+    }
+
+    #[test]
+    fn test_help_subcommands_are_not_unknown() {
+        // A removed/never-implemented subcommand in the help table must fail
+        // this test (this is what the base-token check could not catch).
+        for entry in HELP_ENTRIES {
+            let concrete = concrete_command(entry.pattern);
+            let result = parse_command_verbose(&concrete);
+            if let ParseResult::Err(msg) = result {
+                assert!(
+                    !msg.contains("Unknown") || !msg.contains("subcommand"),
+                    "help advertises '{}' but the parser rejects it as unknown: {}",
+                    entry.pattern,
+                    msg
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_help_advertises_no_removed_subcommands() {
+        let help = format_help();
+        for removed in [
+            "/mcp add",
+            "/mcp remove",
+            "/mcp enable",
+            "/mcp disable",
+            "/skills add",
+            "/skills remove",
+            "/agent set",
+        ] {
+            assert!(
+                !help.contains(removed),
+                "help still advertises removed command '{}'",
+                removed
+            );
+        }
+    }
+
+    #[test]
+    fn test_help_mentions_declarative_config() {
+        assert!(format_help().contains("sandbox.yml"));
+    }
+
+    // ===== Projects command tests =====
+
+    #[test]
+    fn test_parse_projects_list() {
+        assert_eq!(
+            parse_command("/projects"),
+            Some(Command::Projects { forget: None })
+        );
+    }
+
+    #[test]
+    fn test_parse_projects_forget() {
+        assert_eq!(
+            parse_command("/projects forget /tmp"),
+            Some(Command::Projects {
+                forget: Some("/tmp".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_projects_forget_missing_path() {
+        let result = parse_command_verbose("/projects forget");
+        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("Usage:")));
+    }
+
+    #[test]
+    fn test_parse_projects_unknown_subcommand() {
+        let result = parse_command_verbose("/projects foo");
+        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("Unknown projects subcommand")));
+    }
+
+    #[test]
+    fn test_autocomplete_entries_are_all_recognized_commands() {
+        for cmd in ALL_COMMANDS {
+            assert!(
+                command_is_recognized(cmd),
+                "autocomplete advertises '{}' but it is not a recognized command",
+                cmd
+            );
+        }
     }
 }

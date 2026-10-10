@@ -286,6 +286,9 @@ mod cli {
             /// Project directory (defaults to current directory)
             #[arg(long)]
             project: Option<String>,
+            /// Show what would be cleaned without removing anything
+            #[arg(long, default_value_t = false)]
+            dry_run: bool,
         },
 
         /// List saved nanosb sessions for a project
@@ -300,8 +303,23 @@ mod cli {
             #[command(subcommand)]
             action: CacheAction,
         },
-    }
 
+        /// List registered projects
+        Projects,
+
+        /// Remove a project from the registry
+        ProjectsForget {
+            /// Path to the project to forget
+            path: String,
+        },
+
+        /// Reclaim disk: dead supervisor dirs, unreferenced clones, expired sessions
+        Gc {
+            /// Show what would be removed without deleting anything
+            #[arg(long, default_value_t = false)]
+            dry_run: bool,
+        },
+    }
     #[derive(Subcommand)]
     pub enum CacheAction {
         /// Remove unused cache data to reclaim disk space
@@ -694,13 +712,20 @@ mod cli {
             Some(Commands::Stop { sandbox }) => cmd_stop(&sandbox, cli.verbose).await,
             Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
             Some(Commands::Doctor) => cmd_doctor(cli.format).await,
-            Some(Commands::Cleanup { project }) => cmd_cleanup(project.as_deref()).await,
+            Some(Commands::Cleanup { project, dry_run }) => {
+                cmd_cleanup(project.as_deref(), dry_run).await
+            }
             Some(Commands::Sessions { project }) => {
                 cmd_sessions(project.as_deref(), cli.format).await
             }
             Some(Commands::Cache { action }) => match action {
                 CacheAction::Prune { all } => cmd_cache_prune(all, cli.format).await,
             },
+            Some(Commands::Projects) => cmd_projects(cli.format).await,
+            Some(Commands::ProjectsForget { path }) => {
+                cmd_projects_forget(&path, cli.format).await
+            }
+            Some(Commands::Gc { dry_run }) => cmd_gc(dry_run).await,
         }
     }
 
@@ -731,7 +756,7 @@ mod cli {
             (false, None) => client.read_log_file(),
         }
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-        print!("{}", initial);
+        print!("{}", crate::strip_terminal_escapes(&initial));
         std::io::stdout().flush().ok();
 
         if !follow {
@@ -758,7 +783,7 @@ mod cli {
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf)?;
                 offset = len;
-                print!("{}", String::from_utf8_lossy(&buf));
+                print!("{}", crate::strip_terminal_escapes(&String::from_utf8_lossy(&buf)));
                 std::io::stdout().flush().ok();
             }
         }
@@ -902,6 +927,24 @@ mod cli {
 
         // Parse --env-file(s) first (later files override earlier ones)
         for path in env_files {
+            // Reject symlinks / non-regular / oversized files before reading.
+            const MAX_ENV_FILE: u64 = 1 << 20;
+            match std::fs::symlink_metadata(path) {
+                Ok(m) if m.file_type().is_symlink() => anyhow::bail!(
+                    "env file '{}' is a symlink; refusing",
+                    path
+                ),
+                Ok(m) if !m.is_file() => {
+                    anyhow::bail!("env file '{}' is not a regular file", path)
+                }
+                Ok(m) if m.len() > MAX_ENV_FILE => anyhow::bail!(
+                    "env file '{}' is too large ({} bytes)",
+                    path,
+                    m.len()
+                ),
+                Ok(_) => {}
+                Err(e) => anyhow::bail!("failed to access env file '{}': {}", path, e),
+            }
             let content = std::fs::read_to_string(path).map_err(|e| {
                 error!("Failed to read env file '{}': {}", path, e);
                 anyhow::anyhow!("Failed to read env file '{}': {}", path, e)
@@ -2240,7 +2283,7 @@ mod cli {
     }
 
     /// Clean up stale project clones and list project branches.
-    async fn cmd_cleanup(project: Option<&str>) -> anyhow::Result<()> {
+    async fn cmd_cleanup(project: Option<&str>, dry_run: bool) -> anyhow::Result<()> {
         let project_path = match project {
             Some(p) => std::path::PathBuf::from(p),
             None => std::env::current_dir()?,
@@ -2255,20 +2298,49 @@ mod cli {
             return Ok(());
         }
 
+        // Reference-aware: never remove a clone that a saved session still points
+        // at (that would break resume). Collect the clone paths sessions reference.
+        let referenced: std::collections::HashSet<std::path::PathBuf> =
+            sandbox::session::Session::list(&canonical_path)
+                .iter()
+                .flat_map(|entry| entry.session.panels.iter())
+                .filter_map(|p| p.clone_path.clone())
+                .collect();
+
         let mut cleaned = 0;
         if let Ok(entries) = std::fs::read_dir(&clones) {
             for entry in entries {
                 let entry = entry?;
                 if entry.path().is_dir() {
+                    let clone_path = entry.path();
+                    if referenced.contains(&clone_path) {
+                        println!(
+                            "Skipping clone referenced by a session: {}",
+                            entry.file_name().to_string_lossy()
+                        );
+                        continue;
+                    }
+                    if dry_run {
+                        println!(
+                            "Would clean clone: {}",
+                            entry.file_name().to_string_lossy()
+                        );
+                        continue;
+                    }
+                    if !nanosb_cli::tui::gitcmd::has_real_git_dir(&clone_path) {
+                        println!(
+                            "Skipping clone with non-real .git (symlink/corrupt): {}",
+                            entry.file_name().to_string_lossy()
+                        );
+                        continue;
+                    }
                     println!(
                         "Cleaning up stale clone: {}",
                         entry.file_name().to_string_lossy()
                     );
 
-                    let clone_path = entry.path();
-
                     // Detect the branch name from the clone
-                    let branch_output = std::process::Command::new("git")
+                    let branch_output = nanosb_cli::tui::gitcmd::host_git()
                         .args(["rev-parse", "--abbrev-ref", "HEAD"])
                         .current_dir(&clone_path)
                         .output();
@@ -2278,7 +2350,7 @@ mod cli {
                         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
                     // Auto-commit any uncommitted changes
-                    let status_output = std::process::Command::new("git")
+                    let status_output = nanosb_cli::tui::gitcmd::host_git()
                         .args(["status", "--porcelain"])
                         .current_dir(&clone_path)
                         .output();
@@ -2286,11 +2358,11 @@ mod cli {
                         let status_text = String::from_utf8_lossy(&status_out.stdout);
                         if !status_text.trim().is_empty() {
                             println!("  Auto-committing uncommitted changes...");
-                            let _ = std::process::Command::new("git")
+                            let _ = nanosb_cli::tui::gitcmd::host_git()
                                 .args(["add", "-A"])
                                 .current_dir(&clone_path)
                                 .output();
-                            let _ = std::process::Command::new("git")
+                            let _ = nanosb_cli::tui::gitcmd::host_git()
                                 .args(["commit", "-m", "nanosb: auto-save on cleanup"])
                                 .current_dir(&clone_path)
                                 .env("GIT_AUTHOR_NAME", "nanosandbox")
@@ -2301,11 +2373,16 @@ mod cli {
                         }
                     }
 
-                    // Fetch the branch back to source repo
+                    // Fetch the clone branch back to the source under a namespaced
+                    // ref (never refs/heads/*, so user branches are not clobbered).
                     if let Some(ref branch) = branch_name {
-                        let refspec = format!("{}:{}", branch, branch);
-                        let _ = std::process::Command::new("git")
-                            .args(["fetch", &clone_path.to_string_lossy(), &refspec, "--force"])
+                        let short_id = branch
+                            .trim_start_matches("refs/heads/")
+                            .trim_start_matches("nanosb/");
+                        let nanosb_ref = format!("refs/nanosb/{}", short_id);
+                        let refspec = format!("+refs/heads/{}:{}", branch, nanosb_ref);
+                        let _ = nanosb_cli::tui::gitcmd::host_git()
+                            .args(["fetch", &clone_path.to_string_lossy(), &refspec])
                             .current_dir(&project_path)
                             .output();
                     }
@@ -2326,7 +2403,7 @@ mod cli {
         }
 
         // List nanosb branches
-        let output = std::process::Command::new("git")
+        let output = nanosb_cli::tui::gitcmd::host_git()
             .args(["branch", "--list", "nanosb/*"])
             .current_dir(&project_path)
             .output();
@@ -2343,6 +2420,107 @@ mod cli {
         }
 
         println!("\nCleaned up {} clone(s).", cleaned);
+        Ok(())
+    }
+
+    /// Reclaim disk: dead supervisor dirs, unreferenced clones, expired sessions.
+    async fn cmd_gc(dry_run: bool) -> anyhow::Result<()> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let root = std::path::PathBuf::from(&home).join(".nanosandbox");
+        let sandboxes = root.join("sandboxes");
+        let clones = root.join("clones");
+
+        // Collect all clone paths referenced by any saved session.
+        let mut referenced: std::collections::HashSet<std::path::PathBuf> =
+            std::collections::HashSet::new();
+        let sessions_dir = root.join("sessions");
+        if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+            for e in entries.flatten() {
+                let dir = e.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                if let Ok(files) = std::fs::read_dir(&dir) {
+                    for f in files.flatten() {
+                        if let Ok(text) = std::fs::read_to_string(f.path()) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if let Some(panels) = v.get("panels").and_then(|p| p.as_array()) {
+                                    for p in panels {
+                                        if let Some(cp) = p.get("clone_path").and_then(|c| c.as_str())
+                                        {
+                                            referenced.insert(std::path::PathBuf::from(cp));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. Dead supervisor dirs: no running control socket and no live PID.
+        let mut removed_dirs = 0usize;
+        if let Ok(entries) = std::fs::read_dir(&sandboxes) {
+            for e in entries.flatten() {
+                let dir = e.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                let name = dir.file_name().map(|n| n.to_string_lossy().to_string());
+                let Some(name) = name else { continue };
+                let running =
+                    crate::supervisor::client::SupervisorClient::new(&name).is_running();
+                if running {
+                    continue;
+                }
+                removed_dirs += 1;
+                if dry_run {
+                    println!("Would remove dead supervisor dir: {}", name);
+                } else {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    println!("Removed dead supervisor dir: {}", name);
+                }
+            }
+        }
+
+        // 2. Unreferenced clones.
+        // Conservative: if any supervised sandbox is currently running, skip clone
+        // GC entirely (a live sandbox's clone may not yet be in a saved session).
+        let any_running = supervisor_sandbox_dirs().iter().any(|d| {
+            d.file_name()
+                .map(|n| {
+                    crate::supervisor::client::SupervisorClient::new(&n.to_string_lossy())
+                        .is_running()
+                })
+                .unwrap_or(false)
+        });
+        let mut removed_clones = 0usize;
+        if any_running {
+            println!("Skipping clone GC: a supervised sandbox is running.");
+        } else if let Ok(entries) = std::fs::read_dir(&clones) {
+            for e in entries.flatten() {
+                let dir = e.path();
+                let referenced_any = referenced.iter().any(|r| r.starts_with(&dir));
+                if referenced_any {
+                    continue;
+                }
+                removed_clones += 1;
+                if dry_run {
+                    println!("Would remove unreferenced clone tree: {}", dir.display());
+                } else {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    println!("Removed unreferenced clone tree: {}", dir.display());
+                }
+            }
+        }
+
+        println!(
+            "\n{}: {} supervisor dir(s), {} clone tree(s).",
+            if dry_run { "GC dry-run" } else { "GC complete" },
+            removed_dirs,
+            removed_clones
+        );
         Ok(())
     }
 
@@ -2425,6 +2603,107 @@ mod cli {
         Ok(())
     }
 
+    async fn cmd_projects(format: OutputFormat) -> anyhow::Result<()> {
+        fn format_age_precise(dt: &chrono::DateTime<chrono::Utc>) -> String {
+            let now = chrono::Utc::now();
+            let duration = now.signed_duration_since(*dt);
+            let secs = duration.num_seconds();
+            if secs < 60 {
+                format!("{}s ago", secs.max(0))
+            } else if secs < 3600 {
+                format!("{}m ago", duration.num_minutes())
+            } else if secs < 86_400 {
+                format!("{}h ago", duration.num_hours())
+            } else {
+                format!("{}d ago", duration.num_days())
+            }
+        }
+
+        let registry = sandbox::ProjectRegistry::load();
+        let projects = registry.list();
+
+        match format {
+            OutputFormat::Text => {
+                if projects.is_empty() {
+                    println!("No projects registered. Launch nanosb with --project to register one.");
+                    return Ok(());
+                }
+
+                #[derive(tabled::Tabled)]
+                struct ProjectRow {
+                    #[tabled(rename = "PATH")]
+                    path: String,
+                    #[tabled(rename = "NAME")]
+                    name: String,
+                    #[tabled(rename = "LAST USED")]
+                    last_used: String,
+                    #[tabled(rename = "AGE")]
+                    age: String,
+                }
+
+                let rows: Vec<ProjectRow> = projects
+                    .iter()
+                    .map(|entry| ProjectRow {
+                        path: entry.path.clone(),
+                        name: entry.display_name.clone(),
+                        last_used: entry
+                            .last_used
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M:%S")
+                            .to_string(),
+                        age: format_age_precise(&entry.last_used),
+                    })
+                    .collect();
+
+                println!("{}", tabled::Table::new(rows));
+            }
+            OutputFormat::Json => {
+                let json_projects: Vec<_> = projects
+                    .iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "path": entry.path,
+                            "display_name": entry.display_name,
+                            "last_used": entry.last_used,
+                        })
+                    })
+                    .collect();
+                let out = serde_json::json!({ "projects": json_projects });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn cmd_projects_forget(path: &str, format: OutputFormat) -> anyhow::Result<()> {
+        let mut registry = sandbox::ProjectRegistry::load();
+        let path = std::path::Path::new(path);
+        let removed = registry.forget(path);
+
+        match format {
+            OutputFormat::Text => {
+                if removed {
+                    println!("Removed '{}' from project registry.", path.display());
+                } else {
+                    println!(
+                        "Project '{}' was not in the registry.",
+                        path.display()
+                    );
+                }
+            }
+            OutputFormat::Json => {
+                let out = serde_json::json!({
+                    "removed": removed,
+                    "path": path.to_string_lossy(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Run preflight validation, showing doctor output on failure.
     /// Returns the logs directory: `~/.nanosandbox/logs/` on all platforms.
     fn logs_dir() -> std::path::PathBuf {
@@ -2462,8 +2741,68 @@ mod cli {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    // Handle internal subprocess commands BEFORE starting the tokio runtime.
+/// Strip terminal escape strings a malicious guest could use to drive the host
+/// terminal: OSC (clipboard OSC 52, hyperlinks, window title) and DCS/APC/PM/SOS.
+/// Colour CSI is kept (it is the point of a console log).
+fn strip_terminal_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                Some(']') => {
+                    chars.next();
+                    while let Some(c2) = chars.next() {
+                        if c2 == '\u{7}' {
+                            break;
+                        }
+                        if c2 == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('P') | Some('X') | Some('^') | Some('_') => {
+                    chars.next();
+                    while let Some(c2) = chars.next() {
+                        if c2 == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::strip_terminal_escapes;
+
+    #[test]
+    fn strips_osc52_and_keeps_text() {
+        assert_eq!(
+            strip_terminal_escapes("hi\x1b]52;c;Zm9v\x07 there"),
+            "hi there"
+        );
+    }
+
+    #[test]
+    fn strips_dcs_and_keeps_csi_colour() {
+        assert_eq!(
+            strip_terminal_escapes("\x1b[31mred\x1b[0m\x1bPq#0\x1b\\x"),
+            "\x1b[31mred\x1b[0mx"
+        );
+    }
+}
+
+fn main() -> anyhow::Result<()> {    // Handle internal subprocess commands BEFORE starting the tokio runtime.
     //
     // This is critical on macOS: the TUI uses a multi-threaded tokio runtime,
     // and Hypervisor.framework's hv_vm_create() fails when called from a

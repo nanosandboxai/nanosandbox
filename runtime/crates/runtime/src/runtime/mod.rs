@@ -11,6 +11,7 @@
 //! orchestration logic belong in the sandbox layer.
 
 pub mod validation;
+pub mod sandbox;
 
 pub use validation::{
     validate_runtime_prerequisites, validate_runtime_prerequisites_detailed, ValidationResult,

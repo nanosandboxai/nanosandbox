@@ -21,6 +21,7 @@ pub mod error;
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod ffi;
 pub mod project;
+pub mod projects;
 pub mod sandbox;
 pub mod session;
 pub mod settings;
@@ -68,5 +69,6 @@ pub use config::file::{
     resolve_sandbox_configs, SandboxFile,
 };
 pub use error::{Error, Result};
+pub use projects::{ProjectEntry, ProjectRegistry};
 pub use session::Session;
 pub use settings::UserSettings;

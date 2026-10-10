@@ -21,6 +21,18 @@ pub enum RuntimeMode {
     Next,
 }
 
+/// How the host project directory is exposed to a sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceMode {
+    /// The agent works on a host-owned clone; the host reviews changes before
+    /// applying them, and never runs tools on the source repo (default).
+    #[default]
+    Isolated,
+    /// Mount the source project directory read-write directly (legacy opt-in).
+    Shared,
+}
+
 /// Console I/O specification for the "next" runtime mode.
 ///
 /// Describes how host-side file descriptors are wired to the VM's virtio-console.
@@ -152,6 +164,25 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub runtime_mode: RuntimeMode,
 
+    /// Host project sharing mode (default `isolated`).
+    #[serde(default)]
+    pub workspace_mode: WorkspaceMode,
+
+    /// Max inodes the guest may create (0 = unlimited). Opt-in.
+    #[serde(default)]
+    pub max_inodes: u64,
+    /// Max processes the guest may run (0 = unlimited). Opt-in.
+    #[serde(default)]
+    pub max_pids: u32,
+    /// Guest disk I/O limit in bytes/sec (0 = unlimited). Opt-in.
+    #[serde(default)]
+    pub io_bps: u64,
+
+    /// Give each boot a copy-on-write clone of the rootfs so guest writes never
+    /// dirty the pristine template (default false = the template is the boot root).
+    #[serde(default)]
+    pub fresh_rootfs: bool,
+
     /// Console I/O specification for next mode.
     /// Ignored in legacy mode.
     #[serde(default, skip_serializing)]
@@ -212,6 +243,11 @@ impl Default for SandboxConfig {
             command: None,
             command_args: Vec::new(),
             runtime_mode: RuntimeMode::default(),
+            workspace_mode: WorkspaceMode::default(),
+            max_inodes: 0,
+            max_pids: 0,
+            io_bps: 0,
+            fresh_rootfs: false,
             console: None,
             extra_mounts: Vec::new(),
             vsock_socket: None,
@@ -255,6 +291,12 @@ impl SandboxConfigBuilder {
     /// Set memory in MB
     pub fn memory_mb(mut self, memory_mb: u32) -> Self {
         self.config.memory_mb = memory_mb;
+        self
+    }
+
+    /// Set the host project sharing mode
+    pub fn workspace_mode(mut self, mode: WorkspaceMode) -> Self {
+        self.config.workspace_mode = mode;
         self
     }
 
@@ -796,6 +838,38 @@ mod tests {
         let json = r#"{"name": "test", "image": "alpine", "runtime_mode": "legacy"}"#;
         let config: SandboxConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.runtime_mode, RuntimeMode::Legacy);
+    }
+
+    #[test]
+    fn test_workspace_mode_default_is_isolated() {
+        let config = SandboxConfig::builder().name("t").image("alpine").build();
+        assert_eq!(config.workspace_mode, WorkspaceMode::Isolated);
+    }
+
+    #[test]
+    fn test_workspace_mode_serde_snake_case() {
+        let json = r#"{"name": "t", "image": "alpine", "workspace_mode": "shared"}"#;
+        let config: SandboxConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.workspace_mode, WorkspaceMode::Shared);
+
+        let json = r#"{"name": "t", "image": "alpine", "workspace_mode": "isolated"}"#;
+        let config: SandboxConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.workspace_mode, WorkspaceMode::Isolated);
+    }
+
+    #[test]
+    fn test_quota_defaults_are_unlimited() {
+        let config = SandboxConfig::builder().name("t").image("alpine").build();
+        assert_eq!(config.max_inodes, 0);
+        assert_eq!(config.max_pids, 0);
+        assert_eq!(config.io_bps, 0);
+    }
+
+    #[test]
+    fn test_quota_serde() {
+        let json = r#"{"name": "t", "image": "a", "max_inodes": 10000, "max_pids": 512, "io_bps": 1048576}"#;
+        let c: SandboxConfig = serde_json::from_str(json).unwrap();
+        assert_eq!((c.max_inodes, c.max_pids, c.io_bps), (10000, 512, 1048576));
     }
 
     // ── ConsoleSpec tests ───────────────────────────────────────────────

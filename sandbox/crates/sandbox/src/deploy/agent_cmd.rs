@@ -24,22 +24,34 @@ impl AgentCommandBuilder {
     /// * `agent_type` - The agent type.
     /// * `prompt` - The initial task prompt (for headless mode) or empty for interactive.
     /// * `auto_mode` - Whether to run in fully autonomous mode.
+    /// * `interactive` - Run the agent's interactive UI (omit headless flags).
     /// * `permissions` - The permission level.
     /// * `model` - Optional model override.
     pub fn build(
         agent_type: &AgentType,
         prompt: &str,
         auto_mode: bool,
+        interactive: bool,
         permissions: Permissions,
         model: Option<&str>,
     ) -> AgentCommand {
         let effective_permissions = permissions.effective(auto_mode);
 
+        let interactive = interactive && !auto_mode;
+
         match agent_type {
-            AgentType::Claude => Self::build_claude(prompt, auto_mode, effective_permissions, model),
-            AgentType::Codex => Self::build_codex(prompt, auto_mode, effective_permissions, model),
-            AgentType::Goose => Self::build_goose(prompt, auto_mode, effective_permissions, model),
-            AgentType::Cursor => Self::build_cursor(prompt, auto_mode, effective_permissions, model),
+            AgentType::Claude => {
+                Self::build_claude(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::Codex => {
+                Self::build_codex(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::Goose => {
+                Self::build_goose(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::Cursor => {
+                Self::build_cursor(prompt, auto_mode, interactive, effective_permissions, model)
+            }
         }
     }
 
@@ -84,21 +96,23 @@ impl AgentCommandBuilder {
 
     fn build_claude(
         prompt: &str,
-        _auto_mode: bool,
+        interactive: bool,
         permissions: Permissions,
         model: Option<&str>,
     ) -> AgentCommand {
         let mut args = Vec::new();
 
-        if !prompt.is_empty() {
-            args.push("--print".to_string());
-            args.push(prompt.to_string());
-        }
+        if !interactive {
+            if !prompt.is_empty() {
+                args.push("--print".to_string());
+                args.push(prompt.to_string());
+            }
 
-        args.push("--verbose".to_string());
-        args.push("--output-format".to_string());
-        args.push("stream-json".to_string());
-        args.push("--include-partial-messages".to_string());
+            args.push("--verbose".to_string());
+            args.push("--output-format".to_string());
+            args.push("stream-json".to_string());
+            args.push("--include-partial-messages".to_string());
+        }
 
         match permissions {
             Permissions::AllowAll => {
@@ -126,29 +140,30 @@ impl AgentCommandBuilder {
 
     fn build_codex(
         prompt: &str,
-        _auto_mode: bool,
+        interactive: bool,
         permissions: Permissions,
         model: Option<&str>,
     ) -> AgentCommand {
         let mut args = vec!["exec".to_string()];
 
-        // Non-interactive flags
-        args.push("--skip-git-repo-check".to_string());
-        match permissions {
-            Permissions::AllowAll | Permissions::AcceptEdits => {
-                args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+        if !interactive {
+            args.push("--skip-git-repo-check".to_string());
+            match permissions {
+                Permissions::AllowAll | Permissions::AcceptEdits => {
+                    args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+                }
+                Permissions::Default => {}
             }
-            Permissions::Default => {}
-        }
 
-        args.push("--json".to_string());
+            args.push("--json".to_string());
+        }
 
         if let Some(m) = model {
             args.push("--model".to_string());
             args.push(m.to_string());
         }
 
-        if !prompt.is_empty() {
+        if !interactive && !prompt.is_empty() {
             args.push(prompt.to_string());
         }
 
@@ -162,13 +177,13 @@ impl AgentCommandBuilder {
 
     fn build_goose(
         prompt: &str,
-        _auto_mode: bool,
+        interactive: bool,
         _permissions: Permissions,
         _model: Option<&str>,
     ) -> AgentCommand {
         let mut args = Vec::new();
 
-        if !prompt.is_empty() {
+        if !interactive && !prompt.is_empty() {
             args.push("run".to_string());
             args.push("--text".to_string());
             args.push(prompt.to_string());
@@ -188,12 +203,13 @@ impl AgentCommandBuilder {
     fn build_cursor(
         prompt: &str,
         auto_mode: bool,
+        interactive: bool,
         permissions: Permissions,
         model: Option<&str>,
     ) -> AgentCommand {
         let mut args = Vec::new();
 
-        if !prompt.is_empty() {
+        if !interactive && !prompt.is_empty() {
             args.push("--message".to_string());
             args.push(prompt.to_string());
         }
@@ -236,6 +252,7 @@ mod tests {
             &AgentType::Claude,
             "",
             false,
+            false,
             Permissions::Default,
             None,
         );
@@ -251,6 +268,7 @@ mod tests {
             &AgentType::Claude,
             "do something",
             false,
+            false,
             Permissions::AllowAll,
             None,
         );
@@ -265,6 +283,7 @@ mod tests {
             &AgentType::Claude,
             "",
             false,
+            false,
             Permissions::Default,
             Some("claude-sonnet-4-5-20250929"),
         );
@@ -277,6 +296,7 @@ mod tests {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Codex,
             "write tests",
+            false,
             false,
             Permissions::Default,
             None,
@@ -293,6 +313,7 @@ mod tests {
             &AgentType::Codex,
             "",
             false,
+            false,
             Permissions::AllowAll,
             None,
         );
@@ -304,6 +325,7 @@ mod tests {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Goose,
             "do it",
+            false,
             false,
             Permissions::Default,
             None,
@@ -320,6 +342,7 @@ mod tests {
             &AgentType::Goose,
             "",
             false,
+            false,
             Permissions::Default,
             None,
         );
@@ -332,6 +355,7 @@ mod tests {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Cursor,
             "refactor this",
+            false,
             false,
             Permissions::Default,
             None,
@@ -347,6 +371,7 @@ mod tests {
             &AgentType::Cursor,
             "",
             true,
+            false,
             Permissions::AllowAll,
             None,
         );
@@ -411,10 +436,100 @@ mod tests {
             &AgentType::Claude,
             "",
             true,
+            false,
             Permissions::Default,
             None,
         );
         // auto_mode with Default permissions → effective AllowAll
         assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn test_claude_interactive_omits_headless_flags() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Claude,
+            "ignored prompt",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "claude");
+        assert!(!cmd.args.contains(&"--print".to_string()));
+        assert!(!cmd.args.contains(&"--verbose".to_string()));
+        assert!(!cmd.args.contains(&"--output-format".to_string()));
+        assert!(!cmd.args.contains(&"ignored prompt".to_string()));
+    }
+
+    #[test]
+    fn test_claude_interactive_keeps_permission_and_model() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Claude,
+            "",
+            false,
+            true,
+            Permissions::AllowAll,
+            Some("claude-sonnet-4-5-20250929"),
+        );
+        assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(cmd.args.contains(&"--model".to_string()));
+        assert!(cmd.args.contains(&"claude-sonnet-4-5-20250929".to_string()));
+        assert!(!cmd.args.contains(&"--print".to_string()));
+    }
+
+    #[test]
+    fn test_codex_interactive_is_bare_exec() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Codex,
+            "ignored",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.args, vec!["exec".to_string()]);
+    }
+
+    #[test]
+    fn test_goose_interactive_uses_configure() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Goose,
+            "ignored",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert!(cmd.args.contains(&"configure".to_string()));
+        assert!(!cmd.args.contains(&"run".to_string()));
+    }
+
+    #[test]
+    fn test_cursor_interactive_omits_message() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Cursor,
+            "ignored",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert!(!cmd.args.contains(&"--message".to_string()));
+        assert!(!cmd.args.contains(&"ignored".to_string()));
+    }
+
+    #[test]
+    fn test_auto_mode_suppresses_interactive() {
+        // interactive is ignored when auto_mode is on (headless wins).
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Claude,
+            "task",
+            true,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert!(cmd.args.contains(&"--print".to_string()));
+        assert!(cmd.args.contains(&"--output-format".to_string()));
     }
 }

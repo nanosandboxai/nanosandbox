@@ -286,6 +286,9 @@ pub struct ResolvedAgentConfig {
     pub mcp_servers: HashMap<String, McpServerConfig>,
     #[serde(default)]
     pub auto_mode: bool,
+    /// Run the agent interactively on a TTY console (default false = headless).
+    #[serde(default)]
+    pub interactive: bool,
     #[serde(default)]
     pub permissions: Permissions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -313,6 +316,9 @@ pub struct AgentSandboxConfig {
     pub resolved_agent: Option<ResolvedAgentConfig>,
     /// Enable auto/headless mode.
     pub auto_mode: bool,
+    /// Run the agent interactively on a TTY console (default false = headless).
+    #[serde(default)]
+    pub interactive: bool,
     /// Agent permission level.
     pub permissions: Permissions,
     /// Task prompt for headless mode.
@@ -334,6 +340,7 @@ impl Default for AgentSandboxConfig {
             skills: Vec::new(),
             resolved_agent: None,
             auto_mode: false,
+            interactive: false,
             permissions: Permissions::Default,
             prompt: None,
             agent_type: None,
@@ -397,6 +404,10 @@ impl AgentSandboxConfigBuilder {
         self.config.agent_type = Some(at);
         self
     }
+    pub fn interactive(mut self, interactive: bool) -> Self {
+        self.config.interactive = interactive;
+        self
+    }
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.config.model = Some(model.into());
         self
@@ -439,5 +450,30 @@ pub fn normalize_image(image: &str) -> String {
         } else {
             format!("docker.io/library/{}:{}", name, tag)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_config_deserializes_without_interactive_field() {
+        // Sessions saved before the `interactive` field existed must still load.
+        let json = r#"{
+            "sandbox": {"name": "s", "image": "alpine"},
+            "mcp_servers": {},
+            "agent": null,
+            "skills": [],
+            "resolved_agent": null,
+            "auto_mode": false,
+            "permissions": "default",
+            "prompt": null,
+            "agent_type": null,
+            "model": null,
+            "claude_settings": null
+        }"#;
+        let cfg: AgentSandboxConfig = serde_json::from_str(json).expect("old session must load");
+        assert!(!cfg.interactive, "missing interactive must default to false");
     }
 }

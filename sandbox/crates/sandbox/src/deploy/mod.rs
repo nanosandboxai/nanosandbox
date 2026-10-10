@@ -99,6 +99,7 @@ impl DeployPlanner {
             &agent_type,
             &resolved.prompt,
             config.auto_mode,
+            config.interactive,
             config.permissions,
             config.model.as_deref(),
         );
@@ -147,6 +148,7 @@ mod tests {
             skills: vec!["tdd".to_string()],
             resolved_agent: None,
             auto_mode: false,
+            interactive: false,
             permissions: Permissions::Default,
             prompt: None,
             agent_type: Some(AgentType::Claude),
@@ -170,6 +172,7 @@ mod tests {
             }],
             mcp_servers: mcp,
             auto_mode: false,
+            interactive: false,
             permissions: Permissions::Default,
             agent_type: Some(AgentType::Claude),
             claude_settings: None,

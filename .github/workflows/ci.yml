@@ -45,6 +45,9 @@ jobs:
       - name: Check CLI + sandbox SDK + runtime
         run: cargo check -p nanosb-cli -p sandbox -p gateway -p runtime
 
+      - name: Unit tests (CLI/TUI)
+        run: cargo test -p nanosb-cli
+
       - name: Unit tests (sandbox SDK + gateway)
         run: cargo test -p sandbox -p gateway
 

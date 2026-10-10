@@ -53,7 +53,7 @@ pub mod sandbox;
 pub use auth::CredentialStore;
 pub use config::{
     ConsoleSpec, ExtraMount, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope,
-    PortMapping, ProjectConfig, RegistryConfig, RuntimeMode, SandboxConfig,
+    PortMapping, ProjectConfig, RegistryConfig, RuntimeMode, SandboxConfig, WorkspaceMode,
 };
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PruneResult, PulledImage};

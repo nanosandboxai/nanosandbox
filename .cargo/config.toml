@@ -6,3 +6,10 @@ runner = "runtime/scripts/codesign-and-run.sh"
 
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
+
+[target.'cfg(target_os = "linux")']
+# libkrun.a is a Rust `staticlib` that carries its own copy of std (notably
+# `rust_eh_personality`). Linking it into a Rust artifact (e.g. the sandbox
+# cdylib) on Linux with rust-lld fails with "duplicate symbol:
+# rust_eh_personality"; allow the overlap like macOS's default ld does.
+rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]

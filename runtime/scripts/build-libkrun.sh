@@ -25,12 +25,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-# Pinned upstream version
-LIBKRUN_TAG="v1.19.5"
-LIBKRUN_SHA="fb988873026120e0e81b31295aaa4a05d27921f2"  # v1.19.5
+# Pinned nanosandbox libkrun revision (fork = source of truth).
+# The fork's `nanosandbox` branch carries the customizations as commits:
+#   - next-mode init (extra virtiofs mounts + static network)
+#   - macOS virtiofs raw-FUSE traversal hardening
+# Base upstream tag: v1.19.5.
+LIBKRUN_TAG="nanosandbox"
+LIBKRUN_SHA="a148cff426923e5a646392a00b2163d80560c964"
 
-# Upstream repo URL
-LIBKRUN_REPO="https://github.com/containers/libkrun.git"
+# Nanosandbox libkrun fork (source of truth)
+LIBKRUN_REPO="https://github.com/nanosandboxai/libkrun.git"
 
 # Build features (net + blk are the ones nanosandbox uses)
 LIBKRUN_FEATURES="net,blk"
@@ -54,11 +58,11 @@ err()   { printf "\033[1;31mERROR\033[0m %s\n" "$*" >&2; }
 
 info "Building upstream libkrun ${LIBKRUN_TAG}..."
 
-# 1. Clone or update the upstream checkout
+# 1. Clone or update the nanosandbox libkrun fork
 if [ -d "$LIBKRUN_CACHE_DIR" ]; then
     info "Updating existing checkout in ${LIBKRUN_CACHE_DIR}..."
     cd "$LIBKRUN_CACHE_DIR"
-    git fetch --depth=1 origin tag "$LIBKRUN_TAG" 2>/dev/null || true
+    git fetch origin "$LIBKRUN_TAG" 2>/dev/null || true
     git checkout "$LIBKRUN_TAG" 2>/dev/null || {
         err "Failed to checkout ${LIBKRUN_TAG} in existing cache. Removing and re-cloning."
         rm -rf "$LIBKRUN_CACHE_DIR"
@@ -66,7 +70,7 @@ if [ -d "$LIBKRUN_CACHE_DIR" ]; then
 fi
 
 if [ ! -d "$LIBKRUN_CACHE_DIR" ]; then
-    info "Cloning upstream libkrun ${LIBKRUN_TAG}..."
+    info "Cloning nanosandbox libkrun (${LIBKRUN_TAG})..."
     git clone --depth=1 --branch "$LIBKRUN_TAG" "$LIBKRUN_REPO" "$LIBKRUN_CACHE_DIR"
 fi
 
@@ -81,28 +85,9 @@ if [ "$ACTUAL_SHA" != "$LIBKRUN_SHA" ]; then
 fi
 ok "SHA verified: ${ACTUAL_SHA}"
 
-# 2a. Apply next-mode init patches (extra virtiofs mounts + static network)
-#     Uses the combined patch (0003) which includes both features.
-#     Idempotent: if already applied, git apply --reverse --check succeeds and we skip.
-PATCHES_DIR="$REPO_ROOT/scripts/patches"
-PATCH_FILE="$PATCHES_DIR/0003-combined-next-mode-init-changes.patch"
-if [ -f "$PATCH_FILE" ]; then
-    # Check if already applied (reverse apply check)
-    if git apply --reverse --check "$PATCH_FILE" 2>/dev/null; then
-        ok "Next-mode patches already applied, skipping"
-    else
-        info "Applying next-mode patches from $(basename $PATCH_FILE)..."
-        git apply "$PATCH_FILE" || {
-            err "FAILED: patch application failed — checkout may have drifted from v1.19.5"
-            err "Check git status and re-verify SHA: ${LIBKRUN_SHA}"
-            exit 1
-        }
-        ok "Next-mode patches applied"
-    fi
-else
-    err "Patch file not found: $PATCH_FILE"
-    exit 1
-fi
+# 2a. The next-mode init changes (extra virtiofs mounts + static network) are
+#     committed on the fork's `nanosandbox` branch — no build-time patching.
+ok "Customizations are committed in the fork (${LIBKRUN_TAG}@${LIBKRUN_SHA:0:8})"
 
 # 2b. Apply musl statx patch only for musl targets
 if [ -n "${MUSL_TARGET:-}" ] || (command -v apk >/dev/null 2>&1); then
@@ -124,8 +109,21 @@ info "Building libkrun (staticlib) with features: ${LIBKRUN_FEATURES}..."
 CARGO_TOML="$LIBKRUN_CACHE_DIR/src/libkrun/Cargo.toml"
 sed -i.bak 's/crate-type = \["cdylib", "lib"\]/crate-type = ["staticlib"]/' "$CARGO_TOML"
 
-# Set up environment for cross-compilation
-export LIBCLANG_PATH="${LIBCLANG_PATH:-$(brew --prefix llvm 2>/dev/null || echo "")/lib}"
+# Set up environment for cross-compilation.
+# clang-sys (used by bindgen for the KVM bindings) needs LIBCLANG_PATH. macOS:
+# Homebrew llvm. Linux: the distro's llvm dir — Ubuntu ships libclang-*.so.1
+# under /usr/lib/llvm-*/lib, which is off clang-sys's default search path.
+if [ -z "${LIBCLANG_PATH:-}" ]; then
+    if [ "$(uname)" = "Darwin" ]; then
+        export LIBCLANG_PATH="$(brew --prefix llvm 2>/dev/null)/lib"
+    else
+        libclang=$(find /usr/lib /usr/local/lib -name 'libclang*.so*' -print -quit 2>/dev/null || true)
+        if [ -n "$libclang" ]; then
+            export LIBCLANG_PATH="$(dirname "$libclang")"
+        fi
+    fi
+fi
+echo "==> LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>}"
 export NET=1
 export BLK=1
 export INIT_BLOB=1

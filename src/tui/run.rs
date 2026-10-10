@@ -91,6 +91,22 @@ pub enum SessionStartMode {
     ResumeById(String),
 }
 
+/// Result of processing a single [`AppEvent`] in the headless event core.
+pub enum EventOutcome {
+    /// Keep looping.
+    Continue,
+    /// The application should exit.
+    Quit,
+    /// A TUI tool must be launched with the terminal suspended. The caller
+    /// (which owns the real terminal) performs the suspend/run/resume.
+    RunTuiTool {
+        /// Binary name of the tool to launch.
+        binary: String,
+        /// Path to the clone directory to open.
+        path: std::path::PathBuf,
+    },
+}
+
 pub async fn run_tui(
     project_path: Option<std::path::PathBuf>,
     sandbox_configs: Vec<(String, sandbox::AgentSandboxConfig)>,
@@ -248,8 +264,14 @@ pub async fn run_tui(
 
     // Create app state.
     let mut app = App::new();
-    app.project_path = project_path;
+    app.project_path = project_path.clone();
     app.runtime_env_pool = runtime_env_pool;
+
+    // Auto-register the current project in the project registry.
+    if let Some(ref pp) = project_path {
+        let mut registry = sandbox::ProjectRegistry::load();
+        registry.register(pp);
+    }
 
     // Create shared image manager so all sandboxes coordinate pulls
     // (prevents concurrent downloads of the same image layers).
@@ -330,400 +352,9 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
     // Main event loop.
     //
     while let Some(event) = rx.recv().await {
-        match event {
-            AppEvent::Terminal(crossterm_event) => {
-                match crossterm_event {
-                    CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                        // Ctrl+C with active selection → copy to clipboard
-                        // instead of forwarding/clearing.
-                        if key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                            && app
-                                .mouse_selection
-                                .as_ref()
-                                .is_some_and(|s| !s.dragging && s.start != s.end)
-                        {
-                            if let Some(sel) = app.mouse_selection.as_ref() {
-                                let (start, end) = sel.normalized();
-                                if let Some(panel) = app.panels.get(sel.panel_idx) {
-                                    if let Some(ref term) = panel.terminal {
-                                        let text = term
-                                            .screen()
-                                            .contents_between(start.0, start.1, end.0, end.1);
-                                        if !text.is_empty() {
-                                            let _ = copy_to_clipboard(&text);
-                                            app.set_status_message(format!(
-                                                "Copied {} chars to clipboard.",
-                                                text.len()
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            app.mouse_selection = None;
-                        } else {
-                            // Clear mouse selection on any other keypress.
-                            app.mouse_selection = None;
-                            handle_key_event(&mut app, key, &tx).await;
-                        }
-                    }
-                    CrosstermEvent::Key(_) => {
-                        // Ignore Release / Repeat events.
-                    }
-                    CrosstermEvent::Mouse(mouse) => {
-                        handle_mouse_event(&mut app, mouse);
-                    }
-                    CrosstermEvent::Paste(text) => {
-                        tracing::info!(
-                            text_len = text.len(),
-                            focused_panel = app.focused_panel,
-                            "Received terminal paste event"
-                        );
-                        handle_paste_event(&mut app, text, &tx);
-                    }
-                    CrosstermEvent::Resize(_cols, _rows) => {
-                        // ratatui picks up new size on next draw();
-                        // render_panel() detects the delta and propagates
-                        // to vt100 parser + SSH PTY.
-                    }
-                    CrosstermEvent::FocusGained => {}
-                    CrosstermEvent::FocusLost => {}
-                }
-            }
-            AppEvent::SandboxCreating { panel_idx, message } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.loading_message = Some(message);
-                }
-            }
-            AppEvent::SupervisorReady {
-                panel_idx,
-                name,
-                short_id,
-                project_mount,
-            } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.backend = None;
-                    panel.set_supervisor(name.clone());
-                    panel.sandbox_id_short = short_id;
-                    if project_mount.is_some() {
-                        panel.project_mount = project_mount;
-                    }
-                    panel.loading_message = Some("Attaching to supervised sandbox...".into());
-                    panel.mode = PanelMode::Loading;
-                }
-
-                let (pty_cols, pty_rows) = {
-                    let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
-                    let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
-                    super::grid::estimate_panel_inner_size(
-                        term_size.0,
-                        term_size.1,
-                        app.visible_panel_count(),
-                        has_sidebar,
-                        app.zoomed,
-                    )
-                };
-
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let max_attempts = 10;
-                    let mut last_err = String::new();
-                    for attempt in 1..=max_attempts {
-                        let delay = if attempt == 1 { 300 } else { 1000 };
-                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                        match super::terminal::connect_console(
-                            name.clone(),
-                            pty_cols,
-                            pty_rows,
-                            panel_idx,
-                            tx.clone(),
-                        )
-                        .await
-                        {
-                            Ok(handle) => {
-                                let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
-                                return;
-                            }
-                            Err(e) => {
-                                last_err = e;
-                            }
-                        }
-                    }
-                    let _ = tx.send(AppEvent::SshDisconnected {
-                        panel_idx,
-                        error: Some(format!(
-                            "Console attach failed after {} attempts: {}",
-                            max_attempts, last_err
-                        )),
-                    });
-                });
-            }
-            AppEvent::SandboxFailed { panel_idx, error } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.loading_error = Some(error);
-                }
-            }
-            AppEvent::SshConnected { panel_idx, handle } => {
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    let was_reconnecting = panel.reconnecting;
-                    if was_reconnecting && panel.terminal.is_some() {
-                        // Reconnect: keep the existing terminal screen intact
-                        // so the user doesn't see any flicker. Only attach
-                        // the new SSH handle.
-                        panel.terminal_handle = Some(handle);
-                    } else {
-                        // Fresh connection: create new terminal.
-                        let (cols, rows) = panel.last_terminal_size;
-                        panel.terminal = Some(super::terminal::SshTerminal::new(cols, rows));
-                        panel.terminal_handle = Some(handle);
-                    }
-                    panel.mode = if panel.auto_mode {
-                        PanelMode::Headless
-                    } else {
-                        PanelMode::Terminal
-                    };
-                    panel.reconnecting = false;
-                    panel.loading_message = None;
-                    panel.loading_error = None;
-                }
-            }
-            AppEvent::TerminalData { panel_idx, data } => {
-                // Clear selection if terminal content changes in the selected panel
-                // (but not while user is actively dragging).
-                if app
-                    .mouse_selection
-                    .as_ref()
-                    .is_some_and(|s| s.panel_idx == panel_idx && !s.dragging)
-                {
-                    app.mouse_selection = None;
-                }
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    if panel.mode == PanelMode::Headless {
-                        // Headless: parse NDJSON lines from raw SSH bytes.
-                        if let Some(ref mut hs) = panel.headless_state {
-                            parse_headless_data(hs, &data);
-                        }
-                        // Still feed vt100 for /terminal fallback + URL extraction.
-                        if let Some(ref mut term) = panel.terminal {
-                            term.process_bytes(&data);
-
-                            let urls = super::terminal::extract_urls_from_screen(term.screen());
-                            let now = std::time::Instant::now();
-                            for url in urls {
-                                if !super::terminal::is_auth_url(&url) {
-                                    continue;
-                                }
-                                if !url.contains('?') && !super::terminal::is_device_code_url(&url)
-                                {
-                                    continue;
-                                }
-                                let key = super::terminal::url_dedup_key(&url);
-                                if panel.opened_urls.contains(&key) {
-                                    continue;
-                                }
-                                panel
-                                    .pending_urls
-                                    .entry(key)
-                                    .and_modify(|(existing_url, ts)| {
-                                        if url.len() > existing_url.len() {
-                                            *existing_url = url.clone();
-                                            *ts = now;
-                                        }
-                                    })
-                                    .or_insert((url, now));
-                            }
-                        }
-                    } else if let Some(ref mut term) = panel.terminal {
-                        term.process_bytes(&data);
-
-                        // Extract URLs from the parsed vt100 screen, then
-                        // validate the hostname.  TUI apps (ink.js) re-render
-                        // the screen, sometimes garbling text — host validation
-                        // rejects those broken URLs.  The first clean read is
-                        // buffered for 2s (keeping the longest per host+path),
-                        // then opened once.
-                        let urls = super::terminal::extract_urls_from_screen(term.screen());
-                        let now = std::time::Instant::now();
-                        for url in urls {
-                            if !super::terminal::is_auth_url(&url) {
-                                continue;
-                            }
-                            // OAuth authorize URLs always have query parameters
-                            // (?client_id=...).  Truncated URLs from partial screen
-                            // renders won't have reached the '?' yet — skip them.
-                            // Exception: device-code flow URLs (e.g. github.com/login/device,
-                            // cursor.com/loginlink) are complete without query params.
-                            if !url.contains('?') && !super::terminal::is_device_code_url(&url) {
-                                continue;
-                            }
-                            let key = super::terminal::url_dedup_key(&url);
-                            if panel.opened_urls.contains(&key) {
-                                continue;
-                            }
-                            // Keep the longest valid URL seen for each dedup key.
-                            // Reset the debounce timer when the URL grows so we
-                            // wait for the screen to stabilise after a re-render.
-                            panel
-                                .pending_urls
-                                .entry(key)
-                                .and_modify(|(existing_url, ts)| {
-                                    if url.len() > existing_url.len() {
-                                        *existing_url = url.clone();
-                                        *ts = now;
-                                    }
-                                })
-                                .or_insert((url, now));
-                        }
-                    }
-                }
-            }
-            AppEvent::SshDisconnected { panel_idx, error } => {
-                // Check if this is a reconnect attempt that failed.
-                let is_reconnecting = app.panels.get(panel_idx).is_some_and(|p| p.reconnecting);
-                let is_headless = app
-                    .panels
-                    .get(panel_idx)
-                    .is_some_and(|p| p.mode == PanelMode::Headless);
-
-                if is_reconnecting {
-                    // Reconnect failed: revert to loading screen with error.
-                    if let Some(panel) = app.panels.get_mut(panel_idx) {
-                        panel.terminal = None;
-                        panel.terminal_handle = None;
-                        panel.mode = PanelMode::Loading;
-                        panel.loading_error = error.map(|e| format!("Reconnect failed: {}", e));
-                        panel.reconnecting = false;
-                        panel.loading_tick = 0;
-                    }
-                } else if is_headless {
-                    // Headless panel: keep panel visible so user can read output.
-                    // Mark the headless state as completed/error and clean up SSH resources.
-                    if let Some(panel) = app.panels.get_mut(panel_idx) {
-                        // Only update status if not already marked completed/error
-                        // (ExitStatus + Eof/Close both fire SshDisconnected).
-                        if let Some(ref mut hs) = panel.headless_state {
-                            if hs.status != "completed" && hs.status != "error" {
-                                if let Some(ref err) = error {
-                                    hs.agent_text.push_str(&format!("\n[process] {}\n", err));
-                                    hs.finish("error");
-                                } else {
-                                    hs.finish("completed");
-                                }
-                            }
-                        }
-                        // Drop SSH handle but keep the panel.
-                        panel.terminal_handle = None;
-
-                        let name = panel.agent_name.clone();
-                        let msg = if let Some(ref err) = error {
-                            format!("'{}' headless agent exited: {}", name, err)
-                        } else {
-                            format!("'{}' headless agent completed.", name)
-                        };
-                        app.set_status_message(msg);
-                    }
-                } else {
-                    // Genuine disconnect: kill sandbox and close panel.
-                    if let Some((name, sandbox_arc, supervisor_name)) =
-                        kill_panel_at(&mut app, panel_idx)
-                    {
-                        if let Some(sb) = sandbox_arc {
-                            spawn_sandbox_destroy(sb);
-                        }
-                        if let Some(sname) = supervisor_name {
-                            spawn_supervisor_stop(sname);
-                        }
-
-                        let msg = if let Some(err) = error {
-                            format!("'{}' disconnected: {}", name, err)
-                        } else {
-                            format!("'{}' session ended.", name)
-                        };
-                        app.set_status_message(msg);
-                    }
-                }
-            }
-            AppEvent::Tick => {
-                // Increment loading animation counter and tick down panel notifications.
-                for panel in app.panels.iter_mut() {
-                    if panel.mode == PanelMode::Loading {
-                        panel.loading_tick = panel.loading_tick.wrapping_add(1);
-                    }
-                    if let Some((_, _, ref mut ticks)) = panel.notification {
-                        *ticks = ticks.saturating_sub(1);
-                        if *ticks == 0 {
-                            panel.notification = None;
-                        }
-                    }
-                }
-
-                // Flush pending URLs whose 2s debounce window has elapsed.
-                let now = std::time::Instant::now();
-                let debounce = std::time::Duration::from_secs(2);
-                for panel in app.panels.iter_mut() {
-                    let ready: Vec<String> = panel
-                        .pending_urls
-                        .iter()
-                        .filter(|(_key, (_url, first_seen))| {
-                            now.duration_since(*first_seen) >= debounce
-                        })
-                        .map(|(key, _)| key.clone())
-                        .collect();
-                    for key in ready {
-                        if let Some((url, _)) = panel.pending_urls.remove(&key) {
-                            tracing::debug!(
-                                panel = %panel.agent_name,
-                                dedup_key = %key,
-                                url = %url,
-                                "Auth URL debounce elapsed; opening in host browser"
-                            );
-                            panel.opened_urls.insert(key);
-                            tracing::debug!(
-                                panel = %panel.agent_name,
-                                url = %url,
-                                "Opening auth URL in host browser"
-                            );
-                            super::terminal::open_url_in_browser(&url);
-                        }
-                    }
-                }
-
-                // Tick down temporary status message.
-                if let Some((_, ref mut ticks)) = app.status_message {
-                    *ticks = ticks.saturating_sub(1);
-                    if *ticks == 0 {
-                        app.status_message = None;
-                    }
-                }
-
-                // Tick down auto-dismiss system message popup.
-                if let Some(ref mut ticks) = app.system_message_ticks {
-                    *ticks = ticks.saturating_sub(1);
-                    if *ticks == 0 {
-                        app.system_messages.clear();
-                        app.system_message_ticks = None;
-                    }
-                }
-                app.sidebar_tick_counter = app.sidebar_tick_counter.wrapping_add(1);
-                if app.sidebar_tick_counter.is_multiple_of(8) {
-                    // Refresh file lists when sidebar is visible (~every 2s).
-                    if app.show_sandbox_sidebar {
-                        app.refresh_sidebar_modified_files();
-                        app.refresh_sidebar_committed_files();
-                    }
-                    // Auto-sync commits from all panel clones to source repos.
-                    let notifications = app.sync_project_commits();
-                    for (panel_idx, message) in notifications {
-                        if let Some(panel) = app.panels.get_mut(panel_idx) {
-                            panel.chat_history.push(ChatMessage {
-                                role: MessageRole::System,
-                                content: message,
-                            });
-                        }
-                    }
-                }
-            }
-            AppEvent::OpenTuiTool { binary, path } => {
+        match handle_event(&mut app, event, &tx).await {
+            EventOutcome::Quit => break,
+            EventOutcome::RunTuiTool { binary, path } => {
                 // Suspend TUI: leave alternate screen, disable raw mode
                 let _ = disable_raw_mode();
                 let _ = execute!(
@@ -770,44 +401,8 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
                 );
                 terminal.clear()?;
             }
-            AppEvent::UploadStarted {
-                panel_idx,
-                filename,
-            } => {
-                let msg = format!("Uploading {}...", filename);
-                // Show immediately; stays until replaced by Complete/Failed.
-                // 120 ticks × 250ms = 30s (generous timeout, replaced on completion).
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.notification = Some((msg, false, 120));
-                }
-            }
-            AppEvent::UploadComplete {
-                panel_idx,
-                filename,
-                remote_path,
-                size,
-            } => {
-                let msg = format!(
-                    "Uploaded {} ({}) -> {}",
-                    filename,
-                    super::upload::format_size(size),
-                    remote_path,
-                );
-                // Show overlay notification on the panel (replaces previous, auto-dismisses).
-                // 16 ticks × 250ms = 4s.
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.notification = Some((msg, false, 16));
-                }
-            }
-            AppEvent::UploadFailed { panel_idx, error } => {
-                let msg = format!("Upload failed: {}", error);
-                // 24 ticks × 250ms = 6s (errors stay longer).
-                if let Some(panel) = app.panels.get_mut(panel_idx) {
-                    panel.notification = Some((msg, true, 24));
-                }
-            }
+            EventOutcome::Continue => {}
         }
-
         if app.should_quit {
             break;
         }
@@ -906,8 +501,8 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
             }
         }
 
-        // Wait for all sandbox cleanups to complete (with timeout).
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+        // Wait for all sandbox cleanups to complete (with a short cap).
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
         for handle in handles {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let _ = tokio::time::timeout(remaining, handle).await;
@@ -916,12 +511,496 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
         eprintln!("All sandboxes stopped.");
     }
 
-    // Windows safety net: even with spawn_blocking on the HvSocket SSE reader,
-    // a blocking-pool thread parked in recv() cannot be cancelled. The tokio
-    // runtime drop will skip it (because blocking-pool threads are detached),
-    // but belt-and-suspenders — explicitly exit so the process never lingers
-    // after /quit or /destroy.
-    Ok(())
+    // Stop supervisor-backed sandboxes too: /quit used to leave the supervisor
+    // (and its VM + gvproxy) running, so `ps` still showed a live sandbox. The
+    // session is saved above, so `nanosb -r` can redeploy.
+    let supervisor_names: Vec<String> = app
+        .panels
+        .iter()
+        .filter_map(|p| p.supervisor_name().map(str::to_string))
+        .collect();
+    if !supervisor_names.is_empty() {
+        eprintln!("Stopping {} sandbox(es)...", supervisor_names.len());
+        let mut handles = Vec::new();
+        for name in supervisor_names {
+            handles.push(tokio::task::spawn_blocking(move || {
+                let _ = crate::supervisor::client::SupervisorClient::new(&name).stop(true);
+            }));
+        }
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        for handle in handles {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let _ = tokio::time::timeout(remaining, handle).await;
+        }
+        eprintln!("All sandboxes stopped.");
+    }
+
+    // Exit immediately: a parked blocking reader (exec-PTY SSE / terminal event
+    // thread) cannot be cancelled, so the tokio runtime drop would otherwise keep
+    // the process alive. Exiting explicitly makes /quit and /destroy immediate.
+    std::process::exit(0);
+}
+
+/// Process a single [`AppEvent`], mutating `app` and possibly spawning work
+/// via `tx`. This is the headless event core: it performs NO terminal I/O.
+/// The one terminal-coupled event ([`AppEvent::OpenTuiTool`]) is returned to
+/// the caller as [`EventOutcome::RunTuiTool`] instead of being executed here.
+pub async fn handle_event(
+    app: &mut App,
+    event: AppEvent,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> EventOutcome {
+    match event {
+        AppEvent::Terminal(crossterm_event) => {
+            match crossterm_event {
+                CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Ctrl+C with active selection → copy to clipboard
+                    // instead of forwarding/clearing.
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && app
+                            .mouse_selection
+                            .as_ref()
+                            .is_some_and(|s| !s.dragging && s.start != s.end)
+                    {
+                        if let Some(sel) = app.mouse_selection.as_ref() {
+                            let (start, end) = sel.normalized();
+                            if let Some(panel) = app.panels.get(sel.panel_idx) {
+                                if let Some(ref term) = panel.terminal {
+                                    let text = term
+                                        .screen()
+                                        .contents_between(start.0, start.1, end.0, end.1);
+                                    if !text.is_empty() {
+                                        let _ = copy_to_clipboard(&text);
+                                        app.set_status_message(format!(
+                                            "Copied {} chars to clipboard.",
+                                            text.len()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        app.mouse_selection = None;
+                    } else {
+                        // Clear mouse selection on any other keypress.
+                        app.mouse_selection = None;
+                        handle_key_event(app, key, tx).await;
+                    }
+                }
+                CrosstermEvent::Key(_) => {
+                    // Ignore Release / Repeat events.
+                }
+                CrosstermEvent::Mouse(mouse) => {
+                    handle_mouse_event(app, mouse);
+                }
+                CrosstermEvent::Paste(text) => {
+                    tracing::info!(
+                        text_len = text.len(),
+                        focused_panel = app.focused_panel,
+                        "Received terminal paste event"
+                    );
+                    handle_paste_event(app, text, tx);
+                }
+                CrosstermEvent::Resize(_cols, _rows) => {
+                    // ratatui picks up new size on next draw();
+                    // render_panel() detects the delta and propagates
+                    // to vt100 parser + SSH PTY.
+                }
+                CrosstermEvent::FocusGained => {}
+                CrosstermEvent::FocusLost => {}
+            }
+        }
+        AppEvent::SandboxCreating { panel_idx, message } => {
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.loading_message = Some(message);
+            }
+        }
+        AppEvent::SupervisorReady {
+            panel_idx,
+            name,
+            short_id,
+            project_mount,
+            exec_pty,
+        } => {
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.backend = None;
+                panel.set_supervisor(name.clone());
+                panel.sandbox_id_short = short_id;
+                if project_mount.is_some() {
+                    panel.project_mount = project_mount;
+                }
+                panel.exec_pty = exec_pty.clone();
+                panel.loading_message = Some("Attaching to supervised sandbox...".into());
+                panel.mode = PanelMode::Loading;
+            }
+
+            let (pty_cols, pty_rows) = {
+                let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
+                let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
+                super::grid::estimate_panel_inner_size(
+                    term_size.0,
+                    term_size.1,
+                    app.visible_panel_count(),
+                    has_sidebar,
+                    app.zoomed,
+                )
+            };
+
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let max_attempts = 10;
+                let mut last_err = String::new();
+                for attempt in 1..=max_attempts {
+                    let delay = if attempt == 1 { 300 } else { 1000 };
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    let result = match exec_pty.clone() {
+                        Some((sock, program, args)) => {
+                            super::terminal::connect_exec_pty(
+                                sock, program, args, pty_cols, pty_rows, panel_idx, tx.clone(),
+                            )
+                            .await
+                        }
+                        None => {
+                            super::terminal::connect_console(
+                                name.clone(),
+                                pty_cols,
+                                pty_rows,
+                                panel_idx,
+                                tx.clone(),
+                            )
+                            .await
+                        }
+                    };
+                    match result {
+                        Ok(handle) => {
+                            let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
+                            return;
+                        }
+                        Err(e) => {
+                            last_err = e;
+                        }
+                    }
+                }
+                let _ = tx.send(AppEvent::SshDisconnected {
+                    panel_idx,
+                    error: Some(format!(
+                        "Console attach failed after {} attempts: {}",
+                        max_attempts, last_err
+                    )),
+                });
+            });
+        }
+        AppEvent::SandboxFailed { panel_idx, error } => {
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.loading_error = Some(error);
+            }
+        }
+        AppEvent::SshConnected { panel_idx, handle } => {
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                let was_reconnecting = panel.reconnecting;
+                if was_reconnecting && panel.terminal.is_some() {
+                    // Reconnect: keep the existing terminal screen intact
+                    // so the user doesn't see any flicker. Only attach
+                    // the new SSH handle.
+                    panel.terminal_handle = Some(handle);
+                } else {
+                    // Fresh connection: create new terminal.
+                    let (cols, rows) = panel.last_terminal_size;
+                    panel.terminal = Some(super::terminal::SshTerminal::new(cols, rows));
+                    panel.terminal_handle = Some(handle);
+                }
+                panel.mode = if panel.auto_mode {
+                    PanelMode::Headless
+                } else {
+                    PanelMode::Terminal
+                };
+                panel.reconnecting = false;
+                panel.loading_message = None;
+                panel.loading_error = None;
+            }
+        }
+        AppEvent::TerminalData { panel_idx, data } => {
+            // Clear selection if terminal content changes in the selected panel
+            // (but not while user is actively dragging).
+            if app
+                .mouse_selection
+                .as_ref()
+                .is_some_and(|s| s.panel_idx == panel_idx && !s.dragging)
+            {
+                app.mouse_selection = None;
+            }
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                if panel.mode == PanelMode::Headless {
+                    // Headless: parse NDJSON lines from raw SSH bytes.
+                    if let Some(ref mut hs) = panel.headless_state {
+                        parse_headless_data(hs, &data);
+                    }
+                    // Still feed vt100 for /terminal fallback + URL extraction.
+                    if let Some(ref mut term) = panel.terminal {
+                        term.process_bytes(&data);
+
+                        let urls = super::terminal::extract_urls_from_screen(term.screen());
+                        let now = std::time::Instant::now();
+                        for url in urls {
+                            if !super::terminal::is_auth_url(&url) {
+                                continue;
+                            }
+                            if !url.contains('?') && !super::terminal::is_device_code_url(&url)
+                            {
+                                continue;
+                            }
+                            let key = super::terminal::url_dedup_key(&url);
+                            if panel.opened_urls.contains(&key) {
+                                continue;
+                            }
+                            panel
+                                .pending_urls
+                                .entry(key)
+                                .and_modify(|(existing_url, ts)| {
+                                    if url.len() > existing_url.len() {
+                                        *existing_url = url.clone();
+                                        *ts = now;
+                                    }
+                                })
+                                .or_insert((url, now));
+                        }
+                    }
+                } else if let Some(ref mut term) = panel.terminal {
+                    term.process_bytes(&data);
+
+                    // Extract URLs from the parsed vt100 screen, then
+                    // validate the hostname.  TUI apps (ink.js) re-render
+                    // the screen, sometimes garbling text — host validation
+                    // rejects those broken URLs.  The first clean read is
+                    // buffered for 2s (keeping the longest per host+path),
+                    // then opened once.
+                    let urls = super::terminal::extract_urls_from_screen(term.screen());
+                    let now = std::time::Instant::now();
+                    for url in urls {
+                        if !super::terminal::is_auth_url(&url) {
+                            continue;
+                        }
+                        // OAuth authorize URLs always have query parameters
+                        // (?client_id=...).  Truncated URLs from partial screen
+                        // renders won't have reached the '?' yet — skip them.
+                        // Exception: device-code flow URLs (e.g. github.com/login/device,
+                        // cursor.com/loginlink) are complete without query params.
+                        if !url.contains('?') && !super::terminal::is_device_code_url(&url) {
+                            continue;
+                        }
+                        let key = super::terminal::url_dedup_key(&url);
+                        if panel.opened_urls.contains(&key) {
+                            continue;
+                        }
+                        // Keep the longest valid URL seen for each dedup key.
+                        // Reset the debounce timer when the URL grows so we
+                        // wait for the screen to stabilise after a re-render.
+                        panel
+                            .pending_urls
+                            .entry(key)
+                            .and_modify(|(existing_url, ts)| {
+                                if url.len() > existing_url.len() {
+                                    *existing_url = url.clone();
+                                    *ts = now;
+                                }
+                            })
+                            .or_insert((url, now));
+                    }
+                }
+            }
+        }
+        AppEvent::SshDisconnected { panel_idx, error } => {
+            // Check if this is a reconnect attempt that failed.
+            let is_reconnecting = app.panels.get(panel_idx).is_some_and(|p| p.reconnecting);
+            let is_headless = app
+                .panels
+                .get(panel_idx)
+                .is_some_and(|p| p.mode == PanelMode::Headless);
+
+            if is_reconnecting {
+                // Reconnect failed: revert to loading screen with error.
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.terminal = None;
+                    panel.terminal_handle = None;
+                    panel.mode = PanelMode::Loading;
+                    panel.loading_error = error.map(|e| format!("Reconnect failed: {}", e));
+                    panel.reconnecting = false;
+                    panel.loading_tick = 0;
+                }
+            } else if is_headless {
+                // Headless panel: keep panel visible so user can read output.
+                // Mark the headless state as completed/error and clean up SSH resources.
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    // Only update status if not already marked completed/error
+                    // (ExitStatus + Eof/Close both fire SshDisconnected).
+                    if let Some(ref mut hs) = panel.headless_state {
+                        if hs.status != "completed" && hs.status != "error" {
+                            if let Some(ref err) = error {
+                                hs.agent_text.push_str(&format!("\n[process] {}\n", err));
+                                hs.finish("error");
+                            } else {
+                                hs.finish("completed");
+                            }
+                        }
+                    }
+                    // Drop SSH handle but keep the panel.
+                    panel.terminal_handle = None;
+
+                    let name = panel.agent_name.clone();
+                    let msg = if let Some(ref err) = error {
+                        format!("'{}' headless agent exited: {}", name, err)
+                    } else {
+                        format!("'{}' headless agent completed.", name)
+                    };
+                    app.set_status_message(msg);
+                }
+            } else {
+                // Genuine disconnect: kill sandbox and close panel.
+                if let Some((name, sandbox_arc, supervisor_name)) =
+                    kill_panel_at(app, panel_idx)
+                {
+                    if let Some(sb) = sandbox_arc {
+                        spawn_sandbox_destroy(sb);
+                    }
+                    if let Some(sname) = supervisor_name {
+                        spawn_supervisor_stop(sname);
+                    }
+
+                    let msg = if let Some(err) = error {
+                        format!("'{}' disconnected: {}", name, err)
+                    } else {
+                        format!("'{}' session ended.", name)
+                    };
+                    app.set_status_message(msg);
+                }
+            }
+        }
+        AppEvent::Tick => {
+            // Increment loading animation counter and tick down panel notifications.
+            for panel in app.panels.iter_mut() {
+                if panel.mode == PanelMode::Loading {
+                    panel.loading_tick = panel.loading_tick.wrapping_add(1);
+                }
+                if let Some((_, _, ref mut ticks)) = panel.notification {
+                    *ticks = ticks.saturating_sub(1);
+                    if *ticks == 0 {
+                        panel.notification = None;
+                    }
+                }
+            }
+
+            // Flush pending URLs whose 2s debounce window has elapsed.
+            let now = std::time::Instant::now();
+            let debounce = std::time::Duration::from_secs(2);
+            for panel in app.panels.iter_mut() {
+                let ready: Vec<String> = panel
+                    .pending_urls
+                    .iter()
+                    .filter(|(_key, (_url, first_seen))| {
+                        now.duration_since(*first_seen) >= debounce
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                for key in ready {
+                    if let Some((url, _)) = panel.pending_urls.remove(&key) {
+                        tracing::debug!(
+                            panel = %panel.agent_name,
+                            dedup_key = %key,
+                            url = %url,
+                            "Auth URL debounce elapsed; opening in host browser"
+                        );
+                        panel.opened_urls.insert(key);
+                        tracing::debug!(
+                            panel = %panel.agent_name,
+                            url = %url,
+                            "Opening auth URL in host browser"
+                        );
+                        super::terminal::open_url_in_browser(&url);
+                    }
+                }
+            }
+
+            // Tick down temporary status message.
+            if let Some((_, ref mut ticks)) = app.status_message {
+                *ticks = ticks.saturating_sub(1);
+                if *ticks == 0 {
+                    app.status_message = None;
+                }
+            }
+
+            // Tick down auto-dismiss system message popup.
+            if let Some(ref mut ticks) = app.system_message_ticks {
+                *ticks = ticks.saturating_sub(1);
+                if *ticks == 0 {
+                    app.system_messages.clear();
+                    app.system_message_ticks = None;
+                }
+            }
+            app.sidebar_tick_counter = app.sidebar_tick_counter.wrapping_add(1);
+            if app.sidebar_tick_counter.is_multiple_of(8) {
+                // Refresh file lists when sidebar is visible (~every 2s).
+                if app.show_sandbox_sidebar {
+                    app.refresh_sidebar_modified_files();
+                    app.refresh_sidebar_committed_files();
+                }
+                // Auto-sync commits from all panel clones to source repos.
+                let notifications = app.sync_project_commits();
+                for (panel_idx, message) in notifications {
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        panel.chat_history.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: message,
+                        });
+                    }
+                }
+            }
+        }
+        AppEvent::OpenTuiTool { binary, path } => {
+            return EventOutcome::RunTuiTool { binary, path };
+        }
+        AppEvent::UploadStarted {
+            panel_idx,
+            filename,
+        } => {
+            let msg = format!("Uploading {}...", filename);
+            // Show immediately; stays until replaced by Complete/Failed.
+            // 120 ticks × 250ms = 30s (generous timeout, replaced on completion).
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.notification = Some((msg, false, 120));
+            }
+        }
+        AppEvent::UploadComplete {
+            panel_idx,
+            filename,
+            remote_path,
+            size,
+        } => {
+            let msg = format!(
+                "Uploaded {} ({}) -> {}",
+                filename,
+                super::upload::format_size(size),
+                remote_path,
+            );
+            // Show overlay notification on the panel (replaces previous, auto-dismisses).
+            // 16 ticks × 250ms = 4s.
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.notification = Some((msg, false, 16));
+            }
+        }
+        AppEvent::UploadFailed { panel_idx, error } => {
+            let msg = format!("Upload failed: {}", error);
+            // 24 ticks × 250ms = 6s (errors stay longer).
+            if let Some(panel) = app.panels.get_mut(panel_idx) {
+                panel.notification = Some((msg, true, 24));
+            }
+        }
+    }
+
+    if app.should_quit {
+        EventOutcome::Quit
+    } else {
+        EventOutcome::Continue
+    }
 }
 
 /// Print validation results as a checklist.
@@ -1027,6 +1106,7 @@ fn try_attach_supervisor(
             name: sandbox_name.to_string(),
             short_id,
             project_mount: None,
+            exec_pty: None,
         });
         true
     } else {
@@ -1038,6 +1118,13 @@ fn supervisor_sandbox_dir(name: &str) -> std::path::PathBuf {
     crate::supervisor::client::SupervisorClient::new(name)
         .sandbox_dir()
         .to_path_buf()
+}
+
+/// Host directory holding a sandbox's dedicated agent-state mounts
+/// (`<sandbox_dir>/state`), where the agent writes session state — outside the
+/// untrusted workspace.
+fn sandbox_state_dir(name: &str) -> std::path::PathBuf {
+    supervisor_sandbox_dir(name).join("state")
 }
 
 /// Spawn a supervisor-managed sandbox for a TUI panel and attach its console.
@@ -1088,6 +1175,54 @@ async fn spawn_supervisor_panel(
         return;
     }
 
+    let mut rc = rc;
+
+    // Interactive mode: the real TTY comes from the in-guest exec agent's PTY,
+    // not the VM console (krun_add_console_port_tty is unusable here). Stage the
+    // agent, bridge a host vsock socket, and make it PID 1 so the panel can run
+    // the agent through `ExecClient` with a PTY.
+    let mut interactive_exec: Option<(String, Vec<String>)> = None;
+    let mut exec_agent_mount: Option<runtime::config::ExtraMount> = None;
+    if config.interactive {
+        // The program the panel launches over the PTY. An explicit
+        // `sandbox.command` (e.g. a shell for tests) overrides the agent command.
+        let (program, args) = match &config.sandbox.command {
+            Some(c) => (c.clone(), config.sandbox.command_args.clone()),
+            None => (
+                plan.agent_command.binary.clone(),
+                plan.agent_command.args.clone(),
+            ),
+        };
+        let agent_dir = sandbox_dir.join("agent");
+        match deploy::stage_exec_agent(&agent_dir) {
+            Ok(guest_path) => {
+                let exec_sock = sandbox_dir.join("exec.sock");
+                let _ = std::fs::remove_file(&exec_sock);
+                rc.vsock_socket = Some(exec_sock.to_string_lossy().to_string());
+                rc.vsock_port = Some(deploy::EXEC_VSOCK_PORT);
+                rc.command = Some(guest_path);
+                rc.command_args = vec![deploy::EXEC_VSOCK_PORT.to_string()];
+                exec_agent_mount = Some(runtime::config::ExtraMount {
+                    tag: "agent".to_string(),
+                    host_path: agent_dir.to_string_lossy().to_string(),
+                    target: "/agent".to_string(),
+                    readonly: false,
+                });
+                interactive_exec = Some((program, args));
+            }
+            Err(e) => {
+                if let Some(mut pm) = project_mount {
+                    let _ = pm.teardown();
+                }
+                let _ = tx.send(AppEvent::SandboxFailed {
+                    panel_idx,
+                    error: format!("Interactive mode needs the exec agent: {}", e),
+                });
+                return;
+            }
+        }
+    }
+
     let config_json = match serde_json::to_string(&rc) {
         Ok(json) => json,
         Err(e) => {
@@ -1108,7 +1243,14 @@ async fn spawn_supervisor_panel(
             return;
         }
     };
-    let extra_mounts = deploy::extra_mounts_from_plan(&plan);
+    let mut extra_mounts = deploy::extra_mounts_from_plan(&plan);
+    if let Some(mount) = exec_agent_mount {
+        // Mount the exec agent FIRST: the guest init aborts the whole extra-mount
+        // loop on the first failure, and agent-state mounts (e.g.
+        // /home/developer/.claude) fail on images that lack that home dir. The
+        // agent mount target (/agent) always resolves, so it must not be skipped.
+        extra_mounts.insert(0, mount);
+    }
     let extra_mounts_json = match serde_json::to_string(&extra_mounts) {
         Ok(json) => json,
         Err(e) => {
@@ -1151,11 +1293,14 @@ async fn spawn_supervisor_panel(
     }
 
     let short_id = name.chars().take(8).collect::<String>();
+    let exec_pty = interactive_exec
+        .map(|(program, args)| (sandbox_dir.join("exec.sock"), program, args));
     let _ = tx.send(AppEvent::SupervisorReady {
         panel_idx,
         name,
         short_id,
         project_mount,
+        exec_pty,
     });
 }
 
@@ -1177,12 +1322,14 @@ fn spawn_sandbox_destroy(sandbox_arc: Arc<Mutex<Sandbox>>) {
 fn spawn_supervisor_stop(name: String) {
     tokio::task::spawn_blocking(move || {
         let client = crate::supervisor::client::SupervisorClient::new(&name);
-        let _ = client.stop(false);
+        if let Err(e) = client.stop(false) {
+            tracing::warn!(sandbox = %name, error = %e, "supervisor stop failed");
+        }
     });
 }
 
 /// Handle a single key event.
-async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<AppEvent>) {
+pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<AppEvent>) {
     // Pending reconnect confirmation: intercept y/n before anything else.
     if app.pending_reconnect.is_some() {
         match key.code {
@@ -1447,6 +1594,25 @@ async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSend
                                 }
                             };
 
+                            // If the clipboard holds host file path(s) (Finder copy /
+                            // drag-and-drop pastes paths), upload them instead of
+                            // pasting the raw host path as text.
+                            let files = super::upload::detect_file_paths(&text);
+                            if !files.is_empty() {
+                                if let Some((panel_idx, mount_root, exec_sock)) = upload_info.clone() {
+                                    for f in files {
+                                        super::upload::spawn_file_upload(
+                                            mount_root.clone(),
+                                            f,
+                                            exec_sock.clone(),
+                                            panel_idx,
+                                            tx.clone(),
+                                        );
+                                    }
+                                    return;
+                                }
+                            }
+
                             if !text.is_empty() {
                                 if let Some(ref wtx) = write_tx {
                                     let sent = send_bracketed_paste(wtx, &text);
@@ -1464,7 +1630,7 @@ async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSend
                                 return;
                             }
 
-                            if let Some((panel_idx, mount_root)) = upload_info {
+                            if let Some((panel_idx, mount_root, exec_sock)) = upload_info {
                                 if mount_root.is_none() {
                                     tracing::debug!("Clipboard paste produced empty text and no mount");
                                     return;
@@ -1481,7 +1647,7 @@ async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSend
                                         "Clipboard image detected; starting upload"
                                     );
                                     super::upload::spawn_bytes_upload(
-                                        mount_root, png_bytes, filename,
+                                        mount_root, png_bytes, filename, exec_sock,
                                         panel_idx, tx,
                                     );
                                     return;
@@ -1792,7 +1958,7 @@ async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSend
 }
 
 /// Handle a parsed slash command.
-async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<AppEvent>) {
+pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<AppEvent>) {
     match cmd {
         Command::Quit => {
             if app.input_focus == InputFocus::Panel {
@@ -1810,38 +1976,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
         Command::Help => {
             app.set_system_message_persistent(ChatMessage {
                 role: MessageRole::System,
-                content: concat!(
-                    "Available commands:\n",
-                    "  /add <agent> [--tag <version>] [--model <model>] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...\n",
-                    "                                Add a new agent panel\n",
-                    "  /sandboxes                    Toggle sandbox sidebar\n",
-                    "  /focus <n>                    Focus panel n (0-indexed)\n",
-                    "  /close [n|name]               Hide panel (sandbox keeps running)\n",
-                    "  /open [n|name]                Show a hidden panel\n",
-                    "  /kill [n|name]                Kill sandbox & remove panel\n",
-                    "  /copy                         Copy panel content to clipboard\n",
-                    "  /upload <path>                Upload host file to sandbox\n",
-                    "  /paste-image                  Paste clipboard image to sandbox\n",
-                    "  /zoom                         Toggle panel zoom (Ctrl+F)\n",
-                    "  /theme [name]                 Switch colour theme\n",
-                    "  /env [KEY=VALUE]              Set/list panel env vars\n",
-                    "  /reconnect                    Reconnect SSH terminal\n",
-                    "  /branches                     List nanosb branches in project\n",
-                    "  /mcp                          Toggle MCP sidebar\n",
-                    "  /mcp list                     List MCP servers (from sandbox.yml)\n",
-                    "  /skills [list]                List skills (from sandbox.yml)\n",
-                    "  /skills show <name>           Show skill details\n",
-                    "  /agent list                   List available agents\n",
-                    "  /agent show <name>            Show agent details\n",
-                    "  /gitsync [on|off|now]         Sync sandbox commits to local repo\n",
-                    "  /edit [tool]                  Open clone in external tool\n",
-                    "  /clearhistory                 Clear command history\n",
-                    "  /quit                         Suspend session and exit\n",
-                    "  /destroy                      Full cleanup and exit\n",
-                    "\n",
-                    "  Press Esc to dismiss.\n",
-                )
-                .to_string(),
+                content: commands::format_help(),
             });
         }
         Command::Close { target } => {
@@ -1948,6 +2083,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
             branch,
             name,
             auto_mode,
+            interactive,
             prompt,
             model,
             use_env,
@@ -1963,6 +2099,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                 branch.as_deref(),
                 name.as_deref(),
                 auto_mode,
+                interactive,
                 prompt.as_deref(),
                 model.as_deref(),
                 &use_env,
@@ -2005,19 +2142,27 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                 panel.loading_tick = 0;
 
                 let console_name = panel.supervisor_name().map(|s| s.to_string());
+                let exec_pty = panel.exec_pty.clone();
 
                 if let Some(name) = console_name {
                     let tx = tx.clone();
                     tokio::spawn(async move {
-                        match super::terminal::connect_console(
-                            name,
-                            pty_cols,
-                            pty_rows,
-                            panel_idx,
-                            tx.clone(),
-                        )
-                        .await
-                        {
+                        let result = match exec_pty {
+                            Some((sock, program, args)) => {
+                                super::terminal::connect_exec_pty(
+                                    sock, program, args, pty_cols, pty_rows, panel_idx,
+                                    tx.clone(),
+                                )
+                                .await
+                            }
+                            None => {
+                                super::terminal::connect_console(
+                                    name, pty_cols, pty_rows, panel_idx, tx.clone(),
+                                )
+                                .await
+                            }
+                        };
+                        match result {
                             Ok(handle) => {
                                 let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
                             }
@@ -2071,11 +2216,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                 });
             }
         }
-        Command::McpList
-        | Command::McpAdd { .. }
-        | Command::McpRemove { .. }
-        | Command::McpEnable { .. }
-        | Command::McpDisable { .. } => {
+        Command::McpList => {
             if app.panels.is_empty() {
                 app.set_system_message(ChatMessage {
                     role: MessageRole::System,
@@ -2083,21 +2224,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                         .to_string(),
                 });
             } else {
-                match cmd {
-                    Command::McpList => {
-                        handle_mcp_list(app).await;
-                    }
-                    Command::McpAdd { .. }
-                    | Command::McpRemove { .. }
-                    | Command::McpEnable { .. }
-                    | Command::McpDisable { .. } => {
-                        app.set_system_message(ChatMessage {
-                            role: MessageRole::System,
-                            content: "MCP hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply).".to_string(),
-                        });
-                    }
-                    _ => unreachable!(),
-                };
+                handle_mcp_list(app).await;
             }
         }
         Command::Copy => {
@@ -2113,7 +2240,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
             if let Some(dir) = project_dir {
                 let dir = dir.clone();
                 let msg = tokio::task::spawn_blocking(move || {
-                    let output = std::process::Command::new("git")
+                    let output = super::gitcmd::host_git()
                         .args(["branch", "--list", "nanosb/*"])
                         .current_dir(&dir)
                         .output();
@@ -2144,8 +2271,33 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                 });
             }
         }
-        Command::GitSync { action } => {
+        Command::Sync { dry_run, action } => {
             let panel_idx = app.focused_panel;
+            if dry_run {
+                let info = app
+                    .panels
+                    .get(panel_idx)
+                    .and_then(|p| p.project_mount.as_ref())
+                    .map(|pm| {
+                        match (pm.worktree_base.as_ref(), pm.created_branches.first()) {
+                            (Some(wt), Some((_src, branch))) => {
+                                let short_id = branch
+                                    .trim_start_matches("refs/heads/")
+                                    .trim_start_matches("nanosb/");
+                                format!(
+                                    "dry-run: would fetch {} -> refs/nanosb/{} (clone {})",
+                                    branch,
+                                    short_id,
+                                    wt.display()
+                                )
+                            }
+                            _ => "dry-run: nothing to sync (no clone/branch yet).".to_string(),
+                        }
+                    })
+                    .unwrap_or_else(|| "dry-run: no panel.".to_string());
+                push_panel_message(app, info);
+                return;
+            }
             match action.as_deref() {
                 None => {
                     // Show sync status
@@ -2194,8 +2346,8 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                         panel.chat_history.push(ChatMessage {
                             role: MessageRole::System,
                             content: "Auto-sync ENABLED for this panel.\n\
-                                      WARNING: Agent commits will be fetched to your local branch automatically.\n\
-                                      This can be unsafe — use /gitsync off to disable.".to_string(),
+                                      Agent commits are fetched to refs/nanosb/<id> in the source repo\n\
+                                      (never your branch). Review with /diff, then /apply. Use /sync off to disable.".to_string(),
                         });
                         // Create source branch if deferred
                         if let Some(ref mut pm) = panel.project_mount {
@@ -2232,19 +2384,20 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                                     return;
                                 }
                             }
-                            // Fetch current state
+                            // Fetch current state to namespaced ref (no --force needed).
                             if let Some(ref wt_base) = pm.worktree_base {
                                 if let Some((source, branch)) = pm.created_branches.first() {
-                                    let refspec = format!("{}:{}", branch, branch);
+                                    let short_id = branch.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
+                                    let nanosb_ref = format!("refs/nanosb/{}", short_id);
+                                    let refspec = format!("+refs/heads/{}:{}", branch, nanosb_ref);
                                     let wt = wt_base.clone();
                                     let src = source.clone();
                                     let ok = tokio::task::spawn_blocking(move || {
-                                        std::process::Command::new("git")
+                                        super::gitcmd::host_git()
                                             .args([
                                                 "fetch",
                                                 &wt.to_string_lossy(),
                                                 &refspec,
-                                                "--force",
                                             ])
                                             .current_dir(&src)
                                             .output()
@@ -2254,7 +2407,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                                     .await
                                     .unwrap_or(false);
                                     let msg = if ok {
-                                        format!("Synced to branch '{}'.", branch)
+                                        format!("Synced to '{}'.", nanosb_ref)
                                     } else {
                                         "Sync failed. Check clone state.".to_string()
                                     };
@@ -2273,93 +2426,6 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                     }
                 }
                 _ => {} // parse_gitsync already validates
-            }
-        }
-        Command::Edit { tool } => {
-            let panel_idx = app.focused_panel;
-            let clone_path = app
-                .panels
-                .get(panel_idx)
-                .and_then(|p| p.project_mount.as_ref())
-                .and_then(|pm| pm.worktree_base.clone());
-
-            let clone_path = match clone_path {
-                Some(p) => p,
-                None => {
-                    app.set_status_message("No project clone for this panel.");
-                    return;
-                }
-            };
-
-            // Use the explicit tool arg, or fall back to settings preference
-            let editor_pref = tool.as_deref().unwrap_or(&app.settings.tools.editor);
-
-            // Handle custom command template
-            if let Some(ref cmd_template) = app.settings.tools.custom_command {
-                if editor_pref == "custom"
-                    || (editor_pref == "auto" && sandbox::settings::resolve_tool("auto").is_none())
-                {
-                    let cmd = cmd_template.replace("{path}", &clone_path.to_string_lossy());
-                    let parts: Vec<&str> = cmd.split_whitespace().collect();
-                    if let Some((bin, args)) = parts.split_first() {
-                        let _ = std::process::Command::new(bin)
-                            .args(args)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn();
-                    }
-                    app.set_status_message("Opened with custom command.");
-                    return;
-                }
-            }
-
-            let resolved = sandbox::settings::resolve_tool(editor_pref);
-
-            match resolved {
-                Some((binary, true)) => {
-                    // TUI tool: send event to trigger suspend-and-launch in event loop
-                    app.set_status_message(format!("Opening in {}...", binary));
-                    let _ = tx.send(AppEvent::OpenTuiTool {
-                        binary: binary.to_string(),
-                        path: clone_path,
-                    });
-                }
-                Some((binary, false)) => {
-                    // GUI tool: fire-and-forget
-                    let _ = std::process::Command::new(binary)
-                        .arg(&clone_path)
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn();
-                    app.set_status_message(format!("Opened in {}.", binary));
-                }
-                None => {
-                    // On macOS, try `open -a <AppName>` for known GUI apps
-                    // whose shell command isn't on PATH.
-                    #[cfg(target_os = "macos")]
-                    if let Some(app_name) = sandbox::settings::macos_app_name(editor_pref) {
-                        let ok = std::process::Command::new("open")
-                            .args(["-a", app_name])
-                            .arg(&clone_path)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .status()
-                            .map(|s| s.success())
-                            .unwrap_or(false);
-                        if ok {
-                            app.set_status_message(format!("Opened in {}.", app_name));
-                            return;
-                        }
-                    }
-
-                    app.set_status_message(format!(
-                        "No tool '{}' found. Install gitui, lazygit, or VS Code.",
-                        editor_pref,
-                    ));
-                }
             }
         }
         Command::Theme { name } => {
@@ -2403,10 +2469,7 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
         }
 
         // ===== Skills commands =====
-        Command::SkillsList
-        | Command::SkillsAdd { .. }
-        | Command::SkillsRemove { .. }
-        | Command::SkillsShow { .. } => {
+        Command::SkillsList | Command::SkillsShow { .. } => {
             if app.panels.is_empty() {
                 app.set_system_message(ChatMessage {
                     role: MessageRole::System,
@@ -2416,8 +2479,6 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
             } else {
                 match cmd {
                     Command::SkillsList => handle_skills_list(app).await,
-                    Command::SkillsAdd { name } => handle_skills_add(app, &name).await,
-                    Command::SkillsRemove { name } => handle_skills_remove(app, &name).await,
                     Command::SkillsShow { name } => handle_skills_show(app, &name),
                     _ => unreachable!(),
                 }
@@ -2436,22 +2497,8 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
                 handle_agent_show(app).await;
             }
         }
-        Command::AgentSet { .. } => {
-            app.set_system_message(ChatMessage {
-                role: MessageRole::System,
-                content:
-                    "Agent hot-reload was removed — edit sandbox.yml and redeploy (nanosb apply)."
-                        .to_string(),
-            });
-        }
         Command::AgentList => handle_agent_list(app),
         Command::AgentInfo { name } => handle_agent_info(app, &name),
-        Command::Upload { path } => {
-            handle_upload(app, &path, tx);
-        }
-        Command::PasteImage => {
-            handle_paste_image(app, tx);
-        }
         Command::Destroy => {
             // Full cleanup: teardown all projects, delete session, exit.
             // Mark for destroy so the shutdown path knows to do full teardown.
@@ -2462,6 +2509,603 @@ async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<
             app.command_history.clear();
             app.set_status_message("Command history cleared.");
         }
+        Command::Projects { forget } => {
+            let registry = sandbox::ProjectRegistry::load();
+            match forget {
+                None => {
+                    // List projects.
+                    let projects = registry.list();
+                    if projects.is_empty() {
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: "No projects registered. Launch nanosb with --project to register one.".to_string(),
+                        });
+                    } else {
+                        let lines: Vec<String> = projects
+                            .iter()
+                            .enumerate()
+                            .map(|(i, entry)| {
+                                let age = {
+                                    let now = chrono::Utc::now();
+                                    let duration = now.signed_duration_since(entry.last_used);
+                                    let secs = duration.num_seconds();
+                                    if secs < 60 {
+                                        format!("{}s ago", secs.max(0))
+                                    } else if secs < 3600 {
+                                        format!("{}m ago", duration.num_minutes())
+                                    } else if secs < 86_400 {
+                                        format!("{}h ago", duration.num_hours())
+                                    } else {
+                                        format!("{}d ago", duration.num_days())
+                                    }
+                                };
+                                format!(
+                                    "{}. {} ({}) — last used {}",
+                                    i + 1,
+                                    entry.display_name,
+                                    entry.path,
+                                    age,
+                                )
+                            })
+                            .collect();
+                        let msg = format!("Registered projects:\n{}", lines.join("\n"));
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: msg,
+                        });
+                    }
+                }
+                Some(path) => {
+                    let mut registry = registry;
+                    let path = std::path::Path::new(&path);
+                    if registry.forget(path) {
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: format!("Forgot project '{}'.", path.display()),
+                        });
+                    } else {
+                        app.set_system_message(ChatMessage {
+                            role: MessageRole::System,
+                            content: format!("Project '{}' was not in the registry.", path.display()),
+                        });
+                    }
+                }
+            }
+        }
+        Command::Diff { stat } => {
+            handle_diff(app, stat);
+        }
+        Command::Status => {
+            handle_git_status(app);
+        }
+        Command::Discard => {
+            handle_discard(app);
+        }
+        Command::Mounts => {
+            handle_mounts(app);
+        }
+        Command::Exec { args } => {
+            handle_exec(app, &args);
+        }
+        Command::Logs { count } => {
+            handle_logs(app, count);
+        }
+        Command::Stop { target } => {
+            let idx = match app.resolve_panel_target(target.as_deref()) {
+                Some(i) => i,
+                None => {
+                    app.set_status_message("No panel to stop.");
+                    return;
+                }
+            };
+            let name = app.panels[idx]
+                .display_name
+                .clone()
+                .unwrap_or_else(|| app.panels[idx].agent_name.clone());
+            if let Some(sname) = app.panels[idx].supervisor_name().map(str::to_string) {
+                spawn_supervisor_stop(sname);
+                app.set_status_message(format!("Stopped '{}'. Panel kept; use /kill to remove.", name));
+                app.panels[idx].mode = PanelMode::Loading;
+                app.panels[idx].loading_message = Some("Sandbox stopped.".into());
+            } else {
+                app.set_status_message(format!("'{}' has no supervised sandbox to stop.", name));
+            }
+        }
+        Command::Disk => {
+            handle_disk_usage(app);
+        }
+        Command::Gc { dry_run } => {
+            handle_gc(app, dry_run);
+        }
+        Command::Apply { force } => {
+            handle_apply(app, force);
+        }
+        Command::Project { target } => {
+            handle_project_switch(app, target.as_deref());
+        }
+    }
+}
+
+/// `/project [n|path]` — switch the TUI's active project (list if no target).
+///
+/// Existing panels keep their own project mounts; new `/add` panels and session
+/// saves use the newly-active project, so panels from multiple projects coexist.
+fn handle_project_switch(app: &mut App, target: Option<&str>) {
+    let registry = sandbox::ProjectRegistry::load();
+    let projects = registry.list();
+
+    let resolved: Option<std::path::PathBuf> = match target {
+        None => None,
+        Some(t) => {
+            // Numeric => registry index (1-based).
+            if let Ok(n) = t.parse::<usize>() {
+                projects.get(n.saturating_sub(1)).map(|e| std::path::PathBuf::from(&e.path))
+            } else {
+                let p = std::path::PathBuf::from(t);
+                if p.is_dir() {
+                    Some(p)
+                } else {
+                    app.set_status_message(format!("Not a directory: {}", t));
+                    return;
+                }
+            }
+        }
+    };
+
+    match resolved {
+        Some(p) => {
+            let canonical = p.canonicalize().unwrap_or(p);
+            let mut reg = registry;
+            let name = reg.register(&canonical);
+            app.project_path = Some(canonical.clone());
+            app.set_status_message(format!("Active project: {} ({})", name, canonical.display()));
+        }
+        None => {
+            if projects.is_empty() {
+                app.set_system_message(ChatMessage {
+                    role: MessageRole::System,
+                    content: "No projects registered. Use /project <path> to add one.".to_string(),
+                });
+            } else {
+                let lines: Vec<String> = projects
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| format!("  {}  {}  {}", i + 1, e.display_name, e.path))
+                    .collect();
+                app.set_system_message(ChatMessage {
+                    role: MessageRole::System,
+                    content: format!(
+                        "Active project: {}\nRegistered projects:\n{}\nUse /project <n|path> to switch.",
+                        app.project_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(none)".to_string()),
+                        lines.join("\n")
+                    ),
+                });
+            }
+        }
+    }
+}
+
+/// `/apply [--force]` — merge synced agent commits (`refs/nanosb/<id>`) from the
+/// source repo into the user's current branch (fast-forward-only unless forced).
+fn handle_apply(app: &mut App, force: bool) {
+    let info = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.project_mount.as_ref())
+        .and_then(|pm| pm.created_branches.first())
+        .map(|(src, branch)| {
+            let short = branch
+                .trim_start_matches("refs/heads/")
+                .trim_start_matches("nanosb/");
+            (src.clone(), format!("refs/nanosb/{}", short))
+        });
+    let (source, nanosb_ref) = match info {
+        Some(v) => v,
+        None => {
+            app.set_status_message("Nothing to apply yet; run /sync first.");
+            return;
+        }
+    };
+    let mut cmd = super::gitcmd::host_git();
+    if force {
+        cmd.args(["merge", &nanosb_ref]);
+    } else {
+        cmd.args(["merge", "--ff-only", &nanosb_ref]);
+    }
+    let out = cmd.current_dir(&source).output();
+    let content = match out {
+        Ok(o) if o.status.success() => {
+            format!("Applied {} into your branch (fast-forward).", nanosb_ref)
+        }
+        Ok(o) => format!(
+            "Apply failed (non-fast-forward?): {}\nReview with /diff, then /apply --force or rebase manually.",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => format!("Apply failed: {}", e),
+    };
+    push_panel_message(app, content);
+}
+
+/// Sum the byte size of a directory tree (best-effort).
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if let Ok(meta) = e.metadata() {
+                if meta.is_dir() {
+                    stack.push(e.path());
+                } else {
+                    total += meta.len();
+                }
+            }
+        }
+    }
+    total
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    format!("{:.1} {}", v, UNITS[i])
+}
+
+/// `/disk` — report nanosb state directory sizes.
+fn handle_disk_usage(app: &mut App) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let root = std::path::PathBuf::from(home).join(".nanosandbox");
+    let mut lines = vec!["nanosb state disk usage:".to_string()];
+    for (label, sub) in [
+        ("clones", "clones"),
+        ("sandboxes", "sandboxes"),
+        ("sessions", "sessions"),
+        ("bundles", "bundles"),
+        ("images", "images"),
+    ] {
+        let p = root.join(sub);
+        if p.exists() {
+            lines.push(format!("  {:<10} {}", label, human_size(dir_size(&p))));
+        }
+    }
+    push_panel_message(app, lines.join("\n"));
+}
+
+/// `/gc [--dry-run]` — reclaim dead supervisor dirs + unreferenced clone trees.
+fn handle_gc(app: &mut App, dry_run: bool) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let root = std::path::PathBuf::from(home).join(".nanosandbox");
+    let sandboxes = root.join("sandboxes");
+    let clones = root.join("clones");
+
+    let mut dead_dirs = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&sandboxes) {
+        for e in entries.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let Some(name) = dir.file_name().map(|n| n.to_string_lossy().to_string()) else {
+                continue;
+            };
+            if crate::supervisor::client::SupervisorClient::new(&name).is_running() {
+                continue;
+            }
+            dead_dirs += 1;
+            if !dry_run {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    let mut clone_trees = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&clones) {
+        for e in entries.flatten() {
+            if e.path().is_dir() {
+                clone_trees += 1;
+            }
+        }
+    }
+
+    // Clones are only reclaimed conservatively by the CLI `nanosb gc`, which can
+    // cross-check saved sessions; the TUI removes only dead supervisor dirs here.
+    let cloned = if dry_run { "would remove" } else { "removed" };
+    push_panel_message(
+        app,
+        format!(
+            "gc: {} dead supervisor dir(s) {}; {} clone tree(s) present \
+             (use `nanosb gc` for reference-aware clone cleanup).",
+            dead_dirs,
+            if dry_run { "found" } else { cloned },
+            clone_trees
+        ),
+    );
+}
+
+/// Focused panel's project clone + base commit, if usable for host git.
+fn focused_clone_and_base(app: &App) -> Option<(std::path::PathBuf, Option<String>)> {
+    let panel = app.panels.get(app.focused_panel)?;
+    let wt = panel
+        .project_mount
+        .as_ref()
+        .and_then(|pm| pm.worktree_base.clone())?;
+    Some((wt, panel.base_commit.clone()))
+}
+
+fn push_panel_message(app: &mut App, content: String) {
+    if let Some(panel) = app.panels.get_mut(app.focused_panel) {
+        panel.chat_history.push(ChatMessage {
+            role: MessageRole::System,
+            content,
+        });
+    } else {
+        app.set_system_message(ChatMessage {
+            role: MessageRole::System,
+            content,
+        });
+    }
+}
+
+/// `/diff [--stat]` — show agent changes in the focused clone vs its base commit.
+fn handle_diff(app: &mut App, stat: bool) {
+    let Some((wt, base)) = focused_clone_and_base(app) else {
+        app.set_status_message("No project clone for this panel.");
+        return;
+    };
+    if !super::gitcmd::has_real_git_dir(&wt) {
+        app.set_status_message("Refusing: clone .git is not a real directory.");
+        return;
+    }
+    let base = match base {
+        Some(b) => b,
+        None => {
+            app.set_status_message("No base commit recorded yet; agent hasn't run.");
+            return;
+        }
+    };
+    // Never let the agent-writable clone run an external diff or `textconv`
+    // driver (`diff.<driver>.textconv` executes an agent-controlled command).
+    let run_diff = |repo: &std::path::Path, range: &str| -> Option<String> {
+        let mut cmd = super::gitcmd::host_git();
+        if stat {
+            cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--stat", range]);
+        } else {
+            cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--name-status", range]);
+        }
+        let out = cmd.current_dir(repo).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    };
+
+    // Host-owned review state first: the source repo's `refs/nanosb/<id>`.
+    // Fall back to the (hardened) clone-local diff only when it is absent.
+    let review = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.project_mount.as_ref())
+        .and_then(|pm| pm.review_target());
+    let content = review
+        .as_ref()
+        .and_then(|(src, ref_name)| run_diff(src, &format!("{}..{}", base, ref_name)))
+        .or_else(|| run_diff(&wt, &format!("{}..HEAD", base)))
+        .map(|s| {
+            if s.trim().is_empty() {
+                "No changes since base.".to_string()
+            } else {
+                s
+            }
+        })
+        .unwrap_or_else(|| "git diff failed.".to_string());
+    push_panel_message(app, content);
+}
+
+/// `/status` — branch, dirty files, and sync state for the focused panel.
+fn handle_git_status(app: &mut App) {
+    let Some((wt, base)) = focused_clone_and_base(app) else {
+        app.set_status_message("No project clone for this panel.");
+        return;
+    };
+    if !super::gitcmd::has_real_git_dir(&wt) {
+        app.set_status_message("Refusing: clone .git is not a real directory.");
+        return;
+    }
+    let branch = super::gitcmd::host_git()
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&wt)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let dirty = super::gitcmd::host_git()
+        .args(["status", "--porcelain"])
+        .current_dir(&wt)
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    let auto = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.sync_override)
+        .unwrap_or(app.settings.gitsync.auto_sync);
+    let content = format!(
+        "Branch: {}\nBase: {}\nDirty files: {}\nAuto-sync: {}\nApply with /apply after reviewing /diff.",
+        branch,
+        base.as_deref().unwrap_or("<none>"),
+        dirty,
+        if auto { "ON" } else { "OFF" },
+    );
+    push_panel_message(app, content);
+}
+
+/// `/discard` — reset the clone working tree to the recorded base commit.
+fn handle_discard(app: &mut App) {
+    let Some((wt, base)) = focused_clone_and_base(app) else {
+        app.set_status_message("No project clone for this panel.");
+        return;
+    };
+    let base = match base {
+        Some(b) => b,
+        None => {
+            app.set_status_message("No base commit to discard to.");
+            return;
+        }
+    };
+    let short = base[..7.min(base.len())].to_string();
+
+    // Prefer resetting inside the guest (never run host git on agent-writable
+    // state). Fall back to a hardened host reset only when the exec channel or
+    // guest git is unavailable.
+    let exec_sock = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.supervisor_name())
+        .map(|n| supervisor_sandbox_dir(n).join("exec.sock"))
+        .filter(|p| p.exists());
+    if let Some(sock) = exec_sock {
+        let client = runtime::exec::ExecClient::new(sock);
+        if client.is_available() {
+            if let Ok(r) = client.exec("git", &["-C", "/workspace", "reset", "--hard", &base]) {
+                if r.exit_code == 0 {
+                    push_panel_message(
+                        app,
+                        format!("Discarded agent changes (in-guest reset to {}).", short),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    if !super::gitcmd::has_real_git_dir(&wt) {
+        app.set_status_message("Refusing: clone .git is not a real directory.");
+        return;
+    }
+    let out = super::gitcmd::host_git()
+        .args(["reset", "--hard", &base])
+        .current_dir(&wt)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            push_panel_message(app, format!("Discarded agent changes; clone reset to {}.", short))
+        }
+        Ok(o) => app.set_status_message(format!("Discard failed: {}", String::from_utf8_lossy(&o.stderr))),
+        Err(e) => app.set_status_message(format!("Discard failed: {}", e)),
+    }
+}
+
+/// `/mounts` — show the virtiofs/mount surface for the focused panel.
+fn handle_mounts(app: &mut App) {
+    let panel = match app.panels.get(app.focused_panel) {
+        Some(p) => p,
+        None => {
+            app.set_status_message("No focused panel.");
+            return;
+        }
+    };
+    let mut lines = vec!["Mounts for this panel:".to_string()];
+    match panel.project_mount.as_ref().and_then(|pm| pm.worktree_base.as_ref()) {
+        Some(wt) => lines.push(format!("  RW  {}  ->  /workspace", wt.display())),
+        None => lines.push("  (no project mount; sandbox has its own rootfs only)".to_string()),
+    }
+    if let Some(pm) = panel.project_mount.as_ref() {
+        for (src, _branch) in &pm.created_branches {
+            lines.push(format!("  source repo: {}", src.display()));
+        }
+    }
+    lines.push("  agent config/state mounts are set up by the deploy planner (read-only + per-sandbox state).".to_string());
+    push_panel_message(app, lines.join("\n"));
+}
+
+/// `/exec <cmd...>` — run a command in the sandbox over the exec channel.
+fn handle_exec(app: &mut App, args: &[String]) {
+    if args.is_empty() {
+        app.set_status_message("Usage: /exec <command> [args...]");
+        return;
+    }
+    let sock = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.exec_pty.as_ref())
+        .map(|(sock, _, _)| sock.clone());
+    let sock = match sock {
+        Some(s) => s,
+        None => {
+            app.set_status_message(
+                "This sandbox has no exec channel (only interactive/`--exec` sandboxes do).",
+            );
+            return;
+        }
+    };
+    let program = args[0].clone();
+    let rest: Vec<String> = args[1..].to_vec();
+    let arg_refs: Vec<&str> = rest.iter().map(String::as_str).collect();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let client = runtime::exec::ExecClient::new(sock);
+        client.exec(&program, &arg_refs)
+    }));
+    match result {
+        Ok(Ok(res)) => {
+            let mut content = String::new();
+            if !res.stdout.is_empty() {
+                content.push_str(&res.stdout);
+            }
+            if !res.stderr.is_empty() {
+                content.push_str(&format!("\n[stderr]\n{}", res.stderr));
+            }
+            if content.trim().is_empty() {
+                content = format!("(exit {})", res.exit_code);
+            }
+            push_panel_message(app, content);
+        }
+        Ok(Err(e)) => app.set_status_message(format!("exec failed: {}", e)),
+        Err(_) => app.set_status_message("exec failed unexpectedly."),
+    }
+}
+
+/// `/logs [n]` — show the last `n` lines of the sandbox console log.
+fn handle_logs(app: &mut App, count: Option<usize>) {
+    let name = app
+        .panels
+        .get(app.focused_panel)
+        .and_then(|p| p.supervisor_name())
+        .map(str::to_string);
+    let name = match name {
+        Some(n) => n,
+        None => {
+            app.set_status_message("No supervised sandbox for this panel.");
+            return;
+        }
+    };
+    let client = crate::supervisor::client::SupervisorClient::new(&name);
+    let n = count.unwrap_or(50);
+    match client.read_log_tail(n) {
+        Ok(text) => {
+            let content = if text.trim().is_empty() {
+                "(console log is empty)".to_string()
+            } else {
+                text
+            };
+            push_panel_message(app, content);
+        }
+        Err(e) => app.set_status_message(format!("Failed to read logs: {}", e)),
     }
 }
 
@@ -2542,135 +3186,20 @@ fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
 }
 
 /// Get the SSH port and key path from the focused panel, if available.
-fn panel_mount_root(app: &App) -> Option<(usize, Option<std::path::PathBuf>)> {
+fn panel_mount_root(
+    app: &App,
+) -> Option<(usize, Option<std::path::PathBuf>, Option<std::path::PathBuf>)> {
     let idx = app.focused_panel;
     let panel = app.panels.get(idx)?;
     let mount_root = panel
         .project_mount
         .as_ref()
         .and_then(|pm| pm.worktree_base.clone());
-    Some((idx, mount_root))
-}
-
-/// Resolve a user-supplied path: strip quotes, expand `~`, resolve relative paths.
-fn resolve_upload_path(raw: &str) -> std::path::PathBuf {
-    // Strip surrounding quotes.
-    let trimmed = raw.trim().trim_matches('\'').trim_matches('"');
-
-    // Expand leading ~ to home directory.
-    let expanded = if trimmed == "~" {
-        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"))
-    } else if let Some(rest) = trimmed.strip_prefix("~/") {
-        match dirs::home_dir() {
-            Some(home) => home.join(rest),
-            None => std::path::PathBuf::from(trimmed),
-        }
-    } else {
-        std::path::PathBuf::from(trimmed)
-    };
-
-    // Resolve relative paths against the current working directory.
-    if expanded.is_relative() {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&expanded))
-            .unwrap_or(expanded)
-    } else {
-        expanded
-    }
-}
-
-/// Handle the `/upload <path>` command.
-fn handle_upload(app: &mut App, path: &str, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let (panel_idx, mount_root) = match panel_mount_root(app) {
-        Some(info) => info,
-        None => {
-            app.set_system_message(ChatMessage {
-                role: MessageRole::System,
-                content: "No panel to upload to. Use /add <agent> first.".to_string(),
-            });
-            return;
-        }
-    };
-    if mount_root.is_none() {
-        app.set_system_message(ChatMessage {
-            role: MessageRole::System,
-            content: "No project mount for this panel. Uploads require a mounted workspace."
-                .to_string(),
-        });
-        return;
-    }
-
-    let host_path = resolve_upload_path(path);
-    if !host_path.exists() {
-        app.set_system_message(ChatMessage {
-            role: MessageRole::System,
-            content: format!("File not found: {}", host_path.display()),
-        });
-        return;
-    }
-    if !host_path.is_file() {
-        app.set_system_message(ChatMessage {
-            role: MessageRole::System,
-            content: format!("Not a file: {}", host_path.display()),
-        });
-        return;
-    }
-
-    let filename = host_path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    app.set_status_message(format!("Uploading {}...", filename));
-
-    super::upload::spawn_file_upload(mount_root, host_path, panel_idx, tx.clone());
-}
-
-/// Handle the `/paste-image` command.
-fn handle_paste_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let (panel_idx, mount_root) = match panel_mount_root(app) {
-        Some(info) => info,
-        None => {
-            app.set_system_message(ChatMessage {
-                role: MessageRole::System,
-                content: "No panel to upload to. Use /add <agent> first.".to_string(),
-            });
-            return;
-        }
-    };
-    if mount_root.is_none() {
-        app.set_system_message(ChatMessage {
-            role: MessageRole::System,
-            content: "No project mount for this panel. Uploads require a mounted workspace."
-                .to_string(),
-        });
-        return;
-    }
-
-    app.set_status_message("Reading clipboard image...");
-    let tx = tx.clone();
-
-    tokio::spawn(async move {
-        // Clipboard access is blocking — run in spawn_blocking.
-        let result = tokio::task::spawn_blocking(super::upload::read_clipboard_image).await;
-
-        match result {
-            Ok(Ok((png_bytes, filename))) => {
-                super::upload::spawn_bytes_upload(mount_root, png_bytes, filename, panel_idx, tx);
-            }
-            Ok(Err(e)) => {
-                let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
-                    error: e,
-                });
-            }
-            Err(e) => {
-                let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
-                    error: format!("Clipboard task panicked: {}", e),
-                });
-            }
-        }
-    });
+    let exec_sock = panel
+        .supervisor_name()
+        .map(|n| supervisor_sandbox_dir(n).join("exec.sock"))
+        .filter(|p| p.exists());
+    Some((idx, mount_root, exec_sock))
 }
 
 /// Handle a bracketed paste event.
@@ -2697,7 +3226,7 @@ fn handle_paste_event(app: &mut App, text: String, tx: &mpsc::UnboundedSender<Ap
     // In Terminal mode: if the paste is empty (image-only clipboard via Cmd+V),
     // check the clipboard for an image to upload.
     if text.is_empty() {
-        if let Some((panel_idx, mount_root)) = panel_mount_root(app) {
+        if let Some((panel_idx, mount_root, exec_sock)) = panel_mount_root(app) {
             if mount_root.is_none() {
                 tracing::debug!("Empty paste ignored: no project mount for panel");
                 return;
@@ -2715,7 +3244,7 @@ fn handle_paste_event(app: &mut App, text: String, tx: &mpsc::UnboundedSender<Ap
                             "Empty paste resolved to clipboard image upload"
                         );
                         super::upload::spawn_bytes_upload(
-                            mount_root, png_bytes, filename, panel_idx, tx,
+                            mount_root, png_bytes, filename, exec_sock, panel_idx, tx,
                         );
                     }
                     Ok(Err(e)) => {
@@ -2769,7 +3298,7 @@ fn send_bracketed_paste(write_tx: &mpsc::UnboundedSender<Vec<u8>>, text: &str) -
 }
 
 /// Handle a mouse event for panel-scoped text selection.
-fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
+pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     let x = mouse.column;
     let y = mouse.row;
 
@@ -3948,6 +4477,31 @@ fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
 }
 
 fn parse_runtime_env_file(path: &str) -> std::result::Result<Vec<(String, String)>, String> {
+    // Reject a symlinked path (a symlinked .env could point anywhere) and cap
+    // the size before reading, so `--env-file` can't be used to slurp an
+    // arbitrary host file into the sandbox's environment.
+    const MAX_ENV_FILE: u64 = 1 << 20; // 1 MiB
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(format!("env file '{}' is a symlink; refusing", path));
+        }
+        Ok(meta) if !meta.is_file() => {
+            return Err(format!("env file '{}' is not a regular file", path));
+        }
+        Ok(meta) if meta.len() > MAX_ENV_FILE => {
+            return Err(format!(
+                "env file '{}' is too large ({} bytes; max {})",
+                path,
+                meta.len(),
+                MAX_ENV_FILE
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(format!("failed to access env file '{}': {}", path, e));
+        }
+    }
+
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read env file '{}': {}", path, e))?;
 
@@ -3975,6 +4529,7 @@ fn add_agent(
     branch: Option<&str>,
     name: Option<&str>,
     auto_mode: bool,
+    interactive: bool,
     prompt: Option<&str>,
     model: Option<&str>,
     use_env_keys: &[String],
@@ -3997,6 +4552,7 @@ fn add_agent(
 
     // Headless mode setup.
     panel.auto_mode = auto_mode;
+    panel.interactive = interactive && !auto_mode;
     if auto_mode {
         panel.permissions = sandbox::Permissions::AllowAll;
         let task = prompt.unwrap_or("(no prompt)");
@@ -4112,6 +4668,14 @@ fn add_agent(
 
     let mut config = builder.build();
 
+    // Propagate the resolved agent type onto the config so downstream deploy
+    // planning (`deploy_plan_for` -> `has_agent`) actually builds the agent
+    // command. Without this the VM boots with no command (sleep hold).
+    if let Some(agent_type) = panel.agent_type {
+        config.agent_type = Some(agent_type);
+    }
+    config.interactive = panel.interactive;
+
     // Pass auto_sync setting to project config so sandbox creation
     // knows whether to use setup() or setup_deferred().
     if let Some(ref mut proj) = config.sandbox.project {
@@ -4139,7 +4703,8 @@ fn add_agent(
 }
 
 /// Add an agent panel from a resolved AgentSandboxConfig (from sandbox.yml).
-fn add_agent_from_config(
+// Visibility: pub(crate) so the #[cfg(test)] vm_test module can call it.
+pub(crate) fn add_agent_from_config(
     app: &mut App,
     key: &str,
     mut config: AgentSandboxConfig,
@@ -4157,11 +4722,20 @@ fn add_agent_from_config(
     let mut panel = AgentPanel::new(&agent_type);
     panel.display_name = Some(display_name.clone());
     panel.auto_mode = config.auto_mode;
+    panel.interactive = config.interactive && !config.auto_mode;
     panel.permissions = config.permissions;
     panel.model = config.model.clone();
     if config.auto_mode {
         let task = config.prompt.as_deref().unwrap_or("(no prompt)");
         panel.headless_state = Some(super::app::HeadlessState::new(task));
+    }
+
+    // Propagate the detected agent type onto the config so deploy planning
+    // builds the agent command (see add_agent for the same fix).
+    if config.agent_type.is_none() {
+        if let Ok(at) = agent_type.parse::<sandbox::AgentType>() {
+            config.agent_type = Some(at);
+        }
     }
 
     // Copy env vars from config to panel.
@@ -4295,9 +4869,9 @@ fn collect_state_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn detect_goose_session_id_from_state(
-    clone_path: &std::path::Path,
+    state_root: &std::path::Path,
 ) -> std::result::Result<Option<String>, String> {
-    let db_path = clone_path.join(".nanosb-state/.config/goose/data/sessions/sessions.db");
+    let db_path = state_root.join(".config_goose/data/sessions/sessions.db");
     if !db_path.exists() {
         return Ok(None);
     }
@@ -4331,13 +4905,12 @@ fn detect_goose_session_id_from_state(
 
 fn detect_agent_session_id_from_state(
     agent_name: &str,
-    clone_path: &std::path::Path,
+    state_root: &std::path::Path,
 ) -> std::result::Result<Option<String>, String> {
     if normalize_agent_name(agent_name) == "goose" {
-        return detect_goose_session_id_from_state(clone_path);
+        return detect_goose_session_id_from_state(state_root);
     }
 
-    let state_root = clone_path.join(".nanosb-state");
     if !state_root.exists() {
         return Ok(None);
     }
@@ -4346,7 +4919,7 @@ fn detect_agent_session_id_from_state(
         "claude" => state_root.join(".claude"),
         "codex" => state_root.join(".codex"),
         "cursor" => state_root.join(".cursor"),
-        _ => state_root,
+        _ => state_root.to_path_buf(),
     };
 
     if !agent_dir.exists() {
@@ -4486,11 +5059,15 @@ fn resume_session(
             .as_ref()
             .and_then(|pm| pm.worktree_base.as_ref())
         {
-            detect_agent_session_id_from_state(&agent_type, clone).map_err(|e| {
+            // Agent session state lives in the sandbox's dedicated state mounts
+            // (`<sandbox_dir>/state`), outside the untrusted workspace clone.
+            let _ = clone;
+            let state_root = sandbox_state_dir(&sp.config.sandbox.name);
+            detect_agent_session_id_from_state(&agent_type, &state_root).map_err(|e| {
                 format!(
                     "failed to detect session id for agent '{}' from '{}': {}",
                     agent_type,
-                    clone.display(),
+                    state_root.display(),
                     e
                 )
             })?
@@ -4563,7 +5140,8 @@ fn handle_env(app: &mut App, assignment: Option<(String, String)>) {
         }
         Some((key, value)) => {
             if let Some(panel) = app.focused_panel_mut() {
-                panel.runtime_env_keys.remove(&key);
+                // Do not un-mark a runtime key: doing so would let a runtime-only
+                // key name leak into the persisted session file.
                 panel.env.insert(key.clone(), value);
                 panel.chat_history.push(ChatMessage {
                     role: MessageRole::System,
@@ -4680,17 +5258,18 @@ fn build_session_from_app(
         let selected_agent_session_id =
             if let Some(existing) = panel.selected_agent_session_id.clone() {
                 Some(existing)
-            } else if let Some(ref clone) = clone_path {
-                detect_agent_session_id_from_state(&panel.agent_name, clone).map_err(|e| {
+            } else {
+                // Agent session state lives in the sandbox's dedicated state
+                // mounts, not the untrusted workspace clone.
+                let state_root = sandbox_state_dir(&config.sandbox.name);
+                detect_agent_session_id_from_state(&panel.agent_name, &state_root).map_err(|e| {
                     format!(
                         "failed to detect session id for agent '{}' from '{}': {}",
                         panel.agent_name,
-                        clone.display(),
+                        state_root.display(),
                         e
                     )
                 })?
-            } else {
-                None
             };
 
         panels.push(SessionPanel {
@@ -4825,25 +5404,6 @@ async fn handle_skills_list(app: &mut App) {
         lines.join("\n")
     };
     push_skills_feedback(app, content, true);
-}
-
-/// Handle `/skills add <name>` — show redeploy message.
-async fn handle_skills_add(app: &mut App, _name: &str) {
-    push_skills_feedback(
-        app,
-        "Skill hot-reload was removed — add skills to sandbox.yml and redeploy (nanosb apply)."
-            .to_string(),
-        true,
-    );
-}
-
-/// Handle `/skills remove <name>` — show redeploy message.
-async fn handle_skills_remove(app: &mut App, _name: &str) {
-    push_skills_feedback(
-        app,
-        "Skill hot-reload was removed — remove skills from sandbox.yml and redeploy (nanosb apply).".to_string(),
-        true,
-    );
 }
 
 /// Handle `/skills show <name>` — show skill content from the registry.
@@ -5090,7 +5650,7 @@ mod tests {
     #[test]
     fn test_detect_agent_session_id_from_claude_session_id_camel_case() {
         let clone_dir = make_temp_dir("claude-session-detect");
-        let sessions_dir = clone_dir.join(".nanosb-state/.claude/sessions");
+        let sessions_dir = clone_dir.join(".claude/sessions");
         fs::create_dir_all(&sessions_dir).expect("failed to create claude sessions dir");
 
         let session_file = sessions_dir.join("280.json");
@@ -5120,7 +5680,7 @@ mod tests {
     #[test]
     fn test_detect_goose_session_id_from_sqlite_db() {
         let clone_dir = make_temp_dir("goose-session-db");
-        let db_dir = clone_dir.join(".nanosb-state/.config/goose/data/sessions");
+        let db_dir = clone_dir.join(".config_goose/data/sessions");
         fs::create_dir_all(&db_dir).expect("failed to create goose sessions dir");
         let db_path = db_dir.join("sessions.db");
 
@@ -5158,7 +5718,7 @@ mod tests {
     #[test]
     fn test_detect_goose_session_id_schema_error_fails() {
         let clone_dir = make_temp_dir("goose-bad-schema");
-        let db_dir = clone_dir.join(".nanosb-state/.config/goose/data/sessions");
+        let db_dir = clone_dir.join(".config_goose/data/sessions");
         fs::create_dir_all(&db_dir).expect("failed to create goose sessions dir");
         let db_path = db_dir.join("sessions.db");
 

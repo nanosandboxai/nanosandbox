@@ -77,14 +77,16 @@ Additional re-exports: `SandboxConfig`, `ExecResult`, `ExecOptions`, `SandboxSta
 
 ### Build libkrun (first time only)
 
-libkrun is consumed as a prebuilt static library from upstream. Build it once:
+libkrun is consumed as a prebuilt static library from the nanosandbox fork. Build it once:
 
 ```bash
 ./scripts/build-libkrun.sh
 ```
 
-This clones [containers/libkrun](https://github.com/containers/libkrun) at v1.19.5,
-builds it as `libkrun.a`, and places it in `~/.nanosandbox/lib/`.
+This clones [nanosandboxai/libkrun](https://github.com/nanosandboxai/libkrun)
+branch `nanosandbox` (base upstream v1.19.5) at a pinned SHA, builds it as
+`libkrun.a`, and places it in `~/.nanosandbox/lib/`. The fork carries the
+nanosandbox customizations (next-mode init, macOS virtiofs hardening) as commits.
 
 ### Build
 

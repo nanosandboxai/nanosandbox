@@ -29,6 +29,34 @@ Status legend: **Implemented** / **Partial** / **Deferred** (with rationale).
 4. **Raw console bytes via `nanosb logs`** — the TUI uses a VT parser; the CLI writes plain stdout.
 5. **Opt-in exec agent** — `--exec` adds an in-guest listener for host-driven command execution. Mitigated: vsock-only (not network-reachable), gated by the sandbox dir's 0700/0600 permissions, exec verbs only, runs as the configured (non-root) user. Enabling it is an explicit per-sandbox choice; it is off by default.
 
+## Host↔agent git change-management hardening
+
+The agent has a RW virtiofs share over its clone, so it can rewrite the clone's
+`.git/config`/hooks/attributes. Earlier, the host ran plain `git` against that
+clone, which made agent-controlled config a host-code-execution vector
+(`core.fsmonitor`). This is now closed:
+
+- **All host git calls** go through `src/tui/gitcmd.rs::host_git()`, which
+  disables `core.fsmonitor`, `core.hooksPath`, `core.pager/editor/sshCommand/
+  gitProxy/askPass/alternateRefsCommand`, `core.attributesFile`, `diff.external`,
+  `uploadpack.packObjectsHook`, plus `--no-optional-locks`. Covers the sidebar
+  status/diff, the sync poll, `/branches`, `/gitsync now`, and `cmd_cleanup`.
+- **`.git` validation** — `has_real_git_dir()` refuses a symlinked or escaping
+  `.git`, so a compromised clone cannot redirect host git into another repo.
+- **Source repo is read-only to nanosb** — the setup-time source branch was
+  removed; agent changes are fetched to `refs/nanosb/<id>` (never
+  `refs/heads/*`), and the user reviews (`/diff`, `/status`) and applies
+  explicitly.
+- **Non-git projects** are no longer `git init`-ed in place: the repo is
+  initialised inside the clone and the source directory is left untouched.
+- **`/edit`** sanitizes the clone's `.git/config` before opening it in a
+  git-aware tool.
+- **`--env-file`** rejects symlinks/non-regular files and caps size before read.
+- **`nanosb gc`** reclaims dead supervisor dirs and clone trees not referenced
+  by a saved session; `nanosb cleanup` skips session-referenced clones and
+  supports `--dry-run`.
+
+
 ## Evidence
 
 - Patched libkrun (v1.19.5 + next-mode init patch) verified on macOS Apple Silicon (HVF).

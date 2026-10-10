@@ -234,6 +234,108 @@ pub async fn connect_console(
     })
 }
 
+/// Attach to an agent running interactively through the in-guest exec agent's PTY.
+///
+/// Unlike [`connect_console`] (a non-TTY VM console), this starts the agent as a
+/// child of the guest exec agent with a real PTY (`tty = true`), so interactive
+/// TUIs (e.g. Claude Code) get a terminal. Output is forwarded as
+/// `AppEvent::TerminalData`; the returned handle's channels drive stdin + resize.
+///
+/// `exec_sock` is the host socket bridged to the guest vsock exec port.
+pub async fn connect_exec_pty(
+    exec_sock: std::path::PathBuf,
+    program: String,
+    args: Vec<String>,
+    cols: u16,
+    rows: u16,
+    panel_idx: usize,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<SshTerminalHandle, String> {
+    use runtime::exec::{ExecClient, ExecEvent, ExecOptions};
+
+    if !exec_sock.exists() {
+        return Err(format!(
+            "no exec socket at {} (interactive sandbox not ready)",
+            exec_sock.display()
+        ));
+    }
+
+    let client = ExecClient::new(exec_sock);
+    let opts = ExecOptions::new()
+        .tty(true)
+        .size(cols.max(1), rows.max(1))
+        .env("TERM", "xterm-256color")
+        .env("COLORTERM", "truecolor")
+        .env("COLORFGBG", "15;0");
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let handle = client
+        .start(&program, &arg_refs, opts)
+        .map_err(|e| e.to_string())?;
+
+    let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (resize_tx, mut resize_rx) = mpsc::unbounded_channel::<(u16, u16)>();
+
+    // A single blocking task owns the ExecHandle (it is not Send-shareable) and
+    // multiplexes: drain pending input/resize, then read one guest event with a
+    // short timeout so input stays responsive.
+    let tx_read = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut handle = handle;
+        loop {
+            while let Ok(bytes) = write_rx.try_recv() {
+                let s = String::from_utf8_lossy(&bytes).to_string();
+                if handle.write_stdin(&s).is_err() {
+                    return;
+                }
+            }
+            while let Ok((c, r)) = resize_rx.try_recv() {
+                let _ = handle.resize(c, r);
+            }
+
+            match handle.next_event(Some(std::time::Duration::from_millis(50))) {
+                Ok(Some(ExecEvent::Output(chunk))) => {
+                    let _ = tx_read.send(AppEvent::TerminalData {
+                        panel_idx,
+                        data: chunk.data.into_bytes(),
+                    });
+                }
+                Ok(Some(ExecEvent::Exit { code })) => {
+                    let error = if code != 0 {
+                        Some(format!("agent exited with code {}", code))
+                    } else {
+                        None
+                    };
+                    let _ = tx_read.send(AppEvent::SshDisconnected { panel_idx, error });
+                    return;
+                }
+                Ok(Some(ExecEvent::Error { message })) => {
+                    let _ = tx_read.send(AppEvent::SshDisconnected {
+                        panel_idx,
+                        error: Some(message),
+                    });
+                    return;
+                }
+                Ok(Some(ExecEvent::Started { .. })) => {}
+                Ok(None) => {
+                    let _ = tx_read.send(AppEvent::SshDisconnected {
+                        panel_idx,
+                        error: None,
+                    });
+                    return;
+                }
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
+    });
+
+    Ok(SshTerminalHandle {
+        write_tx,
+        resize_tx,
+    })
+}
+
 /// Convert a crossterm `KeyEvent` into the byte sequence expected by a remote PTY.
 pub fn crossterm_key_to_bytes(key: KeyEvent) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -650,7 +752,19 @@ pub fn url_dedup_key(url: &str) -> String {
 }
 
 /// Open a URL in the host machine's default browser.
+///
+/// Only `http(s)` URLs are opened: URLs are scraped from the guest console, so
+/// handing arbitrary schemes (`javascript:`, `file:`, `data:`, custom app
+/// handlers) to the host opener would let guest output drive host actions.
 pub fn open_url_in_browser(url: &str) {
+    let scheme_ok = url
+        .get(..8)
+        .map(|_| url.starts_with("https://") || url.starts_with("http://"))
+        .unwrap_or(false);
+    if !scheme_ok {
+        tracing::warn!(url = %url, "refusing to open non-http(s) URL");
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
         match std::process::Command::new("open")

@@ -75,15 +75,45 @@ pub fn detect_file_paths(text: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Resolve `path` relative to `root`, normalizing `..` components, and reject
+/// the result if it escapes outside `root`.
+///
+/// Unlike `canonicalize`, this works for paths that do not yet exist on disk.
+/// Returns `None` when the root cannot be canonicalized or the path escapes.
+fn resolve_within_root(root: &Path, path: &Path) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let joined = root.join(path);
+    // Normalize `..` components without requiring the path to exist.
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    if normalized.starts_with(&root) {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
 /// Map a guest upload path (`/workspace/...`) onto the host mount root.
+///
+/// Returns `None` if the path does not start with `/workspace` or if the
+/// resolved host path escapes the mount root.
 pub fn host_upload_path(mount_root: &Path, remote_path: &str) -> Option<PathBuf> {
     let rel = remote_path.strip_prefix("/workspace")?;
-    Some(mount_root.join(rel.trim_start_matches('/')))
+    let rel = rel.trim_start_matches('/');
+    resolve_within_root(mount_root, Path::new(rel))
 }
 
 /// Write upload bytes into the panel's virtiofs workspace mount.
 ///
 /// The guest sees the same bytes at `remote_path` because the mount is shared.
+/// Returns an error if the resolved path escapes the mount root.
 pub async fn fs_upload(
     mount_root: &Path,
     remote_path: &str,
@@ -91,10 +121,33 @@ pub async fn fs_upload(
 ) -> Result<u64, String> {
     let host_path = host_upload_path(mount_root, remote_path)
         .ok_or_else(|| format!("unsupported upload path: {}", remote_path))?;
+    // The clone is agent-writable, so a symlinked parent or destination could
+    // redirect the host write outside the mount root. Canonicalize the created
+    // parent and reject symlink destinations before writing.
+    let root = mount_root
+        .canonicalize()
+        .map_err(|e| format!("Canonicalize mount root: {}", e))?;
     if let Some(parent) = host_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| format!("Create {}: {}", parent.display(), e))?;
+        let canon_parent = tokio::fs::canonicalize(parent)
+            .await
+            .map_err(|e| format!("Canonicalize {}: {}", parent.display(), e))?;
+        if !canon_parent.starts_with(&root) {
+            return Err(format!(
+                "Upload parent escapes mount root: {}",
+                canon_parent.display()
+            ));
+        }
+    }
+    if let Ok(meta) = tokio::fs::symlink_metadata(&host_path).await {
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "Upload destination is a symlink: {}",
+                host_path.display()
+            ));
+        }
     }
     tokio::fs::write(&host_path, local_data)
         .await
@@ -102,10 +155,54 @@ pub async fn fs_upload(
     Ok(local_data.len() as u64)
 }
 
+/// Upload bytes to the guest over the exec channel (never a host workspace
+/// write). The payload is base64-encoded and piped to `base64 -d` inside the
+/// guest, then stdin is closed to signal EOF. Returns the byte count.
+pub fn exec_upload(sock: &Path, remote_path: &str, data: &[u8]) -> Result<u64, String> {
+    use base64::Engine;
+
+    let client = runtime::exec::ExecClient::new(sock.to_path_buf());
+    if !client.is_available() {
+        return Err("exec channel unavailable".to_string());
+    }
+    let dir = Path::new(remote_path)
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or(UPLOAD_DIR);
+    let script = format!("mkdir -p '{dir}' && base64 -d > '{remote_path}'");
+    let mut handle = client
+        .start("sh", &["-c", &script], runtime::exec::ExecOptions::default())
+        .map_err(|e| format!("exec start: {e}"))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    handle.write_stdin(&b64).map_err(|e| format!("exec stdin: {e}"))?;
+    handle.close_stdin().map_err(|e| format!("exec close stdin: {e}"))?;
+    loop {
+        match handle
+            .next_event(None)
+            .map_err(|e| format!("exec event: {e}"))?
+        {
+            Some(runtime::exec::ExecEvent::Exit { code }) => {
+                return if code == 0 {
+                    Ok(data.len() as u64)
+                } else {
+                    Err(format!("guest decode exited {code}"))
+                };
+            }
+            Some(runtime::exec::ExecEvent::Error { message }) => return Err(message),
+            Some(_) => {}
+            None => return Err("exec connection closed".to_string()),
+        }
+    }
+}
+
 /// Spawn an async upload task for a host file.
+///
+/// Checks file size BEFORE reading, rejects symlink sources, and ensures the
+/// destination path stays within `/workspace/.uploads/<basename>`.
 pub fn spawn_file_upload(
     mount_root: Option<PathBuf>,
     host_path: PathBuf,
+    exec_sock: Option<PathBuf>,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
@@ -125,6 +222,52 @@ pub fn spawn_file_upload(
             return;
         };
 
+        // Reject symlink sources: use symlink_metadata to detect the link
+        // itself rather than its target.
+        match tokio::fs::symlink_metadata(&host_path).await {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    let _ = tx.send(AppEvent::UploadFailed {
+                        panel_idx,
+                        error: format!("Symlink not allowed: {}", host_path.display()),
+                    });
+                    return;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::UploadFailed {
+                    panel_idx,
+                    error: format!("Stat {}: {}", host_path.display(), e),
+                });
+                return;
+            }
+        }
+
+        // Check file size BEFORE reading the entire file into memory.
+        match tokio::fs::metadata(&host_path).await {
+            Ok(meta) => {
+                if meta.len() > MAX_UPLOAD_SIZE {
+                    let _ = tx.send(AppEvent::UploadFailed {
+                        panel_idx,
+                        error: format!(
+                            "File too large: {} ({} MB, max {} MB)",
+                            filename,
+                            meta.len() / (1024 * 1024),
+                            MAX_UPLOAD_SIZE / (1024 * 1024)
+                        ),
+                    });
+                    return;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::UploadFailed {
+                    panel_idx,
+                    error: format!("Stat {}: {}", host_path.display(), e),
+                });
+                return;
+            }
+        }
+
         let data = match tokio::fs::read(&host_path).await {
             Ok(d) => d,
             Err(e) => {
@@ -136,25 +279,18 @@ pub fn spawn_file_upload(
             }
         };
 
-        if data.len() as u64 > MAX_UPLOAD_SIZE {
-            let _ = tx.send(AppEvent::UploadFailed {
-                panel_idx,
-                error: format!(
-                    "File too large: {} ({} MB, max {} MB)",
-                    filename,
-                    data.len() / (1024 * 1024),
-                    MAX_UPLOAD_SIZE / (1024 * 1024)
-                ),
-            });
-            return;
-        }
-
         let _ = tx.send(AppEvent::UploadStarted {
             panel_idx,
             filename: filename.clone(),
         });
 
-        match fs_upload(&mount_root, &remote_path, &data).await {
+        // Prefer the exec channel (no host write into the agent-writable
+        // workspace); fall back to the guarded host write if it is unavailable.
+        let size = match try_exec_upload(&exec_sock, &remote_path, &data).await {
+            Some(r) => r,
+            None => fs_upload(&mount_root, &remote_path, &data).await,
+        };
+        match size {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
                     panel_idx,
@@ -173,11 +309,29 @@ pub fn spawn_file_upload(
     });
 }
 
+/// Send `data` over the exec channel when a socket is available. Returns `None`
+/// when there is no socket or the channel is unusable (caller falls back).
+async fn try_exec_upload(
+    exec_sock: &Option<PathBuf>,
+    remote_path: &str,
+    data: &[u8],
+) -> Option<Result<u64, String>> {
+    let sock = exec_sock.clone()?;
+    let rp = remote_path.to_string();
+    let d = data.to_vec();
+    tokio::task::spawn_blocking(move || exec_upload(&sock, &rp, &d))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(Ok)
+}
+
 /// Spawn an async upload task for raw bytes (e.g. clipboard image).
 pub fn spawn_bytes_upload(
     mount_root: Option<PathBuf>,
     data: Vec<u8>,
     filename: String,
+    exec_sock: Option<PathBuf>,
     panel_idx: usize,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
@@ -211,7 +365,11 @@ pub fn spawn_bytes_upload(
             filename: filename.clone(),
         });
 
-        match fs_upload(&mount_root, &remote_path, &data).await {
+        let size = match try_exec_upload(&exec_sock, &remote_path, &data).await {
+            Some(r) => r,
+            None => fs_upload(&mount_root, &remote_path, &data).await,
+        };
+        match size {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
                     panel_idx,
@@ -314,5 +472,203 @@ mod tests {
         assert_eq!(format_size(1536), "1.5 KB");
         assert_eq!(format_size(1048576), "1.0 MB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    // --- resolve_within_root ---
+
+    #[test]
+    fn test_resolve_within_root_normal() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, b"hello").unwrap();
+        let result = resolve_within_root(dir.path(), Path::new("test.txt"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), file_path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_within_root_traversal_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = resolve_within_root(dir.path(), Path::new("../etc/passwd"));
+        assert!(result.is_none(), "traversal via .. must be rejected");
+    }
+
+    #[test]
+    fn test_resolve_within_root_nonexistent_allowed() {
+        // Non-existent paths are allowed as long as they don't escape.
+        let dir = tempfile::tempdir().unwrap();
+        let result = resolve_within_root(dir.path(), Path::new("nonexistent/file.txt"));
+        assert!(result.is_some());
+        assert!(result.unwrap().starts_with(dir.path().canonicalize().unwrap()));
+    }
+
+    // --- host_upload_path ---
+
+    #[test]
+    fn test_host_upload_path_normal() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let file_path = sub.join("foo.txt");
+        std::fs::write(&file_path, b"data").unwrap();
+        let result = host_upload_path(dir.path(), "/workspace/sub/foo.txt");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), file_path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_host_upload_path_traversal_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = host_upload_path(dir.path(), "/workspace/../../etc/passwd");
+        assert!(
+            result.is_none(),
+            "traversal via .. in remote path must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_host_upload_path_non_workspace_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(host_upload_path(dir.path(), "/tmp/foo").is_none());
+        // /workspace alone maps to the mount root itself (valid).
+        assert!(host_upload_path(dir.path(), "/workspace").is_some());
+    }
+
+    // --- spawn_file_upload (async, integration-style) ---
+
+    /// Helper: create a temp file with given content and return (dir, path).
+    fn make_temp_file(content: &[u8]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upload.bin");
+        std::fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn test_spawn_file_upload_symlink_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real_file");
+        std::fs::write(&target, b"data").unwrap();
+        let link = dir.path().join("link_file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::soft_link(&target, &link).unwrap();
+
+        let mount_root = dir.path().to_path_buf();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        spawn_file_upload(Some(mount_root), link, None, 0, tx);
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let event = rx.try_recv().unwrap();
+        match event {
+            AppEvent::UploadFailed { error, .. } => {
+                assert!(error.contains("Symlink"), "error: {}", error);
+            }
+            _ => panic!("expected UploadFailed, got a different event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_spawn_file_upload_oversize_rejected() {
+        let mount_dir = tempfile::tempdir().unwrap();
+        let (_dir, path) = make_temp_file(&[0u8; (MAX_UPLOAD_SIZE + 1) as usize]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        spawn_file_upload(Some(mount_dir.path().to_path_buf()), path, None, 0, tx);
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let event = rx.try_recv().unwrap();
+        match event {
+            AppEvent::UploadFailed { error, .. } => {
+                assert!(error.contains("too large"), "error: {}", error);
+            }
+            _ => panic!("expected UploadFailed, got a different event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_spawn_file_upload_normal_accepted() {
+        let mount_dir = tempfile::tempdir().unwrap();
+        let (_dir, path) = make_temp_file(b"hello world");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        spawn_file_upload(Some(mount_dir.path().to_path_buf()), path, None, 0, tx);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Drain all events — expect UploadStarted then UploadComplete.
+        let mut started = false;
+        let mut completed = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AppEvent::UploadStarted { .. } => started = true,
+                AppEvent::UploadComplete { size, .. } => {
+                    assert_eq!(size, 11);
+                    completed = true;
+                }
+                AppEvent::UploadFailed { error, .. } => {
+                    panic!("unexpected UploadFailed: {}", error);
+                }
+                _ => {}
+            }
+        }
+        assert!(started, "expected UploadStarted");
+        assert!(completed, "expected UploadComplete");
+    }
+
+    #[tokio::test]
+    async fn exec_upload_sends_base64_then_closes_stdin() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("exec.sock");
+        let out = dir.path().join("out.bin");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let out_c = out.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let read_frame = |s: &mut std::os::unix::net::UnixStream| -> Option<Vec<u8>> {
+                let mut len = [0u8; 4];
+                s.read_exact(&mut len).ok()?;
+                let mut buf = vec![0u8; u32::from_le_bytes(len) as usize];
+                s.read_exact(&mut buf).ok()?;
+                Some(buf)
+            };
+            let write_frame = |s: &mut std::os::unix::net::UnixStream, body: &[u8]| {
+                s.write_all(&(body.len() as u32).to_le_bytes()).unwrap();
+                s.write_all(body).unwrap();
+                s.flush().unwrap();
+            };
+
+            let _req = read_frame(&mut stream).expect("request frame");
+            let mut b64 = String::new();
+            loop {
+                let Some(frame) = read_frame(&mut stream) else { break };
+                let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+                match v.get("type").and_then(|t| t.as_str()) {
+                    Some("stdin") => {
+                        b64.push_str(v.get("data").and_then(|d| d.as_str()).unwrap())
+                    }
+                    Some("stdin_close") => {
+                        use base64::Engine;
+                        let data =
+                            base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
+                        std::fs::write(&out_c, &data).unwrap();
+                        write_frame(&mut stream, br#"{"type":"exit","code":0}"#);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let payload = b"binary\x00payload\xff";
+        let n = exec_upload(&sock, out.to_str().unwrap(), payload).unwrap();
+        assert_eq!(n as usize, payload.len());
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), payload);
     }
 }

@@ -799,10 +799,26 @@ fn handle_connection(
     }
     #[cfg(target_os = "linux")]
     {
-        use std::os::linux::net::SocketExt;
-        if let Ok(cred) = stream.peer_cred() {
+        // Stable replacement for the unstable `SocketExt::peer_cred`:
+        // getsockopt(SO_PEERCRED) yields the peer's pid/uid/gid.
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                &mut cred as *mut libc::ucred as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if rc == 0 {
             let our_uid = unsafe { libc::getuid() };
-            if cred.uid() != our_uid {
+            if cred.uid != our_uid {
                 let _ = stream.write_all(
                     serde_json::to_string(&ControlResponse::Error {
                         message: "Permission denied: peer UID mismatch".to_string(),

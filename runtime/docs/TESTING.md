@@ -274,6 +274,57 @@ async fn test_new_e2e_feature() {
 }
 ```
 
+## Testing the TUI
+
+The `nanosb` TUI (`nanosb-cli` crate, `src/tui/`) has a layered test suite.
+Only the first layer runs in CI; the VM-backed layers are opt-in.
+
+| Layer | What it proves | Needs TTY/VM? | Command |
+|-------|----------------|---------------|---------|
+| Frame tests (`TestBackend`) | Renderer draws welcome, panels (loading/error/terminal), grid, sidebars, focus, help overlay, status/popup | No | `cargo test -p nanosb-cli` |
+| Handler tests | `/add`, `/close`, `/open`, `/focus`, `/kill`, `/env`, `/theme`, `/zoom`, `/reconnect`, `/clearhistory` mutate `App` correctly; removed subcommands are rejected | No | `cargo test -p nanosb-cli` |
+| Event-loop test | The headless core (`run::handle_event`) survives 100+ synthetic events and renders | No | `cargo test -p nanosb-cli` |
+| Scripted VM E2E | Real supervised alpine sandbox: add → console attach → data → reconnect → kill → sandbox gone | Yes (VM) | `cargo test -p nanosb-cli tui::vm_test -- --ignored --nocapture` |
+| Pty smoke harness | The TUI boots under a real PTY, accepts `/help`, renders, and exits on `/quit` | Yes (PTY + VM) | `scripts/tui-smoke.sh` |
+
+### Headless layers (CI)
+
+```bash
+cargo test -p nanosb-cli
+```
+
+These construct `App` state directly and render into a
+`ratatui::backend::TestBackend`; no terminal, no sandbox. `run::handle_event`
+was extracted from the main loop exactly so this is possible.
+
+### Scripted VM end-to-end (opt-in)
+
+```bash
+# Requires libkrun/libkrunfw, gvproxy, and the Hypervisor entitlement.
+cargo build -p nanosb-cli
+NANOSB_BINARY_PATH="$PWD/target/debug/nanosb" \
+  cargo test -p nanosb-cli tui::vm_test -- --ignored --nocapture
+```
+
+The test boots a real `alpine:latest` supervisor, drives the extracted event
+loop, and asserts the sandbox is no longer running after `/kill` (the same
+mechanism `nanosb ps` uses: `SupervisorClient::is_running()`).
+
+### Pty smoke harness (opt-in)
+
+```bash
+scripts/tui-smoke.sh                 # uses target/debug/nanosb
+scripts/tui-smoke.sh --binary /path/to/nanosb
+```
+
+The harness builds the CLI, runs the TUI from an empty directory (welcome
+screen, so no microVM boot), launches it under a real PTY (`expect` when
+available, else `script -q`), sends `/help` then `/quit`, captures the
+transcript, and asserts the `/help` overlay rendered. It prints
+`PASS: tui-smoke.sh` or `FAIL: …` and cleans up the temporary directory on
+exit. Interactive panel attach (which the pty harness does not exercise) is
+covered by the `#[ignore]` VM test above.
+
 ## Makefile Reference
 
 ```bash

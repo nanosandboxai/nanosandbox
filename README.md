@@ -80,10 +80,34 @@ Notes:
 - `sandbox.yml` env values take precedence over startup env for matching keys.
 - Local `.env` is auto-loaded only when no `sandbox.yml` is active.
 - `/add` does not import startup env automatically; select keys explicitly with `--use-env`.
+- Type `/help` in the TUI for the full command list. The command surface is
+  generated from a single table, so it is always in sync with what the TUI
+  accepts.
+- Agent, MCP, and skill configuration is **declarative**: it lives in
+  `sandbox.yml` and is applied by redeploying (`nanosb apply`). There is no
+  in-TUI hot-reload.
 
 ```bash
 # Add panel and import selected startup env keys
 /add claude --use-env OPENAI_API_KEY --use-env GITHUB_TOKEN
+```
+
+### Testing the TUI
+
+The TUI has a headless test suite (no terminal, no VM) plus an opt-in
+end-to-end check. See [runtime/docs/TESTING.md](runtime/docs/TESTING.md) for the full guide.
+
+```bash
+# Frame, handler, and event-loop tests (no TTY, no VM) — runs in CI
+cargo test -p nanosb-cli
+
+# Scripted VM end-to-end test (requires libkrun/gvproxy + a codesigned
+# binary; opt-in). Run with the real nanosb binary via NANOSB_BINARY_PATH.
+NANOSB_BINARY_PATH="$PWD/target/debug/nanosb" \
+  cargo test -p nanosb-cli tui::vm_test -- --ignored --nocapture
+
+# Local pty smoke harness: drives the TUI under a real PTY
+scripts/tui-smoke.sh
 ```
 
 ### CLI Commands
@@ -152,6 +176,54 @@ sandboxes:
 ```
 
 Bare image names (e.g., `claude`, `codex`) are automatically resolved to `ghcr.io/nanosandboxai/agents-registry/<name>:latest`.
+
+### Interactive agent panels
+
+By default an agent panel runs **headless**: the agent's output is captured as
+structured events. Set `interactive: true` to instead run the agent's own
+interactive UI in the panel, on a real TTY (keystrokes are forwarded to it):
+
+```yaml
+sandboxes:
+  claude:
+    image: localhost:5050/claude:latest
+    interactive: true
+```
+
+Or per panel from the TUI:
+
+```
+/add claude --image localhost:5050/claude:latest --interactive
+```
+
+`interactive` and `auto_mode` are mutually exclusive. Interactive panels are
+backed by the in-guest exec agent's PTY (the same channel as `nanosb exec --tty`).
+
+### Reviewing and applying agent changes
+
+Agent changes stay in the sandbox clone until you review them. From the TUI:
+
+```
+/diff [--stat]     # show what the agent changed vs the base commit
+/status            # branch, dirty files, sync state
+/sync [--dry-run]  # fetch agent commits to refs/nanosb/<id> in the source repo
+/discard           # reset the clone to its base commit
+```
+
+The source repo is **read-only to nanosb**: no branches are created in it and
+changes are never written to `refs/heads/*` — you review and apply them yourself
+(`git fetch origin refs/nanosb/<id>` or the equivalent). Non-git project
+directories are never modified (the repo is initialised inside the clone).
+
+Housekeeping: `/disk` shows state usage, `/gc` reclaims dead supervisor dirs,
+and `nanosb gc` / `nanosb cleanup --dry-run` reclaim disk without touching
+session-referenced clones.
+
+Other TUI commands: `/logs [n]` (console tail), `/stop [n|name]` (stop a
+sandbox, keep the panel), `/exec <cmd>` (run in an exec-channel sandbox),
+`/mounts`, and `/apply` (fast-forward-merge `refs/nanosb/<id>` into your
+branch). Registered projects can be listed and switched with `/projects` and
+`/project <n|path>` — panels from different projects coexist in one TUI.
 
 ## License
 
