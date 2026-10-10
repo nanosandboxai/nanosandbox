@@ -1,14 +1,29 @@
 # Workspace Isolation — Target Design (S5)
 
-Status: **PARTIALLY IMPLEMENTED** (branch `feat/workspace-isolation`).
-Shipped + tested: `gitcmd` hardening (#10), `nanosb logs` escape stripping (#13),
-`~/.nanosandbox` mount verified per-sandbox (#14), `.nanosb-state` removal (#3),
-macOS Seatbelt confinement of the VM subprocess (#2, denylist — verified boot +
-credential deny), `/upload` + `/paste-image` removal + Ctrl/Cmd+V consolidation
-(#5). Remaining (larger): `workspace.mode` flag (#1), `/discard`-in-guest (#7),
-remove `/edit`/`cleanup`/`sanitize` (#8, gated on #9), host review repo (#9),
-rootfs CoW (#11), quotas (#12), libkrun virtiofs patch (#15), Linux Landlock.
-Date: 2026-10-08
+Status: **IMPLEMENTED (S5); two items deliberately deferred.** Branch `feat/workspace-isolation`.
+Shipped + tested:
+- `gitcmd` hardening (#10), `nanosb logs` escape stripping (#13), `~/.nanosandbox`
+  per-sandbox (#14), `.nanosb-state` removal (#3), `/upload`+`/paste-image` removal
+  + Ctrl/Cmd+V consolidation (#5).
+- **#2' Seatbelt is now deny-default** (was a denylist on `(allow default)` — "not a
+  sandbox"). VM boots and virtio-net activates (`eth0 UP 192.168.127.2`);
+  `seatbelt-check` proves `~/.ssh` denied and the `NANOSB_SEATBELT=0` negative control.
+- **#8** `/edit` + `sanitize_clone_config` removed (a host editor on the agent clone).
+- **#9 security objective met**: host fetch/commit use git2 (no hooks), `host_git()`
+  neutralizes clone-local config, and `/diff` passes `--no-ext-diff --no-textconv`
+  (`diff.<driver>.textconv` was a verified host-RCE). A separate review repo is
+  optional architecture, not a security gap.
+- **#1** `workspace.mode` (`isolated` default | `shared`), **#12** quota config
+  (opt-in), **#11** per-boot CoW rootfs (`workspace.fresh_rootfs`, opt-in).
+- **#7** `/discard` prefers an in-guest reset (exec), host fallback.
+- **#15** macOS virtiofs hardening in the libkrun fork (`nanosandbox` @ `a148cff4`);
+  `build-libkrun.sh` builds the fork at that SHA.
+Still open: **#6** uploads-over-exec — blocked because the exec protocol has **no
+stdin-EOF/close frame** (a stdin-driven `base64 -d` would hang; needs a guest-agent
+change). Its objective is already met by `fs_upload`'s symlink-redirect guard. Also
+open: Linux Landlock/`openat2` (libkrun-fork work), and the optional separate review
+repo (#9 architecture).
+Date: 2026-10-08 (updated 2026-10-10)
 Scope: how the host project workspace is exposed to an untrusted agent microVM.
 Companion: `docs/plans/2026-10-08-project-management-and-isolation-options.md`.
 
