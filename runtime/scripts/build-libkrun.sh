@@ -117,14 +117,13 @@ if [ -z "${LIBCLANG_PATH:-}" ]; then
     if [ "$(uname)" = "Darwin" ]; then
         export LIBCLANG_PATH="$(brew --prefix llvm 2>/dev/null)/lib"
     else
-        for d in /usr/lib/llvm-*/lib /usr/lib/llvm*/lib /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu; do
-            if ls "$d"/libclang*.so* >/dev/null 2>&1; then
-                export LIBCLANG_PATH="$d"
-                break
-            fi
-        done
+        libclang=$(find /usr/lib /usr/local/lib -name 'libclang*.so*' 2>/dev/null | head -1)
+        if [ -n "$libclang" ]; then
+            export LIBCLANG_PATH="$(dirname "$libclang")"
+        fi
     fi
 fi
+echo "==> LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>}"
 export NET=1
 export BLK=1
 export INIT_BLOB=1
