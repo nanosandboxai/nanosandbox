@@ -29,8 +29,8 @@ pub fn partial_match(needle: &Value, haystack: &Value) -> bool {
 /// The capability a request verb requires, if any. Unknown verbs are not gated.
 pub fn required_capability(ty: &str) -> Option<Capability> {
     Some(match ty {
-        "hello" | "ping" | "status" | "create" | "start" | "stop" | "kill" | "remove"
-        | "get" | "list" | "modify" | "drain" | "touch" => Capability::Lifecycle,
+        "hello" | "ping" | "status" | "create" | "start" | "stop" | "kill" | "remove" | "get"
+        | "list" | "modify" | "drain" | "touch" => Capability::Lifecycle,
         "exec" | "exec_stream" | "shell" | "attach" | "attach_input" | "attach_resize"
         | "exec_input" | "exec_resize" => Capability::Exec,
         "wait" => Capability::Wait,
@@ -73,11 +73,17 @@ mod tests {
     fn partial_match_scalars_and_nested() {
         let req = json!({"type": "exec", "command": "echo", "args": ["hi"], "env": {"A": "1"}});
         assert!(partial_match(&json!({"type": "exec"}), &req));
-        assert!(partial_match(&json!({"type": "exec", "command": "echo"}), &req));
+        assert!(partial_match(
+            &json!({"type": "exec", "command": "echo"}),
+            &req
+        ));
         assert!(partial_match(&json!({"env": {"A": "1"}}), &req));
         assert!(!partial_match(&json!({"command": "ls"}), &req));
         assert!(!partial_match(&json!({"env": {"B": "1"}}), &req));
-        assert!(!partial_match(&json!({"type": "exec", "args": ["hi", "x"]}), &req));
+        assert!(!partial_match(
+            &json!({"type": "exec", "args": ["hi", "x"]}),
+            &req
+        ));
     }
 
     #[test]
@@ -89,20 +95,37 @@ mod tests {
         assert_eq!(required_capability("wait"), Some(Capability::Wait));
         assert_eq!(required_capability("fs_write"), Some(Capability::Fs));
         assert_eq!(required_capability("logs"), Some(Capability::Logs));
-        assert_eq!(required_capability("metrics_stream"), Some(Capability::Metrics));
-        assert_eq!(required_capability("volume_create"), Some(Capability::Volumes));
+        assert_eq!(
+            required_capability("metrics_stream"),
+            Some(Capability::Metrics)
+        );
+        assert_eq!(
+            required_capability("volume_create"),
+            Some(Capability::Volumes)
+        );
         assert_eq!(required_capability("secret_set"), Some(Capability::Secrets));
-        assert_eq!(required_capability("snapshot_fork"), Some(Capability::Snapshots));
+        assert_eq!(
+            required_capability("snapshot_fork"),
+            Some(Capability::Snapshots)
+        );
         assert_eq!(required_capability("pause"), Some(Capability::Snapshots));
         assert_eq!(required_capability("bogus_verb"), None);
     }
 
     #[test]
     fn terminal_frame_detection() {
-        assert!(is_terminal_frame(&json!({"type": "guest", "event": "exit", "code": 0})));
-        assert!(is_terminal_frame(&json!({"type": "guest", "event": "error", "message": "x"})));
-        assert!(is_terminal_frame(&json!({"type": "event", "event": "done"})));
-        assert!(!is_terminal_frame(&json!({"type": "guest", "event": "stdout", "data": "a"})));
+        assert!(is_terminal_frame(
+            &json!({"type": "guest", "event": "exit", "code": 0})
+        ));
+        assert!(is_terminal_frame(
+            &json!({"type": "guest", "event": "error", "message": "x"})
+        ));
+        assert!(is_terminal_frame(
+            &json!({"type": "event", "event": "done"})
+        ));
+        assert!(!is_terminal_frame(
+            &json!({"type": "guest", "event": "stdout", "data": "a"})
+        ));
         assert!(!is_terminal_frame(&json!({"type": "ok", "version": "1"})));
     }
 }

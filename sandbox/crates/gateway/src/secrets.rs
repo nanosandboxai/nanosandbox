@@ -110,8 +110,8 @@ impl GatewayKeyPair {
             .decode(&encrypted.ciphertext)
             .map_err(|e| format!("bad ciphertext base64: {e}"))?;
 
-        let cipher = Aes256Gcm::new_from_slice(&aes_key)
-            .map_err(|e| format!("AES key init failed: {e}"))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&aes_key).map_err(|e| format!("AES key init failed: {e}"))?;
 
         let plaintext = cipher
             .decrypt(&nonce, ciphertext.as_ref())
@@ -152,8 +152,8 @@ pub fn encrypt_payload(
     let shared = cli_secret.diffie_hellman(&gateway_pk);
     let aes_key = Sha256::digest(shared.as_bytes());
 
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .map_err(|e| format!("AES key init failed: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| format!("AES key init failed: {e}"))?;
 
     let nonce_bytes: [u8; 12] = rand::random();
     let nonce = Nonce::from(nonce_bytes);
@@ -243,7 +243,10 @@ mod tests {
         let h2 = hash_name("session-abc", "KEY_B");
         let h3 = hash_name("session-xyz", "KEY_A");
         assert_ne!(h1, h2, "different key names must produce different hashes");
-        assert_ne!(h1, h3, "different session ids must produce different hashes");
+        assert_ne!(
+            h1, h3,
+            "different session ids must produce different hashes"
+        );
     }
 
     #[test]
@@ -260,7 +263,10 @@ mod tests {
         };
 
         let err = kp.decrypt(&dummy).unwrap_err();
-        assert_eq!(err, "already used", "used keypair must return 'already used'");
+        assert_eq!(
+            err, "already used",
+            "used keypair must return 'already used'"
+        );
     }
 
     #[test]

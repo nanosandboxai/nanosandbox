@@ -490,10 +490,18 @@ impl SecurityContext {
         if !self.capabilities.is_empty() {
             return Some("capabilities");
         }
-        if self.seccomp_profile.as_deref().is_some_and(|s| !s.is_empty()) {
+        if self
+            .seccomp_profile
+            .as_deref()
+            .is_some_and(|s| !s.is_empty())
+        {
             return Some("seccomp_profile");
         }
-        if self.apparmor_profile.as_deref().is_some_and(|s| !s.is_empty()) {
+        if self
+            .apparmor_profile
+            .as_deref()
+            .is_some_and(|s| !s.is_empty())
+        {
             return Some("apparmor_profile");
         }
         if self.no_new_privileges == Some(true) {

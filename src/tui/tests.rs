@@ -24,9 +24,7 @@ use super::theme::ThemeName;
 fn render_backend(app: &mut App, w: u16, h: u16) -> TestBackend {
     let backend = TestBackend::new(w, h);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|f| super::renderer::render(f, app))
-        .unwrap();
+    terminal.draw(|f| super::renderer::render(f, app)).unwrap();
     terminal.backend().clone()
 }
 
@@ -453,12 +451,7 @@ async fn handler_env_list_no_assignment() {
     app.focused_panel = 0;
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    handle_command(
-        &mut app,
-        Command::Env { assignment: None },
-        &tx,
-    )
-    .await;
+    handle_command(&mut app, Command::Env { assignment: None }, &tx).await;
 
     assert!(
         !app.panels[0].chat_history.is_empty(),
@@ -563,9 +556,7 @@ fn handler_deprecated_subcommands_do_not_parse() {
 
 #[tokio::test]
 async fn event_loop_100_synthetic_events() {
-    use ratatui::crossterm::event::{
-        KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
-    };
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     let mut app = App::new();
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -592,15 +583,19 @@ async fn event_loop_100_synthetic_events() {
 
     // 10 resize events
     for _ in 0..10 {
-        events.push(AppEvent::Terminal(ratatui::crossterm::event::Event::Resize(
-            120, 40,
-        )));
+        events.push(AppEvent::Terminal(
+            ratatui::crossterm::event::Event::Resize(120, 40),
+        ));
     }
 
     // 10 focus events
     for _ in 0..10 {
-        events.push(AppEvent::Terminal(ratatui::crossterm::event::Event::FocusGained));
-        events.push(AppEvent::Terminal(ratatui::crossterm::event::Event::FocusLost));
+        events.push(AppEvent::Terminal(
+            ratatui::crossterm::event::Event::FocusGained,
+        ));
+        events.push(AppEvent::Terminal(
+            ratatui::crossterm::event::Event::FocusLost,
+        ));
     }
 
     // Type "/help" into the global input via keystrokes
@@ -661,7 +656,10 @@ async fn handler_diff_no_project_reports() {
     app.focused_panel = 0;
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_command(&mut app, Command::Diff { stat: false }, &tx).await;
-    assert!(app.status_message.is_some(), "/diff should report when no clone");
+    assert!(
+        app.status_message.is_some(),
+        "/diff should report when no clone"
+    );
 }
 
 #[tokio::test]
@@ -671,7 +669,10 @@ async fn handler_status_no_project_reports() {
     app.focused_panel = 0;
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_command(&mut app, Command::Status, &tx).await;
-    assert!(app.status_message.is_some(), "/status should report when no clone");
+    assert!(
+        app.status_message.is_some(),
+        "/status should report when no clone"
+    );
 }
 
 #[tokio::test]
@@ -694,7 +695,10 @@ async fn handler_logs_no_supervisor_reports() {
     app.focused_panel = 0;
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_command(&mut app, Command::Logs { count: Some(10) }, &tx).await;
-    assert!(app.status_message.is_some(), "/logs should report with no sandbox");
+    assert!(
+        app.status_message.is_some(),
+        "/logs should report with no sandbox"
+    );
 }
 
 #[tokio::test]
@@ -703,8 +707,18 @@ async fn handler_exec_no_channel_reports() {
     app.panels.push(AgentPanel::new("claude"));
     app.focused_panel = 0;
     let (tx, _rx) = mpsc::unbounded_channel();
-    handle_command(&mut app, Command::Exec { args: vec!["echo".into(), "hi".into()] }, &tx).await;
-    assert!(app.status_message.is_some(), "/exec should report with no exec channel");
+    handle_command(
+        &mut app,
+        Command::Exec {
+            args: vec!["echo".into(), "hi".into()],
+        },
+        &tx,
+    )
+    .await;
+    assert!(
+        app.status_message.is_some(),
+        "/exec should report with no exec channel"
+    );
 }
 
 #[tokio::test]
@@ -714,7 +728,10 @@ async fn handler_stop_no_supervisor_reports() {
     app.focused_panel = 0;
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_command(&mut app, Command::Stop { target: None }, &tx).await;
-    assert!(app.status_message.is_some(), "/stop should report with no supervisor");
+    assert!(
+        app.status_message.is_some(),
+        "/stop should report with no supervisor"
+    );
 }
 
 #[tokio::test]
@@ -724,7 +741,10 @@ async fn handler_discard_no_project_reports() {
     app.focused_panel = 0;
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_command(&mut app, Command::Discard, &tx).await;
-    assert!(app.status_message.is_some(), "/discard should report when no clone");
+    assert!(
+        app.status_message.is_some(),
+        "/discard should report when no clone"
+    );
 }
 
 #[tokio::test]
@@ -733,7 +753,15 @@ async fn handler_sync_dry_run_reports() {
     app.panels.push(AgentPanel::new("claude"));
     app.focused_panel = 0;
     let (tx, _rx) = mpsc::unbounded_channel();
-    handle_command(&mut app, Command::Sync { dry_run: true, action: None }, &tx).await;
+    handle_command(
+        &mut app,
+        Command::Sync {
+            dry_run: true,
+            action: None,
+        },
+        &tx,
+    )
+    .await;
     assert!(
         !app.panels[0].chat_history.is_empty(),
         "/sync --dry-run should push a message"
@@ -758,11 +786,16 @@ async fn handler_project_missing_path_reports() {
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_command(
         &mut app,
-        Command::Project { target: Some("/nonexistent/xyz".into()) },
+        Command::Project {
+            target: Some("/nonexistent/xyz".into()),
+        },
         &tx,
     )
     .await;
-    assert!(app.status_message.is_some(), "/project <bad path> should report");
+    assert!(
+        app.status_message.is_some(),
+        "/project <bad path> should report"
+    );
 }
 
 // ── /diff + /discard against host-owned review state (no VM, no TTY) ────────
@@ -809,7 +842,12 @@ fn make_review_fixture(
     let clone = root.join("clone");
     git(
         root,
-        &["clone", "-q", src.to_str().unwrap(), clone.to_str().unwrap()],
+        &[
+            "clone",
+            "-q",
+            src.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
     );
     (src, clone, base)
 }

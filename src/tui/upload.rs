@@ -171,11 +171,19 @@ pub fn exec_upload(sock: &Path, remote_path: &str, data: &[u8]) -> Result<u64, S
         .unwrap_or(UPLOAD_DIR);
     let script = format!("mkdir -p '{dir}' && base64 -d > '{remote_path}'");
     let mut handle = client
-        .start("sh", &["-c", &script], runtime::exec::ExecOptions::default())
+        .start(
+            "sh",
+            &["-c", &script],
+            runtime::exec::ExecOptions::default(),
+        )
         .map_err(|e| format!("exec start: {e}"))?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(data);
-    handle.write_stdin(&b64).map_err(|e| format!("exec stdin: {e}"))?;
-    handle.close_stdin().map_err(|e| format!("exec close stdin: {e}"))?;
+    handle
+        .write_stdin(&b64)
+        .map_err(|e| format!("exec stdin: {e}"))?;
+    handle
+        .close_stdin()
+        .map_err(|e| format!("exec close stdin: {e}"))?;
     loop {
         match handle
             .next_event(None)
@@ -499,7 +507,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = resolve_within_root(dir.path(), Path::new("nonexistent/file.txt"));
         assert!(result.is_some());
-        assert!(result.unwrap().starts_with(dir.path().canonicalize().unwrap()));
+        assert!(result
+            .unwrap()
+            .starts_with(dir.path().canonicalize().unwrap()));
     }
 
     // --- host_upload_path ---
@@ -646,16 +656,17 @@ mod tests {
             let _req = read_frame(&mut stream).expect("request frame");
             let mut b64 = String::new();
             loop {
-                let Some(frame) = read_frame(&mut stream) else { break };
+                let Some(frame) = read_frame(&mut stream) else {
+                    break;
+                };
                 let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
                 match v.get("type").and_then(|t| t.as_str()) {
-                    Some("stdin") => {
-                        b64.push_str(v.get("data").and_then(|d| d.as_str()).unwrap())
-                    }
+                    Some("stdin") => b64.push_str(v.get("data").and_then(|d| d.as_str()).unwrap()),
                     Some("stdin_close") => {
                         use base64::Engine;
-                        let data =
-                            base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
+                        let data = base64::engine::general_purpose::STANDARD
+                            .decode(&b64)
+                            .unwrap();
                         std::fs::write(&out_c, &data).unwrap();
                         write_frame(&mut stream, br#"{"type":"exit","code":0}"#);
                         break;

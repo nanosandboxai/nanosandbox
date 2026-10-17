@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A payload of secrets to be passed into a sandbox.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -59,7 +59,10 @@ mod tests {
         let mut p = SecretPayload::new();
         p.add_secret("API_KEY", "hunter2");
         assert!(!p.is_empty());
-        assert_eq!(p.secrets.get("API_KEY").map(|s| s.as_str()), Some("hunter2"));
+        assert_eq!(
+            p.secrets.get("API_KEY").map(|s| s.as_str()),
+            Some("hunter2")
+        );
     }
 
     #[test]
@@ -68,7 +71,9 @@ mod tests {
         p.add_intercepted_file("/etc/secrets.conf", "token=abc");
         assert!(!p.is_empty());
         assert_eq!(
-            p.intercepted_files.get("/etc/secrets.conf").map(|s| s.as_str()),
+            p.intercepted_files
+                .get("/etc/secrets.conf")
+                .map(|s| s.as_str()),
             Some("token=abc")
         );
     }
@@ -84,9 +89,10 @@ mod tests {
 
         assert_eq!(p2.secrets.get("KEY").map(|s| s.as_str()), Some("VALUE"));
         assert_eq!(
-            p2.intercepted_files.get("/path/to/file").map(|s| s.as_str()),
+            p2.intercepted_files
+                .get("/path/to/file")
+                .map(|s| s.as_str()),
             Some("contents")
         );
     }
-
 }

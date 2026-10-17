@@ -143,16 +143,16 @@ impl Theme {
 /// themes — a "Solarized" or "Gruvbox" terminal scheme could turn ANSI Black
 /// into dark gray or blue.  Indexed 16-231 are guaranteed fixed values.
 static NANOSANDBOX: Theme = Theme {
-    background: Color::Indexed(16),    // #000000 — fixed pure black (not remappable)
-    accent: Color::Rgb(228, 88, 74),   // #E4584A — exact brand coral (truecolor)
-    text: Color::Indexed(231),         // #FFFFFF — fixed pure white (not remappable)
-    text_muted: Color::Indexed(245),   // #8A8A8A — fixed medium gray
+    background: Color::Indexed(16), // #000000 — fixed pure black (not remappable)
+    accent: Color::Rgb(228, 88, 74), // #E4584A — exact brand coral (truecolor)
+    text: Color::Indexed(231),      // #FFFFFF — fixed pure white (not remappable)
+    text_muted: Color::Indexed(245), // #8A8A8A — fixed medium gray
     success: Color::Green,
     warning: Color::Yellow,
     error: Color::Red,
     info: Color::Blue,
-    status_bar_bg: Color::Indexed(238),// #444444 — fixed dark gray
-    selection_fg: Color::Indexed(16),  // #000000
+    status_bar_bg: Color::Indexed(238), // #444444 — fixed dark gray
+    selection_fg: Color::Indexed(16),   // #000000
     selection_bg: Color::Rgb(228, 88, 74),
 };
 
@@ -161,29 +161,29 @@ static NANOSANDBOX: Theme = Theme {
 /// Accent is the exact brand coral (`#D4463A`, truecolor); other colours use the
 /// fixed 256-color indexed palette like the dark theme for compatibility.
 static NANOSANDBOX_LIGHT: Theme = Theme {
-    background: Color::Indexed(231),   // #FFFFFF — fixed pure white (not remappable)
-    accent: Color::Rgb(212, 70, 58),   // #D4463A — exact brand coral (truecolor)
-    text: Color::Indexed(16),          // #000000 — fixed pure black
-    text_muted: Color::Indexed(245),   // #8A8A8A — fixed medium gray
+    background: Color::Indexed(231), // #FFFFFF — fixed pure white (not remappable)
+    accent: Color::Rgb(212, 70, 58), // #D4463A — exact brand coral (truecolor)
+    text: Color::Indexed(16),        // #000000 — fixed pure black
+    text_muted: Color::Indexed(245), // #8A8A8A — fixed medium gray
     success: Color::Green,
     warning: Color::Yellow,
     error: Color::Red,
     info: Color::Blue,
-    status_bar_bg: Color::Indexed(252),// #D0D0D0 — fixed light gray
-    selection_fg: Color::Indexed(231), // #FFFFFF
+    status_bar_bg: Color::Indexed(252), // #D0D0D0 — fixed light gray
+    selection_fg: Color::Indexed(231),  // #FFFFFF
     selection_bg: Color::Rgb(212, 70, 58),
 };
 
 /// Dracula — purple accent, vivid colours on dark background.
 static DRACULA: Theme = Theme {
-    background: Color::Rgb(40, 42, 54),  // #282A36
-    accent: Color::Rgb(189, 147, 249), // #BD93F9
-    text: Color::Rgb(248, 248, 242),   // #F8F8F2
-    text_muted: Color::Rgb(98, 114, 164), // #6272A4
-    success: Color::Rgb(80, 250, 123), // #50FA7B
-    warning: Color::Rgb(241, 250, 140), // #F1FA8C
-    error: Color::Rgb(255, 85, 85),    // #FF5555
-    info: Color::Rgb(139, 233, 253),   // #8BE9FD
+    background: Color::Rgb(40, 42, 54),    // #282A36
+    accent: Color::Rgb(189, 147, 249),     // #BD93F9
+    text: Color::Rgb(248, 248, 242),       // #F8F8F2
+    text_muted: Color::Rgb(98, 114, 164),  // #6272A4
+    success: Color::Rgb(80, 250, 123),     // #50FA7B
+    warning: Color::Rgb(241, 250, 140),    // #F1FA8C
+    error: Color::Rgb(255, 85, 85),        // #FF5555
+    info: Color::Rgb(139, 233, 253),       // #8BE9FD
     status_bar_bg: Color::Rgb(68, 71, 90), // #44475A
     selection_fg: Color::Rgb(40, 42, 54),
     selection_bg: Color::Rgb(189, 147, 249),
@@ -191,14 +191,14 @@ static DRACULA: Theme = Theme {
 
 /// Catppuccin Mocha — warm pastels, mauve accent.
 static CATPPUCCIN: Theme = Theme {
-    background: Color::Rgb(30, 30, 46),  // #1E1E2E
-    accent: Color::Rgb(203, 166, 247), // #CBA6F7
-    text: Color::Rgb(205, 214, 244),   // #CDD6F4
-    text_muted: Color::Rgb(88, 91, 112), // #585B70
-    success: Color::Rgb(166, 227, 161), // #A6E3A1
-    warning: Color::Rgb(249, 226, 175), // #F9E2AF
-    error: Color::Rgb(243, 139, 168),  // #F38BA8
-    info: Color::Rgb(137, 180, 250),   // #89B4FA
+    background: Color::Rgb(30, 30, 46),    // #1E1E2E
+    accent: Color::Rgb(203, 166, 247),     // #CBA6F7
+    text: Color::Rgb(205, 214, 244),       // #CDD6F4
+    text_muted: Color::Rgb(88, 91, 112),   // #585B70
+    success: Color::Rgb(166, 227, 161),    // #A6E3A1
+    warning: Color::Rgb(249, 226, 175),    // #F9E2AF
+    error: Color::Rgb(243, 139, 168),      // #F38BA8
+    info: Color::Rgb(137, 180, 250),       // #89B4FA
     status_bar_bg: Color::Rgb(24, 24, 37), // #181825
     selection_fg: Color::Rgb(30, 30, 46),  // #1E1E2E
     selection_bg: Color::Rgb(203, 166, 247),
@@ -206,14 +206,14 @@ static CATPPUCCIN: Theme = Theme {
 
 /// Tokyo Night — blue accent, soft pastels on dark blue-gray.
 static TOKYO_NIGHT: Theme = Theme {
-    background: Color::Rgb(26, 27, 38),  // #1A1B26
-    accent: Color::Rgb(122, 162, 247), // #7AA2F7
-    text: Color::Rgb(192, 202, 245),   // #C0CAF5
-    text_muted: Color::Rgb(86, 95, 137), // #565F89
-    success: Color::Rgb(158, 206, 106), // #9ECE6A
-    warning: Color::Rgb(224, 175, 104), // #E0AF68
-    error: Color::Rgb(247, 118, 142),  // #F7768E
-    info: Color::Rgb(125, 207, 255),   // #7DCFFF
+    background: Color::Rgb(26, 27, 38),    // #1A1B26
+    accent: Color::Rgb(122, 162, 247),     // #7AA2F7
+    text: Color::Rgb(192, 202, 245),       // #C0CAF5
+    text_muted: Color::Rgb(86, 95, 137),   // #565F89
+    success: Color::Rgb(158, 206, 106),    // #9ECE6A
+    warning: Color::Rgb(224, 175, 104),    // #E0AF68
+    error: Color::Rgb(247, 118, 142),      // #F7768E
+    info: Color::Rgb(125, 207, 255),       // #7DCFFF
     status_bar_bg: Color::Rgb(22, 22, 30), // #16161E
     selection_fg: Color::Rgb(26, 27, 38),  // #1A1B26
     selection_bg: Color::Rgb(122, 162, 247),
@@ -221,14 +221,14 @@ static TOKYO_NIGHT: Theme = Theme {
 
 /// Nord — frost blue accent, cool arctic tones.
 static NORD: Theme = Theme {
-    background: Color::Rgb(46, 52, 64),  // #2E3440
-    accent: Color::Rgb(136, 192, 208), // #88C0D0
-    text: Color::Rgb(236, 239, 244),   // #ECEFF4
-    text_muted: Color::Rgb(76, 86, 106), // #4C566A
-    success: Color::Rgb(163, 190, 140), // #A3BE8C
-    warning: Color::Rgb(235, 203, 139), // #EBCB8B
-    error: Color::Rgb(191, 97, 106),   // #BF616A
-    info: Color::Rgb(129, 161, 193),   // #81A1C1
+    background: Color::Rgb(46, 52, 64),    // #2E3440
+    accent: Color::Rgb(136, 192, 208),     // #88C0D0
+    text: Color::Rgb(236, 239, 244),       // #ECEFF4
+    text_muted: Color::Rgb(76, 86, 106),   // #4C566A
+    success: Color::Rgb(163, 190, 140),    // #A3BE8C
+    warning: Color::Rgb(235, 203, 139),    // #EBCB8B
+    error: Color::Rgb(191, 97, 106),       // #BF616A
+    info: Color::Rgb(129, 161, 193),       // #81A1C1
     status_bar_bg: Color::Rgb(59, 66, 82), // #3B4252
     selection_fg: Color::Rgb(46, 52, 64),  // #2E3440
     selection_bg: Color::Rgb(136, 192, 208),

@@ -156,10 +156,16 @@ impl SnapshotStore {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            image: manifest.get("image").and_then(|v| v.as_str()).map(String::from),
+            image: manifest
+                .get("image")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             path: Some(dir.to_string_lossy().to_string()),
             hash: Some(hash_dir(&dir)),
-            created_at_ms: manifest.get("created_at_ms").and_then(|v| v.as_u64()).unwrap_or(0),
+            created_at_ms: manifest
+                .get("created_at_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
             includes_memory: false,
         })
     }
@@ -200,10 +206,14 @@ impl Default for SnapshotStore {
 fn validate_id(id: &str) -> Result<String, SnapshotError> {
     let id = id.trim();
     if id.is_empty() {
-        return Err(SnapshotError::Invalid("snapshot id is required".to_string()));
+        return Err(SnapshotError::Invalid(
+            "snapshot id is required".to_string(),
+        ));
     }
     if id == "." || id == ".." || id.contains('/') || id.contains('\\') || id.contains('\0') {
-        return Err(SnapshotError::Invalid(format!("invalid snapshot id '{id}'")));
+        return Err(SnapshotError::Invalid(format!(
+            "invalid snapshot id '{id}'"
+        )));
     }
     Ok(id.to_string())
 }
@@ -320,7 +330,9 @@ mod tests {
     fn create_captures_state_and_manifest() {
         let (_t, sb) = sandbox_dir();
         let (_s, store) = store();
-        let info = store.create(&sb, "box", Some("alpine:latest".into()), None).unwrap();
+        let info = store
+            .create(&sb, "box", Some("alpine:latest".into()), None)
+            .unwrap();
         assert_eq!(info.sandbox, "box");
         assert!(!info.includes_memory);
         assert!(info.hash.is_some());
@@ -334,7 +346,9 @@ mod tests {
     fn explicit_dest_is_used() {
         let (_t, sb) = sandbox_dir();
         let (_s, store) = store();
-        let info = store.create(&sb, "box", None, Some("my-snap".into())).unwrap();
+        let info = store
+            .create(&sb, "box", None, Some("my-snap".into()))
+            .unwrap();
         assert_eq!(info.id, "my-snap");
         assert!(store.get("my-snap").is_ok());
     }
@@ -358,7 +372,9 @@ mod tests {
         let (_t, sb) = sandbox_dir();
         let (_s, store) = store();
         store.create(&sb, "box", None, Some("dup".into())).unwrap();
-        let err = store.create(&sb, "box", None, Some("dup".into())).unwrap_err();
+        let err = store
+            .create(&sb, "box", None, Some("dup".into()))
+            .unwrap_err();
         assert!(matches!(err, SnapshotError::AlreadyExists(_)), "{err}");
     }
 
@@ -369,7 +385,9 @@ mod tests {
         let info = store.create(&sb, "box", None, Some("snap".into())).unwrap();
         let restore_tmp = tempfile::tempdir().unwrap();
         let new_dir = restore_tmp.path().join("box-restored");
-        store.materialize(&info.id, "box-restored", &new_dir).unwrap();
+        store
+            .materialize(&info.id, "box-restored", &new_dir)
+            .unwrap();
         assert!(new_dir.join("config.json").is_file());
         assert!(new_dir.join("data").join("file.txt").is_file());
     }
@@ -378,10 +396,14 @@ mod tests {
     fn restore_preserves_captured_content() {
         let (_t, sb) = sandbox_with_marker();
         let (_s, store) = store();
-        let info = store.create(&sb, "box", Some("alpine".into()), None).unwrap();
+        let info = store
+            .create(&sb, "box", Some("alpine".into()), None)
+            .unwrap();
         let restore_tmp = tempfile::tempdir().unwrap();
         let restore_dir = restore_tmp.path().join("box-restored");
-        store.materialize(&info.id, "box-restored", &restore_dir).unwrap();
+        store
+            .materialize(&info.id, "box-restored", &restore_dir)
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(restore_dir.join("data").join("marker.txt")).unwrap(),
             "payload-123"
@@ -393,14 +415,23 @@ mod tests {
     fn restore_is_independent() {
         let (_t, sb) = sandbox_with_marker();
         let (_s, store) = store();
-        let info = store.create(&sb, "box", Some("alpine".into()), None).unwrap();
+        let info = store
+            .create(&sb, "box", Some("alpine".into()), None)
+            .unwrap();
         let restore_tmp = tempfile::tempdir().unwrap();
         let restore_dir = restore_tmp.path().join("box-restored");
-        store.materialize(&info.id, "box-restored", &restore_dir).unwrap();
+        store
+            .materialize(&info.id, "box-restored", &restore_dir)
+            .unwrap();
 
         std::fs::write(restore_dir.join("data").join("marker.txt"), b"mutated").unwrap();
 
-        let snap_copy = store.root().join(&info.id).join("state").join("data").join("marker.txt");
+        let snap_copy = store
+            .root()
+            .join(&info.id)
+            .join("state")
+            .join("data")
+            .join("marker.txt");
         assert_eq!(std::fs::read_to_string(&snap_copy).unwrap(), "payload-123");
         assert!(!info.includes_memory);
     }

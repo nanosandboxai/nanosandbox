@@ -3,10 +3,13 @@
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 use ratatui::Frame;
 
-use super::app::{App, AgentPanel, InputFocus, MouseSelection, PanelMode, SidebarFilesTab};
+use super::app::{AgentPanel, App, InputFocus, MouseSelection, PanelMode, SidebarFilesTab};
 use super::commands::autocomplete;
 use super::grid::grid_dimensions;
 use super::theme::{Theme, ThemeName};
@@ -25,8 +28,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Compute dynamic global input height.
     let global_content_width = (frame.area().width as usize).saturating_sub(3).max(1);
     let global_input_height = if app.input_focus == InputFocus::Global {
-        (app.global_input.visual_line_count(global_content_width) as u16)
-            .clamp(1, MAX_INPUT_HEIGHT)
+        (app.global_input.visual_line_count(global_content_width) as u16).clamp(1, MAX_INPUT_HEIGHT)
     } else {
         1
     };
@@ -72,11 +74,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             render_welcome(frame, body_area, app);
         }
     } else if app.show_mcp_sidebar || app.show_sandbox_sidebar {
-        let [panels_area, sidebar_area] = Layout::horizontal([
-            Constraint::Percentage(70),
-            Constraint::Percentage(30),
-        ])
-        .areas(body_area);
+        let [panels_area, sidebar_area] =
+            Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .areas(body_area);
 
         render_panel_grid(frame, panels_area, app);
         if app.show_sandbox_sidebar {
@@ -90,7 +90,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Render autocomplete popup for the global input bar (overlays on top of body).
     if app.input_focus == InputFocus::Global && app.global_input.text().starts_with('/') {
-        render_autocomplete(frame, body_area, global_input_area, app.global_input.text(), app.autocomplete_index, theme);
+        render_autocomplete(
+            frame,
+            body_area,
+            global_input_area,
+            app.global_input.text(),
+            app.autocomplete_index,
+            theme,
+        );
     }
 
     // Render system message popup overlay when panels are open.
@@ -240,19 +247,13 @@ fn render_branded_welcome(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("\u{250c}\u{2500} ", a),
             Span::styled("Getting Started", ab),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{2502}  ", a),
             Span::styled("Spawn a sandbox with an AI agent:", m),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{2502}    ", a),
@@ -268,20 +269,14 @@ fn render_branded_welcome(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("\u{2502}    ", a),
             Span::styled("/add goose", s),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         // ├─ Quick Commands ───────
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{251c}\u{2500} ", a),
             Span::styled("Quick Commands", ab),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{2502}    ", a),
@@ -300,10 +295,7 @@ fn render_branded_welcome(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("/quit", w),
             Span::styled("          exit nanosandbox", m),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{2514}\u{2500}\u{2500}\u{2500}", a),
@@ -352,14 +344,22 @@ fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, vl) in visual_lines.iter().enumerate().skip(scroll_offset).take(viewport_height) {
+    for (i, vl) in visual_lines
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(viewport_height)
+    {
         let text_slice = &app.global_input.text()[vl.byte_start..vl.byte_end];
         let prefix = if i == 0 {
             Span::styled(prompt, prompt_style)
         } else {
             Span::styled("  ", prompt_style)
         };
-        lines.push(Line::from(vec![prefix, Span::styled(text_slice, text_style)]));
+        lines.push(Line::from(vec![
+            prefix,
+            Span::styled(text_slice, text_style),
+        ]));
     }
 
     // Handle empty input.
@@ -381,7 +381,9 @@ fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
     if is_focused {
         let (cursor_row, cursor_col) = app.global_input.cursor_visual_position(content_width);
         let visual_row = cursor_row.saturating_sub(scroll_offset);
-        let x = area.x + prompt_len + (cursor_col as u16).min(area.width.saturating_sub(prompt_len + 1));
+        let x = area.x
+            + prompt_len
+            + (cursor_col as u16).min(area.width.saturating_sub(prompt_len + 1));
         let y = area.y + visual_row as u16;
         if y < area.y + area.height && x < area.x + area.width {
             let buf = frame.buffer_mut();
@@ -544,9 +546,7 @@ fn render_mcp_sidebar(frame: &mut Frame, area: Rect, theme: &Theme) {
     let lines = vec![
         Line::from(Span::styled(
             "MCP Servers",
-            Style::new()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
@@ -590,20 +590,13 @@ fn render_mcp_sidebar(frame: &mut Frame, area: Rect, theme: &Theme) {
 /// Render the sandbox sidebar with a sandboxes list and files section.
 fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     // Split sidebar into two sections: sandboxes (top) and files (bottom).
-    let has_files = !app.sidebar_modified_files.is_empty() || !app.sidebar_committed_files.is_empty();
+    let has_files =
+        !app.sidebar_modified_files.is_empty() || !app.sidebar_committed_files.is_empty();
     let chunks = if has_files {
-        Layout::vertical([
-            Constraint::Percentage(40),
-            Constraint::Percentage(60),
-        ])
-        .split(area)
+        Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area)
     } else {
         // No files: give all space to sandboxes
-        Layout::vertical([
-            Constraint::Percentage(100),
-            Constraint::Min(0),
-        ])
-        .split(area)
+        Layout::vertical([Constraint::Percentage(100), Constraint::Min(0)]).split(area)
     };
 
     // ── Top section: Sandbox list ──
@@ -657,7 +650,8 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
             let focus_marker = if is_focused { " *" } else { "" };
 
             let sync_label = if panel.project_mount.is_some() {
-                let is_syncing = panel.sync_override
+                let is_syncing = panel
+                    .sync_override
                     .unwrap_or(app.settings.gitsync.auto_sync);
                 if is_syncing {
                     Span::styled(" [sync]", Style::new().fg(theme.success))
@@ -677,7 +671,10 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(vec![
                 Span::raw(format!(" [{}] ", i)),
                 status,
-                Span::styled(panel.display_name.as_deref().unwrap_or(&panel.agent_name), name_style),
+                Span::styled(
+                    panel.display_name.as_deref().unwrap_or(&panel.agent_name),
+                    name_style,
+                ),
                 Span::styled(sid, Style::new().fg(theme.text_muted)),
                 sync_label,
                 hidden_label,
@@ -696,9 +693,9 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
         )));
     }
 
-    let scroll = app.sidebar_sandbox_scroll.min(
-        total_lines.saturating_sub(inner_height),
-    ) as u16;
+    let scroll = app
+        .sidebar_sandbox_scroll
+        .min(total_lines.saturating_sub(inner_height)) as u16;
 
     let border_style = if !app.sidebar_files_focused {
         Style::new().fg(theme.accent)
@@ -773,35 +770,31 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
                 };
 
                 Line::from(vec![
-                    Span::styled(
-                        format!(" {} ", status_str),
-                        Style::new().fg(status_color),
-                    ),
+                    Span::styled(format!(" {} ", status_str), Style::new().fg(status_color)),
                     Span::styled(filename, Style::new().fg(theme.text)),
                 ])
             }
-            SidebarFilesTab::Committed => {
-                Line::from(Span::styled(
-                    format!("  {}", entry),
-                    Style::new().fg(theme.success),
-                ))
-            }
+            SidebarFilesTab::Committed => Line::from(Span::styled(
+                format!("  {}", entry),
+                Style::new().fg(theme.success),
+            )),
         };
         lines.push(line);
     }
 
     // Total lines includes tab header.
     let total_content = files.len() + 1; // +1 for tab header
-    let scroll = scroll_offset.min(
-        total_content.saturating_sub(inner_height),
-    ) as u16;
+    let scroll = scroll_offset.min(total_content.saturating_sub(inner_height)) as u16;
 
     // Show scroll indicator if content overflows.
     if total_content > inner_height {
         let remaining = total_content.saturating_sub(inner_height + scroll_offset);
         if remaining > 0 {
             let hint = format!("  \u{2193} {} more", remaining);
-            lines.push(Line::from(Span::styled(hint, Style::new().fg(theme.text_muted))));
+            lines.push(Line::from(Span::styled(
+                hint,
+                Style::new().fg(theme.text_muted),
+            )));
         }
     }
 
@@ -830,7 +823,10 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
 /// Render the panel grid based on the number of visible panels.
 fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
     // Collect visible panel indices.
-    let visible_indices: Vec<usize> = app.panels.iter().enumerate()
+    let visible_indices: Vec<usize> = app
+        .panels
+        .iter()
+        .enumerate()
         .filter(|(_, p)| p.visible)
         .map(|(i, _)| i)
         .collect();
@@ -851,7 +847,10 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
     let show_index = {
         let mut seen = std::collections::HashSet::new();
         visible_indices.iter().any(|&i| {
-            let name = app.panels[i].display_name.as_deref().unwrap_or(&app.panels[i].agent_name);
+            let name = app.panels[i]
+                .display_name
+                .as_deref()
+                .unwrap_or(&app.panels[i].agent_name);
             !seen.insert(name)
         })
     };
@@ -1094,12 +1093,7 @@ fn render_panel(
 ///   1. Header — task description + status + elapsed time
 ///   2. Tools  — scrollable list of tool call log entries
 ///   3. Output — scrollable agent text output
-fn render_headless_panel(
-    frame: &mut Frame,
-    area: Rect,
-    panel: &AgentPanel,
-    theme: &Theme,
-) {
+fn render_headless_panel(frame: &mut Frame, area: Rect, panel: &AgentPanel, theme: &Theme) {
     let state = match &panel.headless_state {
         Some(s) => s,
         None => {
@@ -1164,12 +1158,14 @@ fn render_headless_panel(
         Line::from(vec![
             Span::styled("Status: ", Style::new().fg(theme.text_muted)),
             Span::styled(&state.status, Style::new().fg(status_color)),
-            Span::styled(format!("  [{elapsed_str}]"), Style::new().fg(theme.text_muted)),
+            Span::styled(
+                format!("  [{elapsed_str}]"),
+                Style::new().fg(theme.text_muted),
+            ),
         ]),
     ];
 
-    let header = Paragraph::new(header_lines)
-        .style(Style::new().bg(theme.background));
+    let header = Paragraph::new(header_lines).style(Style::new().bg(theme.background));
     frame.render_widget(header, sections[0]);
 
     // --- Section 2: Tool calls ---
@@ -1203,10 +1199,7 @@ fn render_headless_panel(
         let tools_block = Block::default()
             .borders(Borders::TOP)
             .border_style(Style::new().fg(theme.text_muted))
-            .title(Span::styled(
-                " Tools ",
-                Style::new().fg(theme.text_muted),
-            ));
+            .title(Span::styled(" Tools ", Style::new().fg(theme.text_muted)));
 
         let tools_list = List::new(items)
             .block(tools_block)
@@ -1218,10 +1211,7 @@ fn render_headless_panel(
     let output_block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::new().fg(theme.text_muted))
-        .title(Span::styled(
-            " Output ",
-            Style::new().fg(theme.text_muted),
-        ));
+        .title(Span::styled(" Output ", Style::new().fg(theme.text_muted)));
 
     let text = if !state.agent_text.is_empty() {
         state.agent_text.clone()
@@ -1233,10 +1223,14 @@ fn render_headless_panel(
     // The output block has a top border (1 line), so visible height is height - 1.
     let visible_height = sections[2].height.saturating_sub(1) as usize;
     let output_width = sections[2].width.saturating_sub(2).max(1) as usize;
-    let total_lines: usize = text.lines().map(|l| {
-        let len = l.len().max(1); // empty lines count as 1
-        (len + output_width - 1) / output_width
-    }).sum::<usize>().max(1);
+    let total_lines: usize = text
+        .lines()
+        .map(|l| {
+            let len = l.len().max(1); // empty lines count as 1
+            (len + output_width - 1) / output_width
+        })
+        .sum::<usize>()
+        .max(1);
 
     let scroll = if state.auto_scroll && total_lines > visible_height {
         (total_lines - visible_height) as u16
@@ -1316,11 +1310,7 @@ fn render_panel_notification(
     } else {
         theme.text
     };
-    let bg = if is_error {
-        theme.error
-    } else {
-        theme.accent
-    };
+    let bg = if is_error { theme.error } else { theme.accent };
 
     // Truncate message to fit and pad to fill the full width.
     let max_len = banner_area.width as usize;
@@ -1380,21 +1370,14 @@ fn render_scrollbar(
 /// The logo box is 11 chars wide and 5 chars tall (using rounded Unicode corners).
 /// A 4-cell accent segment sweeps clockwise around the 28-position perimeter,
 /// advancing one step per tick (250ms) for a 7-second revolution.
-fn render_loading_animation(
-    frame: &mut Frame,
-    area: Rect,
-    panel: &AgentPanel,
-    theme: &Theme,
-) {
+fn render_loading_animation(frame: &mut Frame, area: Rect, panel: &AgentPanel, theme: &Theme) {
     let box_width: u16 = 11;
     let box_height: u16 = 5;
 
     // Account for progress/error messages below logo.
     let has_message = panel.loading_message.is_some();
     let has_error = panel.loading_error.is_some();
-    let total_height = box_height
-        + if has_message { 2 } else { 0 }
-        + if has_error { 2 } else { 0 };
+    let total_height = box_height + if has_message { 2 } else { 0 } + if has_error { 2 } else { 0 };
 
     // Center the block in the area.
     if area.width < box_width || area.height < total_height {
@@ -1603,7 +1586,10 @@ fn render_autocomplete(
         .map(|(i, s)| {
             let is_selected = selected == Some(i);
             let style = if is_selected {
-                Style::new().fg(theme.selection_fg).bg(theme.selection_bg).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(theme.selection_fg)
+                    .bg(theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(theme.accent)
             };

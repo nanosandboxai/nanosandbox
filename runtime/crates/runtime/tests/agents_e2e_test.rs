@@ -200,8 +200,7 @@ async fn test_agent_version(
 
     // Check runtime availability - skip if not met (this is expected in some environments)
     if !runtime_available().await {
-        let msg =
-            "Runtime prerequisites not met. Install libkrun (macOS/Linux)".to_string();
+        let msg = "Runtime prerequisites not met. Install libkrun (macOS/Linux)".to_string();
         println!("[SKIP] {}", msg);
         return Ok(AgentTestResult::Skipped(msg));
     }

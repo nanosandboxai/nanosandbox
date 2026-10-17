@@ -123,10 +123,7 @@ async fn test_create_rootfs_cached() {
     let first_time = start.elapsed();
     println!("First rootfs creation: {:?}", first_time);
 
-    assert!(
-        rootfs_dir.join("bin").exists(),
-        "rootfs should have /bin"
-    );
+    assert!(rootfs_dir.join("bin").exists(), "rootfs should have /bin");
 
     // Second call: creates again (no built-in caching at this level)
     let rootfs_dir2 = temp_dir.path().join("rootfs2");
@@ -138,10 +135,7 @@ async fn test_create_rootfs_cached() {
     let second_time = start.elapsed();
     println!("Second rootfs creation: {:?}", second_time);
 
-    assert!(
-        rootfs_dir2.join("bin").exists(),
-        "rootfs2 should have /bin"
-    );
+    assert!(rootfs_dir2.join("bin").exists(), "rootfs2 should have /bin");
 }
 
 /// Test OCI bundle creation
@@ -618,8 +612,8 @@ fn test_output_chunk() {
 /// Test CredentialStore empty and add
 #[test]
 fn test_credential_store_empty() {
-    use runtime::CredentialStore;
     use oci_client::secrets::RegistryAuth;
+    use runtime::CredentialStore;
 
     let store = CredentialStore::empty();
 
@@ -631,8 +625,8 @@ fn test_credential_store_empty() {
 /// Test CredentialStore add and retrieve
 #[test]
 fn test_credential_store_add() {
-    use runtime::CredentialStore;
     use oci_client::secrets::RegistryAuth;
+    use runtime::CredentialStore;
 
     let mut store = CredentialStore::empty();
     store.add_credentials("ghcr.io", "user".to_string(), "token123".to_string());
@@ -1658,7 +1652,10 @@ async fn test_alpine_echo_fuse_rootfs() {
                     let _ = sandbox.stop().await;
                 }
                 Err(e) => {
-                    println!("Start failed (fuse mode, runtime may not be installed): {}", e);
+                    println!(
+                        "Start failed (fuse mode, runtime may not be installed): {}",
+                        e
+                    );
                 }
             }
 
@@ -1716,7 +1713,6 @@ async fn test_alpine_ls_fuse_rootfs() {
         Err(e) => println!("Create failed: {}", e),
     }
 }
-
 
 // ============================================================================
 // Persistent Sandbox: SSH + Agent Gateway availability test
@@ -1781,7 +1777,10 @@ async fn test_cursor_ssh_and_gateway() {
     println!("  SSH port:    {:?}", ssh_port);
     println!("  SSH key:     {:?}", ssh_key);
     println!("  SSH command: {}", ssh_cmd.as_deref().unwrap_or("N/A"));
-    println!("  Guest IP:    {:?} (effective: {})", guest_ip, effective_ip);
+    println!(
+        "  Guest IP:    {:?} (effective: {})",
+        guest_ip, effective_ip
+    );
 
     if let (Some(port), Some(key)) = (ssh_port, ssh_key.as_ref()) {
         let ip = &effective_ip;
@@ -1792,13 +1791,19 @@ async fn test_cursor_ssh_and_gateway() {
         println!("  Testing SSH connection to {}:{}...", ip, port);
         let ssh_result = tokio::process::Command::new("ssh")
             .args([
-                "-i", &key.to_string_lossy(),
-                "-p", &port.to_string(),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=NUL",
-                "-o", "ConnectTimeout=10",
+                "-i",
+                &key.to_string_lossy(),
+                "-p",
+                &port.to_string(),
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=NUL",
+                "-o",
+                "ConnectTimeout=10",
                 &format!("root@{}", ip),
-                "echo", "SSH_OK",
+                "echo",
+                "SSH_OK",
             ])
             .output()
             .await;
@@ -1808,7 +1813,11 @@ async fn test_cursor_ssh_and_gateway() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 let ok = out.status.success() && stdout.contains("SSH_OK");
-                println!("  SSH result: exit={} ok={}", out.status.code().unwrap_or(-1), ok);
+                println!(
+                    "  SSH result: exit={} ok={}",
+                    out.status.code().unwrap_or(-1),
+                    ok
+                );
                 println!("  SSH stdout: '{}'", stdout.trim());
                 if !stderr.is_empty() {
                     println!("  SSH stderr: '{}'", stderr.trim());
@@ -1841,15 +1850,20 @@ async fn test_cursor_ssh_and_gateway() {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 match tokio::net::TcpStream::connect(format!("{}:8080", ip)).await {
                     Ok(mut stream) => {
-                        let request = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                        let request =
+                            "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
                         if let Ok(_) = stream.write_all(request.as_bytes()).await {
                             let mut response = Vec::new();
                             let _ = tokio::time::timeout(
                                 std::time::Duration::from_secs(5),
                                 stream.read_to_end(&mut response),
-                            ).await;
+                            )
+                            .await;
                             let body = String::from_utf8_lossy(&response);
-                            println!("  Gateway /health response:\n    {}", body.replace('\n', "\n    "));
+                            println!(
+                                "  Gateway /health response:\n    {}",
+                                body.replace('\n', "\n    ")
+                            );
                         }
                     }
                     Err(e) => println!("  Gateway health request failed: {}", e),
@@ -1941,7 +1955,9 @@ async fn test_next_mode_console_boot() {
         let mut buf = [0u8; 4096];
         let mut reader = std::io::BufReader::new(output_rx);
         while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             let mut out = output_clone.lock().unwrap();
             out.push_str(&String::from_utf8_lossy(&buf[..n]));
         }
@@ -1957,8 +1973,15 @@ async fn test_next_mode_console_boot() {
     let _ = sandbox.destroy().await;
 
     let output_str = output.lock().unwrap().clone();
-    println!("[{:.1}s] Console output: {:?}", start.elapsed().as_secs_f64(), output_str);
-    assert!(output_str.contains("NEXT_MODE_CONSOLE_OK"), "Expected console output not found");
+    println!(
+        "[{:.1}s] Console output: {:?}",
+        start.elapsed().as_secs_f64(),
+        output_str
+    );
+    assert!(
+        output_str.contains("NEXT_MODE_CONSOLE_OK"),
+        "Expected console output not found"
+    );
 }
 
 /// Boot a vanilla Alpine image in next mode with extra virtiofs mounts.
@@ -2001,7 +2024,8 @@ async fn test_next_mode_extra_mounts() {
     config.command = Some("/bin/sh".to_string());
     config.command_args = vec![
         "-c".to_string(),
-        "echo 'MOUNT_CHECK'; ls -la /mnt/test/ 2>&1 || echo 'MOUNT_NOT_VISIBLE'; sleep 1".to_string(),
+        "echo 'MOUNT_CHECK'; ls -la /mnt/test/ 2>&1 || echo 'MOUNT_NOT_VISIBLE'; sleep 1"
+            .to_string(),
     ];
 
     let start = Instant::now();
@@ -2014,7 +2038,9 @@ async fn test_next_mode_extra_mounts() {
         let mut buf = [0u8; 4096];
         let mut reader = std::io::BufReader::new(output_rx);
         while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             let mut out = output_clone.lock().unwrap();
             out.push_str(&String::from_utf8_lossy(&buf[..n]));
         }
@@ -2029,7 +2055,11 @@ async fn test_next_mode_extra_mounts() {
     let _ = sandbox.destroy().await;
 
     let output_str = output.lock().unwrap().clone();
-    println!("[{:.1}s] Console output: {:?}", start.elapsed().as_secs_f64(), output_str);
+    println!(
+        "[{:.1}s] Console output: {:?}",
+        start.elapsed().as_secs_f64(),
+        output_str
+    );
     // Note: without init patches, the mount won't be visible
     // This test documents the expected behavior once patches are applied
     println!("NOTE: Extra mount visibility requires libkrun init patches");
@@ -2088,7 +2118,9 @@ async fn test_next_mode_network() {
         let mut buf = [0u8; 4096];
         let mut reader = std::io::BufReader::new(output_rx);
         while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             let mut out = output_clone.lock().unwrap();
             out.push_str(&String::from_utf8_lossy(&buf[..n]));
         }
@@ -2103,6 +2135,10 @@ async fn test_next_mode_network() {
     let _ = sandbox.destroy().await;
 
     let output_str = output.lock().unwrap().clone();
-    println!("[{:.1}s] Console output: {:?}", start.elapsed().as_secs_f64(), output_str);
+    println!(
+        "[{:.1}s] Console output: {:?}",
+        start.elapsed().as_secs_f64(),
+        output_str
+    );
     println!("NOTE: Network bring-up requires libkrun init patches");
 }

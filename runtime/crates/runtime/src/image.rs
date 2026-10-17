@@ -195,11 +195,10 @@ impl ImageRef {
     /// Convert to oci_client Reference
     pub fn to_reference(&self) -> Result<Reference> {
         let ref_str = self.full_ref();
-        Reference::try_from(ref_str.as_str())
-            .map_err(|e| {
-                error!("Invalid image reference {}: {}", self.full_ref(), e);
-                Error::InvalidImageRef(format!("{}: {}", self.full_ref(), e))
-            })
+        Reference::try_from(ref_str.as_str()).map_err(|e| {
+            error!("Invalid image reference {}: {}", self.full_ref(), e);
+            Error::InvalidImageRef(format!("{}: {}", self.full_ref(), e))
+        })
     }
 }
 
@@ -510,12 +509,12 @@ impl ImageManager {
         }
         let (manifest, manifest_digest) = manifest_result.ok_or_else(|| {
             let msg = last_err.unwrap_or_else(|| "unknown error".to_string());
-            error!("Failed to fetch manifest for {}: {}", image_ref.full_ref(), msg);
-            Error::ImagePullFailed(format!(
-                "{}: {}",
+            error!(
+                "Failed to fetch manifest for {}: {}",
                 image_ref.full_ref(),
                 msg
-            ))
+            );
+            Error::ImagePullFailed(format!("{}: {}", image_ref.full_ref(), msg))
         })?;
         debug!("Manifest fetched in {:?}", manifest_start.elapsed());
 
@@ -574,19 +573,15 @@ impl ImageManager {
 
                     // Ensure blobs directory exists (defensive: may have been cleaned
                     // between ImageManager::new() and this download task)
-                    tokio::fs::create_dir_all(&blobs_dir)
-                        .await
-                        .map_err(|e| {
-                            error!("Failed to create blobs dir {:?}: {}", blobs_dir, e);
-                            Error::ImagePullFailed(format!("Create blobs dir: {}", e))
-                        })?;
+                    tokio::fs::create_dir_all(&blobs_dir).await.map_err(|e| {
+                        error!("Failed to create blobs dir {:?}: {}", blobs_dir, e);
+                        Error::ImagePullFailed(format!("Create blobs dir: {}", e))
+                    })?;
 
-                    let mut file = tokio::fs::File::create(&temp_path)
-                        .await
-                        .map_err(|e| {
-                            error!("Failed to create temp download file {:?}: {}", temp_path, e);
-                            Error::ImagePullFailed(format!("Create temp file: {}", e))
-                        })?;
+                    let mut file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
+                        error!("Failed to create temp download file {:?}: {}", temp_path, e);
+                        Error::ImagePullFailed(format!("Create temp file: {}", e))
+                    })?;
 
                     client_clone
                         .pull_blob(&reference_clone, &layer_desc, &mut file)
@@ -642,7 +637,10 @@ impl ImageManager {
                     })
                     .await
                     .map_err(|e| {
-                        error!("Blob verification task join failed for {}: {}", digest_short, e);
+                        error!(
+                            "Blob verification task join failed for {}: {}",
+                            digest_short, e
+                        );
                         Error::ImagePullFailed(format!("Verification task: {}", e))
                     })??;
 
@@ -652,12 +650,14 @@ impl ImageManager {
 
             // Await all parallel downloads
             for handle in handles {
-                handle
-                    .await
-                    .map_err(|e| {
-                        error!("Layer download task join error for {}: {}", image_ref.full_ref(), e);
-                        Error::ImagePullFailed(format!("Task join error: {}", e))
-                    })??;
+                handle.await.map_err(|e| {
+                    error!(
+                        "Layer download task join error for {}: {}",
+                        image_ref.full_ref(),
+                        e
+                    );
+                    Error::ImagePullFailed(format!("Task join error: {}", e))
+                })??;
             }
 
             info!("All layers downloaded in {:?}", download_start.elapsed());
@@ -677,25 +677,33 @@ impl ImageManager {
                 config_digest_short,
                 uuid::Uuid::new_v4()
             ));
-            let mut file = tokio::fs::File::create(&temp_path)
-                .await
-                .map_err(|e| {
-                    error!("Failed to create temp config file for {}: {}", image_ref.full_ref(), e);
-                    Error::ImagePullFailed(format!("Create temp config file: {}", e))
-                })?;
+            let mut file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
+                error!(
+                    "Failed to create temp config file for {}: {}",
+                    image_ref.full_ref(),
+                    e
+                );
+                Error::ImagePullFailed(format!("Create temp config file: {}", e))
+            })?;
             client
                 .pull_blob(&reference, &manifest.config, &mut file)
                 .await
                 .map_err(|e| {
-                    error!("Failed to pull config blob for {}: {}", image_ref.full_ref(), e);
+                    error!(
+                        "Failed to pull config blob for {}: {}",
+                        image_ref.full_ref(),
+                        e
+                    );
                     Error::ImagePullFailed(format!("Pull config: {}", e))
                 })?;
-            file.shutdown()
-                .await
-                .map_err(|e| {
-                    error!("Failed to flush config blob for {}: {}", image_ref.full_ref(), e);
-                    Error::ImagePullFailed(format!("Flush config blob: {}", e))
-                })?;
+            file.shutdown().await.map_err(|e| {
+                error!(
+                    "Failed to flush config blob for {}: {}",
+                    image_ref.full_ref(),
+                    e
+                );
+                Error::ImagePullFailed(format!("Flush config blob: {}", e))
+            })?;
             drop(file);
 
             if !config_path.exists() {
@@ -704,7 +712,9 @@ impl ImageManager {
                     .map_err(|e| {
                         error!(
                             "Failed to rename config blob {} for {}: {}",
-                            config_digest_short, image_ref.full_ref(), e
+                            config_digest_short,
+                            image_ref.full_ref(),
+                            e
                         );
                         Error::ImagePullFailed(format!(
                             "Rename config blob {}: {}",
@@ -723,7 +733,11 @@ impl ImageManager {
             })
             .await
             .map_err(|e| {
-                error!("Config blob verification task failed for {}: {}", image_ref.full_ref(), e);
+                error!(
+                    "Config blob verification task failed for {}: {}",
+                    image_ref.full_ref(),
+                    e
+                );
                 Error::ImagePullFailed(format!("Verification task: {}", e))
             })??;
         }
@@ -951,10 +965,7 @@ impl ImageManager {
                                     uuid::Uuid::new_v4()
                                 ));
                                 let mut out_file = File::create(&temp_path).map_err(|e| {
-                                    error!(
-                                        "Failed to create temp tar file {:?}: {}",
-                                        temp_path, e
-                                    );
+                                    error!("Failed to create temp tar file {:?}: {}", temp_path, e);
                                     Error::LayerExtractionFailed(format!(
                                         "Create temp tar {}: {}",
                                         temp_path.display(),
@@ -1045,7 +1056,13 @@ impl ImageManager {
                 tar_path.file_name().unwrap_or_default()
             );
             let file = File::open(tar_path).map_err(|e| {
-                error!("Failed to open tar layer {}/{} {:?}: {}", i + 1, num_layers, tar_path.file_name().unwrap_or_default(), e);
+                error!(
+                    "Failed to open tar layer {}/{} {:?}: {}",
+                    i + 1,
+                    num_layers,
+                    tar_path.file_name().unwrap_or_default(),
+                    e
+                );
                 Error::LayerExtractionFailed(format!("Open tar {}: {}", tar_path.display(), e))
             })?;
             let mut archive = Archive::new(file);
@@ -1053,7 +1070,13 @@ impl ImageManager {
             archive.set_preserve_ownerships(false);
             archive.set_overwrite(true);
             unpack_archive(&mut archive, dest).map_err(|e| {
-                error!("Failed to unpack tar layer {}/{} {:?}: {}", i + 1, num_layers, tar_path.file_name().unwrap_or_default(), e);
+                error!(
+                    "Failed to unpack tar layer {}/{} {:?}: {}",
+                    i + 1,
+                    num_layers,
+                    tar_path.file_name().unwrap_or_default(),
+                    e
+                );
                 Error::LayerExtractionFailed(format!("Failed to unpack tar: {}", e))
             })?;
 
@@ -1110,7 +1133,6 @@ impl ImageManager {
         info!("Rootfs ready in {:?}", start.elapsed());
         Ok(())
     }
-
 }
 
 /// Clone a golden rootfs to a per-sandbox rootfs directory.

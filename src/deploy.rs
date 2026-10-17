@@ -61,9 +61,7 @@ pub fn spawn_supervisor_with_pid(
 /// Spawn the supervisor as a live child of the caller (no `setsid`, no `drop`),
 /// so an external parent (the shim) owns and reaps it. Used by
 /// `nanosb supervise --foreground`.
-pub fn spawn_supervisor_foreground(
-    sp: &SupervisorSpawn,
-) -> anyhow::Result<std::process::Child> {
+pub fn spawn_supervisor_foreground(sp: &SupervisorSpawn) -> anyhow::Result<std::process::Child> {
     spawn_supervisor_child(sp, true)
 }
 

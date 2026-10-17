@@ -10,9 +10,9 @@
 //! | Goose   | YAML     | ~/.config/goose/config.yaml   |
 //! | Cursor  | JSON     | ~/.cursor/mcp.json            |
 
+use crate::config::{AgentType, McpServerConfig};
 use std::collections::HashMap;
 use tracing::warn;
-use crate::config::{AgentType, McpServerConfig};
 
 /// Format identifier for MCP config generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,10 +122,18 @@ impl ConfigGenerator {
         for name in names {
             let srv = &servers[name];
             let mut entry = serde_json::Map::new();
-            entry.insert("command".to_string(), serde_json::Value::String(srv.command.clone()));
+            entry.insert(
+                "command".to_string(),
+                serde_json::Value::String(srv.command.clone()),
+            );
             entry.insert(
                 "args".to_string(),
-                serde_json::Value::Array(srv.args.iter().map(|a| serde_json::Value::String(a.clone())).collect()),
+                serde_json::Value::Array(
+                    srv.args
+                        .iter()
+                        .map(|a| serde_json::Value::String(a.clone()))
+                        .collect(),
+                ),
             );
             if !srv.env.is_empty() {
                 warn_inline_secrets(name, &srv.env);
@@ -182,7 +190,8 @@ impl ConfigGenerator {
             }
             output.push_str("]\n");
 
-            let non_empty_env: HashMap<_, _> = srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
+            let non_empty_env: HashMap<_, _> =
+                srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
             if !non_empty_env.is_empty() {
                 warn_inline_secrets(name, &srv.env);
                 output.push_str("env = { ");
@@ -245,7 +254,8 @@ impl ConfigGenerator {
                 }
             }
 
-            let non_empty_env: HashMap<_, _> = srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
+            let non_empty_env: HashMap<_, _> =
+                srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
             if !non_empty_env.is_empty() {
                 warn_inline_secrets(name, &srv.env);
                 output.push_str("    envs:\n");
@@ -275,7 +285,14 @@ fn looks_like_secret(value: &str) -> bool {
         return false;
     }
     const PREFIXES: &[&str] = &[
-        "AKIA", "gho_", "ghp_", "github_pat_", "sk-", "sk_", "xoxb-", "xoxp-",
+        "AKIA",
+        "gho_",
+        "ghp_",
+        "github_pat_",
+        "sk-",
+        "sk_",
+        "xoxb-",
+        "xoxp-",
     ];
     if PREFIXES.iter().any(|p| value.starts_with(p)) {
         return true;
@@ -311,7 +328,10 @@ mod tests {
             "github".to_string(),
             McpServerConfig {
                 command: "npx".to_string(),
-                args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-github".to_string(),
+                ],
                 env: [("GITHUB_TOKEN".to_string(), "test-token".to_string())].into(),
                 enabled: true,
             },
@@ -320,7 +340,10 @@ mod tests {
             "filesystem".to_string(),
             McpServerConfig {
                 command: "npx".to_string(),
-                args: vec!["-y".to_string(), "@modelcontextprotocol/server-filesystem".to_string()],
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-filesystem".to_string(),
+                ],
                 env: HashMap::new(),
                 enabled: true,
             },
@@ -403,7 +426,10 @@ mod tests {
         );
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Goose);
         let content = String::from_utf8(files[0].content.clone()).unwrap();
-        assert!(!content.contains("envs:"), "empty env should not produce envs section");
+        assert!(
+            !content.contains("envs:"),
+            "empty env should not produce envs section"
+        );
     }
 
     #[test]
@@ -471,12 +497,16 @@ mod tests {
 
     #[test]
     fn test_looks_like_secret_slack_bot() {
-        assert!(looks_like_secret("xoxb-1234567890-1234567890123-abc123def456"));
+        assert!(looks_like_secret(
+            "xoxb-1234567890-1234567890123-abc123def456"
+        ));
     }
 
     #[test]
     fn test_looks_like_secret_slack_user() {
-        assert!(looks_like_secret("xoxp-1234567890-1234567890123-abc123def456"));
+        assert!(looks_like_secret(
+            "xoxp-1234567890-1234567890123-abc123def456"
+        ));
     }
 
     #[test]

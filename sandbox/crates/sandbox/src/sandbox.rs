@@ -68,12 +68,9 @@ impl Sandbox {
         on_progress: Option<&ProgressFn>,
     ) -> Result<Self> {
         let project_mount = setup_project_mount(&mut config, on_progress)?;
-        let inner = runtime::Sandbox::create_with_manager_progress(
-            config,
-            image_manager,
-            on_progress,
-        )
-        .await?;
+        let inner =
+            runtime::Sandbox::create_with_manager_progress(config, image_manager, on_progress)
+                .await?;
         Ok(Self {
             inner,
             project_mount,
@@ -142,16 +139,12 @@ impl Sandbox {
 
     /// Get a reference to the gateway client, or error if not available.
     pub fn gateway(&self) -> gateway::Result<&gateway::GatewayClient> {
-        self.gateway
-            .as_ref()
-            .ok_or(gateway::Error::NotAvailable)
+        self.gateway.as_ref().ok_or(gateway::Error::NotAvailable)
     }
 
     /// Get a mutable reference to the gateway client, or error if not available.
     pub fn gateway_mut(&mut self) -> gateway::Result<&mut gateway::GatewayClient> {
-        self.gateway
-            .as_mut()
-            .ok_or(gateway::Error::NotAvailable)
+        self.gateway.as_mut().ok_or(gateway::Error::NotAvailable)
     }
 
     /// SSH port for connecting to the sandbox, if available.
@@ -207,8 +200,7 @@ impl Sandbox {
                 || rootfs.join(".nanosb-layers").exists();
 
             if has_init {
-                self.inner.config_mut().command =
-                    Some("/usr/local/bin/nanosb-init.sh".to_string());
+                self.inner.config_mut().command = Some("/usr/local/bin/nanosb-init.sh".to_string());
                 self.inner.config_mut().command_args = vec![];
             }
 
@@ -280,16 +272,13 @@ impl Sandbox {
                             self.inner.id(),
                             key_path.display()
                         );
-                        if let Err(e) =
-                            gateway::inject_pubkey_into_rootfs(&rootfs_path, &pubkey)
-                        {
+                        if let Err(e) = gateway::inject_pubkey_into_rootfs(&rootfs_path, &pubkey) {
                             warn!(
                                 "Failed to inject SSH pubkey into rootfs: {} (SSH may not work)",
                                 e
                             );
                         }
-                        self.inner.config_mut().ssh_pubkey =
-                            Some(pubkey.trim().to_string());
+                        self.inner.config_mut().ssh_pubkey = Some(pubkey.trim().to_string());
                         self.ssh_key_path = Some(key_path);
                     }
                     Err(e) => {

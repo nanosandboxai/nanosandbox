@@ -30,18 +30,18 @@
 //! does not expose as a separate concept (it has `readonly` on the struct).
 //! Conversion to `runtime::Mount` is via `Into<runtime::Mount>`.
 
-mod mount_planner;
-mod config_gen;
-mod skills_gen;
 mod agent_cmd;
+mod config_gen;
+mod mount_planner;
+mod skills_gen;
 
+pub use agent_cmd::{AgentCommand, AgentCommandBuilder};
+pub use config_gen::{ConfigFile, ConfigGenerator, McpConfigFormat};
 pub use mount_planner::{merged_config_path, MountPlanner, PlannedMount};
-pub use config_gen::{ConfigGenerator, ConfigFile, McpConfigFormat};
 pub use skills_gen::SkillsGenerator;
-pub use agent_cmd::{AgentCommandBuilder, AgentCommand};
 
-use std::collections::HashMap;
 use crate::config::{AgentSandboxConfig, AgentType, ResolvedAgentConfig};
+use std::collections::HashMap;
 
 /// Full deployment plan for a single sandbox.
 ///
@@ -91,7 +91,12 @@ impl DeployPlanner {
         config_files.extend(mcp_configs);
 
         // Skills config files
-        let skill_configs = SkillsGenerator::generate_all(&resolved.skills, &agent_type, &resolved.agent_name, &resolved.prompt);
+        let skill_configs = SkillsGenerator::generate_all(
+            &resolved.skills,
+            &agent_type,
+            &resolved.agent_name,
+            &resolved.prompt,
+        );
         config_files.extend(skill_configs);
 
         // Agent command
@@ -128,12 +133,18 @@ mod tests {
 
     fn sample_config() -> (AgentSandboxConfig, ResolvedAgentConfig) {
         let mut mcp = HashMap::new();
-        mcp.insert("github".to_string(), McpServerConfig {
-            command: "npx".to_string(),
-            args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
-            env: [("GITHUB_TOKEN".to_string(), "${GITHUB_TOKEN}".to_string())].into(),
-            enabled: true,
-        });
+        mcp.insert(
+            "github".to_string(),
+            McpServerConfig {
+                command: "npx".to_string(),
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-github".to_string(),
+                ],
+                env: [("GITHUB_TOKEN".to_string(), "${GITHUB_TOKEN}".to_string())].into(),
+                enabled: true,
+            },
+        );
 
         let config = AgentSandboxConfig {
             sandbox: runtime::SandboxConfig {
@@ -188,7 +199,10 @@ mod tests {
         let plan = DeployPlanner::plan(&config, &resolved, sandbox_dir, None);
 
         assert_eq!(plan.name, "test-sandbox");
-        assert!(!plan.mounts.is_empty(), "should have at least workspace mount");
+        assert!(
+            !plan.mounts.is_empty(),
+            "should have at least workspace mount"
+        );
         assert!(!plan.config_files.is_empty(), "should have config files");
         assert_eq!(plan.agent_command.binary, "claude");
     }

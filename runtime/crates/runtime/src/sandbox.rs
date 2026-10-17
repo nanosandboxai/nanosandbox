@@ -472,9 +472,7 @@ impl Sandbox {
 
         // Create and start the container again
         debug!("Creating container via runtime");
-        runtime
-            .create(&self.id, &self.config, bundle_path)
-            .await?;
+        runtime.create(&self.id, &self.config, bundle_path).await?;
 
         debug!("Starting container via runtime");
         runtime.start(&self.id).await?;

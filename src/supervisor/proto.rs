@@ -183,12 +183,16 @@ fn unsupported(stream: &mut UnixStream, msg: impl Into<String>) -> std::io::Resu
 
 fn dlog(msg: &str) {
     use std::io::Write;
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open("/tmp/vsock-diag.log")
     {
-        let _ = writeln!(f, "{msg}");
+        let _ = writeln!(f, "{ms} {msg}");
     }
 }
 

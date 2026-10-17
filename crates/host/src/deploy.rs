@@ -133,6 +133,24 @@ pub fn prepare_supervisor_spawn(
     let guest_path = stage_exec_agent(&agent_dir)?;
     let exec_sock = sandbox_dir.join("exec.sock");
     let _ = std::fs::remove_file(&exec_sock);
+    {
+        use std::io::Write;
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/vsock-diag.log")
+        {
+            let _ = writeln!(
+                f,
+                "{ms} prepare_supervisor_spawn: removed {}",
+                exec_sock.display()
+            );
+        }
+    }
     let extra_mounts = vec![runtime_config::ExtraMount {
         tag: "agent".to_string(),
         host_path: agent_dir.to_string_lossy().to_string(),

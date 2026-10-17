@@ -97,14 +97,11 @@ impl SupervisorClient {
                 sock_path.display()
             )));
         }
-        let stream = UnixStream::connect(&sock_path)
-            .map_err(|e| ClientError::ConnectionFailed(format!("{}: {}", sock_path.display(), e)))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .ok();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .ok();
+        let stream = UnixStream::connect(&sock_path).map_err(|e| {
+            ClientError::ConnectionFailed(format!("{}: {}", sock_path.display(), e))
+        })?;
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
         Ok(stream)
     }
 
@@ -136,7 +133,9 @@ impl SupervisorClient {
         match self.send_request(&ControlRequest::Ping {})? {
             ControlResponse::Ok { version } => Ok(version),
             ControlResponse::Error { message } => Err(ClientError::RequestFailed(message)),
-            _ => Err(ClientError::ProtocolError("unexpected response".to_string())),
+            _ => Err(ClientError::ProtocolError(
+                "unexpected response".to_string(),
+            )),
         }
     }
 
@@ -147,12 +146,12 @@ impl SupervisorClient {
 
     /// Stop the sandbox.
     pub fn stop(&self, force: bool) -> ClientResult<()> {
-        match self.send_request(&ControlRequest::Stop {
-            force: Some(force),
-        })? {
+        match self.send_request(&ControlRequest::Stop { force: Some(force) })? {
             ControlResponse::Ok { .. } => Ok(()),
             ControlResponse::Error { message } => Err(ClientError::RequestFailed(message)),
-            _ => Err(ClientError::ProtocolError("unexpected response".to_string())),
+            _ => Err(ClientError::ProtocolError(
+                "unexpected response".to_string(),
+            )),
         }
     }
 
@@ -202,8 +201,7 @@ impl SupervisorClient {
     /// Read console log file directly (works even when supervisor is stopped).
     pub fn read_log_file(&self) -> ClientResult<String> {
         let log_path = self.console_log_path();
-        std::fs::read_to_string(&log_path)
-            .map_err(|e| ClientError::IoError(e))
+        std::fs::read_to_string(&log_path).map_err(|e| ClientError::IoError(e))
     }
 
     /// Read the last N bytes from the console log file.

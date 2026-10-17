@@ -590,8 +590,7 @@ mod tests {
                 signal: None
             }
         );
-        let req: Request =
-            serde_json::from_str("{\"type\":\"kill\",\"name\":\"box\"}").unwrap();
+        let req: Request = serde_json::from_str("{\"type\":\"kill\",\"name\":\"box\"}").unwrap();
         assert_eq!(
             req,
             Request::Kill {
@@ -647,7 +646,10 @@ mod tests {
             Request::ExecInput {
                 data: "ls\n".into(),
             },
-            Request::ExecResize { cols: 120, rows: 40 },
+            Request::ExecResize {
+                cols: 120,
+                rows: 40,
+            },
         ] {
             assert_eq!(roundtrip(&req), req);
         }
@@ -659,8 +661,9 @@ mod tests {
         e.tty = true;
         e.cols = 120;
         e.rows = 40;
-        assert_eq!(roundtrip(&Request::Exec(Box::new(e))), Request::Exec(Box::new(
-            ExecRequest {
+        assert_eq!(
+            roundtrip(&Request::Exec(Box::new(e))),
+            Request::Exec(Box::new(ExecRequest {
                 name: None,
                 command: "cat".into(),
                 args: Vec::new(),
@@ -674,8 +677,8 @@ mod tests {
                 tty: true,
                 cols: 120,
                 rows: 40,
-            }
-        )));
+            }))
+        );
         // A legacy exec frame without tty/cols/rows must decode with defaults.
         let legacy = r#"{"type":"exec","command":"echo","args":[]}"#;
         let req: Request = serde_json::from_str(legacy).unwrap();

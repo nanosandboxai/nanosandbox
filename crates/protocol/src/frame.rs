@@ -37,9 +37,9 @@ where
     T: DeserializeOwned,
 {
     scratch.clear();
-    let n = reader
-        .read_line(scratch)
-        .map_err(|e| ProtocolError::new(crate::error::ErrorCode::Transport, format!("read: {e}")))?;
+    let n = reader.read_line(scratch).map_err(|e| {
+        ProtocolError::new(crate::error::ErrorCode::Transport, format!("read: {e}"))
+    })?;
     if n == 0 {
         return Ok(None);
     }

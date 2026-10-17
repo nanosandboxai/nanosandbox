@@ -51,25 +51,25 @@ pub mod sandbox;
 
 // Re-exports
 pub use auth::CredentialStore;
-pub use runtime_config::{
-    ConsoleSpec, ExtraMount, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope,
-    PortMapping, ProjectConfig, RegistryConfig, RuntimeMode, SandboxConfig, WorkspaceMode,
-};
 pub use error::{Error, Result};
 pub use image::{ImageManager, ImageRef, PruneResult, PulledImage};
 pub use oci::OciBundle;
 pub use registry::{SandboxInfo, SandboxRegistry};
 pub use runtime::{detect_runtime, Runtime};
+pub use runtime_config::{
+    ConsoleSpec, ExtraMount, Mount, MountType, NetworkConfig, NetworkMode, NetworkScope,
+    PortMapping, ProjectConfig, RegistryConfig, RuntimeMode, SandboxConfig, WorkspaceMode,
+};
 pub use sandbox::{ProgressFn, Sandbox, SandboxStatus};
 
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::auth::CredentialStore;
-    pub use runtime_config::*;
     pub use crate::error::{Error, Result};
     pub use crate::image::{ImageManager, ImageRef, PulledImage};
     pub use crate::oci::OciBundle;
     pub use crate::registry::{SandboxInfo, SandboxRegistry};
     pub use crate::runtime::Runtime;
     pub use crate::sandbox::*;
+    pub use runtime_config::*;
 }

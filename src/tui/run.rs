@@ -656,7 +656,13 @@ pub async fn handle_event(
                     let result = match exec_pty.clone() {
                         Some((sock, program, args)) => {
                             super::terminal::connect_exec_pty(
-                                sock, program, args, pty_cols, pty_rows, panel_idx, tx.clone(),
+                                sock,
+                                program,
+                                args,
+                                pty_cols,
+                                pty_rows,
+                                panel_idx,
+                                tx.clone(),
                             )
                             .await
                         }
@@ -745,8 +751,7 @@ pub async fn handle_event(
                             if !super::terminal::is_auth_url(&url) {
                                 continue;
                             }
-                            if !url.contains('?') && !super::terminal::is_device_code_url(&url)
-                            {
+                            if !url.contains('?') && !super::terminal::is_device_code_url(&url) {
                                 continue;
                             }
                             let key = super::terminal::url_dedup_key(&url);
@@ -856,9 +861,7 @@ pub async fn handle_event(
                 }
             } else {
                 // Genuine disconnect: kill sandbox and close panel.
-                if let Some((name, sandbox_arc, supervisor_name)) =
-                    kill_panel_at(app, panel_idx)
-                {
+                if let Some((name, sandbox_arc, supervisor_name)) = kill_panel_at(app, panel_idx) {
                     if let Some(sb) = sandbox_arc {
                         spawn_sandbox_destroy(sb);
                     }
@@ -1293,8 +1296,8 @@ async fn spawn_supervisor_panel(
     }
 
     let short_id = name.chars().take(8).collect::<String>();
-    let exec_pty = interactive_exec
-        .map(|(program, args)| (sandbox_dir.join("exec.sock"), program, args));
+    let exec_pty =
+        interactive_exec.map(|(program, args)| (sandbox_dir.join("exec.sock"), program, args));
     let _ = tx.send(AppEvent::SupervisorReady {
         panel_idx,
         name,
@@ -1329,7 +1332,11 @@ fn spawn_supervisor_stop(name: String) {
 }
 
 /// Handle a single key event.
-pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<AppEvent>) {
+pub(crate) async fn handle_key_event(
+    app: &mut App,
+    key: KeyEvent,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
     // Pending reconnect confirmation: intercept y/n before anything else.
     if app.pending_reconnect.is_some() {
         match key.code {
@@ -1958,7 +1965,11 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
 }
 
 /// Handle a parsed slash command.
-pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<AppEvent>) {
+pub(crate) async fn handle_command(
+    app: &mut App,
+    cmd: Command,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
     match cmd {
         Command::Quit => {
             if app.input_focus == InputFocus::Panel {
@@ -2150,14 +2161,23 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                         let result = match exec_pty {
                             Some((sock, program, args)) => {
                                 super::terminal::connect_exec_pty(
-                                    sock, program, args, pty_cols, pty_rows, panel_idx,
+                                    sock,
+                                    program,
+                                    args,
+                                    pty_cols,
+                                    pty_rows,
+                                    panel_idx,
                                     tx.clone(),
                                 )
                                 .await
                             }
                             None => {
                                 super::terminal::connect_console(
-                                    name, pty_cols, pty_rows, panel_idx, tx.clone(),
+                                    name,
+                                    pty_cols,
+                                    pty_rows,
+                                    panel_idx,
+                                    tx.clone(),
                                 )
                                 .await
                             }
@@ -2278,8 +2298,8 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                     .panels
                     .get(panel_idx)
                     .and_then(|p| p.project_mount.as_ref())
-                    .map(|pm| {
-                        match (pm.worktree_base.as_ref(), pm.created_branches.first()) {
+                    .map(
+                        |pm| match (pm.worktree_base.as_ref(), pm.created_branches.first()) {
                             (Some(wt), Some((_src, branch))) => {
                                 let short_id = branch
                                     .trim_start_matches("refs/heads/")
@@ -2292,8 +2312,8 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                                 )
                             }
                             _ => "dry-run: nothing to sync (no clone/branch yet).".to_string(),
-                        }
-                    })
+                        },
+                    )
                     .unwrap_or_else(|| "dry-run: no panel.".to_string());
                 push_panel_message(app, info);
                 return;
@@ -2387,18 +2407,16 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                             // Fetch current state to namespaced ref (no --force needed).
                             if let Some(ref wt_base) = pm.worktree_base {
                                 if let Some((source, branch)) = pm.created_branches.first() {
-                                    let short_id = branch.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
+                                    let short_id = branch
+                                        .trim_start_matches("refs/heads/")
+                                        .trim_start_matches("nanosb/");
                                     let nanosb_ref = format!("refs/nanosb/{}", short_id);
                                     let refspec = format!("+refs/heads/{}:{}", branch, nanosb_ref);
                                     let wt = wt_base.clone();
                                     let src = source.clone();
                                     let ok = tokio::task::spawn_blocking(move || {
                                         crate::gitcmd::host_git()
-                                            .args([
-                                                "fetch",
-                                                &wt.to_string_lossy(),
-                                                &refspec,
-                                            ])
+                                            .args(["fetch", &wt.to_string_lossy(), &refspec])
                                             .current_dir(&src)
                                             .output()
                                             .map(|o| o.status.success())
@@ -2566,7 +2584,10 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                     } else {
                         app.set_system_message(ChatMessage {
                             role: MessageRole::System,
-                            content: format!("Project '{}' was not in the registry.", path.display()),
+                            content: format!(
+                                "Project '{}' was not in the registry.",
+                                path.display()
+                            ),
                         });
                     }
                 }
@@ -2604,7 +2625,10 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 .unwrap_or_else(|| app.panels[idx].agent_name.clone());
             if let Some(sname) = app.panels[idx].supervisor_name().map(str::to_string) {
                 spawn_supervisor_stop(sname);
-                app.set_status_message(format!("Stopped '{}'. Panel kept; use /kill to remove.", name));
+                app.set_status_message(format!(
+                    "Stopped '{}'. Panel kept; use /kill to remove.",
+                    name
+                ));
                 app.panels[idx].mode = PanelMode::Loading;
                 app.panels[idx].loading_message = Some("Sandbox stopped.".into());
             } else {
@@ -2639,7 +2663,9 @@ fn handle_project_switch(app: &mut App, target: Option<&str>) {
         Some(t) => {
             // Numeric => registry index (1-based).
             if let Ok(n) = t.parse::<usize>() {
-                projects.get(n.saturating_sub(1)).map(|e| std::path::PathBuf::from(&e.path))
+                projects
+                    .get(n.saturating_sub(1))
+                    .map(|e| std::path::PathBuf::from(&e.path))
             } else {
                 let p = std::path::PathBuf::from(t);
                 if p.is_dir() {
@@ -2658,7 +2684,11 @@ fn handle_project_switch(app: &mut App, target: Option<&str>) {
             let mut reg = registry;
             let name = reg.register(&canonical);
             app.project_path = Some(canonical.clone());
-            app.set_status_message(format!("Active project: {} ({})", name, canonical.display()));
+            app.set_status_message(format!(
+                "Active project: {} ({})",
+                name,
+                canonical.display()
+            ));
         }
         None => {
             if projects.is_empty() {
@@ -2880,7 +2910,13 @@ fn handle_diff(app: &mut App, stat: bool) {
         if stat {
             cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--stat", range]);
         } else {
-            cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--name-status", range]);
+            cmd.args([
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--name-status",
+                range,
+            ]);
         }
         let out = cmd.current_dir(repo).output().ok()?;
         out.status
@@ -3003,10 +3039,14 @@ fn handle_discard(app: &mut App) {
         .current_dir(&wt)
         .output();
     match out {
-        Ok(o) if o.status.success() => {
-            push_panel_message(app, format!("Discarded agent changes; clone reset to {}.", short))
-        }
-        Ok(o) => app.set_status_message(format!("Discard failed: {}", String::from_utf8_lossy(&o.stderr))),
+        Ok(o) if o.status.success() => push_panel_message(
+            app,
+            format!("Discarded agent changes; clone reset to {}.", short),
+        ),
+        Ok(o) => app.set_status_message(format!(
+            "Discard failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        )),
         Err(e) => app.set_status_message(format!("Discard failed: {}", e)),
     }
 }
@@ -3021,7 +3061,11 @@ fn handle_mounts(app: &mut App) {
         }
     };
     let mut lines = vec!["Mounts for this panel:".to_string()];
-    match panel.project_mount.as_ref().and_then(|pm| pm.worktree_base.as_ref()) {
+    match panel
+        .project_mount
+        .as_ref()
+        .and_then(|pm| pm.worktree_base.as_ref())
+    {
         Some(wt) => lines.push(format!("  RW  {}  ->  /workspace", wt.display())),
         None => lines.push("  (no project mount; sandbox has its own rootfs only)".to_string()),
     }
@@ -3188,7 +3232,11 @@ fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
 /// Get the SSH port and key path from the focused panel, if available.
 fn panel_mount_root(
     app: &App,
-) -> Option<(usize, Option<std::path::PathBuf>, Option<std::path::PathBuf>)> {
+) -> Option<(
+    usize,
+    Option<std::path::PathBuf>,
+    Option<std::path::PathBuf>,
+)> {
     let idx = app.focused_panel;
     let panel = app.panels.get(idx)?;
     let mount_root = panel

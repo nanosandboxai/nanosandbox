@@ -145,10 +145,34 @@ pub struct AgentDefaultsFile(pub HashMap<String, AgentComputeDefaults>);
 /// the largest (~1.5-2 GB); other agents are comfortable at 2 GB.
 fn builtin_agent_defaults() -> HashMap<AgentType, AgentComputeDefaults> {
     let mut m = HashMap::new();
-    m.insert(AgentType::Claude, AgentComputeDefaults { cpus: 2, memory_mb: 4096 });
-    m.insert(AgentType::Codex, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
-    m.insert(AgentType::Goose, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
-    m.insert(AgentType::Cursor, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
+    m.insert(
+        AgentType::Claude,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 4096,
+        },
+    );
+    m.insert(
+        AgentType::Codex,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::Goose,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::Cursor,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
     m
 }
 
@@ -191,7 +215,10 @@ pub fn load_agent_defaults() -> HashMap<AgentType, AgentComputeDefaults> {
 pub fn agent_compute_for(agent_type: AgentType) -> AgentComputeDefaults {
     load_agent_defaults()
         .remove(&agent_type)
-        .unwrap_or(AgentComputeDefaults { cpus: 2, memory_mb: 2048 })
+        .unwrap_or(AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        })
 }
 
 fn default_enabled() -> bool {
@@ -440,6 +467,9 @@ mod tests {
             "claude_settings": null
         }"#;
         let cfg: AgentSandboxConfig = serde_json::from_str(json).expect("old session must load");
-        assert!(!cfg.interactive, "missing interactive must default to false");
+        assert!(
+            !cfg.interactive,
+            "missing interactive must default to false"
+        );
     }
 }

@@ -95,8 +95,7 @@ async fn test_next_mode_extra_mounts() {
         handle_boot_vm_subprocess();
     }
 
-    let host_dir =
-        std::env::temp_dir().join(format!("nanosb-next-mount-{}", std::process::id()));
+    let host_dir = std::env::temp_dir().join(format!("nanosb-next-mount-{}", std::process::id()));
     std::fs::create_dir_all(&host_dir).unwrap();
     std::fs::write(host_dir.join("hello.txt"), "MOUNT_MARKER_OK\n").unwrap();
 
@@ -117,12 +116,7 @@ async fn test_next_mode_extra_mounts() {
         .memory_mb(256)
         .runtime_mode(RuntimeMode::Next)
         .console(console)
-        .extra_mount(
-            "testmount",
-            host_dir.to_string_lossy(),
-            "/mnt/test",
-            false,
-        )
+        .extra_mount("testmount", host_dir.to_string_lossy(), "/mnt/test", false)
         .timeout_secs(120)
         .build();
 

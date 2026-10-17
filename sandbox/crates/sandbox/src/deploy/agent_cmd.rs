@@ -3,8 +3,8 @@
 //! Builds the CLI invocation (binary + args) for each agent type, and resolves
 //! the environment map passed to the VM boot.
 
-use std::collections::HashMap;
 use crate::config::{AgentType, Permissions};
+use std::collections::HashMap;
 
 /// A resolved agent command: binary path + arguments.
 #[derive(Debug, Clone)]
@@ -75,17 +75,15 @@ impl AgentCommandBuilder {
 
         // Agent-specific env vars
         match agent_type {
-            AgentType::Goose => {
-                match effective_permissions {
-                    Permissions::AllowAll => {
-                        env.insert("GOOSE_MODE".to_string(), "auto".to_string());
-                    }
-                    Permissions::AcceptEdits => {
-                        env.insert("GOOSE_MODE".to_string(), "smart_approve".to_string());
-                    }
-                    Permissions::Default => {}
+            AgentType::Goose => match effective_permissions {
+                Permissions::AllowAll => {
+                    env.insert("GOOSE_MODE".to_string(), "auto".to_string());
                 }
-            }
+                Permissions::AcceptEdits => {
+                    env.insert("GOOSE_MODE".to_string(), "smart_approve".to_string());
+                }
+                Permissions::Default => {}
+            },
             _ => {}
         }
 
@@ -259,7 +257,9 @@ mod tests {
         assert_eq!(cmd.binary, "claude");
         assert!(cmd.args.contains(&"--verbose".to_string()));
         assert!(cmd.args.contains(&"--output-format".to_string()));
-        assert!(!cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(!cmd
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
     }
 
     #[test]
@@ -274,7 +274,9 @@ mod tests {
         );
         assert!(cmd.args.contains(&"--print".to_string()));
         assert!(cmd.args.contains(&"do something".to_string()));
-        assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
     }
 
     #[test]
@@ -317,7 +319,9 @@ mod tests {
             Permissions::AllowAll,
             None,
         );
-        assert!(cmd.args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     }
 
     #[test]
@@ -384,12 +388,8 @@ mod tests {
         let mut base = HashMap::new();
         base.insert("ANTHROPIC_API_KEY".to_string(), "sk-...".to_string());
 
-        let env = AgentCommandBuilder::build_env(
-            &AgentType::Goose,
-            false,
-            Permissions::AllowAll,
-            &base,
-        );
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Goose, false, Permissions::AllowAll, &base);
         assert_eq!(env.get("GOOSE_MODE").unwrap(), "auto");
         assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "sk-...");
     }
@@ -409,24 +409,16 @@ mod tests {
     #[test]
     fn test_build_env_goose_default() {
         let base = HashMap::new();
-        let env = AgentCommandBuilder::build_env(
-            &AgentType::Goose,
-            false,
-            Permissions::Default,
-            &base,
-        );
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Goose, false, Permissions::Default, &base);
         assert!(!env.contains_key("GOOSE_MODE"));
     }
 
     #[test]
     fn test_build_env_non_goose() {
         let base = HashMap::new();
-        let env = AgentCommandBuilder::build_env(
-            &AgentType::Claude,
-            false,
-            Permissions::AllowAll,
-            &base,
-        );
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Claude, false, Permissions::AllowAll, &base);
         assert!(!env.contains_key("GOOSE_MODE"));
     }
 
@@ -441,7 +433,9 @@ mod tests {
             None,
         );
         // auto_mode with Default permissions → effective AllowAll
-        assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
     }
 
     #[test]
@@ -471,7 +465,9 @@ mod tests {
             Permissions::AllowAll,
             Some("claude-sonnet-4-5-20250929"),
         );
-        assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
         assert!(cmd.args.contains(&"--model".to_string()));
         assert!(cmd.args.contains(&"claude-sonnet-4-5-20250929".to_string()));
         assert!(!cmd.args.contains(&"--print".to_string()));

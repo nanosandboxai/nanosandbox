@@ -1,6 +1,6 @@
-use runtime::Sandbox;
 use runtime::config::SandboxConfig;
 use runtime::runtime::handle_boot_vm_subprocess;
+use runtime::Sandbox;
 
 fn main() {
     // Handle subprocess mode (spawns the same exe with "internal-boot-vm" arg)
@@ -8,7 +8,9 @@ fn main() {
         handle_boot_vm_subprocess();
     }
 
-    tokio::runtime::Runtime::new().unwrap().block_on(async_main());
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async_main());
 }
 
 async fn async_main() {
@@ -29,19 +31,30 @@ async fn async_main() {
     let mut sandbox = match Sandbox::create(config).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[{:.1}s] Failed to create sandbox: {}", start.elapsed().as_secs_f64(), e);
+            eprintln!(
+                "[{:.1}s] Failed to create sandbox: {}",
+                start.elapsed().as_secs_f64(),
+                e
+            );
             return;
         }
     };
     println!("[{:.1}s] Sandbox created", start.elapsed().as_secs_f64());
 
     if let Err(e) = sandbox.start().await {
-        eprintln!("[{:.1}s] Failed to start: {}", start.elapsed().as_secs_f64(), e);
+        eprintln!(
+            "[{:.1}s] Failed to start: {}",
+            start.elapsed().as_secs_f64(),
+            e
+        );
         let _ = sandbox.stop().await;
         let _ = sandbox.destroy().await;
         return;
     }
-    println!("[{:.1}s] Sandbox started (VM running)", start.elapsed().as_secs_f64());
+    println!(
+        "[{:.1}s] Sandbox started (VM running)",
+        start.elapsed().as_secs_f64()
+    );
 
     // Note: exec is now handled by the gateway crate in the sandbox layer.
     // This example only measures VM boot time.

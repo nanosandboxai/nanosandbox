@@ -750,9 +750,7 @@ mod cli {
                 CacheAction::Prune { all } => cmd_cache_prune(all, cli.format).await,
             },
             Some(Commands::Projects) => cmd_projects(cli.format).await,
-            Some(Commands::ProjectsForget { path }) => {
-                cmd_projects_forget(&path, cli.format).await
-            }
+            Some(Commands::ProjectsForget { path }) => cmd_projects_forget(&path, cli.format).await,
             Some(Commands::HostSupervise {
                 foreground,
                 name,
@@ -816,7 +814,10 @@ mod cli {
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf)?;
                 offset = len;
-                print!("{}", crate::strip_terminal_escapes(&String::from_utf8_lossy(&buf)));
+                print!(
+                    "{}",
+                    crate::strip_terminal_escapes(&String::from_utf8_lossy(&buf))
+                );
                 std::io::stdout().flush().ok();
             }
         }
@@ -963,18 +964,15 @@ mod cli {
             // Reject symlinks / non-regular / oversized files before reading.
             const MAX_ENV_FILE: u64 = 1 << 20;
             match std::fs::symlink_metadata(path) {
-                Ok(m) if m.file_type().is_symlink() => anyhow::bail!(
-                    "env file '{}' is a symlink; refusing",
-                    path
-                ),
+                Ok(m) if m.file_type().is_symlink() => {
+                    anyhow::bail!("env file '{}' is a symlink; refusing", path)
+                }
                 Ok(m) if !m.is_file() => {
                     anyhow::bail!("env file '{}' is not a regular file", path)
                 }
-                Ok(m) if m.len() > MAX_ENV_FILE => anyhow::bail!(
-                    "env file '{}' is too large ({} bytes)",
-                    path,
-                    m.len()
-                ),
+                Ok(m) if m.len() > MAX_ENV_FILE => {
+                    anyhow::bail!("env file '{}' is too large ({} bytes)", path, m.len())
+                }
                 Ok(_) => {}
                 Err(e) => anyhow::bail!("failed to access env file '{}': {}", path, e),
             }
@@ -1359,9 +1357,7 @@ mod cli {
     ///
     /// Returns `None` when the origin is unknown/pre-dates tracking. Returns an
     /// error when a key the sandbox needs is no longer available on the host.
-    fn resolve_boot_env(
-        origin: &nanosb_cli::deploy::Origin,
-    ) -> anyhow::Result<Option<String>> {
+    fn resolve_boot_env(origin: &nanosb_cli::deploy::Origin) -> anyhow::Result<Option<String>> {
         if origin.source.is_empty() {
             return Ok(None);
         }
@@ -1508,7 +1504,9 @@ mod cli {
         // socket so `nanosb exec` can run commands in this sandbox.
         let mut extra_mounts: Vec<runtime::config::ExtraMount> = Vec::new();
         if exec {
-            let sandbox_dir = SupervisorClient::new(sandbox_name).sandbox_dir().to_path_buf();
+            let sandbox_dir = SupervisorClient::new(sandbox_name)
+                .sandbox_dir()
+                .to_path_buf();
             let agent_dir = sandbox_dir.join("agent");
             let guest_path = nanosb_cli::deploy::stage_exec_agent(&agent_dir)?;
             let exec_sock = sandbox_dir.join("exec.sock");
@@ -1525,8 +1523,7 @@ mod cli {
             // workload stays PID 1 and the agent runs resident alongside it.
             if command.is_empty() {
                 config.command = Some(guest_path);
-                config.command_args =
-                    vec![nanosb_cli::deploy::EXEC_VSOCK_PORT.to_string()];
+                config.command_args = vec![nanosb_cli::deploy::EXEC_VSOCK_PORT.to_string()];
             } else {
                 config.exec_agent = Some(guest_path);
             }
@@ -1543,9 +1540,7 @@ mod cli {
 
         let json_mode = matches!(format, OutputFormat::Json);
         if json_mode && follow {
-            eprintln!(
-                "warning: --follow is ignored in json mode (output captured in \"output\")"
-            );
+            eprintln!("warning: --follow is ignored in json mode (output captured in \"output\")");
         }
         spawn_supervisor(
             sandbox_name,
@@ -1748,7 +1743,11 @@ mod cli {
                     let r = unsafe { libc::poll(keyfds.as_mut_ptr(), 1, 50) };
                     if r > 0 && keyfds[0].revents & libc::POLLIN != 0 {
                         let n = unsafe {
-                            libc::read(0, stdin_buf.as_mut_ptr() as *mut libc::c_void, stdin_buf.len())
+                            libc::read(
+                                0,
+                                stdin_buf.as_mut_ptr() as *mut libc::c_void,
+                                stdin_buf.len(),
+                            )
                         };
                         if n > 0 {
                             let s = String::from_utf8_lossy(&stdin_buf[..n as usize]).to_string();
@@ -2090,11 +2089,7 @@ mod cli {
     }
 
     /// Spawn a supervisor for a sandbox spec (host-side / shim entrypoint).
-    async fn cmd_supervise(
-        name: &str,
-        spec_path: &str,
-        foreground: bool,
-    ) -> anyhow::Result<()> {
+    async fn cmd_supervise(name: &str, spec_path: &str, foreground: bool) -> anyhow::Result<()> {
         let raw = if spec_path == "-" {
             use std::io::Read;
             let mut s = String::new();
@@ -2405,10 +2400,7 @@ mod cli {
                         continue;
                     }
                     if dry_run {
-                        println!(
-                            "Would clean clone: {}",
-                            entry.file_name().to_string_lossy()
-                        );
+                        println!("Would clean clone: {}", entry.file_name().to_string_lossy());
                         continue;
                     }
                     if !nanosb_cli::gitcmd::has_real_git_dir(&clone_path) {
@@ -2530,7 +2522,8 @@ mod cli {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if let Some(panels) = v.get("panels").and_then(|p| p.as_array()) {
                                     for p in panels {
-                                        if let Some(cp) = p.get("clone_path").and_then(|c| c.as_str())
+                                        if let Some(cp) =
+                                            p.get("clone_path").and_then(|c| c.as_str())
                                         {
                                             referenced.insert(std::path::PathBuf::from(cp));
                                         }
@@ -2553,8 +2546,7 @@ mod cli {
                 }
                 let name = dir.file_name().map(|n| n.to_string_lossy().to_string());
                 let Some(name) = name else { continue };
-                let running =
-                    crate::supervisor::client::SupervisorClient::new(&name).is_running();
+                let running = crate::supervisor::client::SupervisorClient::new(&name).is_running();
                 if running {
                     continue;
                 }
@@ -2709,7 +2701,9 @@ mod cli {
         match format {
             OutputFormat::Text => {
                 if projects.is_empty() {
-                    println!("No projects registered. Launch nanosb with --project to register one.");
+                    println!(
+                        "No projects registered. Launch nanosb with --project to register one."
+                    );
                     return Ok(());
                 }
 
@@ -2770,10 +2764,7 @@ mod cli {
                 if removed {
                     println!("Removed '{}' from project registry.", path.display());
                 } else {
-                    println!(
-                        "Project '{}' was not in the registry.",
-                        path.display()
-                    );
+                    println!("Project '{}' was not in the registry.", path.display());
                 }
             }
             OutputFormat::Json => {
@@ -2886,7 +2877,8 @@ mod escape_tests {
     }
 }
 
-fn main() -> anyhow::Result<()> {    // Handle internal subprocess commands BEFORE starting the tokio runtime.
+fn main() -> anyhow::Result<()> {
+    // Handle internal subprocess commands BEFORE starting the tokio runtime.
     //
     // This is critical on macOS: the TUI uses a multi-threaded tokio runtime,
     // and Hypervisor.framework's hv_vm_create() fails when called from a

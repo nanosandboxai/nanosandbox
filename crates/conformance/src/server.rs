@@ -146,7 +146,12 @@ fn handle_conn(
         }
         if let Some(need) = required_capability(ty) {
             if !caps.contains(&need) {
-                if write_frame(&mut writer, &error_frame("unsupported", &format!("verb `{ty}` is not advertised"))).is_err() {
+                if write_frame(
+                    &mut writer,
+                    &error_frame("unsupported", &format!("verb `{ty}` is not advertised")),
+                )
+                .is_err()
+                {
                     return;
                 }
                 continue;
@@ -168,7 +173,12 @@ fn handle_conn(
             }
             None => {
                 drop(guard);
-                if write_frame(&mut writer, &error_frame("internal", "no scripted response")).is_err() {
+                if write_frame(
+                    &mut writer,
+                    &error_frame("internal", "no scripted response"),
+                )
+                .is_err()
+                {
                     return;
                 }
             }
@@ -206,7 +216,9 @@ fn next_request(
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(v) => return Some(v),
                     Err(_) => {
-                        if write_frame(writer, &error_frame("bad_request", "malformed frame")).is_err() {
+                        if write_frame(writer, &error_frame("bad_request", "malformed frame"))
+                            .is_err()
+                        {
                             return None;
                         }
                         continue;
@@ -218,7 +230,12 @@ fn next_request(
                     if Instant::now() >= d {
                         let mut guard = cursor.lock().unwrap();
                         if steps.get(*guard).and_then(|s| s.timeout_ms).is_some() {
-                            if write_frame(writer, &error_frame("timeout", "step wait budget elapsed")).is_err() {
+                            if write_frame(
+                                writer,
+                                &error_frame("timeout", "step wait budget elapsed"),
+                            )
+                            .is_err()
+                            {
                                 return None;
                             }
                             *guard += 1;
@@ -327,7 +344,9 @@ mod tests {
         let req = Request::Hello(HelloRequest::new("test", PROTOCOL_VERSION));
         write_message(stream, &req).unwrap();
         let mut scratch = String::new();
-        read_message::<_, Response>(reader, &mut scratch).unwrap().unwrap()
+        read_message::<_, Response>(reader, &mut scratch)
+            .unwrap()
+            .unwrap()
     }
 
     fn send_req(stream: &mut UnixStream, req: &Value) {
@@ -339,7 +358,9 @@ mod tests {
 
     fn read_resp(reader: &mut BufReader<UnixStream>) -> Value {
         let mut scratch = String::new();
-        read_message::<_, Value>(reader, &mut scratch).unwrap().unwrap()
+        read_message::<_, Value>(reader, &mut scratch)
+            .unwrap()
+            .unwrap()
     }
 
     #[test]
@@ -352,7 +373,10 @@ mod tests {
             panic!("expected hello_ok, got {resp:?}");
         };
         assert_eq!(h.protocol, PROTOCOL_VERSION);
-        assert_eq!(h.capabilities, vec![Capability::Lifecycle, Capability::Exec]);
+        assert_eq!(
+            h.capabilities,
+            vec![Capability::Lifecycle, Capability::Exec]
+        );
     }
 
     #[test]
@@ -387,7 +411,10 @@ mod tests {
         let (mut stream, mut reader) = connect(server.path());
         hello(&mut stream, &mut reader);
 
-        send_req(&mut stream, &serde_json::json!({"type": "exec", "command": "ls"}));
+        send_req(
+            &mut stream,
+            &serde_json::json!({"type": "exec", "command": "ls"}),
+        );
         let resp = read_resp(&mut reader);
         assert_eq!(resp["type"], "error");
         assert_eq!(resp["code"], "internal");
@@ -411,7 +438,10 @@ mod tests {
         let (mut stream, mut reader) = connect(server.path());
         hello(&mut stream, &mut reader);
 
-        send_req(&mut stream, &serde_json::json!({"type": "exec_stream", "command": "x"}));
+        send_req(
+            &mut stream,
+            &serde_json::json!({"type": "exec_stream", "command": "x"}),
+        );
         assert_eq!(read_resp(&mut reader)["type"], "ok");
         assert_eq!(read_resp(&mut reader)["event"], "stdout");
         let last = read_resp(&mut reader);
@@ -426,7 +456,10 @@ mod tests {
         let (mut stream, mut reader) = connect(server.path());
         hello(&mut stream, &mut reader);
 
-        send_req(&mut stream, &serde_json::json!({"type": "exec", "command": "x"}));
+        send_req(
+            &mut stream,
+            &serde_json::json!({"type": "exec", "command": "x"}),
+        );
         let resp = read_resp(&mut reader);
         assert_eq!(resp["type"], "error");
         assert_eq!(resp["code"], "unsupported");
@@ -445,7 +478,9 @@ mod tests {
         let server = ConformanceServer::start(s, None, None).unwrap();
         let (mut stream, mut reader) = connect(server.path());
         hello(&mut stream, &mut reader);
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
 
         let start = Instant::now();
         let resp = read_resp(&mut reader);

@@ -31,7 +31,10 @@ fn main() {
         // Print a helpful error and continue — cargo will fail at link time
         // if the library is truly needed (e.g., for the final binary).
         // This allows `cargo check` on libkrun-sys alone to succeed.
-        println!("cargo:warning=libkrun.a not found at {}", libkrun_a.display());
+        println!(
+            "cargo:warning=libkrun.a not found at {}",
+            libkrun_a.display()
+        );
         println!("cargo:warning=Run: runtime/scripts/build-libkrun.sh");
         println!("cargo:warning=Or set: LIBKRUN_LIB_DIR=/path/to/libkrun.a/dir");
         return;

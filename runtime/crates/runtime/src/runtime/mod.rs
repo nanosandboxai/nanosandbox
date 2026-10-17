@@ -10,8 +10,8 @@
 //! The runtime is a pure VM engine. Gateway communication, SSH setup, and
 //! orchestration logic belong in the sandbox layer.
 
-pub mod validation;
 pub mod sandbox;
+pub mod validation;
 
 pub use validation::{
     validate_runtime_prerequisites, validate_runtime_prerequisites_detailed, ValidationResult,

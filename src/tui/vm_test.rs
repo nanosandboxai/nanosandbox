@@ -27,9 +27,9 @@ use tokio::sync::mpsc;
 use sandbox::AgentSandboxConfig;
 
 use super::app::{App, PanelMode};
+use super::commands::Command;
 use super::event::AppEvent;
 use super::run::{add_agent_from_config, handle_command, handle_event};
-use super::commands::Command;
 
 /// Run the full TUI VM end-to-end lifecycle.
 ///
@@ -63,10 +63,8 @@ async fn test_tui_vm_end_to_end() {
         .timeout_secs(600)
         .build();
     config.sandbox.command = Some("/bin/sh".to_string());
-    config.sandbox.command_args = vec![
-        "-c".to_string(),
-        "echo VM_E2E_READY; sleep 300".to_string(),
-    ];
+    config.sandbox.command_args =
+        vec!["-c".to_string(), "echo VM_E2E_READY; sleep 300".to_string()];
 
     let mut app = App::new();
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
@@ -75,7 +73,11 @@ async fn test_tui_vm_end_to_end() {
     add_agent_from_config(&mut app, &name, config, &tx);
 
     // Assert a panel was pushed.
-    assert_eq!(app.panels.len(), 1, "expected exactly one panel after add_agent_from_config");
+    assert_eq!(
+        app.panels.len(),
+        1,
+        "expected exactly one panel after add_agent_from_config"
+    );
 
     // ── Phase 1: Wait for Terminal ──────────────────────────────────────
     let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
@@ -320,8 +322,14 @@ async fn test_interactive_tty_roundtrip() {
         let _ = std::fs::remove_dir_all(&sandbox_dir);
     }
 
-    assert!(saw_tty_yes, "guest stdin was not a TTY (expected TTY_CHECK:yes)");
-    assert!(saw_echo, "input did not round-trip (expected ECHO:hello-tty)");
+    assert!(
+        saw_tty_yes,
+        "guest stdin was not a TTY (expected TTY_CHECK:yes)"
+    );
+    assert!(
+        saw_echo,
+        "input did not round-trip (expected ECHO:hello-tty)"
+    );
 }
 
 /// Interactive mode launches the **real agent command** (no shell override).
@@ -341,9 +349,7 @@ async fn test_interactive_tty_roundtrip() {
 #[ignore]
 async fn test_interactive_launches_agent_command() {
     let Ok(image) = std::env::var("NANOSB_TEST_AGENT_IMAGE") else {
-        eprintln!(
-            "skipped: set NANOSB_TEST_AGENT_IMAGE=<agent image with `claude`> to run"
-        );
+        eprintln!("skipped: set NANOSB_TEST_AGENT_IMAGE=<agent image with `claude`> to run");
         return;
     };
     let name = format!("tui-agent-cmd-test-{}", std::process::id());
