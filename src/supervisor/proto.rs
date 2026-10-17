@@ -439,6 +439,8 @@ fn handle(
         Request::MetricsStream { interval_ms, .. } => stream_metrics(stream, ctx, interval_ms),
         Request::AttachInput { data } => attach_input(stream, ctx, data),
         Request::AttachResize { cols, rows } => attach_resize(stream, ctx, cols, rows),
+        Request::ConsoleInput { data } => console_input(stream, ctx, data),
+        Request::ConsoleInputClose => console_input_close(stream, ctx),
         Request::ExecInput { .. } => {
             send_error(
                 stream,
@@ -709,6 +711,40 @@ fn attach_input(stream: &mut UnixStream, ctx: &Ctx, data: String) -> std::io::Re
         );
         return Ok(());
     }
+    ack_ok(stream)
+}
+
+fn console_input(stream: &mut UnixStream, ctx: &Ctx, data: String) -> std::io::Result<()> {
+    let result = match ctx.stdin_writer.lock() {
+        Ok(mut w) => w.write_all(data.as_bytes()).and_then(|_| w.flush()),
+        Err(_) => Err(std::io::Error::other("stdin writer poisoned")),
+    };
+    match result {
+        Ok(()) => ack_ok(stream),
+        Err(e) => {
+            send_error(
+                stream,
+                nanosb_protocol::ErrorCode::Io,
+                format!("stdin write failed: {e}"),
+            );
+            Ok(())
+        }
+    }
+}
+
+fn console_input_close(stream: &mut UnixStream, ctx: &Ctx) -> std::io::Result<()> {
+    let Ok(mut w) = ctx.stdin_writer.lock() else {
+        send_error(
+            stream,
+            nanosb_protocol::ErrorCode::InvalidState,
+            "stdin writer poisoned",
+        );
+        return Ok(());
+    };
+    let (_, dummy) = std::io::pipe()?;
+    let old = std::mem::replace(&mut *w, dummy);
+    drop(old);
+    drop(w);
     ack_ok(stream)
 }
 
@@ -1477,6 +1513,23 @@ fn send_agent_error(stream: &mut UnixStream, e: runtime::exec::ExecError) -> std
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_input_close_signals_eof() {
+        use std::io::Read;
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        let stdin_writer = Arc::new(Mutex::new(writer));
+        stdin_writer.lock().unwrap().write_all(b"hi").unwrap();
+        {
+            let mut w = stdin_writer.lock().unwrap();
+            let (_, dummy) = std::io::pipe().unwrap();
+            let old = std::mem::replace(&mut *w, dummy);
+            drop(old);
+        }
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, b"hi");
+    }
 
     struct TestHarness {
         dir: std::path::PathBuf,

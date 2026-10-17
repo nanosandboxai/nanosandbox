@@ -121,6 +121,12 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
+    /// Write raw bytes to the workload's console stdin (PID 1 stdin).
+    ConsoleInput {
+        data: String,
+    },
+    /// Close the workload's console stdin (signal EOF, e.g. so `cat` exits).
+    ConsoleInputClose,
     /// Body frame for a tty `exec_stream`: live stdin bytes.
     ExecInput {
         data: String,
