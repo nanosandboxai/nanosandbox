@@ -1128,6 +1128,7 @@ impl LibkrunRuntime {
             vsock_socket, vsock_port
         ));
         if let (Some(sock), Some(port)) = (vsock_socket, vsock_port) {
+            vlog(&format!("configure: removing existing {sock}"));
             let _ = std::fs::remove_file(sock);
             // Enable the vsock device. This libkrun build (v1.19.5) defaults
             // vsock to Implicit (already enabled), so `add_vsock` may return
