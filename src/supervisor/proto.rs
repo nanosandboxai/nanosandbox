@@ -944,6 +944,12 @@ fn stream_exec_stream(
     opts: ExecOptions,
 ) -> std::io::Result<()> {
     let c = exec_client(ctx);
+    let sock_path = ctx.sandbox_dir.join("exec.sock");
+    dlog(&format!(
+        "stream_exec_stream: {} exists={}",
+        sock_path.display(),
+        sock_path.exists()
+    ));
     if !c.is_available() {
         send_error(
             stream,
