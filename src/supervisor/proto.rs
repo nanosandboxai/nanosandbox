@@ -20,7 +20,7 @@ use runtime::exec::{ExecClient, ExecEvent, ExecHandle, ExecOptions};
 
 use crate::supervisor::secrets::SecretStore;
 use crate::supervisor::volumes::{VolumeError, VolumeRegistry};
-use crate::supervisor::{read_current_state, now_ms, ScrollbackRing, Subscribers};
+use crate::supervisor::{now_ms, read_current_state, ScrollbackRing, Subscribers};
 
 fn map_state(s: crate::supervisor::SandboxState) -> nanosb_protocol::SandboxState {
     use crate::supervisor::SandboxState as S;
@@ -63,7 +63,11 @@ fn exec_configured(ctx: &Ctx) -> bool {
     std::fs::read_to_string(ctx.sandbox_dir.join("config.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("vsock_socket").and_then(|s| s.as_str()).map(String::from))
+        .and_then(|v| {
+            v.get("vsock_socket")
+                .and_then(|s| s.as_str())
+                .map(String::from)
+        })
         .is_some_and(|s| !s.is_empty())
 }
 
@@ -175,6 +179,17 @@ fn send_error(stream: &mut UnixStream, code: nanosb_protocol::ErrorCode, msg: im
 fn unsupported(stream: &mut UnixStream, msg: impl Into<String>) -> std::io::Result<()> {
     send_error(stream, nanosb_protocol::ErrorCode::Unsupported, msg);
     Ok(())
+}
+
+fn dlog(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/vsock-diag.log")
+    {
+        let _ = writeln!(f, "{msg}");
+    }
 }
 
 fn exec_client(ctx: &Ctx) -> ExecClient {
@@ -488,9 +503,7 @@ fn handle_kill(stream: &mut UnixStream, ctx: &Ctx, signal: Option<i32>) -> std::
             send_error(
                 stream,
                 nanosb_protocol::ErrorCode::Unsupported,
-                format!(
-                    "kill signal {other} is not supported; use SIGTERM (15) or SIGKILL (9)"
-                ),
+                format!("kill signal {other} is not supported; use SIGTERM (15) or SIGKILL (9)"),
             );
             Ok(())
         }
@@ -529,7 +542,11 @@ fn handle_wait(
         if let Some(d) = deadline {
             if Instant::now() >= d {
                 ctx.active_waiters.fetch_sub(1, Ordering::SeqCst);
-                send_error(stream, nanosb_protocol::ErrorCode::Timeout, "wait timed out");
+                send_error(
+                    stream,
+                    nanosb_protocol::ErrorCode::Timeout,
+                    "wait timed out",
+                );
                 return Ok(());
             }
         }
@@ -649,6 +666,12 @@ fn handle_secret_remove(
 
 fn ensure_exec_session(ctx: &Ctx) -> Result<(), String> {
     let c = exec_client(ctx);
+    let sock_path = ctx.sandbox_dir.join("exec.sock");
+    dlog(&format!(
+        "exec check: {} exists={}",
+        sock_path.display(),
+        sock_path.exists()
+    ));
     if !c.is_available() {
         return Err("exec channel is not available".to_string());
     }
