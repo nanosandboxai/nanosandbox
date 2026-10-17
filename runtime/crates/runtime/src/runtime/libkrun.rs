@@ -1107,6 +1107,7 @@ impl LibkrunRuntime {
         // networking disabled), matching the microsandbox/Modal model.
         // vsock must be enabled (`krun_add_vsock`) before adding a port, else
         // `krun_add_vsock_port` returns ENODEV.
+        tracing::info!(sock = ?vsock_socket, port = ?vsock_port, "vsock: configure (next)");
         if let (Some(sock), Some(port)) = (vsock_socket, vsock_port) {
             let _ = std::fs::remove_file(sock);
             // Enable the vsock device. This libkrun build (v1.19.5) defaults
@@ -1119,7 +1120,13 @@ impl LibkrunRuntime {
                 Err(e) if e.contains("-17") || e.contains("EEXIST") => {}
                 Err(e) => return Err(format!("add_vsock: {}", e)),
             }
-            ffi::add_vsock_port2(ctx, port, sock, true)?;
+            match ffi::add_vsock_port2(ctx, port, sock, true) {
+                Ok(()) => tracing::info!(sock = %sock, "vsock: host socket bound"),
+                Err(e) => {
+                    tracing::error!(sock = %sock, error = %e, "vsock: add_vsock_port2 failed");
+                    return Err(format!("add_vsock_port2: {e}"));
+                }
+            }
         }
 
         // Set working directory
