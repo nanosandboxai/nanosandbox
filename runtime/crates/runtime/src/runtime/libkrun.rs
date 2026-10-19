@@ -152,6 +152,16 @@ fn docker_guest_env(docker: Option<&DockerConfig>) -> Option<(String, String)> {
     })
 }
 
+/// Build the optional `DOCKER_HOST` guest env pair when Docker is enabled.
+fn docker_host_env(docker: Option<&DockerConfig>) -> Option<(String, String)> {
+    docker.filter(|d| d.enabled).map(|d| {
+        (
+            "DOCKER_HOST".to_string(),
+            format!("unix://{}", d.socket),
+        )
+    })
+}
+
 /// Serialize `config.mounts` into the `NANOSB_MOUNTS` guest env value.
 ///
 /// Produces a JSON array of `{target, kind, tag?, source?, fstype?, options[],
@@ -562,6 +572,9 @@ pub fn handle_boot_vm_subprocess() -> ! {
         serde_json::to_string(&mounts_env_json(&config.mount_specs)).unwrap_or_default(),
     );
     if let Some((key, value)) = docker_guest_env(config.docker.as_ref()) {
+        env.insert(key, value);
+    }
+    if let Some((key, value)) = docker_host_env(config.docker.as_ref()) {
         env.insert(key, value);
     }
 
@@ -2839,5 +2852,31 @@ mod tests {
         assert_eq!(key, "NANOSB_DOCKER");
         let back: DockerConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, docker);
+    }
+
+    #[test]
+    fn docker_host_env_none_when_disabled() {
+        let docker = DockerConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(docker_host_env(Some(&docker)).is_none());
+    }
+
+    #[test]
+    fn docker_host_env_none_when_absent() {
+        assert!(docker_host_env(None).is_none());
+    }
+
+    #[test]
+    fn docker_host_env_set_when_enabled() {
+        let docker = DockerConfig {
+            enabled: true,
+            socket: "/run/docker.sock".to_string(),
+            ..Default::default()
+        };
+        let (key, value) = docker_host_env(Some(&docker)).expect("docker host env pair");
+        assert_eq!(key, "DOCKER_HOST");
+        assert_eq!(value, "unix:///run/docker.sock");
     }
 }
