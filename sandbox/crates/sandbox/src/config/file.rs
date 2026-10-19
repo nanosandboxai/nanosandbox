@@ -59,6 +59,7 @@ pub struct SandboxDefaults {
     pub claude: Option<ClaudeSettingsDef>,
     /// Host project sharing mode (`isolated` default, `shared` legacy).
     pub workspace: Option<WorkspaceDef>,
+    pub docker: Option<DockerDef>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -103,6 +104,7 @@ pub struct SandboxDefinition {
     pub claude: Option<ClaudeSettingsDef>,
     /// Host project sharing mode (`isolated` default, `shared` legacy).
     pub workspace: Option<WorkspaceDef>,
+    pub docker: Option<DockerDef>,
 }
 
 /// Host project sharing mode in YAML.
@@ -121,6 +123,20 @@ pub struct NetworkDef {
     pub scope: Option<NetworkScope>,
     pub ports: Option<Vec<String>>,
     pub dns: Option<Vec<String>>,
+}
+
+/// Docker-in-VM configuration in YAML.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DockerDef {
+    pub enabled: Option<bool>,
+    pub runtime: Option<runtime::config::DockerRuntime>,
+    pub storage_driver: Option<runtime::config::DockerStorageDriver>,
+    pub data_size_bytes: Option<u64>,
+    pub network: Option<runtime::config::DockerNetwork>,
+    pub daemon_json: Option<HashMap<String, serde_json::Value>>,
+    pub preload_images: Option<Vec<String>>,
+    pub rootless: Option<bool>,
+    pub socket: Option<String>,
 }
 
 /// Mount definition in YAML.
@@ -400,6 +416,48 @@ pub fn resolve_sandbox_configs(
                 }
             }
             config.network = net;
+        }
+
+        // Docker: per-sandbox REPLACES defaults (no field-level merge).
+        // When present, start from DockerConfig::default() and override each
+        // explicitly-set field.
+        let docker_def = def.docker.as_ref().or(defaults.docker.as_ref());
+        if let Some(dd) = docker_def {
+            let mut docker = runtime::config::DockerConfig::default();
+            if let Some(enabled) = dd.enabled {
+                docker.enabled = enabled;
+            }
+            if let Some(rt) = dd.runtime {
+                docker.runtime = rt;
+            }
+            if let Some(storage_driver) = dd.storage_driver {
+                docker.storage_driver = storage_driver;
+            }
+            if let Some(data_size_bytes) = dd.data_size_bytes {
+                if data_size_bytes == 0 {
+                    return Err(format!(
+                        "Sandbox '{}': docker.data_size_bytes must be greater than 0",
+                        key,
+                    ));
+                }
+                docker.data_size_bytes = data_size_bytes;
+            }
+            if let Some(network) = dd.network {
+                docker.network = network;
+            }
+            if let Some(ref daemon_json) = dd.daemon_json {
+                docker.daemon_json = daemon_json.clone();
+            }
+            if let Some(ref preload_images) = dd.preload_images {
+                docker.preload_images = preload_images.clone();
+            }
+            if let Some(rootless) = dd.rootless {
+                docker.rootless = rootless;
+            }
+            if let Some(ref socket) = dd.socket {
+                docker.socket = socket.clone();
+            }
+            config.docker = Some(docker);
         }
 
         // Mounts: per-sandbox REPLACES defaults
@@ -1560,5 +1618,120 @@ sandboxes:
         apply_cli_overrides(&mut configs, None, None, None, None, &cli_env);
         assert_eq!(configs[0].1.sandbox.env["NEW_KEY"], "new_value");
         assert_eq!(configs[0].1.sandbox.env["EXISTING"], "overridden");
+    }
+
+    #[test]
+    fn test_parse_docker_block() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      runtime: containerd
+      storage_driver: fuse-overlayfs
+      data_size_bytes: 10737418240
+      network: bridge
+      daemon_json:
+        log-level: debug
+        storage:
+          driver: overlay2
+      preload_images: ["alpine", "busybox"]
+      rootless: true
+      socket: /run/docker.sock
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let docker = file.sandboxes["test"].docker.as_ref().unwrap();
+        assert_eq!(docker.enabled, Some(true));
+        assert_eq!(
+            docker.runtime,
+            Some(runtime::config::DockerRuntime::Containerd)
+        );
+        assert_eq!(
+            docker.storage_driver,
+            Some(runtime::config::DockerStorageDriver::FuseOverlayfs)
+        );
+        assert_eq!(docker.data_size_bytes, Some(10737418240));
+        assert_eq!(docker.network, Some(runtime::config::DockerNetwork::Bridge));
+        assert_eq!(docker.daemon_json.as_ref().unwrap().len(), 2);
+        assert_eq!(docker.preload_images.as_ref().unwrap().len(), 2);
+        assert_eq!(docker.rootless, Some(true));
+        assert_eq!(docker.socket.as_deref(), Some("/run/docker.sock"));
+    }
+
+    #[test]
+    fn test_resolve_docker_per_sandbox_replaces_defaults() {
+        let yaml = r#"
+defaults:
+  image: base:latest
+  docker:
+    enabled: true
+    data_size_bytes: 21474836480
+
+sandboxes:
+  test:
+    docker:
+      runtime: containerd
+      socket: /run/docker.sock
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        let docker = configs[0].1.sandbox.docker.clone().unwrap();
+        // Per-sandbox docker REPLACES the defaults block entirely, so
+        // defaults.enabled=true is not inherited.
+        assert!(!docker.enabled);
+        assert_eq!(docker.runtime, runtime::config::DockerRuntime::Containerd);
+        assert_eq!(docker.socket, "/run/docker.sock");
+        // Epic defaults for the rest.
+        assert_eq!(
+            docker.storage_driver,
+            runtime::config::DockerStorageDriver::Overlay2
+        );
+        assert_eq!(docker.data_size_bytes, 20 * 1024 * 1024 * 1024);
+        assert_eq!(docker.network, runtime::config::DockerNetwork::Host);
+        assert!(docker.daemon_json.is_empty());
+        assert!(docker.preload_images.is_empty());
+        assert!(!docker.rootless);
+    }
+
+    #[test]
+    fn test_resolve_docker_absent_means_none() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert!(configs[0].1.sandbox.docker.is_none());
+    }
+
+    #[test]
+    fn test_resolve_docker_rejects_zero_data_size() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      data_size_bytes: 0
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("docker.data_size_bytes"), "got: {err}");
+    }
+
+    #[test]
+    fn test_resolve_docker_unknown_runtime_fails_loud() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      runtime: cri
+"#;
+        let result = parse_sandbox_file(yaml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cri"));
     }
 }
