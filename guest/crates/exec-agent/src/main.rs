@@ -220,19 +220,354 @@ fn apply_startup_config() {
     }
     if let Ok(docker) = std::env::var("NANOSB_DOCKER") {
         match serde_json::from_str::<serde_json::Value>(&docker) {
-            Ok(v) => {
-                let enabled = v.get("enabled").and_then(|j| j.as_bool()).unwrap_or(false);
-                let runtime = v.get("runtime").and_then(|j| j.as_str()).unwrap_or_default();
-                let network = v.get("network").and_then(|j| j.as_str()).unwrap_or_default();
-                let socket = v.get("socket").and_then(|j| j.as_str()).unwrap_or_default();
-                diag(&format!(
-                    "exec-agent: docker config present (enabled={}, runtime={}, network={}, socket={})",
-                    enabled, runtime, network, socket
-                ));
+            // Docker bootstrap runs on a background thread so the vsock
+            // listener binds immediately: dockerd startup can take tens of
+            // seconds and must not delay the exec channel.
+            Ok(cfg) => {
+                std::thread::spawn(move || docker_bootstrap(cfg));
             }
             Err(e) => diag(&format!("exec-agent: bad NANOSB_DOCKER: {}", e)),
         }
     }
+}
+
+fn docker_enabled(cfg: &serde_json::Value) -> bool {
+    cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+fn docker_socket(cfg: &serde_json::Value) -> String {
+    cfg.get("socket")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/var/run/docker.sock")
+        .to_string()
+}
+
+/// Find a virtio-blk device by its serial (`/sys/block/<dev>/serial`). The
+/// host attaches the Docker data disk with block_id `diskN`, which libkrun
+/// exposes as the device serial.
+fn find_block_device_by_serial(tag: &str) -> Option<String> {
+    find_block_device(|serial| serial == tag)
+}
+
+/// Fallback lookup: any block device whose serial starts with `prefix`.
+fn find_block_device_by_serial_prefix(prefix: &str) -> Option<String> {
+    find_block_device(|serial| serial.starts_with(prefix))
+}
+
+fn find_block_device(pred: impl Fn(&str) -> bool) -> Option<String> {
+    let sys_block = std::path::Path::new("/sys/block");
+    let entries = std::fs::read_dir(sys_block).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("loop")
+            || name.starts_with("ram")
+            || name.starts_with("dm-")
+            || name.starts_with("sr")
+        {
+            continue;
+        }
+        let serial_path = entry.path().join("serial");
+        if let Ok(serial) = std::fs::read_to_string(&serial_path) {
+            if pred(serial.trim()) {
+                return Some(format!("/dev/{}", name));
+            }
+        }
+    }
+    None
+}
+
+/// True when `dev` carries an ext2/3/4 superblock (magic `0x53 0xEF` at
+/// offset 1080, little-endian). Any read error is treated as "not ext4".
+fn has_ext4_signature(dev: &str) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(dev) else {
+        return false;
+    };
+    if f.seek(SeekFrom::Start(1080)).is_err() {
+        return false;
+    }
+    let mut magic = [0u8; 2];
+    if f.read_exact(&mut magic).is_err() {
+        return false;
+    }
+    magic == [0x53, 0xEF]
+}
+
+/// Parse `NANOSB_MOUNTS` for the Docker data-disk plan: the entry with
+/// `kind == "disk"` and `target == "/var/lib/docker"`, returning its tag.
+fn data_disk_plan() -> Option<(String, String)> {
+    let raw = std::env::var("NANOSB_MOUNTS").ok()?;
+    let mounts: Vec<serde_json::Value> = serde_json::from_str(&raw).ok()?;
+    for m in mounts {
+        let kind = m.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let target = m.get("target").and_then(|v| v.as_str()).unwrap_or("");
+        if kind == "disk" && target == "/var/lib/docker" {
+            let tag = m
+                .get("tag")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            return Some((tag, target.to_string()));
+        }
+    }
+    None
+}
+
+fn proc_mount_has_target(target: &str) -> bool {
+    let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
+        return false;
+    };
+    mounts
+        .lines()
+        .any(|l| l.split_whitespace().nth(1) == Some(target))
+}
+
+/// Provision and mount the Docker data disk at /var/lib/docker. Formats it
+/// with ext4 (mkfs.ext4) when it carries no filesystem yet. Never fatal: any
+/// failure is logged and Docker continues on the overlay rootfs.
+fn mount_docker_data_disk(_cfg: &serde_json::Value) {
+    let target = "/var/lib/docker";
+    if proc_mount_has_target(target) {
+        return;
+    }
+    let dev = data_disk_plan()
+        .and_then(|(tag, _)| find_block_device_by_serial(&tag))
+        .or_else(|| find_block_device_by_serial_prefix("disk"));
+    let Some(dev) = dev else {
+        diag("docker: no data disk found for /var/lib/docker; using rootfs storage");
+        return;
+    };
+    if !has_ext4_signature(&dev) {
+        diag(&format!("docker: formatting data disk {} with ext4", dev));
+        match std::process::Command::new("mkfs.ext4")
+            .args(["-F", "-q"])
+            .arg(&dev)
+            .status()
+        {
+            Ok(st) if st.success() => {}
+            Ok(st) => {
+                diag(&format!(
+                    "docker: mkfs.ext4 failed on {} with status {:?}",
+                    dev,
+                    st.code()
+                ));
+                return;
+            }
+            Err(e) => {
+                diag(&format!("docker: failed to run mkfs.ext4 on {}: {}", dev, e));
+                return;
+            }
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(target) {
+        diag(&format!("docker: failed to create {}: {}", target, e));
+    }
+    let c_dev = std::ffi::CString::new(dev.as_str()).unwrap();
+    let c_target = std::ffi::CString::new(target).unwrap();
+    let c_fs = std::ffi::CString::new("ext4").unwrap();
+    let rc = unsafe {
+        libc::mount(
+            c_dev.as_ptr(),
+            c_target.as_ptr(),
+            c_fs.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        diag(&format!(
+            "docker: failed to mount {} at {}: {}",
+            dev,
+            target,
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
+fn ensure_runtime_dirs() {
+    for dir in [
+        "/run",
+        "/var/run",
+        "/tmp",
+        "/var/lib/docker",
+        "/etc/docker",
+        "/var/log",
+    ] {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            diag(&format!("docker: failed to create {}: {}", dir, e));
+        }
+    }
+}
+
+/// Re-mount cgroup2 at /sys/fs/cgroup with the flags dockerd expects. The
+/// libkrun init already mounts it; a remount is best-effort and never fatal.
+fn ensure_cgroup2() {
+    let src = std::ffi::CString::new("cgroup2").unwrap();
+    let target = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
+    let fstype = std::ffi::CString::new("cgroup2").unwrap();
+    let flags = (libc::MS_REMOUNT | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC)
+        as libc::c_ulong;
+    let rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            flags,
+            std::ptr::null(),
+        )
+    };
+    if rc == 0 {
+        return;
+    }
+    let remount_err = std::io::Error::last_os_error();
+    let rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        diag(&format!(
+            "docker: cgroup2 at /sys/fs/cgroup unavailable (remount: {}, mount: {}); continuing",
+            remount_err,
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
+/// Build the daemon.json document: the user's `daemon_json` object plus the
+/// `data-root` / `storage-driver` fields pinned from the typed config (they
+/// always win so the daemon lands on the provisioned data disk).
+fn daemon_json(cfg: &serde_json::Value) -> serde_json::Value {
+    let mut base = cfg
+        .get("daemon_json")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    base.insert(
+        "data-root".to_string(),
+        serde_json::Value::String("/var/lib/docker".to_string()),
+    );
+    let driver = cfg
+        .get("storage_driver")
+        .and_then(|v| v.as_str())
+        .unwrap_or("overlay2")
+        .to_string();
+    base.insert("storage-driver".to_string(), serde_json::Value::String(driver));
+    serde_json::Value::Object(base)
+}
+
+fn write_daemon_json(cfg: &serde_json::Value) {
+    let _ = std::fs::create_dir_all("/etc/docker");
+    let body = serde_json::to_string_pretty(&daemon_json(cfg)).unwrap_or_else(|_| "{}".to_string());
+    if let Err(e) = std::fs::write("/etc/docker/daemon.json", body) {
+        diag(&format!("docker: failed to write /etc/docker/daemon.json: {}", e));
+    }
+}
+
+/// Start `dockerd` (Tier 1: no bridge, no iptables/netfilter) and wait up to
+/// 30s for its unix socket, then preload images best-effort.
+fn start_dockerd(cfg: &serde_json::Value) {
+    let socket = docker_socket(cfg);
+    if std::path::Path::new(&socket).exists() {
+        diag("docker: daemon already running; not starting dockerd");
+        return;
+    }
+    if cfg.get("rootless").and_then(|v| v.as_bool()).unwrap_or(false) {
+        diag("docker: rootless is not supported in this build; not starting dockerd");
+        return;
+    }
+    let driver = cfg
+        .get("storage_driver")
+        .and_then(|v| v.as_str())
+        .unwrap_or("overlay2");
+
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/var/log/dockerd.log");
+    let log_stdio = |log: &std::result::Result<std::fs::File, std::io::Error>| {
+        log.as_ref()
+            .ok()
+            .and_then(|f| f.try_clone().ok())
+            .map(std::process::Stdio::from)
+            .unwrap_or(std::process::Stdio::null())
+    };
+
+    let mut cmd = std::process::Command::new("dockerd");
+    cmd.arg("--bridge=none")
+        .arg("--iptables=false")
+        .arg("--ip6tables=false")
+        .arg(format!("--host=unix://{}", socket))
+        .arg("--data-root=/var/lib/docker")
+        .arg(format!("--storage-driver={}", driver))
+        .arg("--pidfile=/var/run/docker.pid")
+        .stdout(log_stdio(&log))
+        .stderr(log_stdio(&log));
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            diag(&format!("docker: failed to spawn dockerd: {}", e));
+            return;
+        }
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if std::path::Path::new(&socket).exists() {
+            diag(&format!("docker: daemon ready (socket={})", socket));
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let tail = std::fs::read_to_string("/var/log/dockerd.log")
+                .map(|s| s[s.len().saturating_sub(2000)..].to_string())
+                .unwrap_or_default();
+            diag(&format!("docker: daemon not ready after 30s\n{}", tail));
+            let _ = child.kill();
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    if let Some(images) = cfg.get("preload_images").and_then(|v| v.as_array()) {
+        for img in images {
+            let Some(name) = img.as_str() else { continue };
+            let status = std::process::Command::new("docker")
+                .args(["pull", name])
+                .stdout(log_stdio(&log))
+                .stderr(log_stdio(&log))
+                .status();
+            match status {
+                Ok(st) if st.success() => {}
+                Ok(st) => diag(&format!("docker: pull {} failed: {:?}", name, st.code())),
+                Err(e) => diag(&format!("docker: pull {} failed: {}", name, e)),
+            }
+        }
+    }
+}
+
+/// Background entry point: provision the data disk, daemon config, and start
+/// dockerd when `docker.enabled` is true. Every step is logged and non-fatal;
+/// the vsock exec listener is never blocked by this.
+fn docker_bootstrap(cfg: serde_json::Value) {
+    if !docker_enabled(&cfg) {
+        return;
+    }
+    let socket = docker_socket(&cfg);
+    // Export DOCKER_HOST before waiting on the daemon so exec sessions started
+    // while dockerd is still booting still target the right socket.
+    std::env::set_var("DOCKER_HOST", format!("unix://{}", socket));
+    ensure_runtime_dirs();
+    ensure_cgroup2();
+    mount_docker_data_disk(&cfg);
+    write_daemon_json(&cfg);
+    start_dockerd(&cfg);
+    diag(&format!("docker: bootstrap complete (DOCKER_HOST=unix://{})", socket));
 }
 
 fn run(port: u32) -> Result<(), String> {
