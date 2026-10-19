@@ -482,6 +482,12 @@ pub fn handle_boot_vm_subprocess() -> ! {
             .map(|(host, _container)| (host.clone(), false))
             .chain(
                 config
+                    .disk_mounts
+                    .iter()
+                    .map(|(_id, path, _format, readonly)| (path.clone(), *readonly)),
+            )
+            .chain(
+                config
                     .extra_mounts
                     .iter()
                     .map(|m| (m.host_path.clone(), m.readonly)),
