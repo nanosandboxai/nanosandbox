@@ -133,6 +133,42 @@ fn epic7_docker_live() {
         run.stdout
     );
 
+    // The code agent runs as the non-root `developer` user; it must be able to
+    // use the root-owned daemon through the socket group.
+    let socket_group = sandbox
+        .exec("stat", &["-c", "%G", "/var/run/docker.sock"])
+        .expect("stat socket");
+    assert_eq!(socket_group.stdout.trim(), "developer");
+
+    let agent_info = sandbox
+        .exec("su", &["-s", "/bin/sh", "developer", "-c", "docker info"])
+        .expect("agent docker info");
+    assert_eq!(
+        agent_info.exit_code, 0,
+        "agent user cannot reach dockerd: {}",
+        agent_info.stderr
+    );
+
+    let agent_run = sandbox
+        .exec(
+            "su",
+            &[
+                "-s",
+                "/bin/sh",
+                "developer",
+                "-c",
+                "docker run --rm --network host hello-world",
+            ],
+        )
+        .expect("agent docker run");
+    assert_eq!(agent_run.exit_code, 0, "agent docker run failed");
+    assert!(agent_run.stdout.contains("Hello from Docker!"));
+
+    let claude = sandbox
+        .exec("su", &["-s", "/bin/sh", "developer", "-c", "claude --version"])
+        .expect("claude version");
+    assert_eq!(claude.exit_code, 0, "claude not runnable as developer");
+
     sandbox.stop(true).expect("stop");
     let _ = sandbox.remove(true);
     cleanup(&name);
