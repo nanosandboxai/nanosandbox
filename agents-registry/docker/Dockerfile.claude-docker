@@ -10,7 +10,8 @@ USER root
 RUN /usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends \
     docker.io \
     e2fsprogs \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && usermod -aG docker developer
 
 # Verify the docker toolchain landed and report versions.
 RUN dockerd --version && containerd --version && runc --version && mkfs.ext4 -V
