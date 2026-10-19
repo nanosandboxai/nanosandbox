@@ -400,6 +400,35 @@ fn ensure_runtime_dirs() {
     }
 }
 
+/// Mount /run as tmpfs so the Docker socket is guest-local. On a virtiofs
+/// rootfs the guest root cannot chown the socket to the docker group: the
+/// host FUSE server runs unprivileged and returns EPERM.
+fn ensure_run_tmpfs() {
+    if proc_mount_has_target("/run") {
+        return;
+    }
+    let src = std::ffi::CString::new("tmpfs").unwrap();
+    let target = std::ffi::CString::new("/run").unwrap();
+    let fstype = std::ffi::CString::new("tmpfs").unwrap();
+    let data = std::ffi::CString::new("mode=755").unwrap();
+    let flags = (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong;
+    let rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            flags,
+            data.as_ptr() as *const libc::c_void,
+        )
+    };
+    if rc != 0 {
+        diag(&format!(
+            "docker: failed to mount tmpfs at /run: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
 /// Re-mount cgroup2 at /sys/fs/cgroup with the flags dockerd expects. The
 /// libkrun init already mounts it; a remount is best-effort and never fatal.
 fn ensure_cgroup2() {
@@ -568,6 +597,7 @@ fn docker_bootstrap(cfg: serde_json::Value) {
     // while dockerd is still booting still target the right socket.
     std::env::set_var("DOCKER_HOST", format!("unix://{}", socket));
     ensure_runtime_dirs();
+    ensure_run_tmpfs();
     ensure_cgroup2();
     mount_docker_data_disk(&cfg);
     write_daemon_json(&cfg);
