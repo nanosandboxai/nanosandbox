@@ -471,6 +471,15 @@ fn write_daemon_json(cfg: &serde_json::Value) {
 
 /// Start `dockerd` (Tier 1: no bridge, no iptables/netfilter) and wait up to
 /// 30s for its unix socket, then preload images best-effort.
+fn group_exists(name: &str) -> bool {
+    std::fs::read_to_string("/etc/group")
+        .map(|body| {
+            body.lines()
+                .any(|line| line.split(':').next() == Some(name))
+        })
+        .unwrap_or(false)
+}
+
 fn start_dockerd(cfg: &serde_json::Value) {
     let socket = docker_socket(cfg);
     if std::path::Path::new(&socket).exists() {
@@ -497,8 +506,11 @@ fn start_dockerd(cfg: &serde_json::Value) {
     cmd.arg("--bridge=none")
         .arg("--iptables=false")
         .arg("--ip6tables=false")
-        .arg(format!("--host=unix://{}", socket))
-        .arg("--pidfile=/var/run/docker.pid")
+        .arg(format!("--host=unix://{}", socket));
+    if group_exists("developer") {
+        cmd.arg("--group=developer");
+    }
+    cmd.arg("--pidfile=/var/run/docker.pid")
         .stdout(log_stdio(&log))
         .stderr(log_stdio(&log));
 
