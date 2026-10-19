@@ -218,6 +218,21 @@ fn apply_startup_config() {
             Err(e) => diag(&format!("exec-agent: bad NANOSB_MOUNTS: {}", e)),
         }
     }
+    if let Ok(docker) = std::env::var("NANOSB_DOCKER") {
+        match serde_json::from_str::<serde_json::Value>(&docker) {
+            Ok(v) => {
+                let enabled = v.get("enabled").and_then(|j| j.as_bool()).unwrap_or(false);
+                let runtime = v.get("runtime").and_then(|j| j.as_str()).unwrap_or_default();
+                let network = v.get("network").and_then(|j| j.as_str()).unwrap_or_default();
+                let socket = v.get("socket").and_then(|j| j.as_str()).unwrap_or_default();
+                diag(&format!(
+                    "exec-agent: docker config present (enabled={}, runtime={}, network={}, socket={})",
+                    enabled, runtime, network, socket
+                ));
+            }
+            Err(e) => diag(&format!("exec-agent: bad NANOSB_DOCKER: {}", e)),
+        }
+    }
 }
 
 fn run(port: u32) -> Result<(), String> {
