@@ -100,6 +100,7 @@ This repo also contains Docker images for running agents inside nanosandbox VMs.
 Dockerfile.base (node:22-slim + MCP packages + agent tooling)
     |
     ├── Dockerfile.claude  → ghcr.io/nanosandboxai/agents-registry/claude
+    ├── Dockerfile.claude-docker → ghcr.io/nanosandboxai/agents-registry/claude-docker
     ├── Dockerfile.codex   → ghcr.io/nanosandboxai/agents-registry/codex
     ├── Dockerfile.goose   → ghcr.io/nanosandboxai/agents-registry/goose
     └── Dockerfile.cursor  → ghcr.io/nanosandboxai/agents-registry/cursor
@@ -117,9 +118,14 @@ Dockerfile.base (node:22-slim + MCP packages + agent tooling)
 | Image | Agent | Registry |
 |-------|-------|----------|
 | claude | Claude Code | `ghcr.io/nanosandboxai/agents-registry/claude:latest` |
+| claude-docker | Claude Code + Docker toolchain (dockerd, containerd, runc, mkfs.ext4) | `ghcr.io/nanosandboxai/agents-registry/claude-docker:latest` |
 | codex | OpenAI Codex | `ghcr.io/nanosandboxai/agents-registry/codex:latest` |
 | goose | Goose | `ghcr.io/nanosandboxai/agents-registry/goose:latest` |
 | cursor | Cursor Agent | `ghcr.io/nanosandboxai/agents-registry/cursor:latest` |
+
+> `claude-docker` adds the Docker engine binaries on top of the claude image.
+> No daemon is started inside the image — the microVM boot path owns that
+> (see `docs/decisions/docker-in-microvm.md`).
 
 ### Building Locally
 
@@ -127,6 +133,8 @@ Dockerfile.base (node:22-slim + MCP packages + agent tooling)
 cd docker
 docker build -f Dockerfile.base -t base:local .
 docker build -f Dockerfile.claude -t claude:local .
+docker build -f Dockerfile.base -t agents-registry/base:latest ..
+docker build -f Dockerfile.claude-docker -t claude-docker:local ..
 ```
 
 ## Contributing

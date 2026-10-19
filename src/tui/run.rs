@@ -4454,6 +4454,11 @@ fn detect_agent_type_from_image(image: &str) -> Option<String> {
     // Strip tag (the part after the last colon in the segment)
     let image_name = last_segment.split(':').next().unwrap_or(last_segment);
 
+    // claude-docker is the claude agent plus a Docker toolchain (Dockerfile.claude-docker).
+    if image_name == "claude-docker" {
+        return Some("claude".to_string());
+    }
+
     for agent in KNOWN_AGENTS {
         // Match patterns: "agent-claude", "nanosb-claude", "claude", etc.
         if image_name == *agent

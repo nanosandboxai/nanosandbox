@@ -17,6 +17,7 @@ on:
         options:
           - ''
           - claude
+          - claude-docker
           - goose
           - codex
           - cursor
@@ -88,7 +89,7 @@ jobs:
           if [ -n "${{ inputs.agent }}" ]; then
             echo 'agents=["${{ inputs.agent }}"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'agents=["claude","goose","codex","cursor"]' >> "$GITHUB_OUTPUT"
+            echo 'agents=["claude","claude-docker","goose","codex","cursor"]' >> "$GITHUB_OUTPUT"
           fi
 
   # ===========================================================================

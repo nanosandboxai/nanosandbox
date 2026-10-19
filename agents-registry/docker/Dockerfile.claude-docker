@@ -1,0 +1,26 @@
+ARG BASE_IMAGE=agents-registry/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="Claude Code agent with Docker-in-microVM support for nanosandbox sandboxes"
+
+# Docker engine binaries live under /usr/bin (dockerd, containerd, runc) plus
+# e2fsprogs provides mkfs.ext4 for the ext4 data disk. No daemon is started
+# here: the microVM boot path is responsible for that (D2/D4).
+USER root
+RUN /usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends \
+    docker.io \
+    e2fsprogs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Verify the docker toolchain landed and report versions.
+RUN dockerd --version && containerd --version && runc --version && mkfs.ext4 -V
+
+RUN npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force
+
+RUN claude --version && echo "Claude Code: OK"
+
+# Agents refuse --dangerously-skip-permissions as root; the microVM is the boundary.
+USER developer
+
+CMD ["claude"]

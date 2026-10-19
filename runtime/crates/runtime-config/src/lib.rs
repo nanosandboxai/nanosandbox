@@ -1435,7 +1435,7 @@ mod tests {
 pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/agents-registry";
 
 /// Known code-agent image names hosted in the agents registry.
-const AGENT_IMAGES: &[&str] = &["base", "claude", "codex", "cursor", "goose", "legacy"];
+const AGENT_IMAGES: &[&str] = &["base", "claude", "claude-docker", "codex", "cursor", "goose", "legacy"];
 
 /// Normalize an image reference: known agent names get the agents-registry
 /// prefix, other bare names get `docker.io/library/`, fully-qualified refs are
