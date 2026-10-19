@@ -84,9 +84,10 @@ and how each is contained.
   Docker storage directory, image layers, or container metadata. `preload_images`
   must not embed secret material.
 
-## 4. Current state (Tier 1 config surface; Tier 2 future)
+## 4. Current state (Tier 1 daemon start; Tier 2 future)
 
-D5 ships the config surface, `Capability::Docker`, and guest delivery:
+D5 ships the config surface, `Capability::Docker`, and guest delivery; D3/D4
+provision the data disk and start the Tier-1 daemon:
 
 - `docker.enabled` (default `false`)
 - `runtime` (`dockerd` | `podman` | `containerd`)
@@ -101,10 +102,15 @@ D5 ships the config surface, `Capability::Docker`, and guest delivery:
 Guest delivery is `NANOSB_DOCKER` JSON, present only when Docker is configured
 and omitted otherwise.
 
-**`enabled: true` is inert until D2/D4.** D5 does not start a daemon. Setting
-`docker.enabled: true` today configures and advertises the capability but has no
-runtime effect. Tier 2 (bridge networking, netfilter, kernel rebuild) is Epic 8
-(#143) and is not implemented.
+**Tier 1 is implemented.** Setting `docker.enabled: true` provisions a sparse
+raw data disk (`disk_image: "raw"`, `fstype: "ext4"`) attached as virtio-blk
+with block_id `diskN`, mounts it at `/var/lib/docker` (formatting it with
+`mkfs.ext4` on first use), writes `/etc/docker/daemon.json`, and starts
+`dockerd` in the guest at boot with `--bridge=none --iptables=false
+--ip6tables=false`. `DOCKER_HOST` is exported to the PID-1/workload
+environment. `rootless` is not yet supported in this build; enabling it logs a
+diagnostic and does not start a daemon. Tier 2 (bridge networking, netfilter,
+kernel rebuild) is Epic 8 (#143) and is not implemented.
 
 ## 5. Acceptance criteria mapping
 
@@ -135,7 +141,8 @@ runtime effect. Tier 2 (bridge networking, netfilter, kernel rebuild) is Epic 8
 
 ## 7. Follow-ups
 
-- Validate `daemon_json` before Tier 1 daemon start (D2/D4).
+- Validate `daemon_json` before Tier 1 ships a daemon start for real usage (D4
+  starts the daemon with the passthrough as-is; it is not schema-validated).
 - Enforce the secrets-never-persisted rule in the daemon start path (D4).
 - Tier 2 kernel rebuild and deps bundle (Epic 8, #143).
 - Decide whether `rootless` becomes a default and how it interacts with the
