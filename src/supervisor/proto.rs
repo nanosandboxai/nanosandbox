@@ -84,6 +84,7 @@ fn capabilities(ctx: &Ctx) -> Vec<Capability> {
         Capability::Volumes,
         Capability::Signal,
         Capability::Wait,
+        Capability::Docker,
     ];
     if exec_configured(ctx) {
         caps.push(Capability::Exec);

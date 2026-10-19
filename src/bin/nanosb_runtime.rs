@@ -104,6 +104,7 @@ fn capabilities() -> Vec<Capability> {
         Capability::Secrets,
         Capability::Volumes,
         Capability::Snapshots,
+        Capability::Docker,
     ]
 }
 
