@@ -87,7 +87,7 @@ Clients gate optional verbs on these. The full set (`Capability::all()`):
 | `signal` | `kill` with an explicit signal (`SIGTERM`/`SIGKILL`) |
 | `wait` | blocking `wait` verb |
 | `exec_pty` | tty `exec_stream` + live stdin/`exec_resize` frames |
-| `docker` | gates future docker verbs (D2/D4); protocol-declared, not advertised by helpers until those verbs exist |
+| `docker` | helper advertises Docker-in-VM config support; clients gate on it. Container operations use `exec`; bridge networking is Tier 2 |
 
 Version comparison is numeric segment-by-segment (`cmp_version`); a client's
 range intersects a server version via `version_in_range`.

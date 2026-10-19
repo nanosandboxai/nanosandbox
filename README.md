@@ -344,7 +344,7 @@ snapshots, published ports, and an explicit security context. Design decisions:
 - [Networking & dynamic publish scope](docs/decisions/networking-dynamic-publish-scope.md).
 - [Security context contract](docs/decisions/security-context-contract.md).
 - [Multi-container-per-VM](docs/decisions/multi-container-per-vm.md) — v1 keeps one container per VM.
-- [Docker in microVM](docs/decisions/docker-in-microvm.md) — threat model + config surface (Tier 1 daemon starts when enabled; Tier 2 deferred).
+- [Docker in microVM](docs/decisions/docker-in-microvm.md) — threat model + config surface (Tier 1 daemon starts when enabled; use `docker run --network host` for outbound; Tier 2 bridge is deferred).
 
 ## Packaging
 

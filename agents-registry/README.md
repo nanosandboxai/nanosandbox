@@ -125,7 +125,9 @@ Dockerfile.base (node:22-slim + MCP packages + agent tooling)
 
 > `claude-docker` adds the Docker engine binaries on top of the claude image.
 > No daemon is started inside the image — the microVM boot path owns that
-> (see `docs/decisions/docker-in-microvm.md`).
+> (see `docs/decisions/docker-in-microvm.md`). In a sandbox with
+> `docker.enabled: true`, containers use the guest network:
+> `docker run --rm --network host <image> ...` (Tier 1 has no default bridge).
 
 ### Building Locally
 

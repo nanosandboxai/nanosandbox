@@ -112,6 +112,20 @@ environment. `rootless` is not yet supported in this build; enabling it logs a
 diagnostic and does not start a daemon. Tier 2 (bridge networking, netfilter,
 kernel rebuild) is Epic 8 (#143) and is not implemented.
 
+Tier 1 has no default bridge. Containers that need outbound networking must use
+`docker run --network host ...` (or `network_mode: host` in Compose); Docker's
+default bridge requires the Tier-2 kernel. `docker run hello-world` works once
+the image is present because it needs no networking.
+
+**Live evidence (2026-10-19, macOS arm64, next mode).** With
+`claude-docker` from a local registry and a 4 GiB `data_size_bytes`, the sandbox
+booted with `/dev/vda` (virtio-blk serial `disk0`) formatted ext4 and mounted at
+`/var/lib/docker`; `docker info` reported `Storage Driver: overlay2`,
+`Cgroup Version: 2`, `Docker Root Dir: /var/lib/docker`; and
+`docker run --rm --network host hello-world` exited 0 with
+"Hello from Docker!". The opt-in assertion is
+`crates/client/tests/epic7_docker_live.rs`.
+
 ## 5. Acceptance criteria mapping
 
 - **#137 AC1** — The `docker` config round-trips protocol → runtime → guest.

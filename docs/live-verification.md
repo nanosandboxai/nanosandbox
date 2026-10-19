@@ -166,3 +166,25 @@ and booting a VM on the restored writable layer are out of scope (epic R3).
 All live tests are opt-in / `#[ignore]`-gated so CI stays green without a VM.
 Re-run any of them with the exact command in the matrix above, and re-run the
 packaged-install check with `scripts/test-packaged-boot.sh`.
+
+## Epic 7 — Docker-in-VM (Tier 1)
+
+Verified on macOS arm64 (next mode) on 2026-10-19 with a Docker-enabled agent
+image (`claude-docker`) cached from a local registry.
+
+```bash
+NANOSB_RUNTIME_BIN="$PWD/target/debug/nanosb-runtime" \
+NANOSB_TEST_DOCKER_IMAGE=localhost:5050/claude-docker:latest \
+  cargo test -p nanosb-client --test epic7_docker_live -- --ignored --nocapture
+```
+
+Observed inside the microVM:
+
+- `/dev/vda` (virtio-blk serial `disk0`) formatted ext4 and mounted at
+  `/var/lib/docker`; `df` shows the 4 GiB data disk.
+- `docker info`: `Storage Driver: overlay2`, `Cgroup Version: 2`,
+  `Docker Root Dir: /var/lib/docker`.
+- `docker run --rm --network host hello-world` → exit 0, "Hello from Docker!".
+
+Tier 1 has no default bridge; use `--network host` for containers that need
+outbound networking. Bridge/NAT and `-p` publishing require Epic 8.
