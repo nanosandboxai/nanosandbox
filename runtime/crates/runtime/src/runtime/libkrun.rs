@@ -20,7 +20,7 @@ use super::ffi;
 use super::gvproxy::{GvproxyInstance, GvproxyManager};
 use crate::config::{
     ConsoleSpec, ExtraMount, Mount, MountType, NetworkScope, RootfsPatchConfig, RootfsSource,
-    RuntimeMode, SandboxConfig,
+    RuntimeMode, SandboxConfig, DockerConfig,
 };
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -122,6 +122,11 @@ pub struct BootVmRequest {
     /// VM-level rlimits passed to the guest init (`RESOURCE=soft:hard`).
     #[serde(default)]
     pub rlimits: Vec<String>,
+    /// Docker-in-VM configuration (Epic 7 D5). Omitted from the wire when
+    /// docker is not configured so a sandbox without docker has a
+    /// byte-identical boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker: Option<DockerConfig>,
 }
 
 fn default_runtime_mode() -> String {
@@ -134,6 +139,17 @@ fn default_rootfs_source() -> String {
 
 fn default_security_profile() -> String {
     "default".to_string()
+}
+
+/// Build the optional `NANOSB_DOCKER` guest env pair.
+fn docker_guest_env(docker: Option<&DockerConfig>) -> Option<(String, String)> {
+    docker.and_then(|d| match serde_json::to_string(d) {
+        Ok(json) => Some(("NANOSB_DOCKER".to_string(), json)),
+        Err(e) => {
+            warn!("Failed to serialize docker config for guest: {}", e);
+            None
+        }
+    })
 }
 
 /// Serialize `config.mounts` into the `NANOSB_MOUNTS` guest env value.
@@ -545,6 +561,9 @@ pub fn handle_boot_vm_subprocess() -> ! {
         "NANOSB_MOUNTS".to_string(),
         serde_json::to_string(&mounts_env_json(&config.mount_specs)).unwrap_or_default(),
     );
+    if let Some((key, value)) = docker_guest_env(config.docker.as_ref()) {
+        env.insert(key, value);
+    }
 
     let args_refs: Vec<&str> = config.command_args.iter().map(|s| s.as_str()).collect();
 
@@ -798,6 +817,8 @@ struct BootConfig {
     stat_virtualization: Option<String>,
     /// VM-level rlimits passed to the guest init (`RESOURCE=soft:hard`).
     rlimits: Vec<String>,
+    /// Docker-in-VM configuration (Epic 7 D5); None means disabled.
+    docker: Option<DockerConfig>,
 }
 
 struct SandboxState {
@@ -1579,6 +1600,7 @@ impl LibkrunRuntime {
                 security_profile: config.security_profile.clone(),
                 stat_virtualization: config.stat_virtualization.clone(),
                 rlimits: config.rlimits.clone(),
+                docker: config.docker.clone(),
             },
             exit_code: Arc::new(Mutex::new(None)),
         };
@@ -1827,6 +1849,7 @@ impl LibkrunRuntime {
             security_profile: boot.security_profile,
             stat_virtualization: boot.stat_virtualization,
             rlimits: boot.rlimits,
+            docker: boot.docker,
         };
 
         let mut console_dups: Vec<i32> = Vec::new();
@@ -2008,6 +2031,7 @@ impl LibkrunRuntime {
             security_profile: boot.security_profile,
             stat_virtualization: boot.stat_virtualization,
             rlimits: boot.rlimits,
+            docker: boot.docker,
         };
 
         let config_json = serde_json::to_string(&request)
@@ -2787,5 +2811,33 @@ mod tests {
         assert_eq!(disk.get("kind").unwrap().as_str().unwrap(), "disk");
         assert_eq!(disk.get("tag").unwrap().as_str().unwrap(), "disk0");
         assert_eq!(disk.get("fstype").unwrap().as_str().unwrap(), "ext4");
+    }
+
+    #[test]
+    fn docker_guest_env_none_when_docker_absent() {
+        assert!(docker_guest_env(None).is_none());
+    }
+
+    #[test]
+    fn docker_guest_env_json_when_docker_present() {
+        let docker = DockerConfig {
+            enabled: true,
+            runtime: crate::config::DockerRuntime::Podman,
+            storage_driver: crate::config::DockerStorageDriver::FuseOverlayfs,
+            data_size_bytes: 42 * 1024 * 1024 * 1024,
+            network: crate::config::DockerNetwork::Bridge,
+            daemon_json: HashMap::from([(
+                "log-driver".to_string(),
+                serde_json::Value::String("json-file".to_string()),
+            )]),
+            preload_images: vec!["busybox:latest".to_string()],
+            rootless: true,
+            socket: "/run/docker.sock".to_string(),
+        };
+
+        let (key, json) = docker_guest_env(Some(&docker)).expect("docker env pair");
+        assert_eq!(key, "NANOSB_DOCKER");
+        let back: DockerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, docker);
     }
 }
