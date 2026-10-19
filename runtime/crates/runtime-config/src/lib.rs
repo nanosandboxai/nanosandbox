@@ -252,6 +252,10 @@ pub struct SandboxConfig {
     /// VM-level rlimits passed to the guest init (`RESOURCE=soft:hard`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rlimits: Vec<String>,
+
+    /// Docker-in-VM configuration (Epic 7 D5). None means disabled and changes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker: Option<DockerConfig>,
 }
 
 fn default_security_profile() -> String {
@@ -314,6 +318,7 @@ impl Default for SandboxConfig {
             stat_virtualization: None,
             security_profile: default_security_profile(),
             rlimits: Vec::new(),
+            docker: None,
         }
     }
 }
@@ -848,6 +853,114 @@ impl NetworkConfig {
     }
 }
 
+/// Docker-in-VM runtime selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerRuntime {
+    /// Docker daemon (default)
+    #[default]
+    Dockerd,
+    /// Podman
+    Podman,
+    /// containerd
+    Containerd,
+}
+
+/// Docker storage driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerStorageDriver {
+    /// Overlay2 (default)
+    #[default]
+    Overlay2,
+    /// VFS
+    Vfs,
+    /// FUSE overlayfs
+    #[serde(rename = "fuse-overlayfs")]
+    FuseOverlayfs,
+}
+
+/// Docker network mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerNetwork {
+    /// Host networking (default)
+    #[default]
+    Host,
+    /// No networking
+    None,
+    /// Bridge networking
+    Bridge,
+}
+
+/// Docker-in-VM configuration (Epic 7 D5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DockerConfig {
+    /// Whether the Docker daemon is enabled in the VM.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Container runtime to use.
+    #[serde(default = "default_docker_runtime")]
+    pub runtime: DockerRuntime,
+    /// Storage driver for the Docker daemon.
+    #[serde(default = "default_docker_storage_driver")]
+    pub storage_driver: DockerStorageDriver,
+    /// Data volume size in bytes.
+    #[serde(default = "default_docker_data_size")]
+    pub data_size_bytes: u64,
+    /// Docker network mode.
+    #[serde(default = "default_docker_network")]
+    pub network: DockerNetwork,
+    /// Extra daemon.json overrides.
+    #[serde(default)]
+    pub daemon_json: HashMap<String, serde_json::Value>,
+    /// Images to preload into the VM.
+    #[serde(default)]
+    pub preload_images: Vec<String>,
+    /// Whether to run the Docker daemon rootless.
+    #[serde(default)]
+    pub rootless: bool,
+    /// Docker socket path inside the VM.
+    #[serde(default = "default_docker_socket")]
+    pub socket: String,
+}
+
+fn default_docker_runtime() -> DockerRuntime {
+    DockerRuntime::Dockerd
+}
+
+fn default_docker_storage_driver() -> DockerStorageDriver {
+    DockerStorageDriver::Overlay2
+}
+
+fn default_docker_data_size() -> u64 {
+    20 * 1024 * 1024 * 1024
+}
+
+fn default_docker_network() -> DockerNetwork {
+    DockerNetwork::Host
+}
+
+fn default_docker_socket() -> String {
+    "/var/run/docker.sock".to_string()
+}
+
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            runtime: default_docker_runtime(),
+            storage_driver: default_docker_storage_driver(),
+            data_size_bytes: default_docker_data_size(),
+            network: default_docker_network(),
+            daemon_json: HashMap::new(),
+            preload_images: Vec::new(),
+            rootless: false,
+            socket: default_docker_socket(),
+        }
+    }
+}
+
 /// Network mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -1225,6 +1338,96 @@ mod tests {
         assert_eq!(config.runtime_mode, RuntimeMode::Legacy);
         assert!(config.console.is_none());
         assert!(config.extra_mounts.is_empty());
+    }
+
+    // ── DockerConfig tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_docker_config_defaults() {
+        let cfg = DockerConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.runtime, DockerRuntime::Dockerd);
+        assert_eq!(cfg.storage_driver, DockerStorageDriver::Overlay2);
+        assert_eq!(cfg.data_size_bytes, 20 * 1024 * 1024 * 1024);
+        assert_eq!(cfg.network, DockerNetwork::Host);
+        assert!(cfg.daemon_json.is_empty());
+        assert!(cfg.preload_images.is_empty());
+        assert!(!cfg.rootless);
+        assert_eq!(cfg.socket, "/var/run/docker.sock");
+    }
+
+    #[test]
+    fn test_docker_config_serde_roundtrip() {
+        let cfg = DockerConfig {
+            enabled: true,
+            runtime: DockerRuntime::Podman,
+            storage_driver: DockerStorageDriver::Vfs,
+            data_size_bytes: 40 * 1024 * 1024 * 1024,
+            network: DockerNetwork::Bridge,
+            daemon_json: HashMap::from([(
+                "log-level".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#""debug""#).unwrap(),
+            )]),
+            preload_images: vec!["alpine".to_string()],
+            rootless: true,
+            socket: "/run/docker.sock".to_string(),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: DockerConfig = serde_json::from_str(&json).unwrap();
+        assert!(back.enabled);
+        assert_eq!(back.runtime, DockerRuntime::Podman);
+        assert_eq!(back.storage_driver, DockerStorageDriver::Vfs);
+        assert_eq!(back.data_size_bytes, 40 * 1024 * 1024 * 1024);
+        assert_eq!(back.network, DockerNetwork::Bridge);
+        assert_eq!(
+            serde_json::to_string(back.daemon_json.get("log-level").unwrap()).unwrap(),
+            r#""debug""#,
+        );
+        assert_eq!(back.preload_images, vec!["alpine".to_string()]);
+        assert!(back.rootless);
+        assert_eq!(back.socket, "/run/docker.sock");
+    }
+
+    #[test]
+    fn test_docker_config_storage_driver_fuse_overlayfs_wire() {
+        let mut cfg = DockerConfig::default();
+        cfg.storage_driver = DockerStorageDriver::FuseOverlayfs;
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""storage_driver":"fuse-overlayfs""#));
+    }
+
+    #[test]
+    fn test_sandbox_config_docker_absent_is_byte_identical() {
+        let config = SandboxConfig::builder().name("t").image("alpine").build();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("docker"));
+    }
+
+    #[test]
+    fn test_sandbox_config_docker_roundtrip() {
+        let mut config = SandboxConfig::builder().name("t").image("alpine").build();
+        config.docker = Some(DockerConfig {
+            enabled: true,
+            runtime: DockerRuntime::Containerd,
+            storage_driver: DockerStorageDriver::FuseOverlayfs,
+            data_size_bytes: 10 * 1024 * 1024 * 1024,
+            network: DockerNetwork::None,
+            daemon_json: HashMap::new(),
+            preload_images: vec!["busybox".to_string()],
+            rootless: true,
+            socket: "/run/docker.sock".to_string(),
+        });
+        let json = serde_json::to_string(&config).unwrap();
+        let back: SandboxConfig = serde_json::from_str(&json).unwrap();
+        let docker = back.docker.unwrap();
+        assert!(docker.enabled);
+        assert_eq!(docker.runtime, DockerRuntime::Containerd);
+        assert_eq!(docker.storage_driver, DockerStorageDriver::FuseOverlayfs);
+        assert_eq!(docker.data_size_bytes, 10 * 1024 * 1024 * 1024);
+        assert_eq!(docker.network, DockerNetwork::None);
+        assert_eq!(docker.preload_images, vec!["busybox".to_string()]);
+        assert!(docker.rootless);
+        assert_eq!(docker.socket, "/run/docker.sock");
     }
 }
 
