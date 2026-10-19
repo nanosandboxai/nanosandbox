@@ -128,6 +128,8 @@ Dockerfile.base (node:22-slim + MCP packages + agent tooling)
 > (see `docs/decisions/docker-in-microvm.md`). In a sandbox with
 > `docker.enabled: true`, containers use the guest network:
 > `docker run --rm --network host <image> ...` (Tier 1 has no default bridge).
+> The `developer` user is a member of the `docker` group, and the guest daemon
+> creates its socket with that group, so the agent can use Docker without root.
 
 ### Building Locally
 

@@ -126,6 +126,11 @@ booted with `/dev/vda` (virtio-blk serial `disk0`) formatted ext4 and mounted at
 "Hello from Docker!". The opt-in assertion is
 `crates/client/tests/epic7_docker_live.rs`.
 
+`dockerd` is started with `--group developer` when that group exists, and the
+`claude-docker` image adds `developer` to the `docker` group, so the non-root
+code agent can use the daemon. Socket access is still guest-root-equivalent
+(§2): the agent is the intended privileged guest actor.
+
 ## 5. Acceptance criteria mapping
 
 - **#137 AC1** — The `docker` config round-trips protocol → runtime → guest.

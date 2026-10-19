@@ -185,6 +185,9 @@ Observed inside the microVM:
 - `docker info`: `Storage Driver: overlay2`, `Cgroup Version: 2`,
   `Docker Root Dir: /var/lib/docker`.
 - `docker run --rm --network host hello-world` → exit 0, "Hello from Docker!".
+- As the non-root agent user: `su -s /bin/sh developer -c 'docker info'` and
+  `... 'docker run --rm --network host hello-world'` both succeed;
+  `claude --version` → `2.1.303 (Claude Code)`.
 
 Tier 1 has no default bridge; use `--network host` for containers that need
 outbound networking. Bridge/NAT and `-p` publishing require Epic 8.
