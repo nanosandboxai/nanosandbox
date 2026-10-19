@@ -34,6 +34,7 @@ use tracing::{debug, info, warn};
 /// Configuration passed to the `internal-boot-vm` subprocess.
 ///
 /// Serialized as JSON to stdin of the child process.
+
 #[derive(Serialize, Deserialize)]
 pub struct BootVmRequest {
     /// Sandbox identifier (for log file naming)
@@ -1119,7 +1120,8 @@ impl LibkrunRuntime {
                 Err(e) if e.contains("-17") || e.contains("EEXIST") => {}
                 Err(e) => return Err(format!("add_vsock: {}", e)),
             }
-            ffi::add_vsock_port2(ctx, port, sock, true)?;
+            ffi::add_vsock_port2(ctx, port, sock, true)
+                .map_err(|e| format!("add_vsock_port2: {e}"))?;
         }
 
         // Set working directory
@@ -1127,21 +1129,69 @@ impl LibkrunRuntime {
             ffi::set_workdir(ctx, wd)?;
         }
 
+        // The x86 kernel command line is capped at 2048 bytes and libkrun
+        // exports every `KEY=VALUE` token on it as init's environment. A
+        // Kubernetes container's env vars plus NANOSB_MOUNTS overflow that cap
+        // (the kernel panics parsing the cmdline), so the workload environment
+        // is written to the agent share and loaded by the init blob. Only the
+        // compact bootstrap variables below stay on the command line.
+        let env_file = extra_mounts
+            .iter()
+            .find(|m| m.tag == "agent")
+            .map(|agent_mount| {
+                let mut file_env: std::collections::BTreeMap<String, String> =
+                    env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                if !dns.is_empty() {
+                    file_env
+                        .entry("NANOSANDBOX_DNS".to_string())
+                        .or_insert_with(|| dns.join(","));
+                }
+                file_env
+                    .entry("PATH".to_string())
+                    .or_insert_with(|| {
+                        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()
+                    });
+                file_env
+                    .entry("HOME".to_string())
+                    .or_insert_with(|| "/root".to_string());
+                file_env
+                    .entry("TERM".to_string())
+                    .or_insert_with(|| "xterm-256color".to_string());
+
+                let host_path = std::path::Path::new(&agent_mount.host_path).join("env");
+                let mut encoded = Vec::new();
+                for (key, value) in &file_env {
+                    encoded.extend_from_slice(key.as_bytes());
+                    encoded.push(b'=');
+                    encoded.extend_from_slice(value.as_bytes());
+                    encoded.push(0);
+                }
+                std::fs::write(&host_path, &encoded)
+                    .map_err(|e| format!("failed to write {}: {}", host_path.display(), e))?;
+                Ok::<String, String>(format!("{}/env", agent_mount.target))
+            })
+            .transpose()?;
+
         // Build environment variables
-        let mut env_vars: Vec<String> = env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
-        if !dns.is_empty() && !env.contains_key("NANOSANDBOX_DNS") {
-            env_vars.push(format!("NANOSANDBOX_DNS={}", dns.join(",")));
-        }
-        if !env.contains_key("PATH") {
-            env_vars.push(
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
-            );
-        }
-        if !env.contains_key("HOME") {
-            env_vars.push("HOME=/root".to_string());
-        }
-        if !env.contains_key("TERM") {
-            env_vars.push("TERM=xterm-256color".to_string());
+        let mut env_vars: Vec<String> = Vec::new();
+        if let Some(ref path) = env_file {
+            env_vars.push(format!("NANOSB_ENV_FILE={}", path));
+        } else {
+            env_vars.extend(env.iter().map(|(k, v)| format!("{}={}", k, v)));
+            if !dns.is_empty() && !env.contains_key("NANOSANDBOX_DNS") {
+                env_vars.push(format!("NANOSANDBOX_DNS={}", dns.join(",")));
+            }
+            if !env.contains_key("PATH") {
+                env_vars.push(
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+                );
+            }
+            if !env.contains_key("HOME") {
+                env_vars.push("HOME=/root".to_string());
+            }
+            if !env.contains_key("TERM") {
+                env_vars.push("TERM=xterm-256color".to_string());
+            }
         }
 
         // Next-mode env vars for the patched init (see runtime/scripts/patches/README.md)

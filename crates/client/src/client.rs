@@ -587,6 +587,18 @@ impl Sandbox {
         })
     }
 
+    /// Write raw bytes to the workload's console stdin (PID 1 stdin).
+    pub fn write_stdin(&self, data: &str) -> Result<()> {
+        self.ack(Request::ConsoleInput {
+            data: data.to_string(),
+        })
+    }
+
+    /// Close the workload's console stdin, signalling EOF (so `cat` exits).
+    pub fn close_stdin(&self) -> Result<()> {
+        self.ack(Request::ConsoleInputClose)
+    }
+
     // ── observability ──────────────────────────────────────────────────
 
     /// Fetch the current metrics snapshot.

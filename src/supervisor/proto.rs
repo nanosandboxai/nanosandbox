@@ -20,7 +20,7 @@ use runtime::exec::{ExecClient, ExecEvent, ExecHandle, ExecOptions};
 
 use crate::supervisor::secrets::SecretStore;
 use crate::supervisor::volumes::{VolumeError, VolumeRegistry};
-use crate::supervisor::{read_current_state, now_ms, ScrollbackRing, Subscribers};
+use crate::supervisor::{now_ms, read_current_state, ScrollbackRing, Subscribers};
 
 fn map_state(s: crate::supervisor::SandboxState) -> nanosb_protocol::SandboxState {
     use crate::supervisor::SandboxState as S;
@@ -63,7 +63,11 @@ fn exec_configured(ctx: &Ctx) -> bool {
     std::fs::read_to_string(ctx.sandbox_dir.join("config.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("vsock_socket").and_then(|s| s.as_str()).map(String::from))
+        .and_then(|v| {
+            v.get("vsock_socket")
+                .and_then(|s| s.as_str())
+                .map(String::from)
+        })
         .is_some_and(|s| !s.is_empty())
 }
 
@@ -439,6 +443,8 @@ fn handle(
         Request::MetricsStream { interval_ms, .. } => stream_metrics(stream, ctx, interval_ms),
         Request::AttachInput { data } => attach_input(stream, ctx, data),
         Request::AttachResize { cols, rows } => attach_resize(stream, ctx, cols, rows),
+        Request::ConsoleInput { data } => console_input(stream, ctx, data),
+        Request::ConsoleInputClose => console_input_close(stream, ctx),
         Request::ExecInput { .. } => {
             send_error(
                 stream,
@@ -486,9 +492,7 @@ fn handle_kill(stream: &mut UnixStream, ctx: &Ctx, signal: Option<i32>) -> std::
             send_error(
                 stream,
                 nanosb_protocol::ErrorCode::Unsupported,
-                format!(
-                    "kill signal {other} is not supported; use SIGTERM (15) or SIGKILL (9)"
-                ),
+                format!("kill signal {other} is not supported; use SIGTERM (15) or SIGKILL (9)"),
             );
             Ok(())
         }
@@ -527,7 +531,11 @@ fn handle_wait(
         if let Some(d) = deadline {
             if Instant::now() >= d {
                 ctx.active_waiters.fetch_sub(1, Ordering::SeqCst);
-                send_error(stream, nanosb_protocol::ErrorCode::Timeout, "wait timed out");
+                send_error(
+                    stream,
+                    nanosb_protocol::ErrorCode::Timeout,
+                    "wait timed out",
+                );
                 return Ok(());
             }
         }
@@ -709,6 +717,40 @@ fn attach_input(stream: &mut UnixStream, ctx: &Ctx, data: String) -> std::io::Re
         );
         return Ok(());
     }
+    ack_ok(stream)
+}
+
+fn console_input(stream: &mut UnixStream, ctx: &Ctx, data: String) -> std::io::Result<()> {
+    let result = match ctx.stdin_writer.lock() {
+        Ok(mut w) => w.write_all(data.as_bytes()).and_then(|_| w.flush()),
+        Err(_) => Err(std::io::Error::other("stdin writer poisoned")),
+    };
+    match result {
+        Ok(()) => ack_ok(stream),
+        Err(e) => {
+            send_error(
+                stream,
+                nanosb_protocol::ErrorCode::Io,
+                format!("stdin write failed: {e}"),
+            );
+            Ok(())
+        }
+    }
+}
+
+fn console_input_close(stream: &mut UnixStream, ctx: &Ctx) -> std::io::Result<()> {
+    let Ok(mut w) = ctx.stdin_writer.lock() else {
+        send_error(
+            stream,
+            nanosb_protocol::ErrorCode::InvalidState,
+            "stdin writer poisoned",
+        );
+        return Ok(());
+    };
+    let (_, dummy) = std::io::pipe()?;
+    let old = std::mem::replace(&mut *w, dummy);
+    drop(old);
+    drop(w);
     ack_ok(stream)
 }
 
@@ -894,7 +936,6 @@ fn stream_exec_stream(
         return Ok(());
     }
     ack_ok(stream)?;
-    let tty = opts.tty;
     let mut handle = match c.start(command, args, opts) {
         Ok(h) => h,
         Err(e) => {
@@ -913,38 +954,34 @@ fn stream_exec_stream(
     let out = Arc::new(Mutex::new(stream.try_clone()?));
     let done = Arc::new(AtomicBool::new(false));
 
-    if tty {
-        let writer = match handle.try_clone_writer() {
-            Ok(w) => w,
-            Err(e) => {
-                send_error(
-                    stream,
-                    nanosb_protocol::ErrorCode::Io,
-                    format!("cannot clone exec writer: {e}"),
-                );
-                return Ok(());
-            }
-        };
-        // Share `serve`'s BufReader so frames pipelined behind the exec_stream
-        // request (still in its buffer) are not lost to a raw-fd clone.
-        let _ = reader
-            .get_ref()
-            .set_read_timeout(Some(Duration::from_millis(200)));
-        let out_for_input = out.clone();
-        let done_for_input = done.clone();
-        let input_reader = &mut *reader;
-        std::thread::scope(|scope| -> std::io::Result<()> {
-            scope.spawn(move || {
-                exec_input_reader(input_reader, writer, &out_for_input, &done_for_input);
-            });
-            let result = exec_output_loop(&mut handle, &out);
-            done.store(true, Ordering::SeqCst);
-            result
-        })?;
-        let _ = reader.get_ref().set_read_timeout(None);
-    } else {
-        exec_output_loop(&mut handle, &out)?;
-    }
+    let writer = match handle.try_clone_writer() {
+        Ok(w) => w,
+        Err(e) => {
+            send_error(
+                stream,
+                nanosb_protocol::ErrorCode::Io,
+                format!("cannot clone exec writer: {e}"),
+            );
+            return Ok(());
+        }
+    };
+    // Share `serve`'s BufReader so frames pipelined behind the exec_stream
+    // request (still in its buffer) are not lost to a raw-fd clone.
+    let _ = reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(200)));
+    let out_for_input = out.clone();
+    let done_for_input = done.clone();
+    let input_reader = &mut *reader;
+    std::thread::scope(|scope| -> std::io::Result<()> {
+        scope.spawn(move || {
+            exec_input_reader(input_reader, writer, &out_for_input, &done_for_input);
+        });
+        let result = exec_output_loop(&mut handle, &out);
+        done.store(true, Ordering::SeqCst);
+        result
+    })?;
+    let _ = reader.get_ref().set_read_timeout(None);
     Ok(())
 }
 
@@ -991,7 +1028,12 @@ fn exec_input_reader(
             break;
         }
         match reader.read_line(&mut line) {
-            Ok(0) => break,
+            // Client gone (exec-scoped kill or timeout): stop the guest process
+            // so the single-threaded agent can serve the next exec.
+            Ok(0) => {
+                let _ = writer.kill();
+                break;
+            }
             Ok(_) => {
                 let parsed = serde_json::from_str::<Request>(line.trim());
                 line.clear();
@@ -1477,6 +1519,23 @@ fn send_agent_error(stream: &mut UnixStream, e: runtime::exec::ExecError) -> std
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_input_close_signals_eof() {
+        use std::io::Read;
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        let stdin_writer = Arc::new(Mutex::new(writer));
+        stdin_writer.lock().unwrap().write_all(b"hi").unwrap();
+        {
+            let mut w = stdin_writer.lock().unwrap();
+            let (_, dummy) = std::io::pipe().unwrap();
+            let old = std::mem::replace(&mut *w, dummy);
+            drop(old);
+        }
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, b"hi");
+    }
 
     struct TestHarness {
         dir: std::path::PathBuf,
