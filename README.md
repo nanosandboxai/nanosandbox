@@ -256,6 +256,8 @@ sandboxes:
       scope: public         # public (default) | private
       ports: ["8080:80"]
       dns: ["1.1.1.1"]
+    docker:
+      enabled: false      # Docker is inert until D2/D4 (no daemon start yet)
     mounts:
       - host: ./data
         container: /data
@@ -342,6 +344,7 @@ snapshots, published ports, and an explicit security context. Design decisions:
 - [Networking & dynamic publish scope](docs/decisions/networking-dynamic-publish-scope.md).
 - [Security context contract](docs/decisions/security-context-contract.md).
 - [Multi-container-per-VM](docs/decisions/multi-container-per-vm.md) — v1 keeps one container per VM.
+- [Docker in microVM](docs/decisions/docker-in-microvm.md) — threat model + config surface (proposed; Docker is inert until D2/D4).
 
 ## Packaging
 
