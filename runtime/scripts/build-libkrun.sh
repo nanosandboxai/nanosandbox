@@ -32,7 +32,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #   - background workload exec agent (KRUN_EXEC_AGENT)
 # Base upstream tag: v1.19.5.
 LIBKRUN_TAG="nanosandbox"
-LIBKRUN_SHA="0a2cfd467660756096774f748e74fc72106c8df0"
+LIBKRUN_SHA="78c8c5b721fda87f926f27b5895929f1bbfe6ebb"
 
 # Nanosandbox libkrun fork (source of truth)
 LIBKRUN_REPO="https://github.com/nanosandboxai/libkrun.git"
@@ -63,8 +63,8 @@ info "Building upstream libkrun ${LIBKRUN_TAG}..."
 if [ -d "$LIBKRUN_CACHE_DIR" ]; then
     info "Updating existing checkout in ${LIBKRUN_CACHE_DIR}..."
     cd "$LIBKRUN_CACHE_DIR"
-    git fetch origin "$LIBKRUN_TAG" 2>/dev/null || true
-    git checkout "$LIBKRUN_TAG" 2>/dev/null || {
+    git fetch origin "$LIBKRUN_TAG"
+    git checkout -B "$LIBKRUN_TAG" "origin/$LIBKRUN_TAG" || {
         err "Failed to checkout ${LIBKRUN_TAG} in existing cache. Removing and re-cloning."
         rm -rf "$LIBKRUN_CACHE_DIR"
     }
