@@ -518,6 +518,92 @@ impl SecurityContext {
     }
 }
 
+/// Docker runtime engine to run inside the VM (Epic 7 D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerRuntime {
+    #[default]
+    Dockerd,
+    Podman,
+    Containerd,
+}
+
+/// Storage driver for the in-VM Docker daemon (Epic 7 D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerStorageDriver {
+    #[default]
+    Overlay2,
+    Vfs,
+    #[serde(rename = "fuse-overlayfs")]
+    FuseOverlayfs,
+}
+
+/// Network mode for the in-VM Docker daemon (Epic 7 D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerNetwork {
+    #[default]
+    Host,
+    None,
+    Bridge,
+}
+
+/// Docker-in-VM configuration (Epic 7 D5). No runtime behavior yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DockerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_docker_runtime")]
+    pub runtime: DockerRuntime,
+    #[serde(default = "default_docker_storage_driver")]
+    pub storage_driver: DockerStorageDriver,
+    #[serde(default = "default_docker_data_size")]
+    pub data_size_bytes: u64,
+    #[serde(default = "default_docker_network")]
+    pub network: DockerNetwork,
+    #[serde(default)]
+    pub daemon_json: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub preload_images: Vec<String>,
+    #[serde(default)]
+    pub rootless: bool,
+    #[serde(default = "default_docker_socket")]
+    pub socket: String,
+}
+
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            runtime: DockerRuntime::Dockerd,
+            storage_driver: DockerStorageDriver::Overlay2,
+            data_size_bytes: default_docker_data_size(),
+            network: DockerNetwork::Host,
+            daemon_json: HashMap::new(),
+            preload_images: Vec::new(),
+            rootless: false,
+            socket: default_docker_socket(),
+        }
+    }
+}
+
+fn default_docker_runtime() -> DockerRuntime {
+    DockerRuntime::Dockerd
+}
+fn default_docker_storage_driver() -> DockerStorageDriver {
+    DockerStorageDriver::Overlay2
+}
+fn default_docker_data_size() -> u64 {
+    20 * 1024 * 1024 * 1024
+}
+fn default_docker_network() -> DockerNetwork {
+    DockerNetwork::Host
+}
+fn default_docker_socket() -> String {
+    "/var/run/docker.sock".to_string()
+}
+
 /// A full sandbox creation specification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SandboxSpec {
@@ -593,6 +679,9 @@ pub struct SandboxSpec {
     /// create (see [`SecurityContext::unenforced_field`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<SecurityContext>,
+    /// Docker-in-VM configuration (Epic 7 D5). Absent means disabled; no runtime change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker: Option<DockerConfig>,
 }
 
 impl SandboxSpec {
@@ -627,6 +716,7 @@ impl SandboxSpec {
             stat_virtualization: None,
             security_profile: SecurityProfile::default(),
             security: None,
+            docker: None,
         }
     }
 }
@@ -753,5 +843,59 @@ mod tests {
     fn network_spec_explicit_disable_roundtrips() {
         let spec: NetworkSpec = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
         assert!(!spec.enabled);
+    }
+
+    #[test]
+    fn sandbox_spec_docker_roundtrips() {
+        let mut daemon_json = HashMap::new();
+        daemon_json.insert(
+            "log-driver".into(),
+            serde_json::Value::String("json-file".into()),
+        );
+        let original = DockerConfig {
+            enabled: true,
+            runtime: DockerRuntime::Podman,
+            storage_driver: DockerStorageDriver::FuseOverlayfs,
+            data_size_bytes: 42 * 1024 * 1024 * 1024,
+            network: DockerNetwork::Bridge,
+            daemon_json,
+            preload_images: vec!["busybox:latest".into()],
+            rootless: true,
+            socket: "/run/docker.sock".to_string(),
+        };
+        let mut spec = SandboxSpec::new("alpine");
+        spec.docker = Some(original.clone());
+        let s = serde_json::to_string(&spec).unwrap();
+        let back: SandboxSpec = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.docker, Some(original));
+    }
+
+    #[test]
+    fn sandbox_spec_docker_partial_json_gets_epic_defaults() {
+        let partial = r#"{"image":"alpine","docker":{"enabled":true}}"#;
+        let spec: SandboxSpec = serde_json::from_str(partial).unwrap();
+        let docker = spec.docker.as_ref().unwrap();
+        assert_eq!(docker.enabled, true);
+        assert_eq!(docker.runtime, DockerRuntime::Dockerd);
+        assert_eq!(docker.storage_driver, DockerStorageDriver::Overlay2);
+        assert_eq!(docker.data_size_bytes, 20 * 1024 * 1024 * 1024);
+        assert_eq!(docker.network, DockerNetwork::Host);
+        assert_eq!(docker.rootless, false);
+        assert_eq!(docker.socket, "/var/run/docker.sock");
+    }
+
+    #[test]
+    fn sandbox_spec_docker_legacy_json_still_parses() {
+        let legacy = r#"{"image":"alpine"}"#;
+        let spec: SandboxSpec = serde_json::from_str(legacy).unwrap();
+        assert_eq!(spec.docker, None);
+    }
+
+    #[test]
+    fn docker_storage_driver_fuse_overlayfs_wire() {
+        assert_eq!(
+            serde_json::to_string(&DockerStorageDriver::FuseOverlayfs).unwrap(),
+            "\"fuse-overlayfs\""
+        );
     }
 }

@@ -39,6 +39,8 @@ pub enum Capability {
     Wait,
     /// exec_stream with a PTY + live stdin/resize frames.
     ExecPty,
+    /// docker-in-VM configuration surface (Epic 7 D5).
+    Docker,
 }
 
 impl Capability {
@@ -59,6 +61,7 @@ impl Capability {
             Capability::Signal,
             Capability::Wait,
             Capability::ExecPty,
+            Capability::Docker,
         ]
     }
 
@@ -79,6 +82,7 @@ impl Capability {
             Capability::Signal => "signal",
             Capability::Wait => "wait",
             Capability::ExecPty => "exec_pty",
+            Capability::Docker => "docker",
         }
     }
 }
@@ -181,5 +185,11 @@ mod tests {
         for c in Capability::all() {
             assert!(seen.insert(c.as_str()), "duplicate {}", c.as_str());
         }
+    }
+
+    #[test]
+    fn capability_docker_as_str() {
+        assert_eq!(Capability::Docker.as_str(), "docker");
+        assert!(Capability::all().contains(&Capability::Docker));
     }
 }
