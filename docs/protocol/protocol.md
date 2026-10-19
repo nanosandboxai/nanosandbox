@@ -87,6 +87,7 @@ Clients gate optional verbs on these. The full set (`Capability::all()`):
 | `signal` | `kill` with an explicit signal (`SIGTERM`/`SIGKILL`) |
 | `wait` | blocking `wait` verb |
 | `exec_pty` | tty `exec_stream` + live stdin/`exec_resize` frames |
+| `docker` | gates future docker verbs (D2/D4); protocol-declared, not advertised by helpers until those verbs exist |
 
 Version comparison is numeric segment-by-segment (`cmp_version`); a client's
 range intersects a server version via `version_in_range`.
@@ -276,7 +277,7 @@ depend on the runtime crate.
 - **`SandboxSpec`** — the full creation spec: `{ name?, image, cpus?,
   memory_mb?, env, mounts, network, workdir?, timeout_secs?, user?, home?,
   command?, command_args, rlimits, labels, ephemeral, pull_policy, scripts,
-  detached, replace, hostname?, secret_env }`.
+  detached, replace, hostname?, secret_env, docker? }`.
 - **`SandboxList`** — `{ sandboxes: [SandboxInfo], next_cursor? }`.
 - **`GuestEvent`** — `{ event: started | stdout | stderr | exit | error }`:
   `started { pid }`, `stdout { data }`, `stderr { data }`, `exit { code }`,

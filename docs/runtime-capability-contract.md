@@ -37,6 +37,7 @@ must check that a capability is present before calling the verbs it gates
 | `signal` | `kill` with an explicit signal (SIGTERM/SIGKILL) |
 | `wait` | blocking `wait` verb (returns exit code) |
 | `exec_pty` | `exec_stream` with a PTY + live stdin/resize frames |
+| `docker` | gates future docker verbs (D2/D4); protocol-declared but not advertised by helpers until those verbs exist |
 
 `ExecPty`, `Signal`, and `Wait` are the shim-facing surface used by
 containerd/CRI integration on Linux/KVM.
