@@ -127,6 +127,7 @@ fn apply_one_mount(plan: &MountPlan) -> Result<(), String> {
             "noexec" => flags |= libc::MS_NOEXEC as libc::c_ulong,
             "nosuid" => flags |= libc::MS_NOSUID as libc::c_ulong,
             "nodev" => flags |= libc::MS_NODEV as libc::c_ulong,
+            "ro" => flags |= libc::MS_RDONLY as libc::c_ulong,
             _ => {}
         }
     }
@@ -152,7 +153,12 @@ fn apply_one_mount(plan: &MountPlan) -> Result<(), String> {
         ),
         other => return Err(format!("unknown mount kind '{other}'")),
     };
-    let data = plan.options.join(",");
+    // tmpfs consumes size/mode in the data string; virtiofs rejects bind
+    // options such as rbind/rprivate and is already mounted at the share root.
+    let data = match plan.kind.as_str() {
+        "tmpfs" => plan.options.join(","),
+        _ => String::new(),
+    };
     let c_source = std::ffi::CString::new(source).map_err(|e| e.to_string())?;
     let c_fstype = std::ffi::CString::new(fstype).map_err(|e| e.to_string())?;
     let c_data = std::ffi::CString::new(data).map_err(|e| e.to_string())?;
