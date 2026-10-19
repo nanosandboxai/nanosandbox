@@ -25,8 +25,27 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, info, warn};
 
 /// Unpack a tar archive to `dest`.
+///
+/// The `tar` crate does not unlink an existing destination before creating a
+/// hard link, so OCI layers that replace a file with a hard link fail with
+/// `EEXIST` (seen with Debian's `perl5.36.0`). Remove the destination first;
+/// `unpack_in` still enforces path safety.
 fn unpack_archive<R: Read>(archive: &mut Archive<R>, dest: &Path) -> std::io::Result<()> {
-    archive.unpack(dest)
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.header().entry_type().is_hard_link() {
+            if let Ok(path) = entry.path() {
+                let existing = dest.join(path.as_ref());
+                if let Err(e) = std::fs::remove_file(&existing) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        entry.unpack_in(dest)?;
+    }
+    Ok(())
 }
 
 /// Set ownership xattrs on all files from a tar archive.
@@ -1498,6 +1517,43 @@ pub struct PulledImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpack_archive_overwrites_existing_hardlink_destination() {
+        use std::io::Cursor;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b"), b"stale").unwrap();
+
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(5);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        builder.append_data(&mut header, "a", &b"hello"[..]).unwrap();
+
+        let mut link = tar::Header::new_gnu();
+        link.set_size(0);
+        link.set_mode(0o644);
+        link.set_entry_type(tar::EntryType::Link);
+        builder.append_link(&mut link, "b", "a").unwrap();
+        let bytes = builder.into_inner().unwrap();
+
+        let mut archive = Archive::new(Cursor::new(bytes));
+        archive.set_overwrite(true);
+        unpack_archive(&mut archive, dir.path()).unwrap();
+
+        assert_eq!(std::fs::read(dir.path().join("a")).unwrap(), b"hello");
+        assert_eq!(std::fs::read(dir.path().join("b")).unwrap(), b"hello");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let a = std::fs::metadata(dir.path().join("a")).unwrap();
+            let b = std::fs::metadata(dir.path().join("b")).unwrap();
+            assert_eq!(a.ino(), b.ino(), "expected a hard link");
+        }
+    }
 
     #[test]
     fn test_image_ref_parse() {
