@@ -320,6 +320,7 @@ mod tests {
     #[test]
     fn every_sandbox_spec_field_reaches_runtime_config() {
         use nanosb_protocol::{
+            DockerConfig, DockerNetwork, DockerRuntime, DockerStorageDriver,
             PullPolicy, RegistrySpec, RootfsKind, RootfsPatch, RootfsSpec, SecretEntry,
             SecurityProfile, StatVirtualization,
         };
@@ -390,6 +391,20 @@ mod tests {
             path: "/x".to_string(),
             mode: Some(0o755),
         });
+        spec.docker = Some(DockerConfig {
+            enabled: true,
+            runtime: DockerRuntime::Podman,
+            storage_driver: DockerStorageDriver::FuseOverlayfs,
+            data_size_bytes: 42 * 1024 * 1024 * 1024,
+            network: DockerNetwork::Bridge,
+            daemon_json: HashMap::from([(
+                "log-driver".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#""json-file""#).unwrap(),
+            )]),
+            preload_images: vec!["busybox:latest".to_string()],
+            rootless: true,
+            socket: "/run/docker.sock".to_string(),
+        });
 
         let cfg = spec_to_config(&spec).unwrap();
         assert_eq!(cfg.cpus, 3);
@@ -432,6 +447,29 @@ mod tests {
             runtime::config::RootfsSource::LocalDir
         );
         assert_eq!(cfg.patches.len(), 1);
+        let docker = cfg.docker.as_ref().expect("docker config");
+        assert!(docker.enabled);
+        assert_eq!(docker.runtime, runtime::config::DockerRuntime::Podman);
+        assert_eq!(
+            docker.storage_driver,
+            runtime::config::DockerStorageDriver::FuseOverlayfs
+        );
+        assert_eq!(docker.data_size_bytes, 42 * 1024 * 1024 * 1024);
+        assert_eq!(docker.network, runtime::config::DockerNetwork::Bridge);
+        assert_eq!(
+            serde_json::to_string(docker.daemon_json.get("log-driver").unwrap()).unwrap(),
+            r#""json-file""#,
+        );
+        assert_eq!(docker.preload_images, vec!["busybox:latest".to_string()]);
+        assert!(docker.rootless);
+        assert_eq!(docker.socket, "/run/docker.sock");
+    }
+
+    #[test]
+    fn docker_absent_maps_to_none() {
+        let spec = SandboxSpec::new("alpine");
+        let cfg = spec_to_config(&spec).unwrap();
+        assert!(cfg.docker.is_none());
     }
 
     #[test]

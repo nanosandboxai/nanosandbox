@@ -164,6 +164,39 @@ pub fn spec_to_config(spec: &SandboxSpec) -> anyhow::Result<SandboxConfig> {
             skip_tls_verify: r.skip_tls_verify,
         })
         .collect();
+    if let Some(docker) = &spec.docker {
+        config.docker = Some(runtime_config::DockerConfig {
+            enabled: docker.enabled,
+            runtime: match docker.runtime {
+                nanosb_protocol::DockerRuntime::Dockerd => runtime_config::DockerRuntime::Dockerd,
+                nanosb_protocol::DockerRuntime::Podman => runtime_config::DockerRuntime::Podman,
+                nanosb_protocol::DockerRuntime::Containerd => {
+                    runtime_config::DockerRuntime::Containerd
+                }
+            },
+            storage_driver: match docker.storage_driver {
+                nanosb_protocol::DockerStorageDriver::Overlay2 => {
+                    runtime_config::DockerStorageDriver::Overlay2
+                }
+                nanosb_protocol::DockerStorageDriver::Vfs => {
+                    runtime_config::DockerStorageDriver::Vfs
+                }
+                nanosb_protocol::DockerStorageDriver::FuseOverlayfs => {
+                    runtime_config::DockerStorageDriver::FuseOverlayfs
+                }
+            },
+            data_size_bytes: docker.data_size_bytes,
+            network: match docker.network {
+                nanosb_protocol::DockerNetwork::Host => runtime_config::DockerNetwork::Host,
+                nanosb_protocol::DockerNetwork::None => runtime_config::DockerNetwork::None,
+                nanosb_protocol::DockerNetwork::Bridge => runtime_config::DockerNetwork::Bridge,
+            },
+            daemon_json: docker.daemon_json.clone(),
+            preload_images: docker.preload_images.clone(),
+            rootless: docker.rootless,
+            socket: docker.socket.clone(),
+        });
+    }
     if let Some(rootfs) = &spec.rootfs {
         use nanosb_protocol::RootfsKind as K;
         config.rootfs = Some(runtime_config::RootfsConfig {
