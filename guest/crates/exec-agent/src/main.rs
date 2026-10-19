@@ -481,11 +481,6 @@ fn start_dockerd(cfg: &serde_json::Value) {
         diag("docker: rootless is not supported in this build; not starting dockerd");
         return;
     }
-    let driver = cfg
-        .get("storage_driver")
-        .and_then(|v| v.as_str())
-        .unwrap_or("overlay2");
-
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -503,8 +498,6 @@ fn start_dockerd(cfg: &serde_json::Value) {
         .arg("--iptables=false")
         .arg("--ip6tables=false")
         .arg(format!("--host=unix://{}", socket))
-        .arg("--data-root=/var/lib/docker")
-        .arg(format!("--storage-driver={}", driver))
         .arg("--pidfile=/var/run/docker.pid")
         .stdout(log_stdio(&log))
         .stderr(log_stdio(&log));
