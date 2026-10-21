@@ -2216,6 +2216,7 @@ name = "nanosb-host"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "libc",
  "nanosb-protocol",
  "runtime-config",
  "serde",

@@ -17,3 +17,6 @@ serde_json = "1"
 nanosb-protocol = { path = "../protocol" }
 runtime-config = { path = "../../runtime/crates/runtime-config" }
 anyhow = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
