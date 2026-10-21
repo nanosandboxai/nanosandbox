@@ -1046,8 +1046,7 @@ mod cli {
     }
 
     fn supervisor_sandbox_dirs() -> Vec<std::path::PathBuf> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let base = std::path::PathBuf::from(home).join(".nanosandbox/sandboxes");
+        let base = crate::supervisor::sandboxes_root();
         let mut out = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&base) {
             for entry in entries.flatten() {
@@ -2509,9 +2508,8 @@ mod cli {
 
     /// Reclaim disk: dead supervisor dirs, unreferenced clones, expired sessions.
     async fn cmd_gc(dry_run: bool) -> anyhow::Result<()> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let root = std::path::PathBuf::from(&home).join(".nanosandbox");
-        let sandboxes = root.join("sandboxes");
+        let root = crate::supervisor::nanosb_home();
+        let sandboxes = crate::supervisor::sandboxes_root();
         let clones = root.join("clones");
 
         // Collect all clone paths referenced by any saved session.

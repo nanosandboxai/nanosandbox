@@ -233,7 +233,7 @@ impl PortPublish {
 
 /// Networking config surface (WS5). The enforcement engine is Epic 3; here we
 /// only carry the configuration through the protocol.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NetworkSpec {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -250,6 +250,21 @@ pub struct NetworkSpec {
     /// Opaque policy-config passthrough (validated by Epic 3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<serde_json::Value>,
+}
+
+impl Default for NetworkSpec {
+    /// Mirror the serde default: networking is enabled unless explicitly disabled.
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            mode: None,
+            scope: None,
+            publish: Vec::new(),
+            dns: Vec::new(),
+            dns_zones: HashMap::new(),
+            policy: None,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -726,5 +741,17 @@ mod tests {
         let legacy = r#"{"name":"a","image":"alpine","detached":true,"replace":false}"#;
         let spec: SandboxSpec = serde_json::from_str(legacy).unwrap();
         assert_eq!(spec.security, None);
+    }
+
+    #[test]
+    fn network_spec_default_enables_egress() {
+        assert!(NetworkSpec::default().enabled);
+        assert!(SandboxSpec::new("alpine").network.enabled);
+    }
+
+    #[test]
+    fn network_spec_explicit_disable_roundtrips() {
+        let spec: NetworkSpec = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
+        assert!(!spec.enabled);
     }
 }

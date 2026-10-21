@@ -74,9 +74,25 @@ impl SupervisorClient {
         self.sandbox_dir.join("logs").join("console.log")
     }
 
-    /// Check if the supervisor is running (control socket exists).
+    /// Check whether the supervisor is actually alive: a connectable control
+    /// socket, or a recorded supervisor PID that is still alive.
     pub fn is_running(&self) -> bool {
-        self.control_socket_path().exists()
+        if UnixStream::connect(self.control_socket_path()).is_ok() {
+            return true;
+        }
+        self.supervisor_pid_alive()
+    }
+
+    fn supervisor_pid_alive(&self) -> bool {
+        let Some(pid) = self.read_state().and_then(|state| state.supervisor_pid) else {
+            return false;
+        };
+        if pid <= 0 {
+            return false;
+        }
+        // kill(pid, 0) sends no signal; EPERM still means the PID exists.
+        let rc = unsafe { libc::kill(pid, 0) };
+        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
     /// Read the current state from state.json (works even when supervisor is stopped).
@@ -276,5 +292,71 @@ impl AttachConnection {
             .write_all(b"\n")
             .map_err(|e| ClientError::RequestFailed(format!("write newline: {}", e)))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl SupervisorClient {
+    fn with_sandbox_dir(sandbox_name: &str, sandbox_dir: PathBuf) -> Self {
+        Self {
+            sandbox_name: sandbox_name.to_string(),
+            sandbox_dir,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    fn reaped_pid() -> i32 {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn child");
+        let pid = child.id() as i32;
+        let _ = child.wait();
+        pid
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nanosb-host-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn client_with_state(name: &str, supervisor_pid: Option<i32>) -> (SupervisorClient, PathBuf) {
+        let dir = temp_dir(name);
+        let state = serde_json::json!({
+            "sandbox_name": name,
+            "state": "stopped",
+            "pid": null,
+            "exit_code": null,
+            "started_at": "0",
+            "config_hash": "",
+            "supervisor_pid": supervisor_pid,
+        });
+        std::fs::write(dir.join("state.json"), state.to_string()).unwrap();
+        (SupervisorClient::with_sandbox_dir(name, dir.clone()), dir)
+    }
+
+    #[test]
+    fn is_running_uses_supervisor_liveness_not_socket_existence() {
+        let (dead, dead_dir) = client_with_state("dead", Some(reaped_pid()));
+        std::fs::write(dead_dir.join("control.sock"), b"").unwrap();
+        assert!(!dead.is_running());
+
+        let (live, live_dir) = client_with_state("live", Some(std::process::id() as i32));
+        assert!(live.is_running());
+
+        let bound_dir = temp_dir("bound");
+        let _listener = UnixListener::bind(bound_dir.join("control.sock")).unwrap();
+        let bound = SupervisorClient::with_sandbox_dir("bound", bound_dir.clone());
+        assert!(bound.is_running());
+
+        let _ = std::fs::remove_dir_all(&dead_dir);
+        let _ = std::fs::remove_dir_all(&live_dir);
+        let _ = std::fs::remove_dir_all(&bound_dir);
     }
 }
