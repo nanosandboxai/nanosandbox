@@ -191,8 +191,8 @@ async fn test_tui_vm_end_to_end() {
     );
 
     // ── Phase 5: Verify sandbox is gone ─────────────────────────────────
-    // `nanosb ps` reports a supervisor sandbox as Running while its control
-    // socket exists, so `!is_running()` is the same signal: it is gone.
+    // `is_running()` reports real liveness (control socket + supervisor PID),
+    // so `!is_running()` means the supervisor is gone.
     let client = crate::supervisor::client::SupervisorClient::new(&name);
     let gone_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while client.is_running() {

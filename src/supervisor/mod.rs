@@ -504,8 +504,8 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
 
     broadcast_exit(&subscribers, exit_code);
 
-    // Clean up control socket
     let _ = std::fs::remove_file(&control_sock_path);
+    let _ = std::fs::remove_file(sandbox_dir.join("supervisor.pid"));
 
     let final_state = SupervisorState {
         sandbox_name: args.sandbox_name.clone(),

@@ -321,9 +321,10 @@ changes are never written to `refs/heads/*` — you review and apply them yourse
 (`git fetch origin refs/nanosb/<id>` or the equivalent). Non-git project
 directories are never modified (the repo is initialised inside the clone).
 
-Housekeeping: `/disk` shows state usage, `/gc` reclaims dead supervisor dirs,
-and `nanosb gc` / `nanosb cleanup --dry-run` reclaim disk without touching
-session-referenced clones.
+Housekeeping: `/disk` shows state usage, `/gc` reclaims dead supervisor dirs
+(detected by live control-socket/PID liveness), and `nanosb gc` /
+`nanosb cleanup --dry-run` reclaim disk without touching session-referenced
+clones.
 
 Other TUI commands: `/logs [n]` (console tail), `/stop [n|name]` (stop a
 sandbox, keep the panel), `/exec <cmd>` (run in an exec-channel sandbox),
