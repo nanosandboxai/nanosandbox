@@ -262,7 +262,8 @@ depend on the runtime crate.
 - **`PortPublish`** — `{ host_port, container_port, protocol, bind_address? }`.
   `protocol` defaults to `"tcp"`.
 - **`NetworkSpec`** — `{ enabled, mode?, scope?, publish, dns, dns_zones,
-  policy? }`. This is the Epic 1 **config surface**; enforcement is Epic 3.
+  policy? }`. `enabled` defaults to `true` (sandbox egress on). This is the
+  Epic 1 **config surface**; enforcement is Epic 3.
 - **`Rlimit`** — `{ resource, soft?, hard? }`.
 - **`PullPolicy`** — `always` | `missing` | `never`.
 - **`VolumeSpec`** — `{ name, dir?, disk_image?, fstype?, quota_bytes? }`.
