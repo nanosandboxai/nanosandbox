@@ -1,6 +1,6 @@
 # Decision — Docker in the microVM (Epic 7)
 
-Status: proposed (2026-10-19)
+Status: accepted — Tier 1 implemented (2026-10-19); Tier 2 kernel support implemented (2026-10-24)
 Related: Epic 7 (#132), Epic 8 (#143), `docs/decisions/volume-backings.md`,
 `docs/decisions/security-context-contract.md`, `docs/protocol/protocol.md`.
 
@@ -19,8 +19,9 @@ Two tiers are planned:
   through gvproxy virtio-net / TSI. No kernel change is required.
 - **Tier 2** needs kernel modules (`BRIDGE`, `NETFILTER`, `NF_NAT`, `IP_NF_*`,
   `NETFILTER_XTABLES`, `NFT_*`, `NET_SCHED`, `NET_CLS_CGROUP`), a libkrunfw
-  rebuild, and a deps bundle update. That is Epic 8 (#143) and is **not
-  implemented**.
+  rebuild, and a deps bundle update. That is Epic 8 (#143); the kernel support
+  and daemon-side bridge wiring are implemented (see §4). The rebuilt firmware
+  has been installed into the local deps bundle (`~/.nanosandbox/libs/`).
 
 This document records the security and isolation posture for the feature and
 the safe defaults that ship with it.
@@ -59,7 +60,8 @@ and how each is contained.
   netfilter inside the guest. That adds a large, kernel-level attack surface
   (iptables/nftables parsing, NAT, bridge handling) inside the guest. It is
   contained by the VM boundary, but it is a meaningful increase in guest kernel
-  exposure and is deferred to Epic 8 for that reason.
+  exposure. It was deferred to Epic 8 for that reason and is now implemented
+  behind the opt-in `docker_bridge` capability.
 
 ## 3. Safe defaults
 
@@ -75,16 +77,19 @@ and how each is contained.
   PID, inode, IO). `data_size_bytes` (default 20 GiB) deliberately bounds the
   Docker storage footprint so a runaway image or layer cannot exhaust the guest
   disk. These are guidance, not a separate quota mechanism.
-- **`daemon_json` is trusted, unvalidated passthrough in D5.** The value is
-  forwarded to the daemon as-is. It is not schema-validated in this change.
-  Treat it as configuration the user already controls, and validate it before
-  Tier 1 ships a daemon start.
+- **`daemon_json` is validated against a Tier-1 allowlist.** Only keys that do
+  not widen or subvert the Tier-1 isolation surface are accepted; keys such as
+  `bridge`, `iptables`, `runtimes`, `default-runtime`, and `data-root` are
+  rejected, as are unknown keys (so a typo fails loudly instead of being
+  dropped). Validation runs host-side in `DockerConfig::validate()` and is
+  enforced again in the guest before the daemon starts.
 - **Secrets are never persisted into Docker state or preload images.** Secrets
   are injected into the guest environment and must not be written into the
   Docker storage directory, image layers, or container metadata. `preload_images`
-  must not embed secret material.
+  must not embed secret material, and registry mirror / insecure-registry
+  entries must not carry `userinfo@`; both are rejected by `validate()`.
 
-## 4. Current state (Tier 1 daemon start; Tier 2 future)
+## 4. Current state (Tier 1 daemon + Tier 2 bridge networking)
 
 D5 ships the config surface, `Capability::Docker`, and guest delivery; D3/D4
 provision the data disk and start the Tier-1 daemon:
@@ -108,14 +113,19 @@ with block_id `diskN`, mounts it at `/var/lib/docker` (formatting it with
 `mkfs.ext4` on first use), writes `/etc/docker/daemon.json`, and starts
 `dockerd` in the guest at boot with `--bridge=none --iptables=false
 --ip6tables=false`. `DOCKER_HOST` is exported to the PID-1/workload
-environment. `rootless` is not yet supported in this build; enabling it logs a
-diagnostic and does not start a daemon. Tier 2 (bridge networking, netfilter,
-kernel rebuild) is Epic 8 (#143) and is not implemented.
+environment. `rootless` is not supported in Tier 1: a `rootless: true` block is
+rejected loudly at config resolution (and refused again in the guest) instead of
+booting without a daemon. Tier 2 (bridge networking, netfilter, kernel rebuild)
+is Epic 8 (#143); the kernel support is implemented and verified with Docker's
+`check-config.sh` (all "Generally Necessary" options enabled).
 
 Tier 1 has no default bridge. Containers that need outbound networking must use
 `docker run --network host ...` (or `network_mode: host` in Compose); Docker's
-default bridge requires the Tier-2 kernel. `docker run hello-world` works once
-the image is present because it needs no networking.
+default bridge requires the Tier-2 kernel. With a helper that advertises the
+`docker_bridge` capability, set `docker.network: bridge` and Docker starts with
+its default `docker0` bridge, iptables/NAT, and IPv4 forwarding (the exec-agent
+enables the bridge sysctls at boot). `docker run hello-world` works once the
+image is present because it needs no networking.
 
 **Live evidence (2026-10-19, macOS arm64, next mode).** With
 `claude-docker` from a local registry and a 4 GiB `data_size_bytes`, the sandbox
@@ -151,18 +161,26 @@ code agent can use the daemon. Socket access is still guest-root-equivalent
 ## 6. Consequences
 
 - Docker is opt-in and off by default, so existing sandboxes are unaffected.
-- Tier 1 keeps the guest kernel unchanged; the netfilter surface is deferred to
-  Epic 8.
-- `daemon_json` passthrough is unvalidated in D5; it must be validated before a
-  daemon start ships.
+- Tier 2 changes the guest kernel: the netfilter/bridge/NAT stack is compiled
+  in. The VM boundary still contains the added attack surface (§2).
+- `daemon_json` is validated against a Tier-1 allowlist before a daemon start;
+  unsafe, unknown, and credential-bearing entries fail loudly at resolution.
 - The guest remains the trust boundary; container compromise is a guest
   compromise, contained by libkrun.
 
 ## 7. Follow-ups
 
-- Validate `daemon_json` before Tier 1 ships a daemon start for real usage (D4
-  starts the daemon with the passthrough as-is; it is not schema-validated).
-- Enforce the secrets-never-persisted rule in the daemon start path (D4).
-- Tier 2 kernel rebuild and deps bundle (Epic 8, #143).
-- Decide whether `rootless` becomes a default and how it interacts with the
-  socket permission model.
+- `daemon_json` validation: **done.** `DockerConfig::validate()` enforces a
+  Tier-1 allowlist host-side, and the guest guard enforces the same rules before
+  starting `dockerd`.
+- Secrets-never-persisted: **enforced.** `preload_images` and registry mirror /
+  insecure-registry entries that embed credentials are rejected.
+- `rootless`: **decided — unsupported in Tier 1.** A `rootless: true` block is
+  rejected explicitly rather than silently booting without a daemon. Revisiting
+  rootless and its socket-permission model is Tier 2+ work.
+- Tier 2 kernel rebuild and deps bundle (Epic 8, #143): **kernel rebuild done.**
+  The base configs enable the netfilter/bridge/NAT stack; `check-config.sh`
+  reports all "Generally Necessary" options enabled. The daemon-side bridge
+  wiring is implemented in the exec-agent; the rebuilt firmware was installed
+  into the local deps bundle (`~/.nanosandbox/libs/`). A live bridge-mode VM
+  test remains opt-in.

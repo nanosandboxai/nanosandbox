@@ -190,4 +190,6 @@ Observed inside the microVM:
   `claude --version` → `2.1.303 (Claude Code)`.
 
 Tier 1 has no default bridge; use `--network host` for containers that need
-outbound networking. Bridge/NAT and `-p` publishing require Epic 8.
+outbound networking. Tier 2 bridge/NAT networking is implemented (Epic 8);
+gate it on the `docker_bridge` capability and set `docker.network: bridge`.
+A live bridge-mode VM test remains opt-in.
