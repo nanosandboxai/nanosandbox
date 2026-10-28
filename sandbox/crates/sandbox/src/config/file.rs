@@ -457,6 +457,9 @@ pub fn resolve_sandbox_configs(
             if let Some(ref socket) = dd.socket {
                 docker.socket = socket.clone();
             }
+            docker
+                .validate()
+                .map_err(|e| format!("Sandbox '{}': {}", key, e))?;
             config.docker = Some(docker);
         }
 
@@ -1733,5 +1736,148 @@ sandboxes:
         let result = parse_sandbox_file(yaml);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cri"));
+    }
+
+    #[test]
+    fn test_resolve_docker_rejects_rootless_when_enabled() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      rootless: true
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("rootless"), "got: {err}");
+    }
+
+    #[test]
+    fn test_resolve_docker_rejects_forbidden_daemon_key() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      daemon_json:
+        iptables: true
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("iptables"), "got: {err}");
+    }
+
+    #[test]
+    fn test_resolve_docker_rejects_unknown_daemon_key() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      daemon_json:
+        made-up-key: 1
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("not allowed"), "got: {err}");
+    }
+
+    #[test]
+    fn test_resolve_docker_rejects_credential_preload() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      preload_images: ["https://user:pass@registry.example/img:latest"]
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("preload"), "got: {err}");
+    }
+
+    #[test]
+    fn test_resolve_docker_allows_safe_daemon_json() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      daemon_json:
+        log-driver: json-file
+      preload_images: ["alpine:latest"]
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        assert!(configs[0].1.sandbox.docker.as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn test_resolve_docker_bridge_round_trips() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      network: bridge
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        let docker = configs[0].1.sandbox.docker.as_ref().unwrap();
+        assert_eq!(docker.network, runtime::config::DockerNetwork::Bridge);
+        assert!(
+            docker.validate().is_ok(),
+            "bridge + enabled must validate, got: {:?}",
+            docker.validate()
+        );
+    }
+
+    #[test]
+    fn test_resolve_docker_rejects_unknown_network() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: true
+      network: overlay
+"#;
+        // The unknown variant is rejected by serde while deserializing the
+        // DockerDef, so the failure surfaces at parse time (same as the
+        // unknown-runtime test above).
+        let result = parse_sandbox_file(yaml);
+        assert!(
+            result.is_err(),
+            "expected unknown docker network to be rejected, got: {:?}",
+            result
+        );
+        let err = result.unwrap_err().to_lowercase();
+        assert!(
+            err.contains("network") || err.contains("overlay"),
+            "expected error to mention network/overlay, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_docker_bridge_disabled_is_ok() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: test:latest
+    docker:
+      enabled: false
+      network: bridge
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        let docker = configs[0].1.sandbox.docker.as_ref().unwrap();
+        assert!(!docker.enabled);
+        assert_eq!(docker.network, runtime::config::DockerNetwork::Bridge);
     }
 }

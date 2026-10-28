@@ -961,6 +961,134 @@ impl Default for DockerConfig {
     }
 }
 
+pub const DAEMON_JSON_ALLOWED_KEYS: &[&str] = &[
+    "log-driver",
+    "log-level",
+    "log-opts",
+    "registry-mirrors",
+    "insecure-registries",
+    "dns",
+    "dns-opts",
+    "dns-search",
+    "mtu",
+    "default-address-pools",
+    "max-concurrent-downloads",
+    "max-concurrent-uploads",
+    "max-download-attempts",
+    "shutdown-timeout",
+    "default-ulimits",
+    "labels",
+    "features",
+    "live-restore",
+];
+
+pub const DAEMON_JSON_FORBIDDEN_KEYS: &[&str] = &[
+    "bridge",
+    "bip",
+    "fixed-cidr",
+    "fixed-cidr-v6",
+    "iptables",
+    "ip6tables",
+    "ip-forward",
+    "ip-masq",
+    "data-root",
+    "storage-driver",
+    "hosts",
+    "tls",
+    "tlsverify",
+    "tlscacert",
+    "tlscert",
+    "tlskey",
+    "authorization-plugins",
+    "default-runtime",
+    "runtimes",
+    "exec-opts",
+    "seccomp-profile",
+    "apparmor-profile",
+    "selinux-enabled",
+    "userland-proxy",
+    "userns-remap",
+    "experimental",
+];
+
+impl DockerConfig {
+    /// Validate this block against the Tier-1 Docker constraints. Returns a
+    /// human-readable error (prefixed `docker:`) the caller surfaces loudly.
+    /// A disabled block never fails: it has no runtime effect.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.rootless {
+            return Err(
+                "docker: rootless is not supported in Tier 1; set rootless: false (or omit it)"
+                    .to_string(),
+            );
+        }
+        for (key, value) in &self.daemon_json {
+            if DAEMON_JSON_FORBIDDEN_KEYS.contains(&key.as_str()) {
+                return Err(format!(
+                    "docker: daemon_json key '{key}' is forbidden in Tier 1 (it would widen or subvert the Tier-1 isolation surface)"
+                ));
+            }
+            if !DAEMON_JSON_ALLOWED_KEYS.contains(&key.as_str()) {
+                return Err(format!(
+                    "docker: daemon_json key '{key}' is not allowed in Tier 1"
+                ));
+            }
+            if key == "registry-mirrors" || key == "insecure-registries" {
+                let Some(entries) = value.as_array() else {
+                    return Err(format!(
+                        "docker: daemon_json '{key}' must be an array of strings"
+                    ));
+                };
+                for entry in entries {
+                    let Some(s) = entry.as_str() else {
+                        return Err(format!(
+                            "docker: daemon_json '{key}' entries must be strings"
+                        ));
+                    };
+                    if url_has_userinfo(s) {
+                        return Err(format!(
+                            "docker: daemon_json '{key}' entry must not embed credentials"
+                        ));
+                    }
+                }
+            }
+        }
+        for image in &self.preload_images {
+            if image.is_empty() {
+                return Err("docker: preload_images entries must not be empty".to_string());
+            }
+            if image.contains("://") {
+                return Err(format!(
+                    "docker: preload image '{image}' must not be a URL or embed credentials"
+                ));
+            }
+            if let Some(at) = image.find('@') {
+                let before_at = &image[..at];
+                let is_before_first_slash = match image.find('/') {
+                    Some(slash) => at < slash,
+                    None => true,
+                };
+                if is_before_first_slash && before_at.contains(':') {
+                    return Err(format!(
+                        "docker: preload image '{image}' must not embed credentials"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// True when a registry URL embeds `userinfo@` (i.e. `scheme://user:pass@host`).
+fn url_has_userinfo(s: &str) -> bool {
+    let rest = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    authority.contains('@')
+}
+
 /// Network mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -1429,13 +1557,140 @@ mod tests {
         assert!(docker.rootless);
         assert_eq!(docker.socket, "/run/docker.sock");
     }
+
+    #[test]
+    fn test_docker_validate_disabled_never_fails() {
+        let cfg = DockerConfig {
+            enabled: false,
+            rootless: true,
+            daemon_json: HashMap::from([(
+                "iptables".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#"true"#).unwrap(),
+            )]),
+            ..DockerConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_rootless_when_enabled() {
+        let cfg = DockerConfig {
+            enabled: true,
+            rootless: true,
+            ..DockerConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("rootless"));
+    }
+
+    #[test]
+    fn test_docker_validate_allows_clean_config() {
+        let cfg = DockerConfig {
+            enabled: true,
+            daemon_json: HashMap::from([
+                (
+                    "log-driver".to_string(),
+                    serde_json::from_str::<serde_json::Value>(r#""json-file""#).unwrap(),
+                ),
+                (
+                    "log-level".to_string(),
+                    serde_json::from_str::<serde_json::Value>(r#""debug""#).unwrap(),
+                ),
+                (
+                    "log-opts".to_string(),
+                    serde_json::from_str::<serde_json::Value>(r#"{"max-size":"10m"}"#).unwrap(),
+                ),
+            ]),
+            preload_images: vec!["alpine".to_string(), "ghcr.io/x/y:latest".to_string()],
+            ..DockerConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_forbidden_daemon_key() {
+        let cfg = DockerConfig {
+            enabled: true,
+            daemon_json: HashMap::from([(
+                "iptables".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#"true"#).unwrap(),
+            )]),
+            ..DockerConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("iptables"));
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_unknown_daemon_key() {
+        let cfg = DockerConfig {
+            enabled: true,
+            daemon_json: HashMap::from([(
+                "made-up-key".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#""x""#).unwrap(),
+            )]),
+            ..DockerConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("not allowed"));
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_credential_preload() {
+        let cfg = DockerConfig {
+            enabled: true,
+            preload_images: vec!["https://u:p@host/img".to_string()],
+            ..DockerConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg2 = DockerConfig {
+            enabled: true,
+            preload_images: vec!["u:p@ghcr.io/img".to_string()],
+            ..DockerConfig::default()
+        };
+        assert!(cfg2.validate().is_err());
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_empty_preload() {
+        let cfg = DockerConfig {
+            enabled: true,
+            preload_images: vec!["".to_string()],
+            ..DockerConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("preload"));
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_mirror_userinfo() {
+        let cfg = DockerConfig {
+            enabled: true,
+            daemon_json: HashMap::from([(
+                "registry-mirrors".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#"["https://user:pass@mirror"]"#)
+                    .unwrap(),
+            )]),
+            ..DockerConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
 }
 
 /// Default OCI registry for agent images.
 pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/agents-registry";
 
 /// Known code-agent image names hosted in the agents registry.
-const AGENT_IMAGES: &[&str] = &["base", "claude", "claude-docker", "codex", "cursor", "goose", "legacy"];
+const AGENT_IMAGES: &[&str] = &[
+    "base",
+    "claude",
+    "claude-docker",
+    "codex",
+    "cursor",
+    "goose",
+    "legacy",
+];
 
 /// Normalize an image reference: known agent names get the agents-registry
 /// prefix, other bare names get `docker.io/library/`, fully-qualified refs are
