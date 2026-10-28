@@ -41,6 +41,12 @@ pub enum Capability {
     ExecPty,
     /// docker-in-VM configuration surface (Epic 7 D5).
     Docker,
+    /// docker-in-VM bridge networking support (Epic 8 Tier 2).
+    ///
+    /// Advertised when the helper's deps bundle ships a libkrunfw kernel with
+    /// the netfilter/bridge/NAT stack. Clients gate `docker.network: bridge`
+    /// on this capability; without it they must use `host` or `none`.
+    DockerBridge,
 }
 
 impl Capability {
@@ -62,6 +68,7 @@ impl Capability {
             Capability::Wait,
             Capability::ExecPty,
             Capability::Docker,
+            Capability::DockerBridge,
         ]
     }
 
@@ -83,6 +90,7 @@ impl Capability {
             Capability::Wait => "wait",
             Capability::ExecPty => "exec_pty",
             Capability::Docker => "docker",
+            Capability::DockerBridge => "docker_bridge",
         }
     }
 }
@@ -191,5 +199,19 @@ mod tests {
     fn capability_docker_as_str() {
         assert_eq!(Capability::Docker.as_str(), "docker");
         assert!(Capability::all().contains(&Capability::Docker));
+    }
+
+    #[test]
+    fn capability_docker_bridge_as_str() {
+        assert_eq!(Capability::DockerBridge.as_str(), "docker_bridge");
+        assert!(Capability::all().contains(&Capability::DockerBridge));
+    }
+
+    #[test]
+    fn capability_docker_bridge_serde_round_trips() {
+        let json = serde_json::to_string(&Capability::DockerBridge).unwrap();
+        assert_eq!(json, "\"docker_bridge\"");
+        let back: Capability = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Capability::DockerBridge);
     }
 }

@@ -85,6 +85,7 @@ fn capabilities(ctx: &Ctx) -> Vec<Capability> {
         Capability::Signal,
         Capability::Wait,
         Capability::Docker,
+        Capability::DockerBridge,
     ];
     if exec_configured(ctx) {
         caps.push(Capability::Exec);
