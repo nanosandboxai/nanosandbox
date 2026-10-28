@@ -257,7 +257,8 @@ sandboxes:
       ports: ["8080:80"]
       dns: ["1.1.1.1"]
     docker:
-      enabled: false      # Docker starts a Tier-1 dockerd in the VM when enabled
+      enabled: false      # Docker starts a dockerd in the VM when enabled
+      network: host       # host (default) | none | bridge (bridge requires the docker_bridge capability)
     mounts:
       - host: ./data
         container: /data
@@ -344,7 +345,7 @@ snapshots, published ports, and an explicit security context. Design decisions:
 - [Networking & dynamic publish scope](docs/decisions/networking-dynamic-publish-scope.md).
 - [Security context contract](docs/decisions/security-context-contract.md).
 - [Multi-container-per-VM](docs/decisions/multi-container-per-vm.md) — v1 keeps one container per VM.
-- [Docker in microVM](docs/decisions/docker-in-microvm.md) — threat model + config surface (Tier 1 daemon starts when enabled; use `docker run --network host` for outbound; Tier 2 bridge is deferred).
+- [Docker in microVM](docs/decisions/docker-in-microvm.md) — threat model + config surface (daemon starts when enabled; use `docker run --network host` for outbound; Tier 2 bridge networking ships when the helper advertises the `docker_bridge` capability).
 
 ## Packaging
 
