@@ -158,6 +158,33 @@ or any pinned-libkrun feature, you MUST:
    [`runtime/scripts/patches/README.md`](runtime/scripts/patches/README.md), and
    re-verify boot/exec on the Linux/KVM host.
 
+### libkrunfw (guest kernel firmware) — upstream submodule + Docker overlay
+
+`runtime/deps/libkrunfw` is the **upstream** `containers/libkrunfw` submodule
+(gitlink-pinned; not a fork). Docker Tier-2 bridge networking needs netfilter/
+bridge/NAT options that upstream disables, so the build carries an idempotent
+config overlay instead of a fork:
+
+- `runtime/scripts/ci/enable-docker-netfilter.py --all` rewrites the five
+  `config-libkrunfw_*` files in the submodule (flips `not set`/`=m` to `=y`,
+  appends absent options).
+- `runtime/scripts/ci/check-docker-netfilter-config.py` proves the overlay took
+  effect: `--configs` checks the five source configs before `make`, and
+  `--built <path>` checks the resolved kernel `.config` after `make`. It fails
+  when any Docker "Generally Necessary" or Epic 8 §5 option is missing or `=m`.
+- Both run in `runtime/scripts/build-all.sh` (`build_libkrunfw`) and in the
+  kernel-bundle steps of `.github/workflows/{deps-build,release}.yml`, around
+  `make kernel.c`.
+- `runtime/scripts/ci/fetch-kernel-tarball.sh` pre-downloads and sha256-verifies
+  the pinned `linux-6.12.76.tar.xz` (the libkrunfw Makefile skips its own
+  download when the tarball already exists), making the build deterministic and
+  offline-capable after the first fetch.
+- The CI cache key includes the submodule tree and both CI scripts, so a script
+  change invalidates cached kernels.
+- The submodule working tree is expected to be dirty after a build; never commit
+  those config edits upstream. Re-run `git submodule update` to reset, then
+  rebuild (the script re-applies them).
+
 ## Sources of truth (for keeping docs accurate)
 
 | Concern | Source of truth |
@@ -171,6 +198,7 @@ or any pinned-libkrun feature, you MUST:
 | Install paths / bundles | `scripts/install.sh`, `install-deps/install.sh`, `scripts/package-sdk.sh` |
 | Host/shim supervisor entrypoint (`nanosb supervise`) | `src/main.rs` (`cmd_supervise`), `crates/host/src/deploy.rs`, `docs/runtime-capability-contract.md` |
 | libkrun fork (pin, commits, init-hook env) | `runtime/scripts/build-libkrun.sh` (`LIBKRUN_SHA`), `runtime/scripts/patches/README.md`, `nanosandboxai/libkrun`@`nanosandbox` |
+| libkrunfw carry (submodule pin + Docker netfilter overlay + kernel tarball) | `runtime/deps/libkrunfw` gitlink, `runtime/scripts/ci/enable-docker-netfilter.py`, `runtime/scripts/ci/check-docker-netfilter-config.py`, `runtime/scripts/ci/fetch-kernel-tarball.sh`, `.github/workflows/{deps-build,release}.yml` |
 
 ## License
 
