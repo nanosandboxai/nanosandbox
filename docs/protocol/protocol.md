@@ -63,7 +63,7 @@ check capabilities before calling an optional verb.
   "type": "hello_ok",
   "protocol": "1.0.0",
   "helper_version": "0.3.0",
-  "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "networking", "handles", "ephemeral", "signal", "wait", "exec_pty"]
+  "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "networking", "handles", "ephemeral", "signal", "wait", "exec_pty", "docker", "docker_bridge"]
 }
 ```
 
@@ -87,7 +87,8 @@ Clients gate optional verbs on these. The full set (`Capability::all()`):
 | `signal` | `kill` with an explicit signal (`SIGTERM`/`SIGKILL`) |
 | `wait` | blocking `wait` verb |
 | `exec_pty` | tty `exec_stream` + live stdin/`exec_resize` frames |
-| `docker` | helper advertises Docker-in-VM config support; clients gate on it. Container operations use `exec`; bridge networking is Tier 2 |
+| `docker` | helper advertises Docker-in-VM config support; clients gate on it. Container operations use `exec`; bridge networking needs `docker_bridge` |
+| `docker_bridge` | helper advertises Docker-in-VM bridge networking (Epic 8 Tier 2). Clients gate `docker.network: bridge` on it; without it use `host` or `none` |
 
 Version comparison is numeric segment-by-segment (`cmp_version`); a client's
 range intersects a server version via `version_in_range`.
