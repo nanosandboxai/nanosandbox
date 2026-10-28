@@ -28,7 +28,7 @@ Language SDKs (Rust, Python, TypeScript/Node, Go, Ruby, Java, C#/.NET, Kotlin)
 - **`AgentSandboxConfig`** -- Extends the runtime `SandboxConfig` with agent-specific fields: MCP servers, skills, permissions, agent type, model selection, and auto mode.
 - **`deploy`** -- Host-side config delivery module. Generates mount plans, MCP config files, skills files, and agent commands at deploy time. Replaces the in-VM Go gateway's config generation.
 - **`Session`** -- Session persistence supporting resume, fresh, and destroy workflows.
-- **`config::file`** -- `sandbox.yml` parsing, resolution, and CLI override application.
+- **`config::file`** -- `sandbox.yml` parsing, resolution, and CLI override application. It accepts a `docker:` block, resolved and validated at config load (Tier-1 allowlist for `daemon_json`, credential-free `preload_images`; `rootless: true` is rejected).
 - **`AgentsRegistryClient`** -- Fetches agent definitions and skill content from the OCI-based agents registry (`ghcr.io/nanosandboxai/agents-registry`).
 
 ## Config Delivery Model (Phase 4+)

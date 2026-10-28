@@ -24,7 +24,17 @@ build_libkrunfw() {
         exit 1
     fi
     cd "$ROOT_DIR/deps/libkrunfw"
+    # Carry the Docker Tier-2 netfilter/bridge/NAT kernel options into the
+    # pinned upstream submodule. The script is idempotent, so re-running it
+    # after a `git submodule update` is safe. The verifier proves the overlay
+    # took effect (Epic 8 T2 reproducibility check).
+    python3 "$ROOT_DIR/scripts/ci/enable-docker-netfilter.py" --all
+    python3 "$ROOT_DIR/scripts/ci/check-docker-netfilter-config.py" --configs "$PWD"
+    bash "$ROOT_DIR/scripts/ci/fetch-kernel-tarball.sh" "$PWD"
     make
+    if [ -f "linux-6.12.76/.config" ]; then
+        python3 "$ROOT_DIR/scripts/ci/check-docker-netfilter-config.py" --built "linux-6.12.76/.config"
+    fi
     # Copy built library to build/lib/
     find . -name 'libkrunfw*.so*' -o -name 'libkrunfw*.dylib' | head -5 | while read -r f; do
         cp "$f" "$BUILD_DIR/lib/"

@@ -25,7 +25,7 @@ The corpus lives in `scenarios/`; each file is one scenario.
 {
   "id": "<snake_case>",
   "description": "<one line>",
-  "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "networking", "handles", "ephemeral"],
+  "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "networking", "handles", "ephemeral", "docker"],
   "steps": [
     {
       "expect": { "<partial request object>" },
@@ -37,6 +37,8 @@ The corpus lives in `scenarios/`; each file is one scenario.
   "assert": { "<SDK-level expected outcomes; free-form, interpreted by the driver>" }
 }
 ```
+
+`docker` is protocol-declared but no frozen scenario advertises it, so the 35-scenario corpus is unchanged.
 
 ### Top-level fields
 

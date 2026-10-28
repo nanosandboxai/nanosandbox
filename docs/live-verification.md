@@ -166,3 +166,55 @@ and booting a VM on the restored writable layer are out of scope (epic R3).
 All live tests are opt-in / `#[ignore]`-gated so CI stays green without a VM.
 Re-run any of them with the exact command in the matrix above, and re-run the
 packaged-install check with `scripts/test-packaged-boot.sh`.
+
+## Epic 7 — Docker-in-VM (Tier 1)
+
+Verified on macOS arm64 (next mode) on 2026-10-19 with a Docker-enabled agent
+image (`claude-docker`) cached from a local registry.
+
+```bash
+NANOSB_RUNTIME_BIN="$PWD/target/debug/nanosb-runtime" \
+NANOSB_TEST_DOCKER_IMAGE=localhost:5050/claude-docker:latest \
+  cargo test -p nanosb-client --test epic7_docker_live -- --ignored --nocapture
+```
+
+Observed inside the microVM:
+
+- `/dev/vda` (virtio-blk serial `disk0`) formatted ext4 and mounted at
+  `/var/lib/docker`; `df` shows the 4 GiB data disk.
+- `docker info`: `Storage Driver: overlay2`, `Cgroup Version: 2`,
+  `Docker Root Dir: /var/lib/docker`.
+- `docker run --rm --network host hello-world` → exit 0, "Hello from Docker!".
+- As the non-root agent user: `su -s /bin/sh developer -c 'docker info'` and
+  `... 'docker run --rm --network host hello-world'` both succeed;
+  `claude --version` → `2.1.303 (Claude Code)`.
+
+Tier 1 has no default bridge; use `--network host` for containers that need
+outbound networking. Tier 2 bridge/NAT networking is implemented (Epic 8);
+gate it on the `docker_bridge` capability and set `docker.network: bridge`.
+A live bridge-mode VM test remains opt-in:
+
+```bash
+NANOSB_RUNTIME_BIN="$PWD/target/debug/nanosb-runtime" \
+NANOSB_TEST_DOCKER_IMAGE=localhost:5050/claude-docker:latest \
+  cargo test -p nanosb-client --test epic8_bridge_live -- --ignored --nocapture
+```
+
+### Bridge mode needs a netfilter-enabled guest firmware
+
+`dockerd`'s default bridge creates an nftables `nat` chain, so the deps-bundle
+`libkrunfw` must be built with the Docker netfilter/bridge/NAT overlay
+(`runtime/scripts/ci/enable-docker-netfilter.py`, applied by
+`runtime/scripts/build-all.sh` and the deps pipeline). A firmware that predates
+the overlay boots Tier 1 fine but fails bridge mode with:
+
+```
+failed to create NAT chain DOCKER: iptables --wait -t nat -N DOCKER:
+iptables v1.8.9 (nf_tables): TABLE_ADD failed (Operation not supported): table nat
+```
+
+**Status (2026-10-28):** the locally installed deps firmware predates the
+overlay, so the bridge live test fails with the NAT-chain error above until the
+deps bundle is rebuilt (`runtime/scripts/build-all.sh libkrunfw`). Tier 1
+(`epic7_docker_live`) passes against the same firmware. Rebuild the firmware
+before treating the bridge test as evidence.

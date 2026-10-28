@@ -37,6 +37,8 @@ must check that a capability is present before calling the verbs it gates
 | `signal` | `kill` with an explicit signal (SIGTERM/SIGKILL) |
 | `wait` | blocking `wait` verb (returns exit code) |
 | `exec_pty` | `exec_stream` with a PTY + live stdin/resize frames |
+| `docker` | helper advertises Docker-in-VM config support; clients gate on it. Container operations use `exec`; bridge networking needs `docker_bridge` |
+| `docker_bridge` | helper advertises Docker-in-VM bridge networking (Epic 8 Tier 2). Clients gate `docker.network: bridge` on it; without it use `host` or `none` |
 
 `ExecPty`, `Signal`, and `Wait` are the shim-facing surface used by
 containerd/CRI integration on Linux/KVM.

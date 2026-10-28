@@ -252,6 +252,10 @@ pub struct SandboxConfig {
     /// VM-level rlimits passed to the guest init (`RESOURCE=soft:hard`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rlimits: Vec<String>,
+
+    /// Docker-in-VM configuration (Epic 7 D5). None means disabled and changes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker: Option<DockerConfig>,
 }
 
 fn default_security_profile() -> String {
@@ -314,6 +318,7 @@ impl Default for SandboxConfig {
             stat_virtualization: None,
             security_profile: default_security_profile(),
             rlimits: Vec::new(),
+            docker: None,
         }
     }
 }
@@ -848,6 +853,242 @@ impl NetworkConfig {
     }
 }
 
+/// Docker-in-VM runtime selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerRuntime {
+    /// Docker daemon (default)
+    #[default]
+    Dockerd,
+    /// Podman
+    Podman,
+    /// containerd
+    Containerd,
+}
+
+/// Docker storage driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerStorageDriver {
+    /// Overlay2 (default)
+    #[default]
+    Overlay2,
+    /// VFS
+    Vfs,
+    /// FUSE overlayfs
+    #[serde(rename = "fuse-overlayfs")]
+    FuseOverlayfs,
+}
+
+/// Docker network mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerNetwork {
+    /// Host networking (default)
+    #[default]
+    Host,
+    /// No networking
+    None,
+    /// Bridge networking
+    Bridge,
+}
+
+/// Docker-in-VM configuration (Epic 7 D5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DockerConfig {
+    /// Whether the Docker daemon is enabled in the VM.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Container runtime to use.
+    #[serde(default = "default_docker_runtime")]
+    pub runtime: DockerRuntime,
+    /// Storage driver for the Docker daemon.
+    #[serde(default = "default_docker_storage_driver")]
+    pub storage_driver: DockerStorageDriver,
+    /// Data volume size in bytes.
+    #[serde(default = "default_docker_data_size")]
+    pub data_size_bytes: u64,
+    /// Docker network mode.
+    #[serde(default = "default_docker_network")]
+    pub network: DockerNetwork,
+    /// Extra daemon.json overrides.
+    #[serde(default)]
+    pub daemon_json: HashMap<String, serde_json::Value>,
+    /// Images to preload into the VM.
+    #[serde(default)]
+    pub preload_images: Vec<String>,
+    /// Whether to run the Docker daemon rootless.
+    #[serde(default)]
+    pub rootless: bool,
+    /// Docker socket path inside the VM.
+    #[serde(default = "default_docker_socket")]
+    pub socket: String,
+}
+
+fn default_docker_runtime() -> DockerRuntime {
+    DockerRuntime::Dockerd
+}
+
+fn default_docker_storage_driver() -> DockerStorageDriver {
+    DockerStorageDriver::Overlay2
+}
+
+fn default_docker_data_size() -> u64 {
+    20 * 1024 * 1024 * 1024
+}
+
+fn default_docker_network() -> DockerNetwork {
+    DockerNetwork::Host
+}
+
+fn default_docker_socket() -> String {
+    "/var/run/docker.sock".to_string()
+}
+
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            runtime: default_docker_runtime(),
+            storage_driver: default_docker_storage_driver(),
+            data_size_bytes: default_docker_data_size(),
+            network: default_docker_network(),
+            daemon_json: HashMap::new(),
+            preload_images: Vec::new(),
+            rootless: false,
+            socket: default_docker_socket(),
+        }
+    }
+}
+
+pub const DAEMON_JSON_ALLOWED_KEYS: &[&str] = &[
+    "log-driver",
+    "log-level",
+    "log-opts",
+    "registry-mirrors",
+    "insecure-registries",
+    "dns",
+    "dns-opts",
+    "dns-search",
+    "mtu",
+    "default-address-pools",
+    "max-concurrent-downloads",
+    "max-concurrent-uploads",
+    "max-download-attempts",
+    "shutdown-timeout",
+    "default-ulimits",
+    "labels",
+    "features",
+    "live-restore",
+];
+
+pub const DAEMON_JSON_FORBIDDEN_KEYS: &[&str] = &[
+    "bridge",
+    "bip",
+    "fixed-cidr",
+    "fixed-cidr-v6",
+    "iptables",
+    "ip6tables",
+    "ip-forward",
+    "ip-masq",
+    "data-root",
+    "storage-driver",
+    "hosts",
+    "tls",
+    "tlsverify",
+    "tlscacert",
+    "tlscert",
+    "tlskey",
+    "authorization-plugins",
+    "default-runtime",
+    "runtimes",
+    "exec-opts",
+    "seccomp-profile",
+    "apparmor-profile",
+    "selinux-enabled",
+    "userland-proxy",
+    "userns-remap",
+    "experimental",
+];
+
+impl DockerConfig {
+    /// Validate this block against the Tier-1 Docker constraints. Returns a
+    /// human-readable error (prefixed `docker:`) the caller surfaces loudly.
+    /// A disabled block never fails: it has no runtime effect.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.rootless {
+            return Err(
+                "docker: rootless is not supported in Tier 1; set rootless: false (or omit it)"
+                    .to_string(),
+            );
+        }
+        for (key, value) in &self.daemon_json {
+            if DAEMON_JSON_FORBIDDEN_KEYS.contains(&key.as_str()) {
+                return Err(format!(
+                    "docker: daemon_json key '{key}' is forbidden in Tier 1 (it would widen or subvert the Tier-1 isolation surface)"
+                ));
+            }
+            if !DAEMON_JSON_ALLOWED_KEYS.contains(&key.as_str()) {
+                return Err(format!(
+                    "docker: daemon_json key '{key}' is not allowed in Tier 1"
+                ));
+            }
+            if key == "registry-mirrors" || key == "insecure-registries" {
+                let Some(entries) = value.as_array() else {
+                    return Err(format!(
+                        "docker: daemon_json '{key}' must be an array of strings"
+                    ));
+                };
+                for entry in entries {
+                    let Some(s) = entry.as_str() else {
+                        return Err(format!(
+                            "docker: daemon_json '{key}' entries must be strings"
+                        ));
+                    };
+                    if url_has_userinfo(s) {
+                        return Err(format!(
+                            "docker: daemon_json '{key}' entry must not embed credentials"
+                        ));
+                    }
+                }
+            }
+        }
+        for image in &self.preload_images {
+            if image.is_empty() {
+                return Err("docker: preload_images entries must not be empty".to_string());
+            }
+            if image.contains("://") {
+                return Err(format!(
+                    "docker: preload image '{image}' must not be a URL or embed credentials"
+                ));
+            }
+            if let Some(at) = image.find('@') {
+                let before_at = &image[..at];
+                let is_before_first_slash = match image.find('/') {
+                    Some(slash) => at < slash,
+                    None => true,
+                };
+                if is_before_first_slash && before_at.contains(':') {
+                    return Err(format!(
+                        "docker: preload image '{image}' must not embed credentials"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// True when a registry URL embeds `userinfo@` (i.e. `scheme://user:pass@host`).
+fn url_has_userinfo(s: &str) -> bool {
+    let rest = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    authority.contains('@')
+}
+
 /// Network mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -1226,13 +1467,230 @@ mod tests {
         assert!(config.console.is_none());
         assert!(config.extra_mounts.is_empty());
     }
+
+    // ── DockerConfig tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_docker_config_defaults() {
+        let cfg = DockerConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.runtime, DockerRuntime::Dockerd);
+        assert_eq!(cfg.storage_driver, DockerStorageDriver::Overlay2);
+        assert_eq!(cfg.data_size_bytes, 20 * 1024 * 1024 * 1024);
+        assert_eq!(cfg.network, DockerNetwork::Host);
+        assert!(cfg.daemon_json.is_empty());
+        assert!(cfg.preload_images.is_empty());
+        assert!(!cfg.rootless);
+        assert_eq!(cfg.socket, "/var/run/docker.sock");
+    }
+
+    #[test]
+    fn test_docker_config_serde_roundtrip() {
+        let cfg = DockerConfig {
+            enabled: true,
+            runtime: DockerRuntime::Podman,
+            storage_driver: DockerStorageDriver::Vfs,
+            data_size_bytes: 40 * 1024 * 1024 * 1024,
+            network: DockerNetwork::Bridge,
+            daemon_json: HashMap::from([(
+                "log-level".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#""debug""#).unwrap(),
+            )]),
+            preload_images: vec!["alpine".to_string()],
+            rootless: true,
+            socket: "/run/docker.sock".to_string(),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: DockerConfig = serde_json::from_str(&json).unwrap();
+        assert!(back.enabled);
+        assert_eq!(back.runtime, DockerRuntime::Podman);
+        assert_eq!(back.storage_driver, DockerStorageDriver::Vfs);
+        assert_eq!(back.data_size_bytes, 40 * 1024 * 1024 * 1024);
+        assert_eq!(back.network, DockerNetwork::Bridge);
+        assert_eq!(
+            serde_json::to_string(back.daemon_json.get("log-level").unwrap()).unwrap(),
+            r#""debug""#,
+        );
+        assert_eq!(back.preload_images, vec!["alpine".to_string()]);
+        assert!(back.rootless);
+        assert_eq!(back.socket, "/run/docker.sock");
+    }
+
+    #[test]
+    fn test_docker_config_storage_driver_fuse_overlayfs_wire() {
+        let mut cfg = DockerConfig::default();
+        cfg.storage_driver = DockerStorageDriver::FuseOverlayfs;
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""storage_driver":"fuse-overlayfs""#));
+    }
+
+    #[test]
+    fn test_sandbox_config_docker_absent_is_byte_identical() {
+        let config = SandboxConfig::builder().name("t").image("alpine").build();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("docker"));
+    }
+
+    #[test]
+    fn test_sandbox_config_docker_roundtrip() {
+        let mut config = SandboxConfig::builder().name("t").image("alpine").build();
+        config.docker = Some(DockerConfig {
+            enabled: true,
+            runtime: DockerRuntime::Containerd,
+            storage_driver: DockerStorageDriver::FuseOverlayfs,
+            data_size_bytes: 10 * 1024 * 1024 * 1024,
+            network: DockerNetwork::None,
+            daemon_json: HashMap::new(),
+            preload_images: vec!["busybox".to_string()],
+            rootless: true,
+            socket: "/run/docker.sock".to_string(),
+        });
+        let json = serde_json::to_string(&config).unwrap();
+        let back: SandboxConfig = serde_json::from_str(&json).unwrap();
+        let docker = back.docker.unwrap();
+        assert!(docker.enabled);
+        assert_eq!(docker.runtime, DockerRuntime::Containerd);
+        assert_eq!(docker.storage_driver, DockerStorageDriver::FuseOverlayfs);
+        assert_eq!(docker.data_size_bytes, 10 * 1024 * 1024 * 1024);
+        assert_eq!(docker.network, DockerNetwork::None);
+        assert_eq!(docker.preload_images, vec!["busybox".to_string()]);
+        assert!(docker.rootless);
+        assert_eq!(docker.socket, "/run/docker.sock");
+    }
+
+    #[test]
+    fn test_docker_validate_disabled_never_fails() {
+        let cfg = DockerConfig {
+            enabled: false,
+            rootless: true,
+            daemon_json: HashMap::from([(
+                "iptables".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#"true"#).unwrap(),
+            )]),
+            ..DockerConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_rootless_when_enabled() {
+        let cfg = DockerConfig {
+            enabled: true,
+            rootless: true,
+            ..DockerConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("rootless"));
+    }
+
+    #[test]
+    fn test_docker_validate_allows_clean_config() {
+        let cfg = DockerConfig {
+            enabled: true,
+            daemon_json: HashMap::from([
+                (
+                    "log-driver".to_string(),
+                    serde_json::from_str::<serde_json::Value>(r#""json-file""#).unwrap(),
+                ),
+                (
+                    "log-level".to_string(),
+                    serde_json::from_str::<serde_json::Value>(r#""debug""#).unwrap(),
+                ),
+                (
+                    "log-opts".to_string(),
+                    serde_json::from_str::<serde_json::Value>(r#"{"max-size":"10m"}"#).unwrap(),
+                ),
+            ]),
+            preload_images: vec!["alpine".to_string(), "ghcr.io/x/y:latest".to_string()],
+            ..DockerConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_forbidden_daemon_key() {
+        let cfg = DockerConfig {
+            enabled: true,
+            daemon_json: HashMap::from([(
+                "iptables".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#"true"#).unwrap(),
+            )]),
+            ..DockerConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("iptables"));
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_unknown_daemon_key() {
+        let cfg = DockerConfig {
+            enabled: true,
+            daemon_json: HashMap::from([(
+                "made-up-key".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#""x""#).unwrap(),
+            )]),
+            ..DockerConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("not allowed"));
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_credential_preload() {
+        let cfg = DockerConfig {
+            enabled: true,
+            preload_images: vec!["https://u:p@host/img".to_string()],
+            ..DockerConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg2 = DockerConfig {
+            enabled: true,
+            preload_images: vec!["u:p@ghcr.io/img".to_string()],
+            ..DockerConfig::default()
+        };
+        assert!(cfg2.validate().is_err());
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_empty_preload() {
+        let cfg = DockerConfig {
+            enabled: true,
+            preload_images: vec!["".to_string()],
+            ..DockerConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("preload"));
+    }
+
+    #[test]
+    fn test_docker_validate_rejects_mirror_userinfo() {
+        let cfg = DockerConfig {
+            enabled: true,
+            daemon_json: HashMap::from([(
+                "registry-mirrors".to_string(),
+                serde_json::from_str::<serde_json::Value>(r#"["https://user:pass@mirror"]"#)
+                    .unwrap(),
+            )]),
+            ..DockerConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
 }
 
 /// Default OCI registry for agent images.
 pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/agents-registry";
 
 /// Known code-agent image names hosted in the agents registry.
-const AGENT_IMAGES: &[&str] = &["base", "claude", "codex", "cursor", "goose", "legacy"];
+const AGENT_IMAGES: &[&str] = &[
+    "base",
+    "claude",
+    "claude-docker",
+    "codex",
+    "cursor",
+    "goose",
+    "legacy",
+];
 
 /// Normalize an image reference: known agent names get the agents-registry
 /// prefix, other bare names get `docker.io/library/`, fully-qualified refs are

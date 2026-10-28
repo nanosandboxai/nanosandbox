@@ -151,6 +151,8 @@ pub fn prepare_supervisor_spawn(
         config.exec_agent = Some(guest_path);
     }
 
+    ensure_docker_data_disk(&mut config, &sandbox_dir)?;
+
     let extra_mounts_json = serde_json::to_string(&extra_mounts)?;
     let config_json = serde_json::to_string(&config)?;
     let (config_json, boot_env_json) = extract_boot_env(&config_json)?;
@@ -165,6 +167,57 @@ pub fn prepare_supervisor_spawn(
         origin_json,
         timeout_secs: config.timeout_secs,
     })
+}
+
+/// When Docker is enabled, allocate a sparse raw ext4 data disk for
+/// `/var/lib/docker` and register it as a disk-image mount on the config.
+///
+/// Idempotent across restarts: the image is created only if missing, grown
+/// (never shrunk) if smaller than the requested size, and a mount is added only
+/// if no `/var/lib/docker` disk-image mount already exists. Strict no-op when
+/// Docker is absent or disabled. Guest-side mkfs/mount is D4 — not done here.
+fn ensure_docker_data_disk(
+    config: &mut runtime_config::SandboxConfig,
+    sandbox_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let Some(docker) = config.docker.as_ref() else {
+        return Ok(());
+    };
+    if !docker.enabled {
+        return Ok(());
+    }
+    let size = docker.data_size_bytes;
+    if size == 0 {
+        anyhow::bail!("docker.data_size_bytes must be non-zero");
+    }
+    std::fs::create_dir_all(sandbox_dir)?;
+    let image = sandbox_dir.join("docker-data.img");
+    if !image.exists() {
+        std::fs::File::create(&image)?.set_len(size)?;
+    } else {
+        let len = std::fs::metadata(&image)?.len();
+        if len < size {
+            std::fs::OpenOptions::new().write(true).open(&image)?.set_len(size)?;
+        }
+    }
+    let already_mounted = config.mounts.iter().any(|m| {
+        m.container_path == "/var/lib/docker" && m.disk_image.is_some()
+    });
+    if !already_mounted {
+        config.mounts.push(runtime_config::Mount {
+            host_path: image,
+            container_path: "/var/lib/docker".to_string(),
+            readonly: false,
+            mount_type: runtime_config::MountType::Bind,
+            file: false,
+            disk_image: Some("raw".to_string()),
+            fstype: Some("ext4".to_string()),
+            options: Vec::new(),
+            uid: None,
+            gid: None,
+        });
+    }
+    Ok(())
 }
 
 /// Block until the sandbox reports `Running`; fail on `Stopped`/`Error`/timeout.
@@ -274,6 +327,194 @@ mod tests {
         assert_eq!(cfg.command.as_deref(), Some("/bin/sleep"));
         assert_eq!(cfg.command_args, vec!["60".to_string()]);
         assert_eq!(cfg.exec_agent.as_deref(), Some("/agent/exec-agent"));
+
+        std::env::remove_var("NANOSB_GUEST_BIN_DIR");
+        std::env::remove_var("NANOSB_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prepare_spawn_with_docker_creates_data_disk_and_mount() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "nanosb-host-deploy-docker-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let guest_bin = tmp.join("guest-bin");
+        std::fs::create_dir_all(&guest_bin).unwrap();
+        std::fs::write(guest_bin.join("exec-agent"), b"#!/bin/sh\n").unwrap();
+
+        std::env::set_var("NANOSB_GUEST_BIN_DIR", &guest_bin);
+        std::env::set_var("NANOSB_HOME", tmp.join("home"));
+
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("host-deploy-docker-test".to_string());
+        spec.docker = Some(nanosb_protocol::DockerConfig {
+            enabled: true,
+            data_size_bytes: 4 * 1024 * 1024,
+            ..Default::default()
+        });
+        let sp = prepare_supervisor_spawn(&spec).unwrap();
+
+        let cfg: runtime_config::SandboxConfig = serde_json::from_str(&sp.config_json).unwrap();
+        let docker_mounts: Vec<_> = cfg
+            .mounts
+            .iter()
+            .filter(|m| m.container_path == "/var/lib/docker")
+            .collect();
+        assert_eq!(docker_mounts.len(), 1);
+        assert_eq!(docker_mounts[0].disk_image.as_deref(), Some("raw"));
+        assert_eq!(docker_mounts[0].fstype.as_deref(), Some("ext4"));
+
+        let img = sp.sandbox_dir.join("docker-data.img");
+        assert!(img.exists());
+        assert_eq!(std::fs::metadata(&img).unwrap().len(), 4 * 1024 * 1024);
+
+        std::env::remove_var("NANOSB_GUEST_BIN_DIR");
+        std::env::remove_var("NANOSB_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prepare_spawn_with_docker_is_idempotent() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "nanosb-host-deploy-docker-idem-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let guest_bin = tmp.join("guest-bin");
+        std::fs::create_dir_all(&guest_bin).unwrap();
+        std::fs::write(guest_bin.join("exec-agent"), b"#!/bin/sh\n").unwrap();
+
+        std::env::set_var("NANOSB_GUEST_BIN_DIR", &guest_bin);
+        std::env::set_var("NANOSB_HOME", tmp.join("home"));
+
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("host-deploy-docker-idem-test".to_string());
+        spec.docker = Some(nanosb_protocol::DockerConfig {
+            enabled: true,
+            data_size_bytes: 4 * 1024 * 1024,
+            ..Default::default()
+        });
+        let sp1 = prepare_supervisor_spawn(&spec).unwrap();
+        let sp2 = prepare_supervisor_spawn(&spec).unwrap();
+
+        let cfg1: runtime_config::SandboxConfig = serde_json::from_str(&sp1.config_json).unwrap();
+        let cfg2: runtime_config::SandboxConfig = serde_json::from_str(&sp2.config_json).unwrap();
+        let n1 = cfg1
+            .mounts
+            .iter()
+            .filter(|m| m.container_path == "/var/lib/docker" && m.disk_image.is_some())
+            .count();
+        let n2 = cfg2
+            .mounts
+            .iter()
+            .filter(|m| m.container_path == "/var/lib/docker" && m.disk_image.is_some())
+            .count();
+        assert_eq!(n1, 1);
+        assert_eq!(n2, 1);
+
+        let img = sp2.sandbox_dir.join("docker-data.img");
+        assert_eq!(std::fs::metadata(&img).unwrap().len(), 4 * 1024 * 1024);
+
+        std::env::remove_var("NANOSB_GUEST_BIN_DIR");
+        std::env::remove_var("NANOSB_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prepare_spawn_docker_disabled_adds_no_disk() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "nanosb-host-deploy-docker-disabled-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let guest_bin = tmp.join("guest-bin");
+        std::fs::create_dir_all(&guest_bin).unwrap();
+        std::fs::write(guest_bin.join("exec-agent"), b"#!/bin/sh\n").unwrap();
+
+        std::env::set_var("NANOSB_GUEST_BIN_DIR", &guest_bin);
+        std::env::set_var("NANOSB_HOME", tmp.join("home"));
+
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("host-deploy-docker-disabled-test".to_string());
+        spec.docker = Some(nanosb_protocol::DockerConfig {
+            enabled: false,
+            data_size_bytes: 4 * 1024 * 1024,
+            ..Default::default()
+        });
+        let sp = prepare_supervisor_spawn(&spec).unwrap();
+
+        let cfg: runtime_config::SandboxConfig = serde_json::from_str(&sp.config_json).unwrap();
+        assert!(cfg
+            .mounts
+            .iter()
+            .all(|m| m.container_path != "/var/lib/docker"));
+        assert!(!sp.sandbox_dir.join("docker-data.img").exists());
+
+        std::env::remove_var("NANOSB_GUEST_BIN_DIR");
+        std::env::remove_var("NANOSB_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prepare_spawn_without_docker_adds_no_disk() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "nanosb-host-deploy-docker-none-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let guest_bin = tmp.join("guest-bin");
+        std::fs::create_dir_all(&guest_bin).unwrap();
+        std::fs::write(guest_bin.join("exec-agent"), b"#!/bin/sh\n").unwrap();
+
+        std::env::set_var("NANOSB_GUEST_BIN_DIR", &guest_bin);
+        std::env::set_var("NANOSB_HOME", tmp.join("home"));
+
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("host-deploy-docker-none-test".to_string());
+        let sp = prepare_supervisor_spawn(&spec).unwrap();
+
+        let cfg: runtime_config::SandboxConfig = serde_json::from_str(&sp.config_json).unwrap();
+        assert!(cfg
+            .mounts
+            .iter()
+            .all(|m| m.container_path != "/var/lib/docker"));
+        assert!(!sp.sandbox_dir.join("docker-data.img").exists());
+
+        std::env::remove_var("NANOSB_GUEST_BIN_DIR");
+        std::env::remove_var("NANOSB_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prepare_spawn_docker_zero_size_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "nanosb-host-deploy-docker-zero-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let guest_bin = tmp.join("guest-bin");
+        std::fs::create_dir_all(&guest_bin).unwrap();
+        std::fs::write(guest_bin.join("exec-agent"), b"#!/bin/sh\n").unwrap();
+
+        std::env::set_var("NANOSB_GUEST_BIN_DIR", &guest_bin);
+        std::env::set_var("NANOSB_HOME", tmp.join("home"));
+
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("host-deploy-docker-zero-test".to_string());
+        spec.docker = Some(nanosb_protocol::DockerConfig {
+            enabled: true,
+            data_size_bytes: 0,
+            ..Default::default()
+        });
+        let err = prepare_supervisor_spawn(&spec).unwrap_err();
+        assert!(err.to_string().contains("docker.data_size_bytes"));
 
         std::env::remove_var("NANOSB_GUEST_BIN_DIR");
         std::env::remove_var("NANOSB_HOME");

@@ -7,9 +7,10 @@
 - `dbdc12a3` — next-mode init (extra virtiofs mounts + static network)
 - `a148cff4` — macOS virtiofs raw-FUSE traversal hardening
 - `0a2cfd46` — background workload exec agent (`KRUN_EXEC_AGENT`)
+- `78c8c5b7` — load workload env from `NANOSB_ENV_FILE`; CRI boot fixes (IRQs, cmdline, GSIs)
 
 `runtime/scripts/build-libkrun.sh` builds that branch at the pinned SHA
-(`a148cff4`) and no longer applies patches at build time. The patch file below
+(see `LIBKRUN_SHA` in that script) and no longer applies patches at build time. The patch file below
 is kept only as a historical record of the original next-mode change.
 
 ## Purpose

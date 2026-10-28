@@ -218,6 +218,589 @@ fn apply_startup_config() {
             Err(e) => diag(&format!("exec-agent: bad NANOSB_MOUNTS: {}", e)),
         }
     }
+    if let Ok(docker) = std::env::var("NANOSB_DOCKER") {
+        match serde_json::from_str::<serde_json::Value>(&docker) {
+            // Docker bootstrap runs on a background thread so the vsock
+            // listener binds immediately: dockerd startup can take tens of
+            // seconds and must not delay the exec channel.
+            Ok(cfg) => {
+                std::thread::spawn(move || docker_bootstrap(cfg));
+            }
+            Err(e) => diag(&format!("exec-agent: bad NANOSB_DOCKER: {}", e)),
+        }
+    }
+}
+
+fn docker_enabled(cfg: &serde_json::Value) -> bool {
+    cfg.get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+fn docker_socket(cfg: &serde_json::Value) -> String {
+    cfg.get("socket")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/var/run/docker.sock")
+        .to_string()
+}
+
+/// daemon.json keys that are safe to forward to the Tier-1 daemon. Kept in
+/// lockstep with `runtime_config::DAEMON_JSON_ALLOWED_KEYS` so the protocol
+/// path (which bypasses sandbox.yml) cannot smuggle in a wider surface.
+const GUEST_DOCKER_ALLOWED_DAEMON_KEYS: &[&str] = &[
+    "log-driver",
+    "log-level",
+    "log-opts",
+    "registry-mirrors",
+    "insecure-registries",
+    "dns",
+    "dns-opts",
+    "dns-search",
+    "mtu",
+    "default-address-pools",
+    "max-concurrent-downloads",
+    "max-concurrent-uploads",
+    "max-download-attempts",
+    "shutdown-timeout",
+    "default-ulimits",
+    "labels",
+    "features",
+    "live-restore",
+];
+
+/// daemon.json keys that would subvert the Tier-1 isolation surface or move the
+/// data root off the provisioned disk. Kept in lockstep with
+/// `runtime_config::DAEMON_JSON_FORBIDDEN_KEYS`.
+const GUEST_DOCKER_FORBIDDEN_DAEMON_KEYS: &[&str] = &[
+    "bridge",
+    "bip",
+    "fixed-cidr",
+    "fixed-cidr-v6",
+    "iptables",
+    "ip6tables",
+    "ip-forward",
+    "ip-masq",
+    "data-root",
+    "storage-driver",
+    "hosts",
+    "tls",
+    "tlsverify",
+    "tlscacert",
+    "tlscert",
+    "tlskey",
+    "authorization-plugins",
+    "default-runtime",
+    "runtimes",
+    "exec-opts",
+    "seccomp-profile",
+    "apparmor-profile",
+    "selinux-enabled",
+    "userland-proxy",
+    "userns-remap",
+    "experimental",
+];
+
+/// Reject configurations that would subvert the Tier-1 isolation surface.
+/// Mirrors runtime-config's allowlist so the protocol path cannot bypass it.
+fn docker_guard_violation(cfg: &serde_json::Value) -> Option<String> {
+    if cfg
+        .get("rootless")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Some(
+            "docker: rootless is not supported in Tier 1; set rootless: false (or omit it)"
+                .to_string(),
+        );
+    }
+    if let Some(obj) = cfg.get("daemon_json").and_then(|v| v.as_object()) {
+        for (key, value) in obj {
+            if GUEST_DOCKER_FORBIDDEN_DAEMON_KEYS.contains(&key.as_str()) {
+                return Some(format!(
+                    "docker: daemon_json key '{key}' is forbidden in Tier 1"
+                ));
+            }
+            if !GUEST_DOCKER_ALLOWED_DAEMON_KEYS.contains(&key.as_str()) {
+                return Some(format!(
+                    "docker: daemon_json key '{key}' is not allowed in Tier 1"
+                ));
+            }
+            if key == "registry-mirrors" || key == "insecure-registries" {
+                let Some(entries) = value.as_array() else {
+                    return Some(format!(
+                        "docker: daemon_json '{key}' must be an array of strings"
+                    ));
+                };
+                for entry in entries {
+                    let Some(s) = entry.as_str() else {
+                        return Some(format!(
+                            "docker: daemon_json '{key}' entries must be strings"
+                        ));
+                    };
+                    if url_has_userinfo(s) {
+                        return Some(format!(
+                            "docker: daemon_json '{key}' entry must not embed credentials"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(images) = cfg.get("preload_images").and_then(|v| v.as_array()) {
+        for image in images {
+            let Some(name) = image.as_str() else {
+                return Some("docker: preload_images entries must be strings".to_string());
+            };
+            if name.is_empty() {
+                return Some("docker: preload_images entries must not be empty".to_string());
+            }
+            if name.contains("://") {
+                return Some(format!(
+                    "docker: preload image '{name}' must not be a URL or embed credentials"
+                ));
+            }
+            if let Some(at) = name.find('@') {
+                let before_at = &name[..at];
+                let is_before_first_slash = match name.find('/') {
+                    Some(slash) => at < slash,
+                    None => true,
+                };
+                if is_before_first_slash && before_at.contains(':') {
+                    return Some(format!(
+                        "docker: preload image '{name}' must not embed credentials"
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// True when a registry URL embeds `userinfo@` (i.e. `scheme://user:pass@host`).
+fn url_has_userinfo(s: &str) -> bool {
+    let rest = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    authority.contains('@')
+}
+
+/// Find a virtio-blk device by its serial (`/sys/block/<dev>/serial`). The
+/// host attaches the Docker data disk with block_id `diskN`, which libkrun
+/// exposes as the device serial.
+fn find_block_device_by_serial(tag: &str) -> Option<String> {
+    find_block_device(|serial| serial == tag)
+}
+
+/// Fallback lookup: any block device whose serial starts with `prefix`.
+fn find_block_device_by_serial_prefix(prefix: &str) -> Option<String> {
+    find_block_device(|serial| serial.starts_with(prefix))
+}
+
+fn find_block_device(pred: impl Fn(&str) -> bool) -> Option<String> {
+    let sys_block = std::path::Path::new("/sys/block");
+    let entries = std::fs::read_dir(sys_block).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("loop")
+            || name.starts_with("ram")
+            || name.starts_with("dm-")
+            || name.starts_with("sr")
+        {
+            continue;
+        }
+        let serial_path = entry.path().join("serial");
+        if let Ok(serial) = std::fs::read_to_string(&serial_path) {
+            if pred(serial.trim()) {
+                return Some(format!("/dev/{}", name));
+            }
+        }
+    }
+    None
+}
+
+/// True when `dev` carries an ext2/3/4 superblock (magic `0x53 0xEF` at
+/// offset 1080, little-endian). Any read error is treated as "not ext4".
+fn has_ext4_signature(dev: &str) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(dev) else {
+        return false;
+    };
+    if f.seek(SeekFrom::Start(1080)).is_err() {
+        return false;
+    }
+    let mut magic = [0u8; 2];
+    if f.read_exact(&mut magic).is_err() {
+        return false;
+    }
+    magic == [0x53, 0xEF]
+}
+
+/// Parse `NANOSB_MOUNTS` for the Docker data-disk plan: the entry with
+/// `kind == "disk"` and `target == "/var/lib/docker"`, returning its tag.
+fn data_disk_plan() -> Option<(String, String)> {
+    let raw = std::env::var("NANOSB_MOUNTS").ok()?;
+    let mounts: Vec<serde_json::Value> = serde_json::from_str(&raw).ok()?;
+    for m in mounts {
+        let kind = m.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let target = m.get("target").and_then(|v| v.as_str()).unwrap_or("");
+        if kind == "disk" && target == "/var/lib/docker" {
+            let tag = m
+                .get("tag")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            return Some((tag, target.to_string()));
+        }
+    }
+    None
+}
+
+fn proc_mount_has_target(target: &str) -> bool {
+    let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
+        return false;
+    };
+    mounts
+        .lines()
+        .any(|l| l.split_whitespace().nth(1) == Some(target))
+}
+
+/// Provision and mount the Docker data disk at /var/lib/docker. Formats it
+/// with ext4 (mkfs.ext4) when it carries no filesystem yet. Never fatal: any
+/// failure is logged and Docker continues on the overlay rootfs.
+fn mount_docker_data_disk(_cfg: &serde_json::Value) {
+    let target = "/var/lib/docker";
+    if proc_mount_has_target(target) {
+        return;
+    }
+    let dev = data_disk_plan()
+        .and_then(|(tag, _)| find_block_device_by_serial(&tag))
+        .or_else(|| find_block_device_by_serial_prefix("disk"));
+    let Some(dev) = dev else {
+        diag("docker: no data disk found for /var/lib/docker; using rootfs storage");
+        return;
+    };
+    if !has_ext4_signature(&dev) {
+        diag(&format!("docker: formatting data disk {} with ext4", dev));
+        match std::process::Command::new("mkfs.ext4")
+            .args(["-F", "-q"])
+            .arg(&dev)
+            .status()
+        {
+            Ok(st) if st.success() => {}
+            Ok(st) => {
+                diag(&format!(
+                    "docker: mkfs.ext4 failed on {} with status {:?}",
+                    dev,
+                    st.code()
+                ));
+                return;
+            }
+            Err(e) => {
+                diag(&format!(
+                    "docker: failed to run mkfs.ext4 on {}: {}",
+                    dev, e
+                ));
+                return;
+            }
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(target) {
+        diag(&format!("docker: failed to create {}: {}", target, e));
+    }
+    let c_dev = std::ffi::CString::new(dev.as_str()).unwrap();
+    let c_target = std::ffi::CString::new(target).unwrap();
+    let c_fs = std::ffi::CString::new("ext4").unwrap();
+    let rc = unsafe {
+        libc::mount(
+            c_dev.as_ptr(),
+            c_target.as_ptr(),
+            c_fs.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        diag(&format!(
+            "docker: failed to mount {} at {}: {}",
+            dev,
+            target,
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
+fn ensure_runtime_dirs() {
+    for dir in [
+        "/run",
+        "/var/run",
+        "/tmp",
+        "/var/lib/docker",
+        "/etc/docker",
+        "/var/log",
+    ] {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            diag(&format!("docker: failed to create {}: {}", dir, e));
+        }
+    }
+}
+
+/// Mount /run as tmpfs so the Docker socket is guest-local. On a virtiofs
+/// rootfs the guest root cannot chown the socket to the docker group: the
+/// host FUSE server runs unprivileged and returns EPERM.
+fn ensure_run_tmpfs() {
+    if proc_mount_has_target("/run") {
+        return;
+    }
+    let src = std::ffi::CString::new("tmpfs").unwrap();
+    let target = std::ffi::CString::new("/run").unwrap();
+    let fstype = std::ffi::CString::new("tmpfs").unwrap();
+    let data = std::ffi::CString::new("mode=755").unwrap();
+    let flags = (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong;
+    let rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            flags,
+            data.as_ptr() as *const libc::c_void,
+        )
+    };
+    if rc != 0 {
+        diag(&format!(
+            "docker: failed to mount tmpfs at /run: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
+/// Re-mount cgroup2 at /sys/fs/cgroup with the flags dockerd expects. The
+/// libkrun init already mounts it; a remount is best-effort and never fatal.
+fn ensure_cgroup2() {
+    let src = std::ffi::CString::new("cgroup2").unwrap();
+    let target = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
+    let fstype = std::ffi::CString::new("cgroup2").unwrap();
+    let flags =
+        (libc::MS_REMOUNT | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong;
+    let rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            flags,
+            std::ptr::null(),
+        )
+    };
+    if rc == 0 {
+        return;
+    }
+    let remount_err = std::io::Error::last_os_error();
+    let rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        diag(&format!(
+            "docker: cgroup2 at /sys/fs/cgroup unavailable (remount: {}, mount: {}); continuing",
+            remount_err,
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
+/// Build the daemon.json document: the user's `daemon_json` object plus the
+/// `data-root` / `storage-driver` fields pinned from the typed config (they
+/// always win so the daemon lands on the provisioned data disk).
+fn daemon_json(cfg: &serde_json::Value) -> serde_json::Value {
+    let mut base = cfg
+        .get("daemon_json")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    base.insert(
+        "data-root".to_string(),
+        serde_json::Value::String("/var/lib/docker".to_string()),
+    );
+    let driver = cfg
+        .get("storage_driver")
+        .and_then(|v| v.as_str())
+        .unwrap_or("overlay2")
+        .to_string();
+    base.insert(
+        "storage-driver".to_string(),
+        serde_json::Value::String(driver),
+    );
+    serde_json::Value::Object(base)
+}
+
+fn write_daemon_json(cfg: &serde_json::Value) {
+    let _ = std::fs::create_dir_all("/etc/docker");
+    let body = serde_json::to_string_pretty(&daemon_json(cfg)).unwrap_or_else(|_| "{}".to_string());
+    if let Err(e) = std::fs::write("/etc/docker/daemon.json", body) {
+        diag(&format!(
+            "docker: failed to write /etc/docker/daemon.json: {}",
+            e
+        ));
+    }
+}
+
+/// Start `dockerd` (Tier 1: no bridge, no iptables/netfilter) and wait up to
+/// 30s for its unix socket, then preload images best-effort.
+fn group_exists(name: &str) -> bool {
+    std::fs::read_to_string("/etc/group")
+        .map(|body| {
+            body.lines()
+                .any(|line| line.split(':').next() == Some(name))
+        })
+        .unwrap_or(false)
+}
+
+fn docker_network(cfg: &serde_json::Value) -> String {
+    cfg.get("network")
+        .and_then(|v| v.as_str())
+        .unwrap_or("host")
+        .to_string()
+}
+
+fn set_sysctl(key: &str, value: &str) {
+    let path = format!("/proc/sys/{}", key.replace('.', "/"));
+    if let Err(e) = std::fs::write(&path, value) {
+        diag(&format!("docker: failed to set {}={}: {}", key, value, e));
+    }
+}
+
+/// Bridge mode needs IPv4 forwarding and bridge netfilter for Docker's NAT.
+fn configure_bridge_sysctls() {
+    set_sysctl("net.ipv4.ip_forward", "1");
+    set_sysctl("net.bridge.bridge-nf-call-iptables", "1");
+    set_sysctl("net.bridge.bridge-nf-call-ip6tables", "1");
+}
+
+fn start_dockerd(cfg: &serde_json::Value) {
+    let socket = docker_socket(cfg);
+    if std::path::Path::new(&socket).exists() {
+        diag("docker: daemon already running; not starting dockerd");
+        return;
+    }
+    if cfg
+        .get("rootless")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        diag("docker: rootless is not supported in this Tier-1 build; refusing to start dockerd");
+        return;
+    }
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/var/log/dockerd.log");
+    let log_stdio = |log: &std::result::Result<std::fs::File, std::io::Error>| {
+        log.as_ref()
+            .ok()
+            .and_then(|f| f.try_clone().ok())
+            .map(std::process::Stdio::from)
+            .unwrap_or(std::process::Stdio::null())
+    };
+
+    let network = docker_network(cfg);
+    let mut cmd = std::process::Command::new("dockerd");
+    match network.as_str() {
+        "bridge" => {
+            // Tier 2: Docker's default bridge (docker0) with iptables/NAT.
+            // Requires the netfilter/bridge kernel stack (Epic 8 T1).
+            configure_bridge_sysctls();
+            if let Some(mtu) = cfg.get("daemon_json").and_then(|v| v.get("mtu")) {
+                if let Some(mtu) = mtu.as_u64() {
+                    cmd.arg(format!("--mtu={}", mtu));
+                }
+            }
+        }
+        _ => {
+            // Tier 1 host/none: no bridge, no iptables/netfilter.
+            cmd.arg("--bridge=none")
+                .arg("--iptables=false")
+                .arg("--ip6tables=false");
+        }
+    }
+    cmd.arg(format!("--host=unix://{}", socket));
+    if group_exists("developer") {
+        cmd.arg("--group=developer");
+    }
+    cmd.arg("--pidfile=/var/run/docker.pid")
+        .stdout(log_stdio(&log))
+        .stderr(log_stdio(&log));
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            diag(&format!("docker: failed to spawn dockerd: {}", e));
+            return;
+        }
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if std::path::Path::new(&socket).exists() {
+            diag(&format!("docker: daemon ready (socket={})", socket));
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let tail = std::fs::read_to_string("/var/log/dockerd.log")
+                .map(|s| s[s.len().saturating_sub(2000)..].to_string())
+                .unwrap_or_default();
+            diag(&format!("docker: daemon not ready after 30s\n{}", tail));
+            let _ = child.kill();
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    if let Some(images) = cfg.get("preload_images").and_then(|v| v.as_array()) {
+        for img in images {
+            let Some(name) = img.as_str() else { continue };
+            let status = std::process::Command::new("docker")
+                .args(["pull", name])
+                .stdout(log_stdio(&log))
+                .stderr(log_stdio(&log))
+                .status();
+            match status {
+                Ok(st) if st.success() => {}
+                Ok(st) => diag(&format!("docker: pull {} failed: {:?}", name, st.code())),
+                Err(e) => diag(&format!("docker: pull {} failed: {}", name, e)),
+            }
+        }
+    }
+}
+
+/// Background entry point: provision the data disk, daemon config, and start
+/// dockerd when `docker.enabled` is true. Every step is logged and non-fatal;
+/// the vsock exec listener is never blocked by this.
+fn docker_bootstrap(cfg: serde_json::Value) {
+    if !docker_enabled(&cfg) {
+        return;
+    }
+    if let Some(violation) = docker_guard_violation(&cfg) {
+        diag(&format!("docker: refusing to start dockerd: {}", violation));
+        return;
+    }
+    let socket = docker_socket(&cfg);
+    // Export DOCKER_HOST before waiting on the daemon so exec sessions started
+    // while dockerd is still booting still target the right socket.
+    std::env::set_var("DOCKER_HOST", format!("unix://{}", socket));
+    ensure_runtime_dirs();
+    ensure_run_tmpfs();
+    ensure_cgroup2();
+    mount_docker_data_disk(&cfg);
+    write_daemon_json(&cfg);
+    start_dockerd(&cfg);
+    diag(&format!(
+        "docker: bootstrap complete (DOCKER_HOST=unix://{})",
+        socket
+    ));
 }
 
 fn run(port: u32) -> Result<(), String> {
@@ -300,7 +883,9 @@ fn serve(stream: vsock::VsockStream) -> Result<(), String> {
         let req: ExecRequest = match serde_json::from_slice(&bytes) {
             Ok(r) => r,
             Err(e) => {
-                writer.event(&ExecEvent::Error { message: e.to_string() })?;
+                writer.event(&ExecEvent::Error {
+                    message: e.to_string(),
+                })?;
                 continue;
             }
         };
@@ -334,12 +919,20 @@ struct FsStreamState {
     path: String,
 }
 
-fn handle_fs(req: FsRequest, fs_stream: &mut Option<FsStreamState>, w: &Writer) -> Result<(), String> {
+fn handle_fs(
+    req: FsRequest,
+    fs_stream: &mut Option<FsStreamState>,
+    w: &Writer,
+) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     match req {
-        FsRequest::FsRead { path, offset, length } => {
+        FsRequest::FsRead {
+            path,
+            offset,
+            length,
+        } => {
             let data = std::fs::read(&path).map_err(|e| format!("read {}: {}", path, e))?;
             let start = offset.unwrap_or(0) as usize;
             let end = match length {
@@ -351,7 +944,12 @@ fn handle_fs(req: FsRequest, fs_stream: &mut Option<FsStreamState>, w: &Writer) 
                 data_base64: nanosb_protocol::base64_encode(slice),
             })
         }
-        FsRequest::FsWrite { path, data_base64, append, mode } => {
+        FsRequest::FsWrite {
+            path,
+            data_base64,
+            append,
+            mode,
+        } => {
             let bytes = nanosb_protocol::base64_decode(&data_base64)
                 .ok_or_else(|| "invalid base64 payload".to_string())?;
             let mut opts = std::fs::OpenOptions::new();
@@ -361,8 +959,11 @@ fn handle_fs(req: FsRequest, fs_stream: &mut Option<FsStreamState>, w: &Writer) 
             } else {
                 opts.truncate(true);
             }
-            let mut file = opts.open(&path).map_err(|e| format!("write {}: {}", path, e))?;
-            file.write_all(&bytes).map_err(|e| format!("write {}: {}", path, e))?;
+            let mut file = opts
+                .open(&path)
+                .map_err(|e| format!("write {}: {}", path, e))?;
+            file.write_all(&bytes)
+                .map_err(|e| format!("write {}: {}", path, e))?;
             if let Some(m) = mode {
                 let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(m));
             }
@@ -414,7 +1015,9 @@ fn handle_fs(req: FsRequest, fs_stream: &mut Option<FsStreamState>, w: &Writer) 
             for entry in dir {
                 let entry = entry.map_err(|e| format!("list {}: {}", path, e))?;
                 let p = entry.path();
-                let meta = entry.metadata().map_err(|e| format!("stat {}: {}", p.display(), e))?;
+                let meta = entry
+                    .metadata()
+                    .map_err(|e| format!("stat {}: {}", p.display(), e))?;
                 let sym = std::fs::symlink_metadata(&p).ok();
                 entries.push(FsEntry {
                     name: entry.file_name().to_string_lossy().to_string(),
@@ -429,7 +1032,8 @@ fn handle_fs(req: FsRequest, fs_stream: &mut Option<FsStreamState>, w: &Writer) 
             w.send(&FsResponse::FsEntries { entries })
         }
         FsRequest::FsStat { path } => {
-            let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("stat {}: {}", path, e))?;
+            let meta =
+                std::fs::symlink_metadata(&path).map_err(|e| format!("stat {}: {}", path, e))?;
             let modified_ms = meta
                 .modified()
                 .ok()
@@ -449,7 +1053,11 @@ fn handle_fs(req: FsRequest, fs_stream: &mut Option<FsStreamState>, w: &Writer) 
         FsRequest::FsExists { path } => w.send(&FsResponse::FsExists {
             exists: Path::new(&path).exists(),
         }),
-        FsRequest::FsMkdir { path, recursive, mode } => {
+        FsRequest::FsMkdir {
+            path,
+            recursive,
+            mode,
+        } => {
             if recursive {
                 std::fs::create_dir_all(&path).map_err(|e| format!("mkdir {}: {}", path, e))?;
             } else {
@@ -473,7 +1081,10 @@ fn handle_fs(req: FsRequest, fs_stream: &mut Option<FsStreamState>, w: &Writer) 
             w.send(&FsResponse::Ok)
         }
         FsRequest::FsCopy { from, to } => {
-            copy_path(std::path::PathBuf::from(&from), std::path::PathBuf::from(&to))?;
+            copy_path(
+                std::path::PathBuf::from(&from),
+                std::path::PathBuf::from(&to),
+            )?;
             w.send(&FsResponse::Ok)
         }
         FsRequest::FsRename { from, to } => {
@@ -484,10 +1095,13 @@ fn handle_fs(req: FsRequest, fs_stream: &mut Option<FsStreamState>, w: &Writer) 
 }
 
 fn copy_path(from: std::path::PathBuf, to: std::path::PathBuf) -> Result<(), String> {
-    let meta = std::fs::symlink_metadata(&from).map_err(|e| format!("copy {}: {}", from.display(), e))?;
+    let meta =
+        std::fs::symlink_metadata(&from).map_err(|e| format!("copy {}: {}", from.display(), e))?;
     if meta.is_dir() {
         std::fs::create_dir_all(&to).map_err(|e| format!("copy dir {}: {}", to.display(), e))?;
-        for entry in std::fs::read_dir(&from).map_err(|e| format!("copy {}: {}", from.display(), e))? {
+        for entry in
+            std::fs::read_dir(&from).map_err(|e| format!("copy {}: {}", from.display(), e))?
+        {
             let entry = entry.map_err(|e| format!("copy {}: {}", from.display(), e))?;
             copy_path(entry.path(), to.join(entry.file_name()))?;
         }

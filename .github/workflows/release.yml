@@ -45,7 +45,7 @@ jobs:
           path: |
             kernel-x86_64.c
             kernel-aarch64.c
-          key: kernel-bundles-${{ hashFiles('runtime/deps/libkrunfw/**') }}
+          key: kernel-bundles-${{ hashFiles('runtime/deps/libkrunfw/**', 'runtime/scripts/ci/enable-docker-netfilter.py', 'runtime/scripts/ci/check-docker-netfilter-config.py') }}
 
       - name: Install kernel build dependencies
         if: steps.kernel-cache.outputs.cache-hit != 'true'
@@ -61,7 +61,11 @@ jobs:
         if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
           cd runtime/deps/libkrunfw
+          python3 ../../scripts/ci/enable-docker-netfilter.py --all
+          python3 ../../scripts/ci/check-docker-netfilter-config.py --configs "$PWD"
+          bash ../../scripts/ci/fetch-kernel-tarball.sh "$PWD"
           make kernel.c -j"$(nproc)"
+          python3 ../../scripts/ci/check-docker-netfilter-config.py --built linux-6.12.76/.config
           cp kernel.c ../../../kernel-x86_64.c
           echo "=== x86_64 kernel.c ==="
           ls -lh ../../../kernel-x86_64.c
@@ -71,7 +75,11 @@ jobs:
         run: |
           cd runtime/deps/libkrunfw
           make clean
+          python3 ../../scripts/ci/enable-docker-netfilter.py --all
+          python3 ../../scripts/ci/check-docker-netfilter-config.py --configs "$PWD"
+          bash ../../scripts/ci/fetch-kernel-tarball.sh "$PWD"
           make kernel.c ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)"
+          python3 ../../scripts/ci/check-docker-netfilter-config.py --built linux-6.12.76/.config
           cp kernel.c ../../../kernel-aarch64.c
           echo "=== aarch64 kernel.c ==="
           ls -lh ../../../kernel-aarch64.c

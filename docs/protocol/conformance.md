@@ -30,7 +30,7 @@ Each scenario is one JSON file in `sdk/conformance/scenarios/`:
 {
   "id": "<snake_case>",
   "description": "<one line>",
-  "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "networking", "handles", "ephemeral"],
+  "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "networking", "handles", "ephemeral", "docker", "docker_bridge"],
   "steps": [
     {
       "expect": { "<partial request object>" },
@@ -42,6 +42,8 @@ Each scenario is one JSON file in `sdk/conformance/scenarios/`:
   "assert": { "<SDK-level expected outcomes; free-form, interpreted by the driver>" }
 }
 ```
+
+`docker` and `docker_bridge` are protocol-declared but no frozen scenario advertises them, so the 35-scenario corpus is unchanged.
 
 - `expect` is a **partial** request match: every field present must appear in the
   incoming request with an equal value. Omit to accept any request.
