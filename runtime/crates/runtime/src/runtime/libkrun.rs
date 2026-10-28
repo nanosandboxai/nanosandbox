@@ -19,8 +19,8 @@
 use super::ffi;
 use super::gvproxy::{GvproxyInstance, GvproxyManager};
 use crate::config::{
-    ConsoleSpec, ExtraMount, Mount, MountType, NetworkScope, RootfsPatchConfig, RootfsSource,
-    RuntimeMode, SandboxConfig, DockerConfig,
+    ConsoleSpec, DockerConfig, DockerNetwork, ExtraMount, Mount, MountType, NetworkScope,
+    RootfsPatchConfig, RootfsSource, RuntimeMode, SandboxConfig,
 };
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -154,12 +154,9 @@ fn docker_guest_env(docker: Option<&DockerConfig>) -> Option<(String, String)> {
 
 /// Build the optional `DOCKER_HOST` guest env pair when Docker is enabled.
 fn docker_host_env(docker: Option<&DockerConfig>) -> Option<(String, String)> {
-    docker.filter(|d| d.enabled).map(|d| {
-        (
-            "DOCKER_HOST".to_string(),
-            format!("unix://{}", d.socket),
-        )
-    })
+    docker
+        .filter(|d| d.enabled)
+        .map(|d| ("DOCKER_HOST".to_string(), format!("unix://{}", d.socket)))
 }
 
 /// Serialize `config.mounts` into the `NANOSB_MOUNTS` guest env value.
@@ -1186,11 +1183,9 @@ impl LibkrunRuntime {
                         .entry("NANOSANDBOX_DNS".to_string())
                         .or_insert_with(|| dns.join(","));
                 }
-                file_env
-                    .entry("PATH".to_string())
-                    .or_insert_with(|| {
-                        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()
-                    });
+                file_env.entry("PATH".to_string()).or_insert_with(|| {
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()
+                });
                 file_env
                     .entry("HOME".to_string())
                     .or_insert_with(|| "/root".to_string());
@@ -1508,6 +1503,31 @@ impl LibkrunRuntime {
         } else {
             vec![]
         };
+
+        // Docker bridge mode (Epic 8 Tier 2) needs a real guest NIC to host
+        // docker0/NAT. Pure TSI has no NIC, so bridge mode must use gvproxy.
+        // Fail clearly rather than silently booting without the requested bridge.
+        if let Some(docker) = config.docker.as_ref() {
+            if docker.enabled && docker.network == DockerNetwork::Bridge {
+                if !config.network.enabled {
+                    return Err(Error::SandboxCreationFailed(format!(
+                        "docker.network=bridge requires network.enabled=true for sandbox '{}': \
+                         bridge mode needs a guest NIC (gvproxy/virtio-net), but networking is \
+                         disabled, so the VM would fall back to TSI with no NIC. \
+                         Enable networking or set docker.network=host.",
+                        id
+                    )));
+                }
+                if !GvproxyManager::is_available() {
+                    return Err(Error::SandboxCreationFailed(format!(
+                        "docker.network=bridge requires gvproxy (virtio-net) for sandbox '{}': \
+                         TSI has no guest NIC and cannot host docker0. \
+                         Install gvproxy or set docker.network=host.",
+                        id
+                    )));
+                }
+            }
+        }
 
         // Start gvproxy for virtio-net networking if available
         let gvproxy = if config.network.enabled && GvproxyManager::is_available() {
