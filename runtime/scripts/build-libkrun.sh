@@ -144,7 +144,7 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 # Build the staticlib using cargo (with CC_LINUX set for init_blob cross-compilation)
-cargo build --release --features "$LIBKRUN_FEATURES" -j "$JOBS" 2>&1
+cargo build --release -p libkrun --features "$LIBKRUN_FEATURES" -j "$JOBS" 2>&1
 
 # Restore the original Cargo.toml
 mv "$CARGO_TOML.bak" "$CARGO_TOML"
