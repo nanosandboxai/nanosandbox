@@ -192,4 +192,29 @@ Observed inside the microVM:
 Tier 1 has no default bridge; use `--network host` for containers that need
 outbound networking. Tier 2 bridge/NAT networking is implemented (Epic 8);
 gate it on the `docker_bridge` capability and set `docker.network: bridge`.
-A live bridge-mode VM test remains opt-in.
+A live bridge-mode VM test remains opt-in:
+
+```bash
+NANOSB_RUNTIME_BIN="$PWD/target/debug/nanosb-runtime" \
+NANOSB_TEST_DOCKER_IMAGE=localhost:5050/claude-docker:latest \
+  cargo test -p nanosb-client --test epic8_bridge_live -- --ignored --nocapture
+```
+
+### Bridge mode needs a netfilter-enabled guest firmware
+
+`dockerd`'s default bridge creates an nftables `nat` chain, so the deps-bundle
+`libkrunfw` must be built with the Docker netfilter/bridge/NAT overlay
+(`runtime/scripts/ci/enable-docker-netfilter.py`, applied by
+`runtime/scripts/build-all.sh` and the deps pipeline). A firmware that predates
+the overlay boots Tier 1 fine but fails bridge mode with:
+
+```
+failed to create NAT chain DOCKER: iptables --wait -t nat -N DOCKER:
+iptables v1.8.9 (nf_tables): TABLE_ADD failed (Operation not supported): table nat
+```
+
+**Status (2026-10-28):** the locally installed deps firmware predates the
+overlay, so the bridge live test fails with the NAT-chain error above until the
+deps bundle is rebuilt (`runtime/scripts/build-all.sh libkrunfw`). Tier 1
+(`epic7_docker_live`) passes against the same firmware. Rebuild the firmware
+before treating the bridge test as evidence.
