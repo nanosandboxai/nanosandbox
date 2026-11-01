@@ -22,6 +22,10 @@ implementation is the frozen `crates/protocol` crate; these documents mirror it.
 - **[`sandbox-spec.schema.json`](sandbox-spec.schema.json)** — the JSON Schema
   (draft 2020-12) for the `create` wire type, guarded against drift by a Rust
   test in `crates/protocol`.
+- **[`sandbox-resource-naming.md`](sandbox-resource-naming.md)** — the cloud ↔
+  runtime naming reconciliation map (`vcpu`→`cpus`, `memory_mib`→`memory_mb`,
+  `ttl_seconds`→`timeout_secs`, `command[]`→`command`+`command_args`,
+  `working_dir`→`workdir`).
 
 ## Related
 
