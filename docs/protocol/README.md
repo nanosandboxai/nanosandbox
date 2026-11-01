@@ -15,6 +15,10 @@ implementation is the frozen `crates/protocol` crate; these documents mirror it.
   schema, the per-SDK driver contract, and the `expect.type` → SDK-operation
   mapping. The authoritative contract is
   [`sdk/conformance/SPEC.md`](../../sdk/conformance/SPEC.md).
+- **[`sandbox-spec.md`](sandbox-spec.md)** — the `SandboxSpec` field inventory:
+  every field of the creation spec and its nested types (name, type, JSON key,
+  default, required, units). The canonical field vocabulary the cloud "Sandbox
+  resource" projects onto.
 
 ## Related
 
