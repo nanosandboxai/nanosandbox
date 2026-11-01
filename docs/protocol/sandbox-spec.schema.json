@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nanosandbox.ai/schemas/protocol/create-request.schema.json",
+  "title": "Nanosandbox create request",
+  "description": "The wire type for the protocol `create` verb: `{\"type\":\"create\",\"spec\":{...}}`. Mirrors `crates/protocol/src/types.rs` (`SandboxSpec`) and `crates/protocol/src/verbs.rs` (`CreateRequest`). Guarded against drift by a Rust test in `crates/protocol`.",
+  "type": "object",
+  "properties": {
+    "type": { "const": "create" },
+    "spec": { "$ref": "#/$defs/SandboxSpec" }
+  },
+  "required": ["type", "spec"],
+  "additionalProperties": false,
+  "$defs": {
+    "SandboxSpec": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "image": { "type": "string" },
+        "cpus": { "type": "integer", "minimum": 1 },
+        "memory_mb": { "type": "integer", "minimum": 1 },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "mounts": { "type": "array", "items": { "$ref": "#/$defs/MountSpec" } },
+        "network": { "$ref": "#/$defs/NetworkSpec" },
+        "workdir": { "type": "string" },
+        "timeout_secs": { "type": "integer", "minimum": 1 },
+        "user": { "type": "string" },
+        "home": { "type": "string" },
+        "command": { "type": "string" },
+        "command_args": { "type": "array", "items": { "type": "string" } },
+        "rlimits": { "type": "array", "items": { "$ref": "#/$defs/Rlimit" } },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "ephemeral": { "type": "boolean" },
+        "pull_policy": { "enum": ["always", "missing", "never"] },
+        "scripts": { "type": "object", "additionalProperties": { "type": "string" } },
+        "detached": { "type": "boolean" },
+        "replace": { "type": "boolean" },
+        "hostname": { "type": "string" },
+        "secret_env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "secrets": { "type": "array", "items": { "$ref": "#/$defs/SecretEntry" } },
+        "rootfs": { "$ref": "#/$defs/RootfsSpec" },
+        "patches": { "type": "array", "items": { "$ref": "#/$defs/RootfsPatch" } },
+        "registry": { "type": "array", "items": { "$ref": "#/$defs/RegistrySpec" } },
+        "stat_virtualization": { "enum": ["strict", "relaxed", "off"] },
+        "security_profile": { "enum": ["default", "restricted"] },
+        "security": { "$ref": "#/$defs/SecurityContext" }
+      },
+      "required": ["image"],
+      "additionalProperties": false
+    },
+    "MountSpec": {
+      "type": "object",
+      "properties": {
+        "host_path": { "type": "string" },
+        "guest_path": { "type": "string" },
+        "readonly": { "type": "boolean" },
+        "mount_type": { "enum": ["bind", "virtiofs", "tmpfs"] },
+        "file": { "type": "boolean" },
+        "tmpfs": { "type": "boolean" },
+        "disk_image": { "type": "string" },
+        "fstype": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "uid": { "type": "integer" },
+        "gid": { "type": "integer" }
+      },
+      "required": ["host_path", "guest_path"],
+      "additionalProperties": false
+    },
+    "NetworkSpec": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mode": { "type": "string" },
+        "scope": { "type": "string" },
+        "publish": { "type": "array", "items": { "$ref": "#/$defs/PortPublish" } },
+        "dns": { "type": "array", "items": { "type": "string" } },
+        "dns_zones": { "type": "object", "additionalProperties": { "type": "string" } },
+        "policy": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "PortPublish": {
+      "type": "object",
+      "properties": {
+        "host_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "container_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "protocol": { "type": "string" },
+        "bind_address": { "type": "string" }
+      },
+      "required": ["host_port", "container_port"],
+      "additionalProperties": false
+    },
+    "Rlimit": {
+      "type": "object",
+      "properties": {
+        "resource": { "type": "string" },
+        "soft": { "type": "integer", "minimum": 0 },
+        "hard": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["resource"],
+      "additionalProperties": false
+    },
+    "RootfsSpec": {
+      "type": "object",
+      "properties": {
+        "kind": { "enum": ["oci", "local_dir", "disk_image"] },
+        "path": { "type": "string" },
+        "fstype": { "type": "string" },
+        "format": { "type": "string" },
+        "read_only": { "type": "boolean" }
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "RootfsPatch": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "op": { "const": "mkdir" },
+            "path": { "type": "string" },
+            "mode": { "type": "integer" }
+          },
+          "required": ["op", "path"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": { "const": "text" },
+            "path": { "type": "string" },
+            "content": { "type": "string" },
+            "mode": { "type": "integer" }
+          },
+          "required": ["op", "path", "content"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": { "const": "copy_file" },
+            "from": { "type": "string" },
+            "to": { "type": "string" },
+            "mode": { "type": "integer" }
+          },
+          "required": ["op", "from", "to"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": { "const": "copy_dir" },
+            "from": { "type": "string" },
+            "to": { "type": "string" }
+          },
+          "required": ["op", "from", "to"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": { "const": "remove" },
+            "path": { "type": "string" },
+            "recursive": { "type": "boolean" }
+          },
+          "required": ["op", "path"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RegistrySpec": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string" },
+        "insecure": { "type": "boolean" },
+        "skip_tls_verify": { "type": "boolean" },
+        "username": { "type": "string" },
+        "password": { "type": "string" }
+      },
+      "required": ["host"],
+      "additionalProperties": false
+    },
+    "SecurityContext": {
+      "type": "object",
+      "properties": {
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "seccomp_profile": { "type": "string" },
+        "apparmor_profile": { "type": "string" },
+        "no_new_privileges": { "type": "boolean" },
+        "run_as_user": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "SecretEntry": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "string" }
+      },
+      "required": ["key"],
+      "additionalProperties": false
+    }
+  }
+}

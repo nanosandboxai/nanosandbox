@@ -19,6 +19,9 @@ implementation is the frozen `crates/protocol` crate; these documents mirror it.
   every field of the creation spec and its nested types (name, type, JSON key,
   default, required, units). The canonical field vocabulary the cloud "Sandbox
   resource" projects onto.
+- **[`sandbox-spec.schema.json`](sandbox-spec.schema.json)** — the JSON Schema
+  (draft 2020-12) for the `create` wire type, guarded against drift by a Rust
+  test in `crates/protocol`.
 
 ## Related
 

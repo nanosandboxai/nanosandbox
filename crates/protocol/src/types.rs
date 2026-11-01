@@ -754,4 +754,153 @@ mod tests {
         let spec: NetworkSpec = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
         assert!(!spec.enabled);
     }
+
+    /// A spec with every field populated, so nothing is elided by
+    /// `skip_serializing_if`. Used by the schema drift guard.
+    fn canonical_spec() -> SandboxSpec {
+        let mut spec = SandboxSpec::new("alpine");
+        spec.name = Some("demo".into());
+        spec.cpus = Some(2);
+        spec.memory_mb = Some(1024);
+        spec.env.insert("FOO".into(), "bar".into());
+        spec.mounts.push(MountSpec::bind("/host", "/guest"));
+        spec.network = NetworkSpec {
+            enabled: true,
+            mode: Some("nat".into()),
+            scope: Some("private".into()),
+            publish: vec![PortPublish::tcp(8080, 80)],
+            dns: vec!["1.1.1.1".into()],
+            dns_zones: HashMap::new(),
+            policy: None,
+        };
+        spec.workdir = Some("/work".into());
+        spec.timeout_secs = Some(3600);
+        spec.user = Some("1000".into());
+        spec.home = Some("/home/user".into());
+        spec.command = Some("python".into());
+        spec.command_args = vec!["app.py".into()];
+        spec.rlimits.push(Rlimit {
+            resource: "nofile".into(),
+            soft: Some(1024),
+            hard: Some(2048),
+        });
+        spec.labels.insert("app".into(), "demo".into());
+        spec.ephemeral = true;
+        spec.pull_policy = PullPolicy::Missing;
+        spec.scripts.insert("start".into(), "echo hi".into());
+        spec.detached = false;
+        spec.replace = true;
+        spec.hostname = Some("box".into());
+        spec.secret_env.insert("API_KEY".into(), "api-key".into());
+        spec.secrets.push(SecretEntry {
+            key: "api-key".into(),
+            value: Some("s3cret".into()),
+        });
+        spec.rootfs = Some(RootfsSpec {
+            kind: RootfsKind::LocalDir,
+            path: Some("/rootfs".into()),
+            fstype: None,
+            format: None,
+            read_only: true,
+        });
+        spec.patches.push(RootfsPatch::Mkdir {
+            path: "/app".into(),
+            mode: Some(0o755),
+        });
+        spec.registry.push(RegistrySpec {
+            host: "ghcr.io".into(),
+            insecure: false,
+            skip_tls_verify: false,
+            username: Some("u".into()),
+            password: Some("p".into()),
+        });
+        spec.stat_virtualization = Some(StatVirtualization::Relaxed);
+        spec.security_profile = SecurityProfile::Restricted;
+        spec.security = Some(SecurityContext {
+            capabilities: Vec::new(),
+            seccomp_profile: None,
+            apparmor_profile: None,
+            no_new_privileges: None,
+            run_as_user: Some("1000".into()),
+        });
+        spec
+    }
+
+    /// The published JSON Schema (draft 2020-12) for the `create` wire type.
+    /// Embedded at compile time so a drift between the schema and the Rust
+    /// struct fails CI. See `docs/protocol/sandbox-spec.schema.json`.
+    const SANDBOX_SPEC_SCHEMA: &str =
+        include_str!("../../../docs/protocol/sandbox-spec.schema.json");
+
+    #[test]
+    fn sandbox_spec_schema_required_fields_match_struct() {
+        let schema: serde_json::Value = serde_json::from_str(SANDBOX_SPEC_SCHEMA).unwrap();
+        let spec = &schema["$defs"]["SandboxSpec"];
+        // Only `image` is required: every other field is an `Option` or has a
+        // serde default, so a minimal create is `{"image":"alpine"}`.
+        assert_eq!(
+            spec["required"],
+            serde_json::json!(["image"]),
+            "schema required fields drifted from SandboxSpec"
+        );
+    }
+
+    #[test]
+    fn sandbox_spec_schema_properties_match_struct() {
+        let schema: serde_json::Value = serde_json::from_str(SANDBOX_SPEC_SCHEMA).unwrap();
+        let props = schema["$defs"]["SandboxSpec"]["properties"]
+            .as_object()
+            .unwrap();
+
+        // A fully-populated spec serializes every field (nothing is elided).
+        let json = serde_json::to_value(canonical_spec()).unwrap();
+        let obj = json.as_object().unwrap();
+
+        // Every field the struct emits must be declared in the schema.
+        for key in obj.keys() {
+            assert!(
+                props.contains_key(key),
+                "schema is missing SandboxSpec property {key}"
+            );
+        }
+        // Every schema property must be produced by the struct (no stale fields).
+        for key in props.keys() {
+            assert!(
+                obj.contains_key(key),
+                "schema has stale SandboxSpec property {key}"
+            );
+        }
+
+        // Each declared property's type must match the serialized value.
+        for (key, value) in obj {
+            let prop = &props[key];
+            match prop.get("type").and_then(|t| t.as_str()) {
+                Some("string") => assert!(value.is_string(), "{key} should be a string"),
+                Some("integer") => assert!(value.is_number(), "{key} should be an integer"),
+                Some("boolean") => assert!(value.is_boolean(), "{key} should be a boolean"),
+                Some("object") => assert!(value.is_object(), "{key} should be an object"),
+                Some("array") => assert!(value.is_array(), "{key} should be an array"),
+                Some(other) => panic!("unexpected schema type {other} for {key}"),
+                None => {
+                    if let Some(enum_vals) = prop.get("enum").and_then(|e| e.as_array()) {
+                        assert!(
+                            enum_vals.contains(value),
+                            "{key} value {value} not in schema enum"
+                        );
+                    } else {
+                        // A bare `$ref` (network, rootfs, security) is an object.
+                        assert!(value.is_object(), "{key} should be an object");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sandbox_spec_canonical_example_roundtrips() {
+        let spec = canonical_spec();
+        let s = serde_json::to_string(&spec).unwrap();
+        let back: SandboxSpec = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, spec);
+    }
 }
