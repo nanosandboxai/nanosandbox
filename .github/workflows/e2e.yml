@@ -78,8 +78,10 @@ jobs:
     name: Live microVM boot (macOS arm64)
     runs-on: macos-latest
     needs: build-kernels
-    # Best-effort: shared macOS runners do not reliably provide the vsock exec
-    # channel, so this live job must not block the workflow (mirrors e2e-linux).
+    # Shared macOS runners are not reliably available (jobs queue then get
+    # cancelled), so run this heavy live job only on main / manual dispatch and
+    # keep it best-effort — it must not block PRs or feature pushes.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     continue-on-error: true
     timeout-minutes: 60
     steps:
