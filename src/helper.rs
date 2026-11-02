@@ -67,7 +67,7 @@ pub fn create_sandbox(spec: &SandboxSpec) -> anyhow::Result<()> {
         sp.timeout_secs,
     )?;
     deploy::wait_for_running(&sp.name, 60)?;
-    deploy::wait_for_exec_channel(&sp.name, 20)?;
+    deploy::wait_for_exec_channel(&sp.name, 60)?;
     Ok(())
 }
 
