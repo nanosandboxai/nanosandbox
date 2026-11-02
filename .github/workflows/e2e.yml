@@ -139,6 +139,15 @@ jobs:
             --entitlements runtime/entitlements.plist \
             target/release/nanosb-runtime
 
+      - name: Build and stage exec-agent (aarch64 musl)
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          ( cd guest/crates/exec-agent && RUSTFLAGS="-C linker=rust-lld" cargo build --release --target aarch64-unknown-linux-musl )
+          mkdir -p "$HOME/.nanosandbox/guest-bin"
+          cp guest/crates/exec-agent/target/aarch64-unknown-linux-musl/release/exec-agent "$HOME/.nanosandbox/guest-bin/exec-agent"
+          chmod +x "$HOME/.nanosandbox/guest-bin/exec-agent"
+          file "$HOME/.nanosandbox/guest-bin/exec-agent"
+
       - name: Live conformance (Epic 1 AC5/AC6/AC9)
         env:
           NANOSB_RUNTIME_BIN: ${{ github.workspace }}/target/release/nanosb-runtime
