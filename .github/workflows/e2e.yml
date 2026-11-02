@@ -78,6 +78,9 @@ jobs:
     name: Live microVM boot (macOS arm64)
     runs-on: macos-latest
     needs: build-kernels
+    # Best-effort: shared macOS runners do not reliably provide the vsock exec
+    # channel, so this live job must not block the workflow (mirrors e2e-linux).
+    continue-on-error: true
     timeout-minutes: 60
     steps:
       - name: Checkout (with submodules)
