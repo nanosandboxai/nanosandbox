@@ -158,6 +158,39 @@ or any pinned-libkrun feature, you MUST:
    [`runtime/scripts/patches/README.md`](runtime/scripts/patches/README.md), and
    re-verify boot/exec on the Linux/KVM host.
 
+## Runtime compatibility: local + cloud MUST always stay compatible (MANDATORY)
+
+The `nanosb` runtime is one engine behind three front doors, and they must
+**always** stay mutually compatible and version-compatible:
+
+- **Local (personal machine):** the `nanosb` CLI (`nanosb run`, `nanosb
+  supervise`, `nanosb apply` + `sandbox.yml`) driving libkrun directly.
+- **Cloud — node agent:** the cloud API's node agent (`nanosandboxai/cloud`)
+  shells out to `nanosb supervise --spec -` with a runtime `SandboxSpec`.
+- **Cloud — containerd shim:** `nanosandboxai/nanosandbox-shim` maps an
+  OCI bundle / Kubernetes Pod into a `SandboxSpec` and spawns `nanosb supervise`.
+
+Every runtime change — config fields, defaults, the protocol `SandboxSpec`
+contract, the VM-boot path, guest-init hooks — MUST satisfy all three:
+
+1. **Never break local usage.** Local inputs (`sandbox.yml`, CLI flags) and the
+   `SandboxConfig` defaults must keep working on a personal machine; never
+   require a cloud-only input for a local path. Any change to local-visible
+   behavior must be intentional and documented.
+2. **Never break the cloud paths.** The node agent and the shim build a
+   `SandboxSpec` and hand it to `nanosb supervise`; the runtime must honor that
+   contract (e.g. `workdir`, `mounts`, `network`, `command`) exactly as the
+   local CLI does.
+3. **Stay version-compatible across front doors.** A single runtime build must
+   be usable by both local and cloud consumers of the same contract — do not
+   add a field or behavior only one front door can supply. Prefer additive,
+   backward-compatible changes; when the `SandboxSpec` schema changes, update
+   `docs/protocol/sandbox-spec.md` + `sandbox-spec.schema.json` and the cloud /
+   shim consumers in the same change.
+
+Before finishing any runtime change, exercise it through the **local CLI**
+(`nanosb run` / `nanosb supervise`) and state the cloud / shim impact.
+
 ## Sources of truth (for keeping docs accurate)
 
 | Concern | Source of truth |

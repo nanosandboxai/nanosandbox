@@ -232,6 +232,7 @@ defaults:
   memory: 4096
   timeout: 600
   permissions: default
+  workdir: /workspace     # guest working directory (default: /workspace)
   workspace:
     mode: isolated        # isolated (default) | shared
     fresh_rootfs: false
