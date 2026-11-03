@@ -59,6 +59,8 @@ pub struct SandboxDefaults {
     pub claude: Option<ClaudeSettingsDef>,
     /// Host project sharing mode (`isolated` default, `shared` legacy).
     pub workspace: Option<WorkspaceDef>,
+    /// Working directory for the guest command (default `/workspace`).
+    pub workdir: Option<String>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -103,6 +105,8 @@ pub struct SandboxDefinition {
     pub claude: Option<ClaudeSettingsDef>,
     /// Host project sharing mode (`isolated` default, `shared` legacy).
     pub workspace: Option<WorkspaceDef>,
+    /// Working directory for the guest command (default `/workspace`).
+    pub workdir: Option<String>,
 }
 
 /// Host project sharing mode in YAML.
@@ -304,6 +308,9 @@ pub fn resolve_sandbox_configs(
             .or_else(|| defaults.workspace.as_ref().and_then(|w| w.fresh_rootfs))
         {
             config.fresh_rootfs = fr;
+        }
+        if let Some(wd) = def.workdir.clone().or_else(|| defaults.workdir.clone()) {
+            config.workdir = wd;
         }
 
         // Env vars merge order: defaults env_file → defaults env → per-sandbox env_file → per-sandbox env
@@ -1510,8 +1517,7 @@ sandboxes:
     }
 
     #[test]
-    fn test_workdir_is_silently_ignored() {
-        // workdir was removed from the schema; existing configs must still parse
+    fn test_workdir_is_honored() {
         let yaml = r#"
 defaults:
   workdir: /some/custom/path
@@ -1519,15 +1525,23 @@ sandboxes:
   test:
     image: test:latest
     workdir: /another/path
+  inherited:
+    image: test:latest
 "#;
-        let result = parse_sandbox_file(yaml);
-        assert!(
-            result.is_ok(),
-            "workdir in yaml should be silently ignored, got: {:?}",
-            result.err()
-        );
-        let file = result.unwrap();
-        assert_eq!(file.sandboxes.len(), 1);
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        let workdir = |name: &str| {
+            configs
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap()
+                .1
+                .sandbox
+                .workdir
+                .clone()
+        };
+        assert_eq!(workdir("test"), "/another/path");
+        assert_eq!(workdir("inherited"), "/some/custom/path");
     }
 
     #[test]

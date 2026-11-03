@@ -234,6 +234,10 @@ mod cli {
             #[arg(long)]
             home: Option<String>,
 
+            /// Working directory for the guest command (default: /workspace)
+            #[arg(long)]
+            workdir: Option<String>,
+
             /// Enable the host↔guest exec channel (vsock) for `nanosb exec`.
             ///
             /// Injects the exec agent into the guest and bridges a host socket
@@ -704,6 +708,7 @@ mod cli {
                 run_as_root,
                 user,
                 home,
+                workdir,
                 exec,
                 follow,
                 command,
@@ -721,6 +726,7 @@ mod cli {
                     timeout,
                     user.as_deref(),
                     home.as_deref(),
+                    workdir.as_deref(),
                     exec,
                     follow,
                     &command,
@@ -1466,6 +1472,7 @@ mod cli {
         timeout: u32,
         user: Option<&str>,
         home: Option<&str>,
+        workdir: Option<&str>,
         exec: bool,
         follow: bool,
         command: &[String],
@@ -1487,6 +1494,9 @@ mod cli {
         }
         if let Some(h) = home {
             builder = builder.home(h);
+        }
+        if let Some(w) = workdir {
+            builder = builder.workdir(w);
         }
         for (key, value) in env_vars {
             builder = builder.env(key, value);
@@ -1658,6 +1668,7 @@ mod cli {
         timeout: u32,
         user: Option<&str>,
         home: Option<&str>,
+        workdir: Option<&str>,
         exec: bool,
         follow: bool,
         command: &[String],
@@ -1681,6 +1692,7 @@ mod cli {
             timeout,
             user,
             home,
+            workdir,
             exec,
             follow,
             command,

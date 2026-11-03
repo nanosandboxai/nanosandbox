@@ -78,6 +78,11 @@ jobs:
     name: Live microVM boot (macOS arm64)
     runs-on: macos-latest
     needs: build-kernels
+    # Shared macOS runners are not reliably available (jobs queue then get
+    # cancelled), so run this heavy live job only on main / manual dispatch and
+    # keep it best-effort — it must not block PRs or feature pushes.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    continue-on-error: true
     timeout-minutes: 60
     steps:
       - name: Checkout (with submodules)
@@ -138,6 +143,15 @@ jobs:
           codesign --force --sign - \
             --entitlements runtime/entitlements.plist \
             target/release/nanosb-runtime
+
+      - name: Build and stage exec-agent (aarch64 musl)
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          ( cd guest/crates/exec-agent && RUSTFLAGS="-C linker=rust-lld" cargo build --release --target aarch64-unknown-linux-musl )
+          mkdir -p "$HOME/.nanosandbox/guest-bin"
+          cp guest/crates/exec-agent/target/aarch64-unknown-linux-musl/release/exec-agent "$HOME/.nanosandbox/guest-bin/exec-agent"
+          chmod +x "$HOME/.nanosandbox/guest-bin/exec-agent"
+          file "$HOME/.nanosandbox/guest-bin/exec-agent"
 
       - name: Live conformance (Epic 1 AC5/AC6/AC9)
         env:

@@ -68,6 +68,9 @@ pub struct BootVmRequest {
     /// Home directory (`HOME`) to set for the guest command.
     #[serde(default)]
     pub home: Option<String>,
+    /// Working directory for the guest PID-1 workload (container `process.cwd`).
+    #[serde(default)]
+    pub workdir: Option<String>,
     /// Runtime mode: "legacy" or "next".
     #[serde(default = "default_runtime_mode")]
     pub runtime_mode: String,
@@ -555,7 +558,7 @@ pub fn handle_boot_vm_subprocess() -> ! {
             config.memory_mb,
             &config.command,
             &args_refs,
-            None,
+            config.workdir.as_deref(),
             &env,
             &config.network_scope,
             &config.port_mappings,
@@ -580,7 +583,7 @@ pub fn handle_boot_vm_subprocess() -> ! {
             config.memory_mb,
             &config.command,
             &args_refs,
-            None,
+            config.workdir.as_deref(),
             &env,
             &config.network_scope,
             &config.port_mappings,
@@ -831,6 +834,8 @@ struct SandboxState {
     user: Option<String>,
     /// Home directory (`HOME`) for the guest command.
     home: Option<String>,
+    /// Working directory for the guest PID-1 workload (container `process.cwd`).
+    workdir: Option<String>,
     /// Host unix socket bridged to a guest vsock port (exec channel).
     vsock_socket: Option<String>,
     /// Guest vsock port for the exec channel.
@@ -1556,6 +1561,7 @@ impl LibkrunRuntime {
                 .clone()
                 .or_else(|| config.run_as_root.then(|| "0".to_string())),
             home: config.home.clone(),
+            workdir: (!config.workdir.is_empty()).then(|| config.workdir.clone()),
             vsock_socket: config.vsock_socket.clone(),
             vsock_port: config.vsock_port,
             exec_agent: config.exec_agent.clone(),
@@ -1630,6 +1636,7 @@ impl LibkrunRuntime {
             env,
             user,
             home,
+            workdir,
             boot,
         ) = {
             let sandboxes = self.lock_sandboxes();
@@ -1651,6 +1658,7 @@ impl LibkrunRuntime {
                 state.env.clone(),
                 state.user.clone(),
                 state.home.clone(),
+                state.workdir.clone(),
                 state.boot.clone(),
             )
         };
@@ -1675,6 +1683,7 @@ impl LibkrunRuntime {
                 &env,
                 user.as_deref(),
                 home.as_deref(),
+                workdir.as_deref(),
                 boot,
             )
         })
@@ -1785,6 +1794,7 @@ impl LibkrunRuntime {
         gvproxy_socket: Option<&str>,
         user: Option<&str>,
         home: Option<&str>,
+        workdir: Option<&str>,
         env: &HashMap<String, String>,
         console: Option<ConsoleSpec>,
         extra_mounts: Vec<ExtraMount>,
@@ -1809,6 +1819,7 @@ impl LibkrunRuntime {
             run_as_root: false,
             user: user.map(|s| s.to_string()),
             home: home.map(|s| s.to_string()),
+            workdir: workdir.map(|s| s.to_string()),
             runtime_mode: "next".to_string(),
             console,
             extra_mounts,
@@ -1968,6 +1979,7 @@ impl LibkrunRuntime {
         env: &HashMap<String, String>,
         user: Option<&str>,
         home: Option<&str>,
+        workdir: Option<&str>,
         boot: BootConfig,
     ) -> std::result::Result<i32, String> {
         // Serialize VM configuration for the subprocess
@@ -1990,6 +2002,7 @@ impl LibkrunRuntime {
             run_as_root: false,
             user: user.map(|s| s.to_string()),
             home: home.map(|s| s.to_string()),
+            workdir: workdir.map(|s| s.to_string()),
             runtime_mode,
             console: None,            // Set by the supervisor via env or config
             extra_mounts: Vec::new(), // Set by the supervisor via config
@@ -2159,6 +2172,7 @@ impl LibkrunRuntime {
             env,
             user,
             home,
+            workdir,
             vsock_socket,
             vsock_port,
             exec_agent,
@@ -2184,6 +2198,7 @@ impl LibkrunRuntime {
                 state.env.clone(),
                 state.user.clone(),
                 state.home.clone(),
+                state.workdir.clone(),
                 state.vsock_socket.clone(),
                 state.vsock_port,
                 state.exec_agent.clone(),
@@ -2210,6 +2225,7 @@ impl LibkrunRuntime {
                 gvproxy_socket.as_deref(),
                 user.as_deref(),
                 home.as_deref(),
+                workdir.as_deref(),
                 &env,
                 console,
                 extra_mounts,

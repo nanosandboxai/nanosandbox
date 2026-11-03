@@ -54,6 +54,9 @@ jobs:
       - name: Unit tests (runtime)
         run: cargo test -p runtime --lib
 
+      - name: Unit tests (protocol)
+        run: cargo test -p nanosb-protocol
+
   host-layer:
     name: Host layer (FFI/TUI-free)
     runs-on: ubuntu-latest
