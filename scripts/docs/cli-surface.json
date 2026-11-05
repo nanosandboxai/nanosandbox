@@ -261,8 +261,8 @@
     ],
     "help_entries": [
       {
-        "description": "Add a new agent panel",
-        "pattern": "/add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]..."
+        "description": "Add a new agent panel (interactive by default; --headless runs headless)",
+        "pattern": "/add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]..."
       },
       {
         "description": "Toggle sandbox sidebar",

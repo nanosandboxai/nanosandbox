@@ -353,7 +353,7 @@ async fn handler_add_pushes_panel() {
             branch: None,
             name: None,
             auto_mode: false,
-            interactive: false,
+            interactive: true,
             prompt: None,
             model: None,
             use_env: vec![],

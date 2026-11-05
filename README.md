@@ -107,10 +107,11 @@ Notes:
 /add claude --use-env OPENAI_API_KEY --use-env GITHUB_TOKEN
 
 # Supported agents: claude, codex, goose, cursor, opencode, aider, gemini, crush
-/add opencode --auto-mode -p "list files"                # headless opencode
-/add aider --auto-mode -p "refactor the module"         # headless aider
-/add gemini --interactive                               # Gemini CLI interactive UI
-/add crush                                              # Crush interactive UI (default)
+# Interactive (the default): opens the agent's TUI
+/add opencode
+# Headless (auto-approved run): --headless (or the alias --auto-mode) with -p
+/add opencode --headless -p "list files"
+/add aider --headless -p "refactor the module"
 ```
 
 ### Language SDKs
@@ -326,9 +327,10 @@ should start in a different directory.
 
 ### Interactive agent panels
 
-By default an agent panel runs **headless**: the agent's output is captured as
-structured events. Set `interactive: true` to instead run the agent's own
-interactive UI in the panel, on a real TTY (keystrokes are forwarded to it):
+By default an agent panel runs **interactively**: the agent's own interactive UI
+opens in the panel, on a real TTY (keystrokes are forwarded to it). Set
+`interactive: false` in `sandbox.yml` or use `--headless -p <prompt>` from the
+TUI to run the agent headless, with its output captured as structured events:
 
 ```yaml
 sandboxes:
@@ -340,11 +342,13 @@ sandboxes:
 Or per panel from the TUI:
 
 ```
-/add claude --image localhost:5050/claude:latest --interactive
+/add claude --image localhost:5050/claude:latest         # interactive (default)
+/add claude --headless -p "audit the codebase"           # headless
 ```
 
-`interactive` and `auto_mode` are mutually exclusive. Interactive panels are
-backed by the in-guest exec agent's PTY (the same channel as `nanosb exec --tty`).
+`--auto-mode` is accepted as a backwards-compatible alias of `--headless`.
+Interactive panels are backed by the in-guest exec agent's PTY (the same channel
+as `nanosb exec --tty`).
 
 ### Supported agents
 

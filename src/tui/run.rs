@@ -4613,7 +4613,8 @@ fn add_agent(
 
     let mut panel = AgentPanel::new(agent);
 
-    // Headless mode setup.
+    // Mode setup: interactive is the default (parser passes interactive=true);
+    // --headless sets auto_mode so the headless/auto-approved path wins.
     panel.auto_mode = auto_mode;
     panel.interactive = interactive && !auto_mode;
     if auto_mode {
@@ -4785,6 +4786,7 @@ pub(crate) fn add_agent_from_config(
     let mut panel = AgentPanel::new(&agent_type);
     panel.display_name = Some(display_name.clone());
     panel.auto_mode = config.auto_mode;
+    // Interactive is the config/tui default; auto_mode (headless) wins.
     panel.interactive = config.interactive && !config.auto_mode;
     panel.permissions = config.permissions;
     panel.model = config.model.clone();
@@ -5100,10 +5102,10 @@ fn resume_session(
         if let Some(ref clone_path) = sp.clone_path {
             if clone_path.exists() {
                 // Add VirtioFS mount for existing clone directly.
-                config
-                    .sandbox
-                    .mounts
-                    .push(sandbox::Mount::virtiofs(clone_path, sandbox::deploy::GUEST_HOME));
+                config.sandbox.mounts.push(sandbox::Mount::virtiofs(
+                    clone_path,
+                    sandbox::deploy::GUEST_HOME,
+                ));
                 // Do NOT set config.sandbox.project — this skips setup_project_mount().
                 config.sandbox.project = None;
 
