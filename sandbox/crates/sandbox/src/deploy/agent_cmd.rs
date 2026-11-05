@@ -862,4 +862,92 @@ mod tests {
         );
         assert!(cmd.args.contains(&"--yolo".to_string()));
     }
+
+    #[test]
+    fn test_all_agents_interactive_and_headless_argv() {
+        let cases: &[(AgentType, &str, &[&str], &[&str])] = &[
+            (AgentType::Claude, "claude", &[], &["--print", "do it"]),
+            (
+                AgentType::Codex,
+                "codex",
+                &[],
+                &["exec", "--skip-git-repo-check", "do it"],
+            ),
+            (
+                AgentType::Goose,
+                "goose",
+                &["session"],
+                &["run", "--text", "do it"],
+            ),
+            (
+                AgentType::Cursor,
+                "cursor-agent",
+                &[],
+                &["--message", "do it"],
+            ),
+            (AgentType::Opencode, "opencode", &[], &["run", "do it"]),
+            (
+                AgentType::Aider,
+                "aider",
+                &[],
+                &["--message", "do it", "--yes", "--no-auto-commits"],
+            ),
+            (AgentType::Gemini, "gemini", &[], &["-p", "do it"]),
+            (AgentType::Crush, "crush", &[], &["run", "do it"]),
+        ];
+
+        assert_eq!(
+            cases.len(),
+            AgentType::ALL.len(),
+            "table must cover every agent in AgentType::ALL"
+        );
+
+        for (agent_type, binary, interactive_args, headless_args) in cases.iter().copied() {
+            let interactive_cmd = AgentCommandBuilder::build(
+                &agent_type,
+                "ignored prompt",
+                false,
+                true,
+                Permissions::Default,
+                None,
+            );
+            assert_eq!(
+                interactive_cmd.binary, binary,
+                "interactive binary for {:?}",
+                agent_type
+            );
+            assert_eq!(
+                interactive_cmd.args,
+                interactive_args
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+                "interactive argv for {:?} must be the agent's TUI",
+                agent_type,
+            );
+
+            let headless_cmd = AgentCommandBuilder::build(
+                &agent_type,
+                "do it",
+                false,
+                false,
+                Permissions::Default,
+                None,
+            );
+            assert_eq!(
+                headless_cmd.binary, binary,
+                "headless binary for {:?}",
+                agent_type
+            );
+            for arg in headless_args {
+                assert!(
+                    headless_cmd.args.contains(&arg.to_string()),
+                    "headless argv for {:?} should contain {:?}, got {:?}",
+                    agent_type,
+                    arg,
+                    headless_cmd.args,
+                );
+            }
+        }
+    }
 }

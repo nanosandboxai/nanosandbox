@@ -2086,6 +2086,73 @@ mod tests {
         }
     }
 
+    // ===== Table-driven /add coverage over ALL supported agents =====
+
+    fn expected_add_agent(
+        agent: &str,
+        auto_mode: bool,
+        interactive: bool,
+        prompt: Option<&str>,
+    ) -> Command {
+        Command::AddAgent {
+            agent: agent.to_string(),
+            image: None,
+            tag: None,
+            project: None,
+            branch: None,
+            name: None,
+            auto_mode,
+            interactive,
+            prompt: prompt.map(String::from),
+            model: None,
+            use_env: vec![],
+            env_file: None,
+            run_as_root: false,
+        }
+    }
+
+    #[test]
+    fn test_parse_add_all_agents_interactive_by_default() {
+        for agent in SUPPORTED_AGENTS {
+            assert_eq!(
+                parse_command(&format!("/add {}", agent)),
+                Some(expected_add_agent(agent, false, true, None)),
+                "`/add {}` should parse as interactive by default",
+                agent,
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_add_all_agents_headless() {
+        for agent in SUPPORTED_AGENTS {
+            assert_eq!(
+                parse_command_verbose(&format!("/add {} --headless -p \"list files\"", agent)),
+                ParseResult::Ok(expected_add_agent(agent, true, false, Some("list files"))),
+                "`/add {} --headless -p \"list files\"` should parse as headless",
+                agent,
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_add_auto_mode_alias_matches_headless_all_agents() {
+        for agent in SUPPORTED_AGENTS {
+            let via_auto_mode = parse_command_verbose(&format!("/add {} --auto-mode -p x", agent));
+            let via_headless = parse_command_verbose(&format!("/add {} --headless -p x", agent));
+            assert!(
+                matches!(via_auto_mode, ParseResult::Ok(_)),
+                "`/add {} --auto-mode -p x` should parse as Ok",
+                agent,
+            );
+            assert_eq!(
+                via_auto_mode, via_headless,
+                "`--auto-mode` must parse identically to `--headless` for {}",
+                agent,
+            );
+        }
+    }
+
     // ===== Help/parser parity (Epic 2 AC1) =====
 
     /// Materialize a help pattern into a concrete command string by replacing

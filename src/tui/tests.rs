@@ -369,6 +369,88 @@ async fn handler_add_pushes_panel() {
     assert_eq!(app.panels[0].mode, PanelMode::Loading);
 }
 
+const ALL_AGENTS: &[&str] = &[
+    "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
+];
+
+#[tokio::test]
+async fn handler_add_all_agents_interactive_panel_state() {
+    for agent in ALL_AGENTS {
+        let mut app = App::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_command(
+            &mut app,
+            Command::AddAgent {
+                agent: agent.to_string(),
+                image: None,
+                tag: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: false,
+                interactive: true,
+                prompt: None,
+                model: None,
+                use_env: vec![],
+                env_file: None,
+                run_as_root: false,
+            },
+            &tx,
+        )
+        .await;
+
+        assert_eq!(app.panels.len(), 1, "{}: should have 1 panel", agent);
+        let panel = &app.panels[0];
+        assert!(panel.interactive, "{}: interactive should be true", agent);
+        assert!(!panel.auto_mode, "{}: auto_mode should be false", agent);
+        assert!(
+            panel.headless_state.is_none(),
+            "{}: headless_state should be None",
+            agent
+        );
+    }
+}
+
+#[tokio::test]
+async fn handler_add_all_agents_headless_panel_state() {
+    for agent in ALL_AGENTS {
+        let mut app = App::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_command(
+            &mut app,
+            Command::AddAgent {
+                agent: agent.to_string(),
+                image: None,
+                tag: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: true,
+                interactive: false,
+                prompt: Some("x".into()),
+                model: None,
+                use_env: vec![],
+                env_file: None,
+                run_as_root: false,
+            },
+            &tx,
+        )
+        .await;
+
+        assert_eq!(app.panels.len(), 1, "{}: should have 1 panel", agent);
+        let panel = &app.panels[0];
+        assert!(panel.auto_mode, "{}: auto_mode should be true", agent);
+        assert!(!panel.interactive, "{}: interactive should be false", agent);
+        assert!(
+            panel.headless_state.is_some(),
+            "{}: headless_state should be Some",
+            agent
+        );
+    }
+}
+
 #[tokio::test]
 async fn handler_close_hides_panel() {
     let mut app = App::new();

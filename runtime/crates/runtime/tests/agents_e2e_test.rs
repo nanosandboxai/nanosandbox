@@ -111,10 +111,16 @@ const DEFAULT_REGISTRY: &str = "ghcr.io/nanosandboxai/nanosandbox";
 /// and `NANOSB_E2E_TAG` environment variables (e.g. to test locally-built
 /// images pushed to a local registry).
 fn agent_image(agent_command: &str) -> String {
-    let registry = std::env::var("NANOSB_E2E_REGISTRY")
-        .unwrap_or_else(|_| DEFAULT_REGISTRY.to_string());
+    let registry =
+        std::env::var("NANOSB_E2E_REGISTRY").unwrap_or_else(|_| DEFAULT_REGISTRY.to_string());
     let tag = std::env::var("NANOSB_E2E_TAG").unwrap_or_else(|_| IMAGE_TAG.to_string());
-    format!("{}/{}:{}", registry, agent_command, tag)
+    // The image repository name differs from the in-guest binary for Cursor:
+    // the image is `cursor`, but the binary it ships is `cursor-agent`.
+    let repo = match agent_command {
+        "cursor-agent" => "cursor",
+        other => other,
+    };
+    format!("{}/{}:{}", registry, repo, tag)
 }
 
 // =============================================================================
@@ -127,6 +133,39 @@ async fn runtime_available() -> bool {
     validate_runtime_prerequisites().await.is_ok()
 }
 
+/// Point the runtime at a real `nanosb` binary for the VM boot subprocess.
+///
+/// The runtime boots each VM by spawning `<exe> internal-boot-vm` (see
+/// `boot_persistent_vm_next`). When the test binary is the current exe, libtest
+/// treats `internal-boot-vm` as a test filter and runs zero tests, so no VM ever
+/// boots and the exec socket never appears. The product path spawns the real
+/// `nanosb` binary; do the same here by setting `NANOSB_BINARY_PATH` (honored by
+/// the runtime) to the workspace's built `nanosb` before any sandbox starts.
+fn ensure_boot_binary() {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        if std::env::var_os("NANOSB_BINARY_PATH").is_some() {
+            return;
+        }
+        // CARGO_MANIFEST_DIR = <workspace>/runtime/crates/runtime
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent());
+        if let Some(root) = root {
+            for profile in ["release", "debug"] {
+                let candidate = root.join("target").join(profile).join("nanosb");
+                if candidate.exists() {
+                    std::env::set_var("NANOSB_BINARY_PATH", &candidate);
+                    return;
+                }
+            }
+        }
+    });
+}
+
 /// Stage the guest exec agent into a persistent host dir (once per process).
 fn stage_exec_agent_dir() -> std::path::PathBuf {
     use std::sync::OnceLock;
@@ -134,12 +173,29 @@ fn stage_exec_agent_dir() -> std::path::PathBuf {
     DIR.get_or_init(|| {
         let dir = std::env::temp_dir().join(format!("nanosb-e2e-agent-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let src = std::env::var("HOME")
-            .map(|h| std::path::PathBuf::from(h).join(".nanosandbox/guest-bin/exec-agent"))
-            .unwrap_or_default();
+        // Mirror `nanosb_cli::deploy::guest_bin_dir` resolution.
+        let src = std::env::var("NANOSB_GUEST_BIN_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|_| {
+                std::env::var("NANOSB_HOME").map(|h| std::path::PathBuf::from(h).join("guest-bin"))
+            })
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".nanosandbox/guest-bin"))
+                    .unwrap_or_default()
+            })
+            .join("exec-agent");
         let dst = dir.join("exec-agent");
         if !dst.exists() {
-            std::fs::copy(&src, &dst).unwrap();
+            std::fs::copy(&src, &dst).unwrap_or_else(|e| {
+                panic!(
+                    "failed to stage exec-agent from {}: {} (build it with \
+                     `cd guest/crates/exec-agent && RUSTFLAGS=\"-C linker=rust-lld\" \
+                     cargo build --target aarch64-unknown-linux-musl --release`)",
+                    src.display(),
+                    e
+                )
+            });
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -154,13 +210,14 @@ fn stage_exec_agent_dir() -> std::path::PathBuf {
 /// Create a sandbox configuration for agent testing, with the host↔guest exec
 /// channel wired up so commands can be run inside the guest.
 fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig {
+    ensure_boot_binary();
+
     let mut config = SandboxConfig::builder()
         .name(sandbox_name)
         .image(image)
         .cpus(2)
         .memory_mb(1024)
         .runtime_mode(runtime::config::RuntimeMode::Next)
-        .user("1000")
         .build();
 
     let agent_dir = stage_exec_agent_dir();
@@ -174,7 +231,10 @@ fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig
     let _ = std::fs::remove_file(&exec_sock);
     config.vsock_socket = Some(exec_sock.to_string_lossy().to_string());
     config.vsock_port = Some(1024);
-    config.exec_agent = Some("/agent/exec-agent".to_string());
+    // Mirror the product's no-workload path: the exec agent is PID 1 and serves
+    // the vsock exec channel directly.
+    config.command = Some("/agent/exec-agent".to_string());
+    config.command_args = vec!["1024".to_string()];
     config
 }
 
@@ -526,7 +586,9 @@ async fn test_agent_guest_user_is_non_root() {
 
     let command = "claude";
     let sandbox_name = "nonroot-check";
-    let config = create_agent_sandbox_config(sandbox_name, &agent_image(command));
+    let mut config = create_agent_sandbox_config(sandbox_name, &agent_image(command));
+    // This test specifically exercises the non-root guest user path.
+    config.user = Some("1000".to_string());
 
     println!("\n[Step 1] Creating sandbox...");
     let mut sandbox = match Sandbox::create(config).await {
