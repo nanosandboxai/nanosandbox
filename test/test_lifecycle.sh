@@ -12,7 +12,7 @@ source "$(dirname "$0")/lib.sh"
 
 print_suite_header "Sandbox Lifecycle (run / exec / stop / rm)"
 
-IMAGE="ghcr.io/nanosandboxai/agents-registry/claude:latest"
+IMAGE="ghcr.io/nanosandboxai/nanosandbox/claude:latest"
 RUNTIME_OK=true
 
 # Pre-check: ensure image is available
