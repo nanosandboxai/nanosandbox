@@ -718,7 +718,11 @@ async fn test_agent_interactive_tty_smoke() {
         .start(&agent, &[], opts)
         .expect("exec start failed");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let secs: u64 = std::env::var("NANOSB_E2E_TTY_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     let mut bytes = 0usize;
     let mut early_exit = None;
     while std::time::Instant::now() < deadline {
