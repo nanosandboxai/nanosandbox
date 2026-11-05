@@ -75,16 +75,22 @@ impl SupervisorClient {
     }
 
     /// Check whether the supervisor is actually alive: a connectable control
-    /// socket, or a recorded supervisor PID that is still alive.
+    /// socket, or a live owner PID for a non-terminal sandbox.
     pub fn is_running(&self) -> bool {
         if UnixStream::connect(self.control_socket_path()).is_ok() {
             return true;
         }
-        self.supervisor_pid_alive()
+        // A terminal (`stopped`/`error`) state means the supervisor finished, so
+        // never report it running even if its reaped PID was reused by an
+        // unrelated process (which would make `kill(pid, 0)` falsely succeed).
+        match self.read_state() {
+            Some(state) if state.state.is_active() => Self::pid_alive(state.supervisor_pid),
+            _ => false,
+        }
     }
 
-    fn supervisor_pid_alive(&self) -> bool {
-        let Some(pid) = self.read_state().and_then(|state| state.supervisor_pid) else {
+    fn pid_alive(pid: Option<i32>) -> bool {
+        let Some(pid) = pid else {
             return false;
         };
         if pid <= 0 {
@@ -113,14 +119,11 @@ impl SupervisorClient {
                 sock_path.display()
             )));
         }
-        let stream = UnixStream::connect(&sock_path)
-            .map_err(|e| ClientError::ConnectionFailed(format!("{}: {}", sock_path.display(), e)))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .ok();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .ok();
+        let stream = UnixStream::connect(&sock_path).map_err(|e| {
+            ClientError::ConnectionFailed(format!("{}: {}", sock_path.display(), e))
+        })?;
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
         Ok(stream)
     }
 
@@ -152,7 +155,9 @@ impl SupervisorClient {
         match self.send_request(&ControlRequest::Ping {})? {
             ControlResponse::Ok { version } => Ok(version),
             ControlResponse::Error { message } => Err(ClientError::RequestFailed(message)),
-            _ => Err(ClientError::ProtocolError("unexpected response".to_string())),
+            _ => Err(ClientError::ProtocolError(
+                "unexpected response".to_string(),
+            )),
         }
     }
 
@@ -163,12 +168,12 @@ impl SupervisorClient {
 
     /// Stop the sandbox.
     pub fn stop(&self, force: bool) -> ClientResult<()> {
-        match self.send_request(&ControlRequest::Stop {
-            force: Some(force),
-        })? {
+        match self.send_request(&ControlRequest::Stop { force: Some(force) })? {
             ControlResponse::Ok { .. } => Ok(()),
             ControlResponse::Error { message } => Err(ClientError::RequestFailed(message)),
-            _ => Err(ClientError::ProtocolError("unexpected response".to_string())),
+            _ => Err(ClientError::ProtocolError(
+                "unexpected response".to_string(),
+            )),
         }
     }
 
@@ -218,8 +223,7 @@ impl SupervisorClient {
     /// Read console log file directly (works even when supervisor is stopped).
     pub fn read_log_file(&self) -> ClientResult<String> {
         let log_path = self.console_log_path();
-        std::fs::read_to_string(&log_path)
-            .map_err(|e| ClientError::IoError(e))
+        std::fs::read_to_string(&log_path).map_err(|e| ClientError::IoError(e))
     }
 
     /// Read the last N bytes from the console log file.
@@ -326,28 +330,33 @@ mod tests {
         dir
     }
 
-    fn client_with_state(name: &str, supervisor_pid: Option<i32>) -> (SupervisorClient, PathBuf) {
+    fn client_with_state(
+        name: &str,
+        state_str: &str,
+        supervisor_pid: Option<i32>,
+    ) -> (SupervisorClient, PathBuf) {
         let dir = temp_dir(name);
-        let state = serde_json::json!({
+        let json = serde_json::json!({
             "sandbox_name": name,
-            "state": "stopped",
+            "state": state_str,
             "pid": null,
             "exit_code": null,
             "started_at": "0",
             "config_hash": "",
             "supervisor_pid": supervisor_pid,
         });
-        std::fs::write(dir.join("state.json"), state.to_string()).unwrap();
+        std::fs::write(dir.join("state.json"), json.to_string()).unwrap();
         (SupervisorClient::with_sandbox_dir(name, dir.clone()), dir)
     }
 
     #[test]
     fn is_running_uses_supervisor_liveness_not_socket_existence() {
-        let (dead, dead_dir) = client_with_state("dead", Some(reaped_pid()));
+        let (dead, dead_dir) = client_with_state("dead", "running", Some(reaped_pid()));
         std::fs::write(dead_dir.join("control.sock"), b"").unwrap();
         assert!(!dead.is_running());
 
-        let (live, live_dir) = client_with_state("live", Some(std::process::id() as i32));
+        let (live, live_dir) =
+            client_with_state("live", "running", Some(std::process::id() as i32));
         assert!(live.is_running());
 
         let bound_dir = temp_dir("bound");
@@ -358,5 +367,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dead_dir);
         let _ = std::fs::remove_dir_all(&live_dir);
         let _ = std::fs::remove_dir_all(&bound_dir);
+    }
+
+    #[test]
+    fn is_running_false_for_terminal_state_even_with_live_pid() {
+        // Regression: a stopped/errored sandbox whose recorded supervisor PID was
+        // reaped and reused by another process must NOT report as running.
+        let live = Some(std::process::id() as i32);
+        let (stopped, stopped_dir) = client_with_state("t-stopped", "stopped", live);
+        assert!(!stopped.is_running());
+
+        let (errored, errored_dir) = client_with_state("t-error", "error", live);
+        assert!(!errored.is_running());
+
+        let _ = std::fs::remove_dir_all(&stopped_dir);
+        let _ = std::fs::remove_dir_all(&errored_dir);
     }
 }

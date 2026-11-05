@@ -515,7 +515,8 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         started_at,
         config_hash,
         exited_at_ms: Some(now_ms()),
-        supervisor_pid,
+        // The owner is exiting: drop it so a later PID reuse can't read as running.
+        supervisor_pid: None,
     };
     write_state(&sandbox_dir, &final_state);
 

@@ -32,6 +32,13 @@ pub enum SandboxState {
     Error,
 }
 
+impl SandboxState {
+    /// Whether the sandbox is live (`Starting`/`Running`), i.e. not terminal.
+    pub fn is_active(self) -> bool {
+        matches!(self, SandboxState::Starting | SandboxState::Running)
+    }
+}
+
 /// Supervisor state persisted to `state.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupervisorState {
