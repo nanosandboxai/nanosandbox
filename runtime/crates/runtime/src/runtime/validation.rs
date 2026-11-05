@@ -219,9 +219,11 @@ fn find_linux_libkrunfw() -> Option<String> {
 
     // NANOSB_HOME (default ~/.nanosandbox) is authoritative, then HOME, then system.
     let mut search_dirs: Vec<String> = Vec::new();
-    let nanosb_home = std::env::var("NANOSB_HOME")
-        .ok()
-        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.nanosandbox")));
+    let nanosb_home = std::env::var("NANOSB_HOME").ok().or_else(|| {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| format!("{h}/.nanosandbox"))
+    });
     if let Some(base) = &nanosb_home {
         search_dirs.push(format!("{base}/libs"));
     }
@@ -329,16 +331,21 @@ async fn validate_macos_detailed() -> ValidationResult {
 fn find_macos_libkrunfw() -> Option<String> {
     // NANOSB_HOME (default ~/.nanosandbox) is authoritative, then HOME, then system.
     let mut search_dirs: Vec<String> = Vec::new();
-    let nanosb_home = std::env::var("NANOSB_HOME")
-        .ok()
-        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.nanosandbox")));
+    let nanosb_home = std::env::var("NANOSB_HOME").ok().or_else(|| {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| format!("{h}/.nanosandbox"))
+    });
     if let Some(base) = &nanosb_home {
         search_dirs.push(format!("{base}/libs"));
     }
     if let Ok(home) = std::env::var("HOME") {
         search_dirs.push(format!("{}/.nanosandbox/libs", home));
     }
-    search_dirs.extend(["/opt/homebrew/lib".to_string(), "/usr/local/lib".to_string()]);
+    search_dirs.extend([
+        "/opt/homebrew/lib".to_string(),
+        "/usr/local/lib".to_string(),
+    ]);
 
     for dir in &search_dirs {
         let path = format!("{}/libkrunfw.5.dylib", dir);

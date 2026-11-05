@@ -1,5 +1,5 @@
-pub mod payload;
 pub mod crypto;
+pub mod payload;
 
-pub use payload::SecretPayload;
 pub use crypto::encrypt_payload;
+pub use payload::SecretPayload;

@@ -27,7 +27,9 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("internal-boot-vm") {
         handle_boot_vm_subprocess();
     }
-    tokio::runtime::Runtime::new().unwrap().block_on(async_main());
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async_main());
 }
 
 async fn async_main() {
@@ -76,7 +78,10 @@ async fn async_main() {
     let start = Instant::now();
     let mut sandbox = match Sandbox::create(config).await {
         Ok(s) => s,
-        Err(e) => { eprintln!("[{:.1}s] Failed: {}", start.elapsed().as_secs_f64(), e); return; }
+        Err(e) => {
+            eprintln!("[{:.1}s] Failed: {}", start.elapsed().as_secs_f64(), e);
+            return;
+        }
     };
     println!("[{:.1}s] Sandbox created", start.elapsed().as_secs_f64());
 
@@ -87,13 +92,20 @@ async fn async_main() {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => print!("{}", String::from_utf8_lossy(&buf[..n])),
-                Err(e) => { eprintln!("[read err] {}", e); break; }
+                Err(e) => {
+                    eprintln!("[read err] {}", e);
+                    break;
+                }
             }
         }
     });
 
     if let Err(e) = sandbox.start().await {
-        eprintln!("[{:.1}s] Start failed: {}", start.elapsed().as_secs_f64(), e);
+        eprintln!(
+            "[{:.1}s] Start failed: {}",
+            start.elapsed().as_secs_f64(),
+            e
+        );
         let _ = sandbox.stop().await;
         let _ = sandbox.destroy().await;
         return;

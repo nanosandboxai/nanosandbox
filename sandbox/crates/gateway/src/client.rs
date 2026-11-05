@@ -108,7 +108,9 @@ impl GatewayClient {
     }
 
     pub fn secrets_pubkey(&self) -> Option<String> {
-        self.secrets_keypair.as_ref().map(|kp| kp.public_key_base64())
+        self.secrets_keypair
+            .as_ref()
+            .map(|kp| kp.public_key_base64())
     }
 
     pub fn is_available(&self) -> bool {
@@ -161,7 +163,8 @@ impl GatewayClient {
     }
 
     pub async fn exec(&self, command: &str, args: &[&str]) -> Result<ExecResult> {
-        self.exec_with_options(command, args, ExecOptions::default()).await
+        self.exec_with_options(command, args, ExecOptions::default())
+            .await
     }
 
     pub async fn exec_with_options(
@@ -249,7 +252,11 @@ impl GatewayClient {
         let exit_code = tokio::task::spawn_blocking(move || {
             let on_sse = |text: &str, is_stderr: bool| {
                 on_output_blocking(OutputChunk {
-                    stream: if is_stderr { Stream::Stderr } else { Stream::Stdout },
+                    stream: if is_stderr {
+                        Stream::Stderr
+                    } else {
+                        Stream::Stdout
+                    },
                     data: text.to_string(),
                     timestamp: Utc::now(),
                 });
@@ -283,7 +290,10 @@ impl GatewayClient {
 
             if !is_vm_running() {
                 let elapsed = start.elapsed().as_secs_f32();
-                error!("VM process died after {:.1}s — aborting health check", elapsed);
+                error!(
+                    "VM process died after {:.1}s — aborting health check",
+                    elapsed
+                );
                 return Err(Error::VmDied);
             }
 
@@ -305,19 +315,14 @@ impl GatewayClient {
     // -- Secrets --
 
     pub fn send_secrets(&mut self, encrypted_json: &str) -> Result<SecretManifest> {
-        let kp = self
-            .secrets_keypair
-            .as_mut()
-            .ok_or_else(|| Error::SecretsError(
-                "secrets keypair not available (gateway not started?)".to_string(),
-            ))?;
+        let kp = self.secrets_keypair.as_mut().ok_or_else(|| {
+            Error::SecretsError("secrets keypair not available (gateway not started?)".to_string())
+        })?;
 
         let encrypted: secrets::EncryptedPayload = serde_json::from_str(encrypted_json)
             .map_err(|e| Error::SecretsError(format!("failed to parse EncryptedPayload: {e}")))?;
 
-        let payload = kp
-            .decrypt(&encrypted)
-            .map_err(Error::SecretsError)?;
+        let payload = kp.decrypt(&encrypted).map_err(Error::SecretsError)?;
 
         for (key, value) in &payload.secrets {
             self.secrets_store.insert(key.clone(), value.clone());
@@ -396,7 +401,10 @@ impl GatewayClient {
                 let hash = {
                     let input = format!("{session_id}:{key}");
                     let digest = Sha256::digest(input.as_bytes());
-                    digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    digest
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
                 };
                 let path = format!("/run/secrets/files/{}", hash);
                 let escaped = sq_escape(value);
