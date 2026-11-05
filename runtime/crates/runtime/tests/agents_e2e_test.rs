@@ -692,6 +692,66 @@ async fn test_agent_extra_mounts_land() {
     println!("[PASS] all extra mounts landed in the guest");
 }
 
+/// Start an agent interactively over a PTY (as the TUI panel does) and assert it
+/// comes up and emits output without an early non-zero exit. Interactive TUIs
+/// keep running, so we cannot assert on exit code; set NANOSB_E2E_AGENT to pick
+/// the agent (defaults to claude).
+#[tokio::test]
+#[ignore]
+async fn test_agent_interactive_tty_smoke() {
+    let agent = std::env::var("NANOSB_E2E_AGENT").unwrap_or_else(|_| "claude".to_string());
+
+    if !runtime_available().await {
+        println!("[SKIP] Runtime prerequisites not met");
+        return;
+    }
+
+    let sandbox_name = format!("interactive-{}", agent);
+    let config = create_agent_sandbox_config(&sandbox_name, &agent_image(&agent));
+    let mut sandbox = Sandbox::create(config)
+        .await
+        .expect("sandbox create failed");
+    sandbox.start().await.expect("sandbox start failed");
+
+    let opts = runtime::exec::ExecOptions::new().tty(true).size(120, 40);
+    let mut handle = exec_client(&sandbox)
+        .start(&agent, &[], opts)
+        .expect("exec start failed");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut bytes = 0usize;
+    let mut early_exit = None;
+    while std::time::Instant::now() < deadline {
+        match handle.next_event(Some(std::time::Duration::from_secs(2))) {
+            Ok(Some(runtime::exec::ExecEvent::Output(chunk))) => bytes += chunk.data.len(),
+            Ok(Some(runtime::exec::ExecEvent::Exit { code })) => {
+                early_exit = Some(code);
+                break;
+            }
+            Ok(Some(runtime::exec::ExecEvent::Error { message })) => {
+                early_exit = Some(-1);
+                println!("[TTY] {} exec error: {}", agent, message);
+            }
+            _ => {}
+        }
+    }
+
+    let _ = sandbox.stop().await;
+    let _ = sandbox.destroy().await;
+
+    println!(
+        "[TTY] {} output_bytes={} early_exit={:?}",
+        agent, bytes, early_exit
+    );
+    assert!(bytes > 0, "{} produced no PTY output", agent);
+    assert!(
+        early_exit.is_none() || early_exit == Some(0),
+        "{} exited non-zero over PTY: {:?}",
+        agent,
+        early_exit
+    );
+}
+
 // =============================================================================
 // Image Pull Test
 // =============================================================================
