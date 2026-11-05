@@ -5,7 +5,7 @@ LABEL org.opencontainers.image.description="OpenCode agent for nanosandbox sandb
 
 # Pinned to a specific GitHub release. NOT Dependabot-managed (no npm
 # package); bump manually in this Dockerfile.
-ARG OPENCODE_VERSION=1.19.5
+ARG OPENCODE_VERSION=2.2.5
 
 # Pure install: opencode CLI via the official installer.
 # The installer drops the binary under ~/.opencode/bin (HOME=/root at build).

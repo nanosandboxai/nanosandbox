@@ -5,7 +5,7 @@ LABEL org.opencontainers.image.description="Goose agent for nanosandbox sandboxe
 
 # Pinned to a specific GitHub release. NOT Dependabot-managed (no npm
 # package); bump manually in this Dockerfile.
-ARG GOOSE_VERSION=0.86.0
+ARG GOOSE_VERSION=1.57.0
 
 # Install bzip2 (tarball extraction) and libgomp1 (OpenMP runtime required by goose)
 RUN /usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends bzip2 libgomp1 \
