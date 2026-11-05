@@ -39,7 +39,8 @@ cargo build -p nanosb-cli
 # Build the CLI (release)
 cargo build --release -p nanosb-cli
 
-# TUI/CLI unit tests (no TTY, no VM) — runs in CI
+# TUI + CLI tests (no TTY, no VM) — runs in CI
+#   nanosb-cli includes the headless TUI suite (src/tui/tests.rs, ratatui TestBackend)
 cargo test -p nanosb-cli
 cargo test -p sandbox -p gateway
 cargo test -p runtime --lib
@@ -65,15 +66,45 @@ NANOSB_BINARY_PATH="$PWD/target/debug/nanosb" \
 # Protocol conformance harness
 cargo build -p nanosb-conformance
 
-# Local PTY smoke harness
+# Local PTY smoke harness (launch + /help only — NOT the TUI test suite)
 scripts/tui-smoke.sh
 ```
+
+## TUI is tested in Rust (MANDATORY)
+
+The TUI is Rust, so its behavior MUST be covered by the Rust test harness under
+`src/tui/` — not only by the shell scripts. `scripts/tui-smoke.sh` is a PTY
+launch smoke check, never the primary TUI coverage.
+
+- **Frames, layout, styling** — render with `ratatui::backend::TestBackend` and
+  assert on the buffer text and per-cell styles. Helpers live in
+  [`src/tui/tests.rs`](src/tui/tests.rs) (`render_screen` / `render_backend`).
+  No TTY, no VM.
+- **Commands, keybindings, events** — drive `handle_command` / `handle_event`
+  from `#[tokio::test]`, plus the synthetic event loop, in the same file.
+- **End-to-end lifecycle** (create → connect → send → reconnect → kill over the
+  real supervisor + in-guest exec channel) — [`src/tui/vm_test.rs`](src/tui/vm_test.rs).
+  `NANOSB_BINARY_PATH` MUST point at a codesigned `nanosb` binary (the supervisor
+  is spawned from it; an unset/wrong path makes the panel never connect):
+  ```bash
+  NANOSB_BINARY_PATH="$PWD/target/release/nanosb" \
+    cargo test -p nanosb-cli tui::vm_test -- --ignored --nocapture
+  ```
+
+Every TUI change — a new slash command, keybinding, layout/grid, panel state, or
+theme — MUST add or update Rust tests under `src/tui/tests.rs` (or
+`vm_test.rs`) in the same change, and they MUST pass. Shell harnesses are
+additive only.
 
 ## Conventions
 
 - **Rust edition 2021.** Match the existing style in the file you are editing.
-- **Single version source of truth.** The workspace version lives in the root
-  `Cargo.toml` `[workspace.package] version`; member crates use
+- **Single version source of truth.** The canonical version lives in the root
+  `VERSION` file. `scripts/set-version.sh <semver>` writes it there and rewrites
+  every component manifest that carries a version (root `Cargo.toml`
+  `[workspace.package] version`, the workspace-member entries in `Cargo.lock`,
+  `sdk/python/pyproject.toml`, `sdk/typescript/package.json`, `sdk/java/pom.xml`,
+  and `guest/crates/exec-agent/Cargo.toml`). Member crates use
   `version.workspace = true`. Exception: `guest/crates/exec-agent` is excluded
   from the workspace (linux-only, cross-compiled) and carries its own version.
 - **Never suppress type errors** (`as any`, `@ts-ignore`, `unwrap_or_default`
@@ -83,6 +114,52 @@ scripts/tui-smoke.sh
 - **Atomic commits.** One logical change per commit, with a conventional-commit
   subject (`feat:`, `fix:`, `chore:`, `docs:`, `ci:`) matching existing history.
 - Never commit unless the user asked for it.
+
+## Versioning and releases (MANDATORY)
+
+The canonical version is the root `VERSION` file; `scripts/set-version.sh <semver>`
+propagates it to every manifest (see "Single version source of truth" above).
+The release pipeline (`.github/workflows/release.yml`) is **tag-driven**: pushing
+a `v*` tag runs `scripts/set-version.sh` with the tag's version and publishes all
+artifacts under that version. Never hand-edit a single manifest.
+
+### Choose the bump from the largest change in the release
+
+We follow SemVer, applied pre-1.0 (`0.y.z`). Pick the highest level that **any
+single change** in the release warrants. It is decided by the *furthest-reaching*
+change, not by the number of changes and not by an average.
+
+| Bump | When any single change qualifies | Examples |
+|------|----------------------------------|----------|
+| **MAJOR** `X.0.0` | Breaking change to a **stable public contract** | `SandboxSpec` / wire-protocol break; removing or renaming a CLI command/flag; removing a `sandbox.yml` field or changing its type incompatibly; an install-layout change that breaks existing installs; dropping a supported platform |
+| **MINOR** `0.Y.0` | **Backward-compatible** new surface, or a notable behavior / milestone change | new CLI command/flag; new `sandbox.yml` field; new platform, SDK, or agent; a security-model or release-pipeline overhaul |
+| **PATCH** `0.0.Z` | **Backward-compatible** fix with no new surface | bug fix; documentation-accuracy correction; dependency bump; internal refactor |
+
+Rules:
+
+- **Furthest-reaching wins.** One breaking change in an otherwise fix-only release
+  is still a MAJOR-class release.
+- **Pre-1.0 exception.** While the version is `0.y.z`, breaking changes take a
+  **MINOR** bump. Reserve `v1.0.0` for when you deliberately declare the public
+  surface stable. Call out every breaking change in the release notes.
+- **1.0 gate.** Promote `0.x` → `1.0.0` only once the wire `SandboxSpec`, the
+  `nanosb` CLI surface, and the `sandbox.yml` schema are frozen and
+  version-compatible across all three front doors (local, cloud node agent,
+  containerd shim).
+- **Docs move with the version.** Update every doc that states the current
+  version (install examples, component READMEs) in the same change. Leave purely
+  historical references (e.g. "in v0.2.0 we changed X") intact.
+
+### Cutting a release
+
+1. `scripts/set-version.sh <X.Y.Z>` — writes `VERSION` and every manifest; then
+   `scripts/test-set-version.sh` must pass.
+2. Commit `VERSION` + all manifests together (`chore(release): vX.Y.Z`).
+3. `git tag vX.Y.Z && git push origin vX.Y.Z` — the tag triggers
+   `release.yml`, which builds and publishes the release (assets, checksums,
+   install scripts).
+4. Verify the published assets and write release notes that summarize the changes
+   and call out any breaking change.
 
 ## Documentation is part of the change (MANDATORY)
 
@@ -197,6 +274,7 @@ Before finishing any runtime change, exercise it through the **local CLI**
 |---------|-----------------|
 | CLI commands, flags, subcommands | `src/main.rs` (clap definitions) |
 | TUI slash-commands | `src/tui/commands.rs` (`HELP_ENTRIES`) |
+| TUI tests (frames/handlers/E2E) | `src/tui/tests.rs` (ratatui `TestBackend`) + `src/tui/vm_test.rs` |
 | `sandbox.yml` schema / defaults | `sandbox/crates/sandbox/src/config/file.rs` + `config/mod.rs` |
 | Runtime `SandboxConfig` defaults | `runtime/crates/runtime/src/config/mod.rs` |
 | Wire protocol | `docs/protocol/protocol.md` + `crates/protocol` |
@@ -204,6 +282,7 @@ Before finishing any runtime change, exercise it through the **local CLI**
 | Install paths / bundles | `scripts/install.sh`, `install-deps/install.sh`, `scripts/package-sdk.sh` |
 | Host/shim supervisor entrypoint (`nanosb supervise`) | `src/main.rs` (`cmd_supervise`), `crates/host/src/deploy.rs`, `docs/runtime-capability-contract.md` |
 | libkrun fork (pin, commits, init-hook env) | `runtime/scripts/build-libkrun.sh` (`LIBKRUN_SHA`), `runtime/scripts/patches/README.md`, `nanosandboxai/libkrun`@`nanosandbox` |
+| Current version + release policy | `VERSION`, `scripts/set-version.sh`, this file ("Versioning and releases") |
 
 ## License
 

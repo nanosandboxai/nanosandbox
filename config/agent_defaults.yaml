@@ -31,3 +31,19 @@ goose:
 cursor:
   cpus: 2
   memory_mb: 2048
+
+opencode:
+  cpus: 2
+  memory_mb: 2048
+
+aider:
+  cpus: 2
+  memory_mb: 2048
+
+gemini:
+  cpus: 2
+  memory_mb: 2048
+
+crush:
+  cpus: 2
+  memory_mb: 2048

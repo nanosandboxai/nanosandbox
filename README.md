@@ -54,7 +54,7 @@ The binary will be at `target/release/nanosb`.
 nanosb doctor
 
 # Pull an agent image
-nanosb pull ghcr.io/nanosandboxai/agents-registry/claude:latest
+nanosb pull ghcr.io/nanosandboxai/nanosandbox/claude:latest
 
 # Run a sandbox from sandbox.yml in the current directory
 nanosb
@@ -105,6 +105,12 @@ Notes:
 ```bash
 # Add panel and import selected startup env keys
 /add claude --use-env OPENAI_API_KEY --use-env GITHUB_TOKEN
+
+# Supported agents: claude, codex, goose, cursor, opencode, aider, gemini, crush
+/add opencode --auto-mode -p "list files"                # headless opencode
+/add aider --auto-mode -p "refactor the module"         # headless aider
+/add gemini --interactive                               # Gemini CLI interactive UI
+/add crush                                              # Crush interactive UI (default)
 ```
 
 ### Language SDKs
@@ -232,7 +238,7 @@ defaults:
   memory: 4096
   timeout: 600
   permissions: default
-  workdir: /workspace     # guest working directory (default: /workspace)
+  workdir: /home/developer  # guest working directory (default: the guest home)
   workspace:
     mode: isolated        # isolated (default) | shared
     fresh_rootfs: false
@@ -264,7 +270,7 @@ sandboxes:
     project:
       path: .
       branch: main
-      mount_point: /workspace
+      mount_point: /home/developer
       auto_sync: false
 
   codex:
@@ -274,15 +280,49 @@ sandboxes:
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     auto_mode: true
-    prompt: "Refactor the module in /workspace."
+    prompt: "Refactor the module in /home/developer."
 
   cursor:
     type: cursor
     image: cursor
     interactive: true
+
+  goose:
+    type: goose
+    image: goose
+
+  opencode:
+    type: opencode
+    image: opencode
+    auto_mode: true
+    prompt: "Scan the project in /home/developer for TODOs."
+
+  aider:
+    type: aider
+    image: aider
+
+  gemini:
+    type: gemini
+    image: gemini
+    env:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+
+  crush:
+    type: crush
+    image: crush
+    auto_mode: true
+    prompt: "Add tests for the parser and run them."
 ```
 
-Bare image names (e.g., `claude`, `codex`) are automatically resolved to `ghcr.io/nanosandboxai/agents-registry/<name>:latest`.
+Bare agent image names (`claude`, `codex`, `goose`, `cursor`, `opencode`,
+`aider`, `gemini`, `crush`) are automatically resolved to
+`ghcr.io/nanosandboxai/nanosandbox/<name>:latest`; any other bare name
+resolves to the matching Docker Hub library image.
+
+The guest working directory and the project mount point default to the guest
+user's **home directory** (`/home/developer`). There is no mandatory
+`/workspace`: set `workdir` or `project.mount_point` explicitly when your agent
+should start in a different directory.
 
 ### Interactive agent panels
 
@@ -305,6 +345,34 @@ Or per panel from the TUI:
 
 `interactive` and `auto_mode` are mutually exclusive. Interactive panels are
 backed by the in-guest exec agent's PTY (the same channel as `nanosb exec --tty`).
+
+### Supported agents
+
+Nanosandbox ships images for eight agent CLIs in
+`ghcr.io/nanosandboxai/nanosandbox/`. At boot, nanosb runs the agent's CLI
+inside the VM with the invocation below (bare when interactive, with the listed
+flags when headless). API keys are injected from the panel environment via
+`/add --use-env <KEY>` or `nanosb --env <KEY>=...`:
+
+| Agent | Default image | Interactive | Headless (default permissions) | API key env var(s) |
+|-------|----------------|-------------|--------------------------------|--------------------|
+| Claude | `.../claude:latest` | `claude` | `claude --print <prompt> --verbose --output-format stream-json --include-partial-messages` | `ANTHROPIC_API_KEY` (required) |
+| Codex | `.../codex:latest` | `codex` | `codex exec --skip-git-repo-check --json <prompt>` | `OPENAI_API_KEY` (required) |
+| Goose | `.../goose:latest` | `goose session` | `goose run --text <prompt>` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+| Cursor | `.../cursor:latest` | `cursor-agent` | `cursor-agent --message <prompt>` | none declared |
+| OpenCode | `.../opencode:latest` | `opencode` | `opencode run <prompt>` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+| Aider | `.../aider:latest` | `aider` | `aider --message <prompt> --yes --no-auto-commits` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+| Gemini CLI | `.../gemini:latest` | `gemini` | `gemini -p <prompt>` | `GEMINI_API_KEY` (required) |
+| Crush | `.../crush:latest` | `crush` | `crush run <prompt>` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+
+Image references above are shorthand for
+`ghcr.io/nanosandboxai/nanosandbox/<name>:latest`. Permission flags are
+added per agent rather than globally: `allow-all` (or auto-mode) adds
+`--dangerously-skip-permissions` for claude, `--dangerously-bypass-approvals-and-sandbox`
+for codex, `--auto` for opencode, `--approval-mode yolo` for gemini, and
+`--force` (plus `--trust --approve-mcps` in auto-mode) for cursor; goose instead
+sets the `GOOSE_MODE` env var (`auto` for allow-all, `smart_approve` for
+accept-edits); crush adds `--yolo` to its interactive TUI under allow-all.
 
 ### Reviewing and applying agent changes
 
