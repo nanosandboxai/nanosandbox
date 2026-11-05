@@ -351,6 +351,31 @@ impl ImageManager {
         self.cache_dir.join("blobs").join("sha256")
     }
 
+    /// Read the OCI image config's `Env` entries (e.g. the image's `PATH`) as
+    /// `(key, value)` pairs. Empty if the config blob is missing or malformed.
+    pub fn read_image_env(&self, config_digest: &str) -> HashMap<String, String> {
+        let short = config_digest
+            .strip_prefix("sha256:")
+            .unwrap_or(config_digest);
+        let Ok(data) = std::fs::read_to_string(self.blobs_dir().join(short)) else {
+            return HashMap::new();
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) else {
+            return HashMap::new();
+        };
+        json.get("config")
+            .and_then(|c| c.get("Env"))
+            .and_then(|e| e.as_array())
+            .map(|env| {
+                env.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| s.split_once('='))
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Get the extracted layers directory
     pub fn extracted_dir(&self) -> PathBuf {
         self.cache_dir.join("extracted")
@@ -757,6 +782,7 @@ impl ImageManager {
             layers: layer_digests,
             config_digest: manifest_digest,
             size: total_size,
+            env: self.read_image_env(&config_digest),
         };
 
         if let Err(e) = self.save_manifest(&pulled) {
@@ -1515,6 +1541,8 @@ pub struct PulledImage {
     pub config_digest: String,
     /// Total size in bytes
     pub size: u64,
+    /// Environment from the image config (`Env`), e.g. `PATH`.
+    pub env: HashMap<String, String>,
 }
 
 #[cfg(test)]
@@ -1558,6 +1586,7 @@ mod tests {
             layers: vec!["sha256:abc123".to_string(), "sha256:def456".to_string()],
             config_digest: "sha256:config789".to_string(),
             size: 1024,
+            env: Default::default(),
         };
 
         manager.save_manifest(&pulled).unwrap();
@@ -1658,6 +1687,7 @@ mod tests {
             layers: vec!["sha256:abc123".to_string()],
             config_digest: "sha256:cfg".to_string(),
             size: 100,
+            env: Default::default(),
         };
         manager.save_manifest(&pulled).unwrap();
 
