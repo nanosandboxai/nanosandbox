@@ -1,5 +1,5 @@
 defaults:
-  image: ghcr.io/nanosandboxai/agents-registry/claude:rc12
+  image: ghcr.io/nanosandboxai/nanosandbox/claude:rc12
   cpus: 2
   memory: 4096
   timeout: 600

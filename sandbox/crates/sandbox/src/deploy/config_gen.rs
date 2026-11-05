@@ -10,9 +10,9 @@
 //! | Goose   | YAML     | ~/.config/goose/config.yaml   |
 //! | Cursor  | JSON     | ~/.cursor/mcp.json            |
 
+use crate::config::{AgentType, McpServerConfig};
 use std::collections::HashMap;
 use tracing::warn;
-use crate::config::{AgentType, McpServerConfig};
 
 /// Format identifier for MCP config generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,10 @@ pub enum McpConfigFormat {
     Codex,
     Goose,
     Cursor,
+    Opencode,
+    Aider,
+    Gemini,
+    Crush,
 }
 
 impl From<AgentType> for McpConfigFormat {
@@ -30,6 +34,10 @@ impl From<AgentType> for McpConfigFormat {
             AgentType::Codex => McpConfigFormat::Codex,
             AgentType::Goose => McpConfigFormat::Goose,
             AgentType::Cursor => McpConfigFormat::Cursor,
+            AgentType::Opencode => McpConfigFormat::Opencode,
+            AgentType::Aider => McpConfigFormat::Aider,
+            AgentType::Gemini => McpConfigFormat::Gemini,
+            AgentType::Crush => McpConfigFormat::Crush,
         }
     }
 }
@@ -91,6 +99,38 @@ impl ConfigGenerator {
                     });
                 }
             }
+            McpConfigFormat::Opencode => {
+                if let Some(content) = Self::generate_opencode(servers) {
+                    files.push(ConfigFile {
+                        relative_path: "opencode/opencode.json".to_string(),
+                        content,
+                    });
+                }
+            }
+            McpConfigFormat::Aider => {
+                if let Some(content) = Self::generate_aider(servers) {
+                    files.push(ConfigFile {
+                        relative_path: "aider/.aider.conf.yml".to_string(),
+                        content,
+                    });
+                }
+            }
+            McpConfigFormat::Gemini => {
+                if let Some(content) = Self::generate_gemini(servers) {
+                    files.push(ConfigFile {
+                        relative_path: "gemini/settings.json".to_string(),
+                        content,
+                    });
+                }
+            }
+            McpConfigFormat::Crush => {
+                if let Some(content) = Self::generate_crush(servers) {
+                    files.push(ConfigFile {
+                        relative_path: "crush/crush.json".to_string(),
+                        content,
+                    });
+                }
+            }
         }
 
         files
@@ -122,10 +162,18 @@ impl ConfigGenerator {
         for name in names {
             let srv = &servers[name];
             let mut entry = serde_json::Map::new();
-            entry.insert("command".to_string(), serde_json::Value::String(srv.command.clone()));
+            entry.insert(
+                "command".to_string(),
+                serde_json::Value::String(srv.command.clone()),
+            );
             entry.insert(
                 "args".to_string(),
-                serde_json::Value::Array(srv.args.iter().map(|a| serde_json::Value::String(a.clone())).collect()),
+                serde_json::Value::Array(
+                    srv.args
+                        .iter()
+                        .map(|a| serde_json::Value::String(a.clone()))
+                        .collect(),
+                ),
             );
             if !srv.env.is_empty() {
                 warn_inline_secrets(name, &srv.env);
@@ -182,7 +230,8 @@ impl ConfigGenerator {
             }
             output.push_str("]\n");
 
-            let non_empty_env: HashMap<_, _> = srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
+            let non_empty_env: HashMap<_, _> =
+                srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
             if !non_empty_env.is_empty() {
                 warn_inline_secrets(name, &srv.env);
                 output.push_str("env = { ");
@@ -245,7 +294,8 @@ impl ConfigGenerator {
                 }
             }
 
-            let non_empty_env: HashMap<_, _> = srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
+            let non_empty_env: HashMap<_, _> =
+                srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
             if !non_empty_env.is_empty() {
                 warn_inline_secrets(name, &srv.env);
                 output.push_str("    envs:\n");
@@ -268,6 +318,132 @@ impl ConfigGenerator {
     fn generate_cursor(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
         Self::generate_claude(servers)
     }
+
+    /// Generate OpenCode MCP config (JSON, `mcp` key in opencode.json).
+    ///
+    /// Format:
+    /// ```json
+    /// {
+    ///   "mcp": {
+    ///     "github": {
+    ///       "type": "local",
+    ///       "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+    ///       "enabled": true,
+    ///       "environment": { "GITHUB_TOKEN": "..." }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    fn generate_opencode(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
+        if servers.is_empty() {
+            return None;
+        }
+
+        let mut entries = serde_json::Map::new();
+        let mut names: Vec<&String> = servers.keys().collect();
+        names.sort();
+
+        for name in names {
+            let srv = &servers[name];
+            let mut entry = serde_json::Map::new();
+            entry.insert(
+                "type".to_string(),
+                serde_json::Value::String("local".to_string()),
+            );
+            entry.insert(
+                "command".to_string(),
+                serde_json::Value::Array(
+                    std::iter::once(srv.command.clone())
+                        .chain(srv.args.iter().cloned())
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+            entry.insert("enabled".to_string(), serde_json::Value::Bool(srv.enabled));
+            if !srv.env.is_empty() {
+                warn_inline_secrets(name, &srv.env);
+                let env_map: serde_json::Map<String, _> = srv
+                    .env
+                    .iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .collect();
+                if !env_map.is_empty() {
+                    entry.insert(
+                        "environment".to_string(),
+                        serde_json::Value::Object(env_map),
+                    );
+                }
+            }
+            entries.insert(name.clone(), serde_json::Value::Object(entry));
+        }
+
+        let wrapper = serde_json::json!({ "mcp": serde_json::Value::Object(entries) });
+        let content = serde_json::to_string_pretty(&wrapper).ok()?;
+        Some(content.into_bytes())
+    }
+
+    /// Generate Aider MCP config (YAML, `mcp_servers` key in .aider.conf.yml).
+    ///
+    /// Format:
+    /// ```yaml
+    /// mcp_servers:
+    ///   github:
+    ///     command: npx
+    ///     args: ["-y", "@modelcontextprotocol/server-github"]
+    ///     env:
+    ///       GITHUB_TOKEN: "..."
+    /// ```
+    fn generate_aider(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
+        if servers.is_empty() {
+            return None;
+        }
+
+        let mut output = String::new();
+        output.push_str("mcp_servers:\n");
+
+        let mut names: Vec<&String> = servers.keys().collect();
+        names.sort();
+
+        for name in names {
+            let srv = &servers[name];
+            output.push_str(&format!("  {}:\n", name));
+            output.push_str(&format!("    command: {}\n", srv.command));
+            if !srv.args.is_empty() {
+                output.push_str("    args: [");
+                for (j, arg) in srv.args.iter().enumerate() {
+                    if j > 0 {
+                        output.push_str(", ");
+                    }
+                    output.push_str(&format!("{:?}", arg));
+                }
+                output.push_str("]\n");
+            }
+            let non_empty_env: HashMap<_, _> =
+                srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
+            if !non_empty_env.is_empty() {
+                warn_inline_secrets(name, &srv.env);
+                output.push_str("    env:\n");
+                let mut env_keys: Vec<&String> = non_empty_env.keys().copied().collect();
+                env_keys.sort();
+                for k in env_keys {
+                    output.push_str(&format!("      {}: {:?}\n", k, non_empty_env[k]));
+                }
+            }
+        }
+
+        Some(output.into_bytes())
+    }
+
+    /// Generate Gemini CLI MCP config (JSON, `mcpServers` key in settings.json).
+    fn generate_gemini(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
+        Self::generate_claude(servers)
+    }
+
+    /// Generate Crush MCP config (JSON, `mcpServers` key in crush.json).
+    fn generate_crush(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
+        Self::generate_claude(servers)
+    }
 }
 
 fn looks_like_secret(value: &str) -> bool {
@@ -275,7 +451,14 @@ fn looks_like_secret(value: &str) -> bool {
         return false;
     }
     const PREFIXES: &[&str] = &[
-        "AKIA", "gho_", "ghp_", "github_pat_", "sk-", "sk_", "xoxb-", "xoxp-",
+        "AKIA",
+        "gho_",
+        "ghp_",
+        "github_pat_",
+        "sk-",
+        "sk_",
+        "xoxb-",
+        "xoxp-",
     ];
     if PREFIXES.iter().any(|p| value.starts_with(p)) {
         return true;
@@ -311,7 +494,10 @@ mod tests {
             "github".to_string(),
             McpServerConfig {
                 command: "npx".to_string(),
-                args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-github".to_string(),
+                ],
                 env: [("GITHUB_TOKEN".to_string(), "test-token".to_string())].into(),
                 enabled: true,
             },
@@ -320,7 +506,10 @@ mod tests {
             "filesystem".to_string(),
             McpServerConfig {
                 command: "npx".to_string(),
-                args: vec!["-y".to_string(), "@modelcontextprotocol/server-filesystem".to_string()],
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-filesystem".to_string(),
+                ],
                 env: HashMap::new(),
                 enabled: true,
             },
@@ -383,6 +572,59 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_opencode() {
+        let servers = sample_servers();
+        let files = ConfigGenerator::generate_all(&servers, &AgentType::Opencode);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "opencode/opencode.json");
+
+        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        assert!(content.contains("\"mcp\""));
+        assert!(content.contains("\"type\": \"local\""));
+        assert!(content.contains("github"));
+        assert!(content.contains("npx"));
+        assert!(content.contains("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn test_generate_aider() {
+        let servers = sample_servers();
+        let files = ConfigGenerator::generate_all(&servers, &AgentType::Aider);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "aider/.aider.conf.yml");
+
+        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        assert!(content.contains("mcp_servers:"));
+        assert!(content.contains("github:"));
+        assert!(content.contains("command: npx"));
+        assert!(content.contains("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn test_generate_gemini() {
+        let servers = sample_servers();
+        let files = ConfigGenerator::generate_all(&servers, &AgentType::Gemini);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "gemini/settings.json");
+
+        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        assert!(content.contains("mcpServers"));
+        assert!(content.contains("github"));
+    }
+
+    #[test]
+    fn test_generate_crush() {
+        let servers = sample_servers();
+        let files = ConfigGenerator::generate_all(&servers, &AgentType::Crush);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "crush/crush.json");
+
+        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        assert!(content.contains("mcpServers"));
+        assert!(content.contains("github"));
+    }
+
+    #[test]
     fn test_generate_empty_servers() {
         let servers = HashMap::new();
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Claude);
@@ -403,7 +645,10 @@ mod tests {
         );
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Goose);
         let content = String::from_utf8(files[0].content.clone()).unwrap();
-        assert!(!content.contains("envs:"), "empty env should not produce envs section");
+        assert!(
+            !content.contains("envs:"),
+            "empty env should not produce envs section"
+        );
     }
 
     #[test]
@@ -471,12 +716,16 @@ mod tests {
 
     #[test]
     fn test_looks_like_secret_slack_bot() {
-        assert!(looks_like_secret("xoxb-1234567890-1234567890123-abc123def456"));
+        assert!(looks_like_secret(
+            "xoxb-1234567890-1234567890123-abc123def456"
+        ));
     }
 
     #[test]
     fn test_looks_like_secret_slack_user() {
-        assert!(looks_like_secret("xoxp-1234567890-1234567890123-abc123def456"));
+        assert!(looks_like_secret(
+            "xoxp-1234567890-1234567890123-abc123def456"
+        ));
     }
 
     #[test]

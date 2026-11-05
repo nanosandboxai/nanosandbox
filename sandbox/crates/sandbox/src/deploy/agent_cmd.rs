@@ -3,8 +3,8 @@
 //! Builds the CLI invocation (binary + args) for each agent type, and resolves
 //! the environment map passed to the VM boot.
 
-use std::collections::HashMap;
 use crate::config::{AgentType, Permissions};
+use std::collections::HashMap;
 
 /// A resolved agent command: binary path + arguments.
 #[derive(Debug, Clone)]
@@ -52,6 +52,18 @@ impl AgentCommandBuilder {
             AgentType::Cursor => {
                 Self::build_cursor(prompt, auto_mode, interactive, effective_permissions, model)
             }
+            AgentType::Opencode => {
+                Self::build_opencode(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::Aider => {
+                Self::build_aider(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::Gemini => {
+                Self::build_gemini(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::Crush => {
+                Self::build_crush(prompt, interactive, effective_permissions, model)
+            }
         }
     }
 
@@ -75,17 +87,15 @@ impl AgentCommandBuilder {
 
         // Agent-specific env vars
         match agent_type {
-            AgentType::Goose => {
-                match effective_permissions {
-                    Permissions::AllowAll => {
-                        env.insert("GOOSE_MODE".to_string(), "auto".to_string());
-                    }
-                    Permissions::AcceptEdits => {
-                        env.insert("GOOSE_MODE".to_string(), "smart_approve".to_string());
-                    }
-                    Permissions::Default => {}
+            AgentType::Goose => match effective_permissions {
+                Permissions::AllowAll => {
+                    env.insert("GOOSE_MODE".to_string(), "auto".to_string());
                 }
-            }
+                Permissions::AcceptEdits => {
+                    env.insert("GOOSE_MODE".to_string(), "smart_approve".to_string());
+                }
+                Permissions::Default => {}
+            },
             _ => {}
         }
 
@@ -144,17 +154,21 @@ impl AgentCommandBuilder {
         permissions: Permissions,
         model: Option<&str>,
     ) -> AgentCommand {
-        let mut args = vec!["exec".to_string()];
+        let mut args = Vec::new();
 
         if !interactive {
+            args.push("exec".to_string());
             args.push("--skip-git-repo-check".to_string());
-            match permissions {
-                Permissions::AllowAll | Permissions::AcceptEdits => {
-                    args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-                }
-                Permissions::Default => {}
-            }
+        }
 
+        match permissions {
+            Permissions::AllowAll | Permissions::AcceptEdits => {
+                args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+            }
+            Permissions::Default => {}
+        }
+
+        if !interactive {
             args.push("--json".to_string());
         }
 
@@ -183,14 +197,14 @@ impl AgentCommandBuilder {
     ) -> AgentCommand {
         let mut args = Vec::new();
 
-        if !interactive && !prompt.is_empty() {
+        if interactive {
+            args.push("session".to_string());
+        } else if !prompt.is_empty() {
             args.push("run".to_string());
             args.push("--text".to_string());
             args.push(prompt.to_string());
-        } else {
-            // Interactive mode — goose configure if no provider configured
-            args.push("configure".to_string());
         }
+        // Headless with empty prompt: bare `goose` (never `goose configure`).
 
         AgentCommand {
             binary: "goose".to_string(),
@@ -240,6 +254,145 @@ impl AgentCommandBuilder {
             args,
         }
     }
+
+    // ── OpenCode ────────────────────────────────────────────────────
+
+    fn build_opencode(
+        prompt: &str,
+        interactive: bool,
+        permissions: Permissions,
+        model: Option<&str>,
+    ) -> AgentCommand {
+        let mut args = Vec::new();
+
+        if !interactive {
+            args.push("run".to_string());
+            if !prompt.is_empty() {
+                args.push(prompt.to_string());
+            }
+        }
+
+        match permissions {
+            Permissions::AllowAll => {
+                args.push("--auto".to_string());
+            }
+            Permissions::AcceptEdits | Permissions::Default => {}
+        }
+
+        if let Some(m) = model {
+            args.push("--model".to_string());
+            args.push(m.to_string());
+        }
+
+        AgentCommand {
+            binary: "opencode".to_string(),
+            args,
+        }
+    }
+
+    // ── Aider ───────────────────────────────────────────────────────
+
+    fn build_aider(
+        prompt: &str,
+        interactive: bool,
+        _permissions: Permissions,
+        model: Option<&str>,
+    ) -> AgentCommand {
+        let mut args = Vec::new();
+
+        if !interactive {
+            if !prompt.is_empty() {
+                args.push("--message".to_string());
+                args.push(prompt.to_string());
+            }
+            args.push("--yes".to_string());
+            // Aider auto-commits by default; disable so the sandbox workspace
+            // git history is not polluted with agent commits.
+            args.push("--no-auto-commits".to_string());
+        }
+
+        if let Some(m) = model {
+            args.push("--model".to_string());
+            args.push(m.to_string());
+        }
+
+        AgentCommand {
+            binary: "aider".to_string(),
+            args,
+        }
+    }
+
+    // ── Gemini CLI ──────────────────────────────────────────────────
+
+    fn build_gemini(
+        prompt: &str,
+        interactive: bool,
+        permissions: Permissions,
+        model: Option<&str>,
+    ) -> AgentCommand {
+        let mut args = Vec::new();
+
+        if !interactive {
+            args.push("-p".to_string());
+            if !prompt.is_empty() {
+                args.push(prompt.to_string());
+            }
+        }
+
+        match permissions {
+            Permissions::AllowAll => {
+                args.push("--approval-mode".to_string());
+                args.push("yolo".to_string());
+            }
+            Permissions::AcceptEdits | Permissions::Default => {}
+        }
+
+        if let Some(m) = model {
+            args.push("--model".to_string());
+            args.push(m.to_string());
+        }
+
+        AgentCommand {
+            binary: "gemini".to_string(),
+            args,
+        }
+    }
+
+    // ── Crush ───────────────────────────────────────────────────────
+
+    fn build_crush(
+        prompt: &str,
+        interactive: bool,
+        permissions: Permissions,
+        model: Option<&str>,
+    ) -> AgentCommand {
+        let mut args = Vec::new();
+
+        if !interactive {
+            args.push("run".to_string());
+            if !prompt.is_empty() {
+                args.push(prompt.to_string());
+            }
+        } else {
+            // `--yolo` is a root-command flag (interactive TUI only).
+            match permissions {
+                Permissions::AllowAll => {
+                    args.push("--yolo".to_string());
+                }
+                Permissions::AcceptEdits | Permissions::Default => {}
+            }
+        }
+
+        if let Some(m) = model {
+            args.push("--model".to_string());
+            args.push(m.to_string());
+        }
+
+        AgentCommand {
+            binary: "crush".to_string(),
+            args,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -259,7 +412,9 @@ mod tests {
         assert_eq!(cmd.binary, "claude");
         assert!(cmd.args.contains(&"--verbose".to_string()));
         assert!(cmd.args.contains(&"--output-format".to_string()));
-        assert!(!cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(!cmd
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
     }
 
     #[test]
@@ -274,7 +429,9 @@ mod tests {
         );
         assert!(cmd.args.contains(&"--print".to_string()));
         assert!(cmd.args.contains(&"do something".to_string()));
-        assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
     }
 
     #[test]
@@ -317,7 +474,9 @@ mod tests {
             Permissions::AllowAll,
             None,
         );
-        assert!(cmd.args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     }
 
     #[test]
@@ -347,7 +506,11 @@ mod tests {
             None,
         );
         assert_eq!(cmd.binary, "goose");
-        assert!(cmd.args.contains(&"configure".to_string()));
+        assert!(
+            !cmd.args.contains(&"configure".to_string()),
+            "headless goose with empty prompt must not run `goose configure`, got {:?}",
+            cmd.args
+        );
     }
 
     #[test]
@@ -384,12 +547,8 @@ mod tests {
         let mut base = HashMap::new();
         base.insert("ANTHROPIC_API_KEY".to_string(), "sk-...".to_string());
 
-        let env = AgentCommandBuilder::build_env(
-            &AgentType::Goose,
-            false,
-            Permissions::AllowAll,
-            &base,
-        );
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Goose, false, Permissions::AllowAll, &base);
         assert_eq!(env.get("GOOSE_MODE").unwrap(), "auto");
         assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "sk-...");
     }
@@ -409,24 +568,16 @@ mod tests {
     #[test]
     fn test_build_env_goose_default() {
         let base = HashMap::new();
-        let env = AgentCommandBuilder::build_env(
-            &AgentType::Goose,
-            false,
-            Permissions::Default,
-            &base,
-        );
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Goose, false, Permissions::Default, &base);
         assert!(!env.contains_key("GOOSE_MODE"));
     }
 
     #[test]
     fn test_build_env_non_goose() {
         let base = HashMap::new();
-        let env = AgentCommandBuilder::build_env(
-            &AgentType::Claude,
-            false,
-            Permissions::AllowAll,
-            &base,
-        );
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Claude, false, Permissions::AllowAll, &base);
         assert!(!env.contains_key("GOOSE_MODE"));
     }
 
@@ -441,7 +592,9 @@ mod tests {
             None,
         );
         // auto_mode with Default permissions → effective AllowAll
-        assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
     }
 
     #[test]
@@ -471,14 +624,16 @@ mod tests {
             Permissions::AllowAll,
             Some("claude-sonnet-4-5-20250929"),
         );
-        assert!(cmd.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
         assert!(cmd.args.contains(&"--model".to_string()));
         assert!(cmd.args.contains(&"claude-sonnet-4-5-20250929".to_string()));
         assert!(!cmd.args.contains(&"--print".to_string()));
     }
 
     #[test]
-    fn test_codex_interactive_is_bare_exec() {
+    fn test_codex_interactive_is_bare_codex() {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Codex,
             "ignored",
@@ -487,11 +642,16 @@ mod tests {
             Permissions::Default,
             None,
         );
-        assert_eq!(cmd.args, vec!["exec".to_string()]);
+        assert_eq!(cmd.binary, "codex");
+        assert!(
+            cmd.args.is_empty(),
+            "interactive codex must be bare `codex` (not `codex exec`), got {:?}",
+            cmd.args
+        );
     }
 
     #[test]
-    fn test_goose_interactive_uses_configure() {
+    fn test_goose_interactive_uses_session() {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Goose,
             "ignored",
@@ -500,8 +660,7 @@ mod tests {
             Permissions::Default,
             None,
         );
-        assert!(cmd.args.contains(&"configure".to_string()));
-        assert!(!cmd.args.contains(&"run".to_string()));
+        assert_eq!(cmd.args, vec!["session".to_string()]);
     }
 
     #[test]
@@ -531,5 +690,176 @@ mod tests {
         );
         assert!(cmd.args.contains(&"--print".to_string()));
         assert!(cmd.args.contains(&"--output-format".to_string()));
+    }
+
+    #[test]
+    fn test_opencode_headless() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Opencode,
+            "do it",
+            false,
+            false,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "opencode");
+        assert_eq!(cmd.args, vec!["run".to_string(), "do it".to_string()]);
+    }
+
+    #[test]
+    fn test_opencode_interactive_is_bare() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Opencode,
+            "ignored",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "opencode");
+        assert!(
+            cmd.args.is_empty(),
+            "interactive opencode must be bare `opencode`, got {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn test_opencode_allow_all_adds_auto() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Opencode,
+            "do it",
+            false,
+            false,
+            Permissions::AllowAll,
+            None,
+        );
+        assert!(cmd.args.contains(&"--auto".to_string()));
+    }
+
+    #[test]
+    fn test_aider_headless() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Aider,
+            "do it",
+            false,
+            false,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "aider");
+        assert!(cmd.args.contains(&"--message".to_string()));
+        assert!(cmd.args.contains(&"do it".to_string()));
+        assert!(cmd.args.contains(&"--yes".to_string()));
+        assert!(cmd.args.contains(&"--no-auto-commits".to_string()));
+    }
+
+    #[test]
+    fn test_aider_interactive_is_bare() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Aider,
+            "ignored",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "aider");
+        assert!(
+            cmd.args.is_empty(),
+            "interactive aider must be bare `aider`, got {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn test_gemini_headless() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Gemini,
+            "do it",
+            false,
+            false,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "gemini");
+        assert_eq!(cmd.args, vec!["-p".to_string(), "do it".to_string()]);
+    }
+
+    #[test]
+    fn test_gemini_interactive_is_bare() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Gemini,
+            "ignored",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "gemini");
+        assert!(
+            cmd.args.is_empty(),
+            "interactive gemini must be bare `gemini`, got {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn test_gemini_allow_all_adds_yolo() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Gemini,
+            "do it",
+            false,
+            false,
+            Permissions::AllowAll,
+            None,
+        );
+        assert!(cmd.args.contains(&"--approval-mode".to_string()));
+        assert!(cmd.args.contains(&"yolo".to_string()));
+    }
+
+    #[test]
+    fn test_crush_headless() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Crush,
+            "do it",
+            false,
+            false,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "crush");
+        assert_eq!(cmd.args, vec!["run".to_string(), "do it".to_string()]);
+    }
+
+    #[test]
+    fn test_crush_interactive_is_bare() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Crush,
+            "ignored",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(cmd.binary, "crush");
+        assert!(
+            cmd.args.is_empty(),
+            "interactive crush must be bare `crush`, got {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn test_crush_interactive_allow_all_adds_yolo() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Crush,
+            "",
+            false,
+            true,
+            Permissions::AllowAll,
+            None,
+        );
+        assert!(cmd.args.contains(&"--yolo".to_string()));
     }
 }

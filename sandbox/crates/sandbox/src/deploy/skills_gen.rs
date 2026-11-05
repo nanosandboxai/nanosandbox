@@ -10,8 +10,8 @@
 //! | Goose   | Everything concatenated into one file  | .goosehints              |
 //! | Cursor  | Individual .mdc rule files per skill   | nanosandbox-agent.mdc    |
 
-use crate::config::{AgentType, SkillDef};
 use super::config_gen::ConfigFile;
+use crate::config::{AgentType, SkillDef};
 
 /// Skills config generator.
 pub struct SkillsGenerator;
@@ -25,7 +25,7 @@ You are running inside an isolated nanosandbox VM (Debian Linux). You have:
 - When a task requires a runtime or tool that is missing, install it yourself
   using `sudo apt-get update && sudo apt-get install -y <package>` before proceeding.
   Do NOT ask the user to install software — you have full permissions to do it.
-- The working directory is /workspace (project files are mounted here).
+- The working directory is /home/developer (project files are mounted here).
 - Network access is available for downloading packages and dependencies.
 
 "#;
@@ -48,6 +48,10 @@ impl SkillsGenerator {
             AgentType::Codex => Self::generate_codex(skills, agent_name, prompt),
             AgentType::Goose => Self::generate_goose(skills, agent_name, prompt),
             AgentType::Cursor => Self::generate_cursor(skills, agent_name, prompt),
+            AgentType::Opencode => Self::generate_opencode(skills, agent_name, prompt),
+            AgentType::Aider => Self::generate_aider(skills, agent_name, prompt),
+            AgentType::Gemini => Self::generate_gemini(skills, agent_name, prompt),
+            AgentType::Crush => Self::generate_crush(skills, agent_name, prompt),
         }
     }
 
@@ -165,7 +169,10 @@ impl SkillsGenerator {
         // Always-apply preamble rule
         let mut preamble = String::new();
         preamble.push_str("---\n");
-        preamble.push_str(&format!("description: \"Nanosandbox agent definition: {}\"\n", agent_name));
+        preamble.push_str(&format!(
+            "description: \"Nanosandbox agent definition: {}\"\n",
+            agent_name
+        ));
         preamble.push_str("alwaysApply: true\n");
         preamble.push_str("---\n\n");
         preamble.push_str(SANDBOX_PREAMBLE);
@@ -175,6 +182,104 @@ impl SkillsGenerator {
         files.push(ConfigFile {
             relative_path: "cursor/rules/nanosandbox-agent.mdc".to_string(),
             content: preamble.into_bytes(),
+        });
+
+        files
+    }
+
+    // ── OpenCode Format ──────────────────────────────────────────────
+    // Skills: ~/.config/opencode/skills/<name>/SKILL.md
+    // Prompt: ~/.config/opencode/AGENTS.md
+
+    fn generate_opencode(skills: &[SkillDef], _agent_name: &str, prompt: &str) -> Vec<ConfigFile> {
+        let mut files = Vec::new();
+
+        for skill in skills {
+            let content = Self::format_skill_md(skill);
+            files.push(ConfigFile {
+                relative_path: format!("opencode/skills/{}/SKILL.md", skill.name),
+                content: content.into_bytes(),
+            });
+        }
+
+        let prompt_content = format!("{}{}\n", SANDBOX_PREAMBLE, prompt);
+        files.push(ConfigFile {
+            relative_path: "opencode/AGENTS.md".to_string(),
+            content: prompt_content.into_bytes(),
+        });
+
+        files
+    }
+
+    // ── Aider Format ────────────────────────────────────────────────
+    // Skills + prompt concatenated into CONVENTIONS.md (aider has no
+    // native skill files; it reads conventions from CONVENTIONS.md).
+
+    fn generate_aider(skills: &[SkillDef], _agent_name: &str, prompt: &str) -> Vec<ConfigFile> {
+        let mut output = String::new();
+        output.push_str(SANDBOX_PREAMBLE);
+        output.push_str(prompt);
+        output.push_str("\n\n");
+
+        for skill in skills {
+            output.push_str(&format!("## {}\n\n", skill.name));
+            if !skill.description.is_empty() {
+                output.push_str(&skill.description);
+                output.push_str("\n\n");
+            }
+            output.push_str(&skill.content);
+            output.push_str("\n\n");
+        }
+
+        vec![ConfigFile {
+            relative_path: "aider/CONVENTIONS.md".to_string(),
+            content: output.into_bytes(),
+        }]
+    }
+
+    // ── Gemini CLI Format ───────────────────────────────────────────
+    // Skills: ~/.gemini/skills/<name>/SKILL.md
+    // Prompt: ~/.gemini/GEMINI.md
+
+    fn generate_gemini(skills: &[SkillDef], _agent_name: &str, prompt: &str) -> Vec<ConfigFile> {
+        let mut files = Vec::new();
+
+        for skill in skills {
+            let content = Self::format_skill_md(skill);
+            files.push(ConfigFile {
+                relative_path: format!("gemini/skills/{}/SKILL.md", skill.name),
+                content: content.into_bytes(),
+            });
+        }
+
+        let prompt_content = format!("{}{}\n", SANDBOX_PREAMBLE, prompt);
+        files.push(ConfigFile {
+            relative_path: "gemini/GEMINI.md".to_string(),
+            content: prompt_content.into_bytes(),
+        });
+
+        files
+    }
+
+    // ── Crush Format ────────────────────────────────────────────────
+    // Skills: ~/.config/crush/skills/<name>/SKILL.md
+    // Prompt: ~/.config/crush/AGENTS.md
+
+    fn generate_crush(skills: &[SkillDef], _agent_name: &str, prompt: &str) -> Vec<ConfigFile> {
+        let mut files = Vec::new();
+
+        for skill in skills {
+            let content = Self::format_skill_md(skill);
+            files.push(ConfigFile {
+                relative_path: format!("crush/skills/{}/SKILL.md", skill.name),
+                content: content.into_bytes(),
+            });
+        }
+
+        let prompt_content = format!("{}{}\n", SANDBOX_PREAMBLE, prompt);
+        files.push(ConfigFile {
+            relative_path: "crush/AGENTS.md".to_string(),
+            content: prompt_content.into_bytes(),
         });
 
         files
@@ -195,7 +300,10 @@ impl SkillsGenerator {
             b.push_str(&format!("when_to_use: {:?}\n", skill.when_to_use));
         }
         if !skill.allowed_tools.is_empty() {
-            b.push_str(&format!("allowed-tools: {}\n", skill.allowed_tools.join(" ")));
+            b.push_str(&format!(
+                "allowed-tools: {}\n",
+                skill.allowed_tools.join(" ")
+            ));
         }
         if let Some(false) = skill.user_invocable {
             b.push_str("user-invocable: false\n");
@@ -247,7 +355,12 @@ mod tests {
     #[test]
     fn test_generate_claude_skills() {
         let skills = sample_skills();
-        let files = SkillsGenerator::generate_all(&skills, &AgentType::Claude, "python-dev", "You are a Python dev.");
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Claude,
+            "python-dev",
+            "You are a Python dev.",
+        );
 
         // 2 skill files + 1 CLAUDE.md
         assert_eq!(files.len(), 3);
@@ -258,7 +371,9 @@ mod tests {
         assert!(content.contains("Sandbox Environment"));
         assert!(content.contains("Python dev"));
 
-        let tdd_skill = files.iter().find(|f| f.relative_path == "claude/skills/tdd/SKILL.md");
+        let tdd_skill = files
+            .iter()
+            .find(|f| f.relative_path == "claude/skills/tdd/SKILL.md");
         assert!(tdd_skill.is_some(), "should have tdd SKILL.md");
         let tdd_content = String::from_utf8(tdd_skill.unwrap().content.clone()).unwrap();
         assert!(tdd_content.contains("name: tdd"));
@@ -268,7 +383,12 @@ mod tests {
     #[test]
     fn test_generate_goose_skills() {
         let skills = sample_skills();
-        let files = SkillsGenerator::generate_all(&skills, &AgentType::Goose, "python-dev", "You are a Python dev.");
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Goose,
+            "python-dev",
+            "You are a Python dev.",
+        );
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "goose/.goosehints");
@@ -283,7 +403,12 @@ mod tests {
     #[test]
     fn test_generate_codex_skills() {
         let skills = sample_skills();
-        let files = SkillsGenerator::generate_all(&skills, &AgentType::Codex, "python-dev", "You are a Python dev.");
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Codex,
+            "python-dev",
+            "You are a Python dev.",
+        );
 
         // 2 skill files + 1 AGENTS.md
         assert_eq!(files.len(), 3);
@@ -291,28 +416,128 @@ mod tests {
         let agents_md = files.iter().find(|f| f.relative_path == "codex/AGENTS.md");
         assert!(agents_md.is_some());
 
-        let tdd_skill = files.iter().find(|f| f.relative_path == "agents/skills/tdd/SKILL.md");
+        let tdd_skill = files
+            .iter()
+            .find(|f| f.relative_path == "agents/skills/tdd/SKILL.md");
         assert!(tdd_skill.is_some());
     }
 
     #[test]
     fn test_generate_cursor_skills() {
         let skills = sample_skills();
-        let files = SkillsGenerator::generate_all(&skills, &AgentType::Cursor, "python-dev", "You are a Python dev.");
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Cursor,
+            "python-dev",
+            "You are a Python dev.",
+        );
 
         // 2 .mdc rule files + 1 preamble rule
         assert_eq!(files.len(), 3);
 
-        let preamble = files.iter().find(|f| f.relative_path == "cursor/rules/nanosandbox-agent.mdc");
+        let preamble = files
+            .iter()
+            .find(|f| f.relative_path == "cursor/rules/nanosandbox-agent.mdc");
         assert!(preamble.is_some());
         let preamble_content = String::from_utf8(preamble.unwrap().content.clone()).unwrap();
         assert!(preamble_content.contains("alwaysApply: true"));
 
-        let tdd_rule = files.iter().find(|f| f.relative_path == "cursor/rules/nanosb-tdd.mdc");
+        let tdd_rule = files
+            .iter()
+            .find(|f| f.relative_path == "cursor/rules/nanosb-tdd.mdc");
         assert!(tdd_rule.is_some());
         let tdd_content = String::from_utf8(tdd_rule.unwrap().content.clone()).unwrap();
         assert!(tdd_content.contains("alwaysApply: false"));
         assert!(tdd_content.contains("description: \"Test-driven development\""));
+    }
+
+    #[test]
+    fn test_generate_opencode_skills() {
+        let skills = sample_skills();
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Opencode,
+            "python-dev",
+            "You are a Python dev.",
+        );
+
+        // 2 skill files + 1 AGENTS.md
+        assert_eq!(files.len(), 3);
+
+        let agents_md = files
+            .iter()
+            .find(|f| f.relative_path == "opencode/AGENTS.md");
+        assert!(agents_md.is_some());
+
+        let tdd_skill = files
+            .iter()
+            .find(|f| f.relative_path == "opencode/skills/tdd/SKILL.md");
+        assert!(tdd_skill.is_some());
+    }
+
+    #[test]
+    fn test_generate_aider_skills() {
+        let skills = sample_skills();
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Aider,
+            "python-dev",
+            "You are a Python dev.",
+        );
+
+        // Everything concatenated into CONVENTIONS.md
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "aider/CONVENTIONS.md");
+
+        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        assert!(content.contains("Sandbox Environment"));
+        assert!(content.contains("Python dev"));
+        assert!(content.contains("## tdd"));
+        assert!(content.contains("Red-green-refactor"));
+    }
+
+    #[test]
+    fn test_generate_gemini_skills() {
+        let skills = sample_skills();
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Gemini,
+            "python-dev",
+            "You are a Python dev.",
+        );
+
+        // 2 skill files + 1 GEMINI.md
+        assert_eq!(files.len(), 3);
+
+        let gemini_md = files.iter().find(|f| f.relative_path == "gemini/GEMINI.md");
+        assert!(gemini_md.is_some());
+
+        let tdd_skill = files
+            .iter()
+            .find(|f| f.relative_path == "gemini/skills/tdd/SKILL.md");
+        assert!(tdd_skill.is_some());
+    }
+
+    #[test]
+    fn test_generate_crush_skills() {
+        let skills = sample_skills();
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Crush,
+            "python-dev",
+            "You are a Python dev.",
+        );
+
+        // 2 skill files + 1 AGENTS.md
+        assert_eq!(files.len(), 3);
+
+        let agents_md = files.iter().find(|f| f.relative_path == "crush/AGENTS.md");
+        assert!(agents_md.is_some());
+
+        let tdd_skill = files
+            .iter()
+            .find(|f| f.relative_path == "crush/skills/tdd/SKILL.md");
+        assert!(tdd_skill.is_some());
     }
 
     #[test]

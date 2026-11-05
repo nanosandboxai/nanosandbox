@@ -59,7 +59,7 @@ pub struct SandboxDefaults {
     pub claude: Option<ClaudeSettingsDef>,
     /// Host project sharing mode (`isolated` default, `shared` legacy).
     pub workspace: Option<WorkspaceDef>,
-    /// Working directory for the guest command (default `/workspace`).
+    /// Working directory for the guest command (default: the guest home).
     pub workdir: Option<String>,
 }
 
@@ -105,7 +105,7 @@ pub struct SandboxDefinition {
     pub claude: Option<ClaudeSettingsDef>,
     /// Host project sharing mode (`isolated` default, `shared` legacy).
     pub workspace: Option<WorkspaceDef>,
-    /// Working directory for the guest command (default `/workspace`).
+    /// Working directory for the guest command (default: the guest home).
     pub workdir: Option<String>,
 }
 
@@ -267,7 +267,7 @@ pub fn resolve_sandbox_configs(
         let mut agent_config = AgentSandboxConfig::default();
 
         // Image (required after merge). Bare names like "claude" are normalized
-        // to the agents registry (ghcr.io/nanosandboxai/agents-registry/claude:latest).
+        // to the agents registry (ghcr.io/nanosandboxai/nanosandbox/claude:latest).
         config.image = def
             .image
             .clone()
@@ -463,7 +463,7 @@ pub fn resolve_sandbox_configs(
                 mount_point: proj
                     .mount_point
                     .clone()
-                    .unwrap_or_else(|| "/workspace".to_string()),
+                    .unwrap_or_else(|| "/home/developer".to_string()),
                 auto_sync: proj.auto_sync.unwrap_or(false),
             });
         }
@@ -750,7 +750,7 @@ sandboxes:
     fn test_resolve_run_as_root_snake_and_camel() {
         let yaml = r#"
 defaults:
-  image: ghcr.io/nanosandboxai/agents-registry/claude:rc23
+  image: ghcr.io/nanosandboxai/nanosandbox/claude:rc23
   runAsRoot: true
 
 sandboxes:
@@ -1553,7 +1553,7 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        assert_eq!(configs[0].1.sandbox.workdir, "/workspace");
+        assert_eq!(configs[0].1.sandbox.workdir, "/home/developer");
     }
 
     #[test]
