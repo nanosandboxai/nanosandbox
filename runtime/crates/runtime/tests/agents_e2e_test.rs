@@ -207,6 +207,16 @@ fn stage_exec_agent_dir() -> std::path::PathBuf {
     .clone()
 }
 
+const MOUNT_MARKER: &str = "nanosb-mount-marker";
+
+/// Stage a host dir whose marker file proves a virtiofs mount landed in the guest.
+fn stage_mount_dir(kind: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("nanosb-e2e-mount-{}", kind));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(MOUNT_MARKER), kind).unwrap();
+    dir
+}
+
 /// Create a sandbox configuration for agent testing, with the host↔guest exec
 /// channel wired up so commands can be run inside the guest.
 fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig {
@@ -225,6 +235,20 @@ fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig
         tag: "agent".to_string(),
         host_path: agent_dir.to_string_lossy().to_string(),
         target: "/agent".to_string(),
+        readonly: false,
+    });
+    // Mirror the product's layout (project at the guest HOME, agent state nested
+    // inside). Two or more extra mounts is the path that regressed.
+    config.extra_mounts.push(runtime::config::ExtraMount {
+        tag: "nanosb-0".to_string(),
+        host_path: stage_mount_dir("project").to_string_lossy().to_string(),
+        target: "/home/developer".to_string(),
+        readonly: false,
+    });
+    config.extra_mounts.push(runtime::config::ExtraMount {
+        tag: "nanosb-1".to_string(),
+        host_path: stage_mount_dir("state").to_string_lossy().to_string(),
+        target: "/home/developer/.nanosandbox".to_string(),
         readonly: false,
     });
     let exec_sock = std::env::temp_dir().join(format!("nanosb-e2e-{}.sock", sandbox_name));
@@ -615,6 +639,58 @@ async fn test_agent_guest_user_is_non_root() {
     let uid = result.stdout.trim();
     assert_ne!(uid, "0", "guest user is root (uid=0) in pure image");
     println!("[PASS] guest user is non-root (uid={})", uid);
+}
+
+// =============================================================================
+// Extra Virtiofs Mount Test
+// =============================================================================
+
+/// Boot with the product's multi-mount set and prove every mount landed in the
+/// guest. Regression guard: the parser used to mount only the first extra mount
+/// and silently skip the rest.
+#[tokio::test]
+#[ignore]
+async fn test_agent_extra_mounts_land() {
+    println!("\n========================================");
+    println!("  Extra Virtiofs Mounts Test");
+    println!("========================================");
+
+    if !runtime_available().await {
+        println!("[SKIP] Runtime prerequisites not met");
+        return;
+    }
+
+    let sandbox_name = "extra-mounts";
+    let config = create_agent_sandbox_config(sandbox_name, &agent_image("claude"));
+    let mut sandbox = Sandbox::create(config)
+        .await
+        .expect("sandbox create failed");
+    sandbox.start().await.expect("sandbox start failed");
+
+    let client = exec_client(&sandbox);
+    let project = client
+        .exec("cat", &["/home/developer/nanosb-mount-marker"])
+        .expect("failed to exec cat on project marker");
+    let state = client
+        .exec("cat", &["/home/developer/.nanosandbox/nanosb-mount-marker"])
+        .expect("failed to exec cat on state marker");
+
+    let _ = sandbox.stop().await;
+    let _ = sandbox.destroy().await;
+
+    assert_eq!(
+        project.exit_code, 0,
+        "project mount missing in guest: {}",
+        project.stderr
+    );
+    assert_eq!(project.stdout.trim(), "project", "wrong project marker");
+    assert_eq!(
+        state.exit_code, 0,
+        "nested state mount missing in guest: {}",
+        state.stderr
+    );
+    assert_eq!(state.stdout.trim(), "state", "wrong state marker");
+    println!("[PASS] all extra mounts landed in the guest");
 }
 
 // =============================================================================

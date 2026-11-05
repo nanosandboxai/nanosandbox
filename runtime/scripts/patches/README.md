@@ -8,9 +8,10 @@
 - `a148cff4` — macOS virtiofs raw-FUSE traversal hardening
 - `0a2cfd46` — background workload exec agent (`KRUN_EXEC_AGENT`)
 - `78c8c5b7` — fix CRI app-container VM boot (IRQs, cmdline, GSIs)
+- `e43537c1` — fix extra-virtiofs parser so every `KRUN_EXTRA_MOUNTS` entry mounts
 
 `runtime/scripts/build-libkrun.sh` builds that branch at the pinned SHA
-(`78c8c5b7`) and no longer applies patches at build time. The patch file below
+(`e43537c1`) and no longer applies patches at build time. The patch file below
 is kept only as a historical record of the original next-mode change.
 
 ## Purpose
