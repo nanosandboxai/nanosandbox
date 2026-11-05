@@ -7,10 +7,12 @@ LABEL org.opencontainers.image.description="Aider agent for nanosandbox sandboxe
 # package); bump manually in this Dockerfile.
 ARG AIDER_VERSION=0.86.2
 
-# Pure install: aider CLI via uv (already present in the base image).
-# UV_NO_MODIFY_PATH=1 keeps it from editing shell rc; the binary lands in
-# ~/.local/bin, HOME=/root at build.
-ENV PATH="/root/.local/bin:${PATH}"
+# Pure install to /usr/local via uv: the guest runs as a non-root user and
+# /root is 0700, so a ~/.local/bin install would be unexecutable.
+# UV_NO_MODIFY_PATH=1 keeps it from editing shell rc.
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
+ENV UV_TOOL_DIR=/usr/local/share/uv/tools
+ENV UV_PYTHON_INSTALL_DIR=/usr/local/share/uv/python
 
 RUN UV_NO_MODIFY_PATH=1 uv tool install --force --python python3.12 --with pip "aider-chat==${AIDER_VERSION}"
 

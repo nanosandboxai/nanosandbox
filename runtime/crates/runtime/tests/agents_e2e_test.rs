@@ -229,6 +229,9 @@ fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig
         .memory_mb(1024)
         .runtime_mode(runtime::config::RuntimeMode::Next)
         .build();
+    // Mirror the product: the TUI runs agents as the non-root guest user, so an
+    // image whose CLI lands under /root (0700) must still be exec'able here.
+    config.user = Some("1000".to_string());
 
     let agent_dir = stage_exec_agent_dir();
     config.extra_mounts.push(runtime::config::ExtraMount {
@@ -248,7 +251,7 @@ fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig
     config.extra_mounts.push(runtime::config::ExtraMount {
         tag: "nanosb-1".to_string(),
         host_path: stage_mount_dir("state").to_string_lossy().to_string(),
-        target: "/home/developer/.nanosandbox".to_string(),
+        target: "/home/developer/.config/opencode".to_string(),
         readonly: false,
     });
     let exec_sock = std::env::temp_dir().join(format!("nanosb-e2e-{}.sock", sandbox_name));
@@ -277,19 +280,15 @@ fn exec_client(sandbox: &Sandbox) -> runtime::exec::ExecClient {
     runtime::exec::ExecClient::new(sock)
 }
 
-/// Run a command in the sandbox with a PATH that includes the agent binary
-/// dirs. opencode/aider install under `/root/...`, which is not on the exec
-/// agent's default PATH.
+/// Run an agent command in the sandbox. PATH is the image's own ENV (adopted by
+/// the runtime), so CLIs installed outside the stock PATH (opencode/aider under
+/// `/root/...`) resolve. No PATH override here on purpose — that is the contract.
 fn exec_agent_command(
     sandbox: &Sandbox,
     command: &str,
     args: &[&str],
 ) -> runtime::exec::ExecResultT<runtime::exec::ExecResult> {
-    let opts = runtime::exec::ExecOptions::new().env(
-        "PATH",
-        "/root/.opencode/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    );
-    exec_client(sandbox).exec_with(command, args, opts)
+    exec_client(sandbox).exec(command, args)
 }
 
 // =============================================================================
@@ -672,7 +671,7 @@ async fn test_agent_extra_mounts_land() {
         .exec("cat", &["/home/developer/nanosb-mount-marker"])
         .expect("failed to exec cat on project marker");
     let state = client
-        .exec("cat", &["/home/developer/.nanosandbox/nanosb-mount-marker"])
+        .exec("cat", &["/home/developer/.config/opencode/nanosb-mount-marker"])
         .expect("failed to exec cat on state marker");
 
     let _ = sandbox.stop().await;
