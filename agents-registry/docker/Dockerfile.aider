@@ -1,0 +1,17 @@
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="Aider agent for nanosandbox sandboxes"
+
+# Pinned to a specific PyPI release. NOT Dependabot-managed (no npm
+# package); bump manually in this Dockerfile.
+ARG AIDER_VERSION=0.86.2
+
+# Pure install: aider CLI via uv (already present in the base image).
+# UV_NO_MODIFY_PATH=1 keeps it from editing shell rc; the binary lands in
+# ~/.local/bin, HOME=/root at build.
+ENV PATH="/root/.local/bin:${PATH}"
+
+RUN UV_NO_MODIFY_PATH=1 uv tool install --force --python python3.12 --with pip "aider-chat==${AIDER_VERSION}"
+
+RUN aider --version && echo "Aider: OK"

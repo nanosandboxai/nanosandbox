@@ -1,0 +1,13 @@
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="Crush agent for nanosandbox sandboxes"
+
+# Pinned via agents-registry/docker/package.json (Dependabot-managed).
+ARG CRUSH_VERSION=0.99.0
+
+# Pure install: Crush CLI via npm + sanity check.
+RUN npm install -g "@charmland/crush@${CRUSH_VERSION}" \
+    && npm cache clean --force
+
+RUN crush --version && echo "Crush: OK"

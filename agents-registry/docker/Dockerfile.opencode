@@ -1,0 +1,16 @@
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="OpenCode agent for nanosandbox sandboxes"
+
+# Pinned to a specific GitHub release. NOT Dependabot-managed (no npm
+# package); bump manually in this Dockerfile.
+ARG OPENCODE_VERSION=1.19.5
+
+# Pure install: opencode CLI via the official installer.
+# The installer drops the binary under ~/.opencode/bin (HOME=/root at build).
+ENV PATH="/root/.opencode/bin:${PATH}"
+
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "${OPENCODE_VERSION}"
+
+RUN opencode --version && echo "OpenCode: OK"
