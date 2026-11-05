@@ -8,7 +8,7 @@
 //!
 //! ## Platform Support
 //!
-//! - **Linux/macOS**: Uses `ghcr.io/nanosandboxai/agents-registry/<agent>:latest`
+//! - **Linux/macOS**: Uses `ghcr.io/nanosandboxai/nanosandbox/<agent>:latest`
 
 //!
 //! ## Agents Tested
@@ -19,6 +19,10 @@
 //! | Goose       | `goose`        | AI developer agent by Block      |
 //! | Codex       | `codex`        | OpenAI's coding assistant        |
 //! | Cursor CLI  | `cursor-agent` | Cursor's AI agent                |
+//! | OpenCode     | `opencode`     | Open-source AI coding agent      |
+//! | Aider       | `aider`        | AI pair programming in terminal  |
+//! | Gemini CLI  | `gemini`       | Google's AI coding assistant     |
+//! | Crush       | `crush`        | AI coding agent                  |
 //!
 //! ## Running Tests
 //!
@@ -69,6 +73,26 @@ const AGENTS: &[AgentDef] = &[
         command: "cursor-agent",
         version_args: &["--version"],
     },
+    AgentDef {
+        name: "OpenCode",
+        command: "opencode",
+        version_args: &["--version"],
+    },
+    AgentDef {
+        name: "Aider",
+        command: "aider",
+        version_args: &["--version"],
+    },
+    AgentDef {
+        name: "Gemini CLI",
+        command: "gemini",
+        version_args: &["--version"],
+    },
+    AgentDef {
+        name: "Crush",
+        command: "crush",
+        version_args: &["--version"],
+    },
 ];
 
 // =============================================================================
@@ -78,12 +102,19 @@ const AGENTS: &[AgentDef] = &[
 /// Default image tag for testing (RC builds for pre-release validation)
 const IMAGE_TAG: &str = "rc1";
 
-/// Build the image reference for a given agent
+/// Default registry prefix for agent images
+const DEFAULT_REGISTRY: &str = "ghcr.io/nanosandboxai/nanosandbox";
+
+/// Build the image reference for a given agent.
+///
+/// The registry prefix and tag are overridable via the `NANOSB_E2E_REGISTRY`
+/// and `NANOSB_E2E_TAG` environment variables (e.g. to test locally-built
+/// images pushed to a local registry).
 fn agent_image(agent_command: &str) -> String {
-    format!(
-        "ghcr.io/nanosandboxai/agents-registry/{}:{}",
-        agent_command, IMAGE_TAG
-    )
+    let registry = std::env::var("NANOSB_E2E_REGISTRY")
+        .unwrap_or_else(|_| DEFAULT_REGISTRY.to_string());
+    let tag = std::env::var("NANOSB_E2E_TAG").unwrap_or_else(|_| IMAGE_TAG.to_string());
+    format!("{}/{}:{}", registry, agent_command, tag)
 }
 
 // =============================================================================
@@ -96,14 +127,85 @@ async fn runtime_available() -> bool {
     validate_runtime_prerequisites().await.is_ok()
 }
 
-/// Create a sandbox configuration for agent testing
+/// Stage the guest exec agent into a persistent host dir (once per process).
+fn stage_exec_agent_dir() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("nanosb-e2e-agent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = std::env::var("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(".nanosandbox/guest-bin/exec-agent"))
+            .unwrap_or_default();
+        let dst = dir.join("exec-agent");
+        if !dst.exists() {
+            std::fs::copy(&src, &dst).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+        dir
+    })
+    .clone()
+}
+
+/// Create a sandbox configuration for agent testing, with the host↔guest exec
+/// channel wired up so commands can be run inside the guest.
 fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig {
-    SandboxConfig::builder()
+    let mut config = SandboxConfig::builder()
         .name(sandbox_name)
         .image(image)
         .cpus(2)
         .memory_mb(1024)
-        .build()
+        .runtime_mode(runtime::config::RuntimeMode::Next)
+        .user("1000")
+        .build();
+
+    let agent_dir = stage_exec_agent_dir();
+    config.extra_mounts.push(runtime::config::ExtraMount {
+        tag: "agent".to_string(),
+        host_path: agent_dir.to_string_lossy().to_string(),
+        target: "/agent".to_string(),
+        readonly: false,
+    });
+    let exec_sock = std::env::temp_dir().join(format!("nanosb-e2e-{}.sock", sandbox_name));
+    let _ = std::fs::remove_file(&exec_sock);
+    config.vsock_socket = Some(exec_sock.to_string_lossy().to_string());
+    config.vsock_port = Some(1024);
+    config.exec_agent = Some("/agent/exec-agent".to_string());
+    config
+}
+
+/// Create an exec client for a started sandbox's vsock exec channel, waiting
+/// for the host socket to appear (the VM boots in a child process).
+fn exec_client(sandbox: &Sandbox) -> runtime::exec::ExecClient {
+    let sock = sandbox.config().vsock_socket.clone().unwrap_or_default();
+    let path = std::path::PathBuf::from(&sock);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !path.exists() {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    runtime::exec::ExecClient::new(sock)
+}
+
+/// Run a command in the sandbox with a PATH that includes the agent binary
+/// dirs. opencode/aider install under `/root/...`, which is not on the exec
+/// agent's default PATH.
+fn exec_agent_command(
+    sandbox: &Sandbox,
+    command: &str,
+    args: &[&str],
+) -> runtime::exec::ExecResultT<runtime::exec::ExecResult> {
+    let opts = runtime::exec::ExecOptions::new().env(
+        "PATH",
+        "/root/.opencode/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    );
+    exec_client(sandbox).exec_with(command, args, opts)
 }
 
 // =============================================================================
@@ -200,8 +302,7 @@ async fn test_agent_version(
 
     // Check runtime availability - skip if not met (this is expected in some environments)
     if !runtime_available().await {
-        let msg =
-            "Runtime prerequisites not met. Install libkrun (macOS/Linux)".to_string();
+        let msg = "Runtime prerequisites not met. Install libkrun (macOS/Linux)".to_string();
         println!("[SKIP] {}", msg);
         return Ok(AgentTestResult::Skipped(msg));
     }
@@ -226,7 +327,7 @@ async fn test_agent_version(
 
                     // Execute version command
                     println!("\n[Step 3] Executing: {} {}", command, args.join(" "));
-                    let test_result = match sandbox.exec(command, args).await {
+                    let test_result = match exec_agent_command(&sandbox, command, args) {
                         Ok(result) => {
                             println!("\n[OUTPUT]");
                             println!("Exit code: {}", result.exit_code);
@@ -311,7 +412,7 @@ async fn test_all_agents_version() {
     println!("\n========================================");
     println!("  Agents Registry Comprehensive Test");
     println!("========================================");
-    println!("Image pattern: ghcr.io/nanosandboxai/agents-registry/<agent>:latest");
+    println!("Image pattern: {} (e.g. {})", agent_image("<agent>"), agent_image("claude"));
     println!("Testing {} agents\n", AGENTS.len());
 
     // Check runtime - skip entire test if not met
@@ -341,7 +442,7 @@ async fn test_all_agents_version() {
                     continue;
                 }
 
-                match sandbox.exec(agent.command, agent.version_args).await {
+                match exec_agent_command(&sandbox, agent.command, agent.version_args) {
                     Ok(result) => {
                         if result.exit_code == 0 {
                             println!(
@@ -390,7 +491,7 @@ async fn test_all_agents_version() {
     // Fail the test if any agent failed
     if image_pull_failed {
         panic!(
-            "Image pull failed. Ensure agent images are available at ghcr.io/nanosandboxai/agents-registry/"
+            "Image pull failed. Ensure agent images are available at ghcr.io/nanosandboxai/nanosandbox/"
         );
     }
 
@@ -401,6 +502,57 @@ async fn test_all_agents_version() {
         failed,
         AGENTS.len()
     );
+}
+
+// =============================================================================
+// Non-Root Guest User Test
+// =============================================================================
+
+/// Test that the guest user is NON-ROOT inside a pure agent image.
+///
+/// Pure images must not run as root: `id -u` must exit 0 and print a uid != 0.
+#[tokio::test]
+#[ignore]
+async fn test_agent_guest_user_is_non_root() {
+    println!("\n========================================");
+    println!("  Guest User Non-Root Test (pure image)");
+    println!("========================================");
+
+    if !runtime_available().await {
+        println!("[SKIP] Runtime prerequisites not met");
+        return;
+    }
+    println!("[OK] Runtime available");
+
+    let command = "claude";
+    let sandbox_name = "nonroot-check";
+    let config = create_agent_sandbox_config(sandbox_name, &agent_image(command));
+
+    println!("\n[Step 1] Creating sandbox...");
+    let mut sandbox = match Sandbox::create(config).await {
+        Ok(s) => s,
+        Err(e) => panic!("Sandbox creation failed: {}", e),
+    };
+    println!("[OK] Sandbox created: {}", sandbox.id());
+
+    println!("\n[Step 2] Starting sandbox...");
+    sandbox.start().await.expect("sandbox start failed");
+    println!("[OK] Sandbox started");
+
+    println!("\n[Step 3] Executing: id -u");
+    let result = exec_client(&sandbox)
+        .exec("id", &["-u"])
+        .expect("exec id -u failed");
+    println!("Exit code: {}", result.exit_code);
+    println!("Stdout: {}", result.stdout.trim());
+
+    let _ = sandbox.stop().await;
+    let _ = sandbox.destroy().await;
+
+    assert_eq!(result.exit_code, 0, "id -u failed");
+    let uid = result.stdout.trim();
+    assert_ne!(uid, "0", "guest user is root (uid=0) in pure image");
+    println!("[PASS] guest user is non-root (uid={})", uid);
 }
 
 // =============================================================================
@@ -471,7 +623,7 @@ async fn test_agents_environment_report() {
     println!("[Platform]");
     println!("  OS: {}", std::env::consts::OS);
     println!("  Arch: {}", std::env::consts::ARCH);
-    println!("  Image pattern: ghcr.io/nanosandboxai/agents-registry/<agent>:latest");
+    println!("  Image pattern: {} (e.g. {})", agent_image("<agent>"), agent_image("claude"));
 
     // Runtime
     println!("\n[Runtime Status]");

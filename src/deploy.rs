@@ -61,9 +61,7 @@ pub fn spawn_supervisor_with_pid(
 /// Spawn the supervisor as a live child of the caller (no `setsid`, no `drop`),
 /// so an external parent (the shim) owns and reaps it. Used by
 /// `nanosb supervise --foreground`.
-pub fn spawn_supervisor_foreground(
-    sp: &SupervisorSpawn,
-) -> anyhow::Result<std::process::Child> {
+pub fn spawn_supervisor_foreground(sp: &SupervisorSpawn) -> anyhow::Result<std::process::Child> {
     spawn_supervisor_child(sp, true)
 }
 
@@ -173,6 +171,7 @@ pub fn materialize_plan(
             anyhow::bail!("mount host path does not exist: {}", host.display());
         }
     }
+
     for file in &plan.config_files {
         let path = match sandbox::deploy::merged_config_path(&file.relative_path) {
             Some(merged) => sandbox_dir.join("state").join(merged),
@@ -356,6 +355,48 @@ mod tests {
         let dir = std::env::temp_dir().join("nanosb-deploy-test-explicit");
         let (_plan, rc) = deploy_plan_for(&config, &dir);
         assert_eq!(rc.user.as_deref(), Some("2000"));
+    }
+
+    #[test]
+    fn materialize_writes_config_into_sandbox_state_not_workspace() {
+        use std::collections::HashMap;
+
+        let mut config = sandbox::AgentSandboxConfig::default();
+        config.sandbox.name = "materialize-test".to_string();
+        config.sandbox.image = "claude".to_string();
+        config.agent_type = Some(sandbox::AgentType::Claude);
+        config.mcp_servers = HashMap::from([(
+            "github".to_string(),
+            sandbox::McpServerConfig {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+                env: HashMap::new(),
+                enabled: true,
+            },
+        )]);
+        let ws = tempfile::tempdir().unwrap();
+        config.sandbox.project = Some(runtime::config::ProjectConfig {
+            path: ws.path().to_path_buf(),
+            branch: None,
+            mount_point: sandbox::deploy::GUEST_HOME.to_string(),
+            auto_sync: false,
+        });
+
+        let sandbox_dir = std::env::temp_dir().join("nanosb-materialize-test");
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
+        let (plan, _rc) = deploy_plan_for(&config, &sandbox_dir);
+        materialize_plan(&sandbox_dir, &plan).unwrap();
+
+        // Merged config lives in the sandbox state dir (mounted at ~/.claude), not the workspace.
+        assert!(
+            sandbox_dir.join("state/.claude/settings.json").exists(),
+            "merged config must be written under the sandbox state dir"
+        );
+        assert!(
+            !ws.path().join(".claude").exists(),
+            "config must not be written into the workspace dir"
+        );
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
     }
 
     #[test]

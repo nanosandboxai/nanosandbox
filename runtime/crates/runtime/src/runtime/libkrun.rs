@@ -337,10 +337,49 @@ fn lookup_group_gid(
     Err(format!("group '{}' not found in guest /etc/group", name))
 }
 
+/// Create a guest user (passwd + group entries) in the rootfs when the image
+/// does not ship one. Pure agent images no longer define a `developer` user, so
+/// the runtime owns the guest user. Uses a fixed non-root uid/gid (1000) and a
+/// home of `/home/<name>`.
+fn create_guest_user(
+    rootfs_path: &std::path::Path,
+    name: &str,
+) -> std::result::Result<(String, String, String), String> {
+    let uid = "1000";
+    let gid = "1000";
+    let home = format!("/home/{}", name);
+
+    let etc_dir = rootfs_path.join("etc");
+    std::fs::create_dir_all(&etc_dir)
+        .map_err(|e| format!("mkdir {}: {}", etc_dir.display(), e))?;
+
+    let passwd_path = etc_dir.join("passwd");
+    let mut passwd_data = std::fs::read_to_string(&passwd_path).unwrap_or_default();
+    if !passwd_data.ends_with('\n') && !passwd_data.is_empty() {
+        passwd_data.push('\n');
+    }
+    passwd_data.push_str(&format!("{}:x:{}:{}::{}:/bin/sh\n", name, uid, gid, home));
+    std::fs::write(&passwd_path, &passwd_data)
+        .map_err(|e| format!("write {}: {}", passwd_path.display(), e))?;
+
+    let group_path = etc_dir.join("group");
+    let mut group_data = std::fs::read_to_string(&group_path).unwrap_or_default();
+    if !group_data.ends_with('\n') && !group_data.is_empty() {
+        group_data.push('\n');
+    }
+    group_data.push_str(&format!("{}:x:{}:\n", name, gid));
+    std::fs::write(&group_path, &group_data)
+        .map_err(|e| format!("write {}: {}", group_path.display(), e))?;
+
+    Ok((uid.to_string(), gid.to_string(), home))
+}
+
 /// Resolve a user spec to numeric `(uid, gid, home)` against the guest rootfs.
 ///
 /// The libkrun init blob requires **numeric** uid/gid, so usernames and group
-/// names are resolved from the guest's `/etc/passwd` and `/etc/group`.
+/// names are resolved from the guest's `/etc/passwd` and `/etc/group`. When a
+/// named user is absent from the image (pure agent images ship no `developer`
+/// user), the runtime creates it via [`create_guest_user`].
 fn resolve_guest_user(
     rootfs_path: &std::path::Path,
     spec: &str,
@@ -368,17 +407,17 @@ fn resolve_guest_user(
             .map(|l| l.split(':').collect())
             .unwrap_or_default()
     } else {
-        if passwd_data.is_empty() {
-            return Err(format!(
-                "cannot resolve user '{}': guest has no /etc/passwd (use a numeric uid, e.g. --user 1000)",
-                user_part
-            ));
-        }
         let entry = passwd_data
             .lines()
-            .find(|l| l.split(':').next() == Some(user_part))
-            .ok_or_else(|| format!("user '{}' not found in guest /etc/passwd", user_part))?;
-        entry.split(':').collect()
+            .find(|l| l.split(':').next() == Some(user_part));
+        match entry {
+            Some(l) => l.split(':').collect(),
+            None => {
+                // User absent from the image — create it (non-root uid 1000).
+                let (uid, gid, home) = create_guest_user(rootfs_path, user_part)?;
+                return Ok((uid, Some(gid), Some(home)));
+            }
+        }
     };
     if !entry_fields.is_empty() && entry_fields.len() < 6 {
         return Err(format!("malformed passwd entry for '{}'", user_part));
@@ -1151,11 +1190,9 @@ impl LibkrunRuntime {
                         .entry("NANOSANDBOX_DNS".to_string())
                         .or_insert_with(|| dns.join(","));
                 }
-                file_env
-                    .entry("PATH".to_string())
-                    .or_insert_with(|| {
-                        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()
-                    });
+                file_env.entry("PATH".to_string()).or_insert_with(|| {
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()
+                });
                 file_env
                     .entry("HOME".to_string())
                     .or_insert_with(|| "/root".to_string());
@@ -1283,6 +1320,20 @@ impl LibkrunRuntime {
                     })?;
                 }
                 env_vars.push(format!("KRUN_HOME={}", h));
+            }
+        }
+
+        // Materialize the working directory inside the guest rootfs so the
+        // init's chdir to it cannot fail. The default workdir is the guest
+        // home (`/home/developer`), which pure images do not ship.
+        if let Some(wd) = workdir {
+            if wd.starts_with('/') {
+                let host_wd = std::path::Path::new(rootfs_path).join(wd.trim_start_matches('/'));
+                if !host_wd.exists() {
+                    std::fs::create_dir_all(&host_wd).map_err(|e| {
+                        format!("failed to create workdir {}: {}", host_wd.display(), e)
+                    })?;
+                }
             }
         }
 
@@ -2571,10 +2622,17 @@ mod tests {
     }
 
     #[test]
-    fn unknown_name_errors() {
+    fn unknown_name_creates_user() {
         let root = fixture_rootfs(PASSWD, GROUP);
-        let err = resolve_guest_user(&root, "nobody", None).unwrap_err();
-        assert!(err.contains("not found"), "{}", err);
+        let (uid, gid, home) = resolve_guest_user(&root, "nobody", None).unwrap();
+        assert_eq!(uid, "1000");
+        assert_eq!(gid.as_deref(), Some("1000"));
+        assert_eq!(home.as_deref(), Some("/home/nobody"));
+        // The passwd entry must have been written back to the rootfs.
+        let passwd = std::fs::read_to_string(root.join("etc/passwd")).unwrap();
+        assert!(passwd.contains("nobody:x:1000:1000::/home/nobody:/bin/sh"));
+        let group = std::fs::read_to_string(root.join("etc/group")).unwrap();
+        assert!(group.contains("nobody:x:1000:"));
     }
 
     #[test]
@@ -2584,16 +2642,20 @@ mod tests {
     }
 
     #[test]
-    fn name_without_passwd_gives_actionable_error() {
+    fn name_without_passwd_creates_user() {
         let dir = std::env::temp_dir().join(format!(
             "nanosb-nopasswd-{}-{}",
             std::process::id(),
             unique_nonce()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let err = resolve_guest_user(&dir, "developer", None).unwrap_err();
-        assert!(err.contains("/etc/passwd"), "{}", err);
-        assert!(err.contains("numeric uid"), "{}", err);
+        let (uid, gid, home) = resolve_guest_user(&dir, "developer", None).unwrap();
+        assert_eq!(uid, "1000");
+        assert_eq!(gid.as_deref(), Some("1000"));
+        assert_eq!(home.as_deref(), Some("/home/developer"));
+        // /etc/passwd and /etc/group must have been created.
+        let passwd = std::fs::read_to_string(dir.join("etc/passwd")).unwrap();
+        assert!(passwd.contains("developer:x:1000:1000::/home/developer:/bin/sh"));
     }
 
     #[test]

@@ -511,7 +511,7 @@ mod tests {
         let oci_config = generate_config(&config, Path::new("rootfs"));
 
         assert_eq!(oci_config["ociVersion"], OCI_VERSION);
-        assert_eq!(oci_config["process"]["cwd"], "/workspace");
+        assert_eq!(oci_config["process"]["cwd"], "/home/developer");
         assert_eq!(oci_config["root"]["path"], "rootfs");
     }
 
