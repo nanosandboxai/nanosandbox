@@ -1,0 +1,413 @@
+{
+  "about": "Machine-readable CLI + TUI surface for docs-accuracy checks.",
+  "cli": {
+    "alias_of": {
+      "delete": "rm"
+    },
+    "global_flags": [
+      {
+        "long": "format",
+        "short": null
+      },
+      {
+        "long": "verbose",
+        "short": "v"
+      },
+      {
+        "long": "project",
+        "short": null
+      },
+      {
+        "long": "config",
+        "short": null
+      },
+      {
+        "long": "sandbox",
+        "short": null
+      },
+      {
+        "long": "cpus",
+        "short": null
+      },
+      {
+        "long": "memory",
+        "short": null
+      },
+      {
+        "long": "timeout",
+        "short": null
+      },
+      {
+        "long": "permissions",
+        "short": null
+      },
+      {
+        "long": "env",
+        "short": "e"
+      },
+      {
+        "long": "env-file",
+        "short": null
+      },
+      {
+        "long": "resume",
+        "short": "r"
+      },
+      {
+        "long": "session",
+        "short": null
+      }
+    ],
+    "prog": "nanosb",
+    "subcommands": [
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": true,
+        "name": "__supervise",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "supervise",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "logs",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "attach",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "apply",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "restart",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "describe",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "pull",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "images",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "run",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "exec",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "ps",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "stop",
+        "subcommands": []
+      },
+      {
+        "aliases": [
+          "delete"
+        ],
+        "flags": [],
+        "hidden": false,
+        "name": "rm",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "doctor",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "cleanup",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "sessions",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "cache",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "projects",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "projects-forget",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "gc",
+        "subcommands": []
+      }
+    ]
+  },
+  "sources": {
+    "cli": "src/main.rs",
+    "extractor": "scripts/docs/extract-cli-surface.py",
+    "tui": "src/tui/commands.rs"
+  },
+  "tui": {
+    "commands": [
+      "/add",
+      "/ag",
+      "/agent",
+      "/apply",
+      "/branches",
+      "/clearhistory",
+      "/close",
+      "/copy",
+      "/des",
+      "/destroy",
+      "/diff",
+      "/discard",
+      "/disk",
+      "/edit",
+      "/env",
+      "/exec",
+      "/focus",
+      "/gc",
+      "/gitsync",
+      "/help",
+      "/home/developer",
+      "/kill",
+      "/logs",
+      "/mcp",
+      "/mounts",
+      "/open",
+      "/project",
+      "/projects",
+      "/q",
+      "/quit",
+      "/reconnect",
+      "/sandboxes",
+      "/sk",
+      "/skills",
+      "/status",
+      "/stop",
+      "/sync",
+      "/theme",
+      "/tmp",
+      "/zoom"
+    ],
+    "help_entries": [
+      {
+        "description": "Add a new agent panel",
+        "pattern": "/add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]..."
+      },
+      {
+        "description": "Toggle sandbox sidebar",
+        "pattern": "/sandboxes"
+      },
+      {
+        "description": "Focus panel n (0-indexed)",
+        "pattern": "/focus <n>"
+      },
+      {
+        "description": "Hide panel (sandbox keeps running)",
+        "pattern": "/close [n|name]"
+      },
+      {
+        "description": "Show a hidden panel",
+        "pattern": "/open [n|name]"
+      },
+      {
+        "description": "Kill sandbox & remove panel",
+        "pattern": "/kill [n|name]"
+      },
+      {
+        "description": "Copy panel content to clipboard",
+        "pattern": "/copy"
+      },
+      {
+        "description": "Toggle panel zoom (Ctrl+F)",
+        "pattern": "/zoom"
+      },
+      {
+        "description": "Switch colour theme",
+        "pattern": "/theme [name]"
+      },
+      {
+        "description": "Set/list panel env vars",
+        "pattern": "/env [KEY=VALUE]"
+      },
+      {
+        "description": "Reconnect SSH terminal",
+        "pattern": "/reconnect"
+      },
+      {
+        "description": "List nanosb branches in project",
+        "pattern": "/branches"
+      },
+      {
+        "description": "Sync sandbox commits to refs/nanosb/<id>",
+        "pattern": "/sync [on|off|now]"
+      },
+      {
+        "description": "Toggle MCP sidebar",
+        "pattern": "/mcp"
+      },
+      {
+        "description": "List MCP servers (from sandbox.yml)",
+        "pattern": "/mcp list"
+      },
+      {
+        "description": "List skills (from sandbox.yml)",
+        "pattern": "/skills [list]"
+      },
+      {
+        "description": "Show skill details",
+        "pattern": "/skills show <name>"
+      },
+      {
+        "description": "List available agents",
+        "pattern": "/agent list"
+      },
+      {
+        "description": "Show agent details",
+        "pattern": "/agent show <name>"
+      },
+      {
+        "description": "Clear command history",
+        "pattern": "/clearhistory"
+      },
+      {
+        "description": "List registered projects",
+        "pattern": "/projects"
+      },
+      {
+        "description": "Remove a project from the registry",
+        "pattern": "/projects forget <path>"
+      },
+      {
+        "description": "Show agent changes vs base commit",
+        "pattern": "/diff [--stat]"
+      },
+      {
+        "description": "Show clone branch, dirty files, sync state",
+        "pattern": "/status"
+      },
+      {
+        "description": "Sync agent changes to refs/nanosb/<id>",
+        "pattern": "/sync [--dry-run] [on|off|now]"
+      },
+      {
+        "description": "Reset the clone to its base commit",
+        "pattern": "/discard"
+      },
+      {
+        "description": "Show the panel's mounts",
+        "pattern": "/mounts"
+      },
+      {
+        "description": "Run a command in the sandbox (exec channel)",
+        "pattern": "/exec <command>"
+      },
+      {
+        "description": "Show the sandbox console log tail",
+        "pattern": "/logs [n]"
+      },
+      {
+        "description": "Stop a sandbox (keeps the panel)",
+        "pattern": "/stop [n|name]"
+      },
+      {
+        "description": "Show nanosb state disk usage",
+        "pattern": "/disk"
+      },
+      {
+        "description": "Reclaim disk (dead dirs, orphan clones)",
+        "pattern": "/gc [--dry-run]"
+      },
+      {
+        "description": "Fast-forward-merge agent commits into your branch",
+        "pattern": "/apply [--force]"
+      },
+      {
+        "description": "Switch the active project (or list)",
+        "pattern": "/project [n|path]"
+      },
+      {
+        "description": "Suspend session and exit",
+        "pattern": "/quit"
+      },
+      {
+        "description": "Full cleanup and exit",
+        "pattern": "/destroy"
+      },
+      {
+        "description": "Config is declarative: edit sandbox.yml and run `nanosb apply`.",
+        "pattern": ""
+      }
+    ]
+  }
+}
