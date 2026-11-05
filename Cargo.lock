@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "gateway"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "libkrun-sys"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
 ]
@@ -2146,14 +2146,14 @@ dependencies = [
 
 [[package]]
 name = "nanosandbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanosb-client",
 ]
 
 [[package]]
 name = "nanosb-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "nanosb-client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanosb-protocol",
  "serde_json",
@@ -2203,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "nanosb-conformance"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nanosb-client",
  "nanosb-protocol",
@@ -2213,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "nanosb-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "nanosb-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3142,7 +3142,7 @@ dependencies = [
 
 [[package]]
 name = "runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3175,7 +3175,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3324,7 +3324,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
