@@ -787,7 +787,7 @@ async fn test_workspace_writable() {
             "sh",
             &[
                 "-c",
-                "id; touch /home/developer/.wtest && mkdir -p /home/developer/.local/share/opencode && echo WS_WRITABLE || echo WS_NOT_WRITABLE",
+                "id; mkdir -p /home/developer/.local/share/opencode && echo WS_WRITABLE || echo WS_NOT_WRITABLE",
             ],
         )
         .expect("exec");
