@@ -339,14 +339,15 @@ fn lookup_group_gid(
 
 /// Create a guest user (passwd + group entries) in the rootfs when the image
 /// does not ship one. Pure agent images no longer define a `developer` user, so
-/// the runtime owns the guest user. Uses a fixed non-root uid/gid (1000) and a
-/// home of `/home/<name>`.
+/// the runtime owns the guest user. Uses the invoking host uid/gid so the
+/// bind-mounted workspace and agent-state dirs (owned by the host user) stay
+/// writable, and a home of `/home/<name>`.
 fn create_guest_user(
     rootfs_path: &std::path::Path,
     name: &str,
 ) -> std::result::Result<(String, String, String), String> {
-    let uid = "1000";
-    let gid = "1000";
+    let uid = unsafe { libc::getuid() }.to_string();
+    let gid = unsafe { libc::getgid() }.to_string();
     let home = format!("/home/{}", name);
 
     let etc_dir = rootfs_path.join("etc");
@@ -2625,14 +2626,18 @@ mod tests {
     fn unknown_name_creates_user() {
         let root = fixture_rootfs(PASSWD, GROUP);
         let (uid, gid, home) = resolve_guest_user(&root, "nobody", None).unwrap();
-        assert_eq!(uid, "1000");
-        assert_eq!(gid.as_deref(), Some("1000"));
+        let host_uid = unsafe { libc::getuid() }.to_string();
+        let host_gid = unsafe { libc::getgid() }.to_string();
+        assert_eq!(uid, host_uid);
+        assert_eq!(gid.as_deref(), Some(host_gid.as_str()));
         assert_eq!(home.as_deref(), Some("/home/nobody"));
         // The passwd entry must have been written back to the rootfs.
         let passwd = std::fs::read_to_string(root.join("etc/passwd")).unwrap();
-        assert!(passwd.contains("nobody:x:1000:1000::/home/nobody:/bin/sh"));
+        assert!(passwd.contains(&format!(
+            "nobody:x:{host_uid}:{host_gid}::/home/nobody:/bin/sh"
+        )));
         let group = std::fs::read_to_string(root.join("etc/group")).unwrap();
-        assert!(group.contains("nobody:x:1000:"));
+        assert!(group.contains(&format!("nobody:x:{host_gid}:")));
     }
 
     #[test]
@@ -2650,12 +2655,16 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let (uid, gid, home) = resolve_guest_user(&dir, "developer", None).unwrap();
-        assert_eq!(uid, "1000");
-        assert_eq!(gid.as_deref(), Some("1000"));
+        let host_uid = unsafe { libc::getuid() }.to_string();
+        let host_gid = unsafe { libc::getgid() }.to_string();
+        assert_eq!(uid, host_uid);
+        assert_eq!(gid.as_deref(), Some(host_gid.as_str()));
         assert_eq!(home.as_deref(), Some("/home/developer"));
         // /etc/passwd and /etc/group must have been created.
         let passwd = std::fs::read_to_string(dir.join("etc/passwd")).unwrap();
-        assert!(passwd.contains("developer:x:1000:1000::/home/developer:/bin/sh"));
+        assert!(passwd.contains(&format!(
+            "developer:x:{host_uid}:{host_gid}::/home/developer:/bin/sh"
+        )));
     }
 
     #[test]

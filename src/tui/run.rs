@@ -648,7 +648,7 @@ pub async fn handle_event(
 
             let tx = tx.clone();
             tokio::spawn(async move {
-                let max_attempts = 10;
+                let max_attempts = 90;
                 let mut last_err = String::new();
                 for attempt in 1..=max_attempts {
                     let delay = if attempt == 1 { 300 } else { 1000 };

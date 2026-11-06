@@ -229,9 +229,10 @@ fn create_agent_sandbox_config(sandbox_name: &str, image: &str) -> SandboxConfig
         .memory_mb(1024)
         .runtime_mode(runtime::config::RuntimeMode::Next)
         .build();
-    // Mirror the product: the TUI runs agents as the non-root guest user, so an
-    // image whose CLI lands under /root (0700) must still be exec'able here.
-    config.user = Some("1000".to_string());
+    // Mirror the product: the TUI runs agents as the non-root `developer` guest
+    // user, so the CLI must be exec'able and its HOME (the host-owned workspace
+    // mount) must be writable.
+    config.user = Some("developer".to_string());
 
     let agent_dir = stage_exec_agent_dir();
     config.extra_mounts.push(runtime::config::ExtraMount {
@@ -700,6 +701,7 @@ async fn test_agent_extra_mounts_land() {
 #[ignore]
 async fn test_agent_interactive_tty_smoke() {
     let agent = std::env::var("NANOSB_E2E_AGENT").unwrap_or_else(|_| "claude".to_string());
+    let cmd = std::env::var("NANOSB_E2E_CMD").unwrap_or_else(|_| agent.clone());
 
     if !runtime_available().await {
         println!("[SKIP] Runtime prerequisites not met");
@@ -713,9 +715,12 @@ async fn test_agent_interactive_tty_smoke() {
         .expect("sandbox create failed");
     sandbox.start().await.expect("sandbox start failed");
 
-    let opts = runtime::exec::ExecOptions::new().tty(true).size(120, 40);
+    let opts = runtime::exec::ExecOptions::new()
+        .tty(true)
+        .size(120, 40)
+        .workdir("/home/developer");
     let mut handle = exec_client(&sandbox)
-        .start(&agent, &[], opts)
+        .start(&cmd, &[], opts)
         .expect("exec start failed");
 
     let secs: u64 = std::env::var("NANOSB_E2E_TTY_SECS")
@@ -724,10 +729,14 @@ async fn test_agent_interactive_tty_smoke() {
         .unwrap_or(8);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     let mut bytes = 0usize;
+    let mut captured = String::new();
     let mut early_exit = None;
     while std::time::Instant::now() < deadline {
         match handle.next_event(Some(std::time::Duration::from_secs(2))) {
-            Ok(Some(runtime::exec::ExecEvent::Output(chunk))) => bytes += chunk.data.len(),
+            Ok(Some(runtime::exec::ExecEvent::Output(chunk))) => {
+                bytes += chunk.data.len();
+                captured.push_str(&chunk.data);
+            }
             Ok(Some(runtime::exec::ExecEvent::Exit { code })) => {
                 early_exit = Some(code);
                 break;
@@ -743,16 +752,52 @@ async fn test_agent_interactive_tty_smoke() {
     let _ = sandbox.stop().await;
     let _ = sandbox.destroy().await;
 
-    println!(
-        "[TTY] {} output_bytes={} early_exit={:?}",
-        agent, bytes, early_exit
-    );
+    let printable: String = captured.chars().filter(|c| !c.is_control()).collect();
+    let text_tail: String = printable
+        .chars()
+        .rev()
+        .take(700)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    println!("[TTY] {} bytes={} exit={:?}", cmd, bytes, early_exit);
+    println!("[TTY] text_tail: {}", text_tail);
     assert!(bytes > 0, "{} produced no PTY output", agent);
     assert!(
         early_exit.is_none() || early_exit == Some(0),
         "{} exited non-zero over PTY: {:?}",
         agent,
         early_exit
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_writable() {
+    if !runtime_available().await {
+        println!("[SKIP] Runtime prerequisites not met");
+        return;
+    }
+    let config = create_agent_sandbox_config("ws-owner", &agent_image("claude"));
+    let mut sandbox = Sandbox::create(config).await.expect("create");
+    sandbox.start().await.expect("start");
+    let r = exec_client(&sandbox)
+        .exec(
+            "sh",
+            &[
+                "-c",
+                "id; touch /home/developer/.wtest && mkdir -p /home/developer/.local/share/opencode && echo WS_WRITABLE || echo WS_NOT_WRITABLE",
+            ],
+        )
+        .expect("exec");
+    println!("[WS] exit={}\n{}", r.exit_code, r.stdout);
+    let _ = sandbox.stop().await;
+    let _ = sandbox.destroy().await;
+    assert!(
+        r.stdout.contains("WS_WRITABLE"),
+        "guest HOME (workspace) is not writable: {}",
+        r.stdout
     );
 }
 
