@@ -84,6 +84,9 @@ for sdk in "${SDKS[@]}"; do
     rsync -a \
       --exclude target --exclude classes --exclude '*.jar' --exclude '*.class' \
       --exclude bin --exclude obj --exclude __pycache__ --exclude '*.pyc' \
+      --exclude build --exclude .gradle --exclude node_modules --exclude dist \
+      --exclude '*.egg-info' --exclude '*.nupkg' --exclude '*.snupkg' \
+      --exclude '*.gem' --exclude '*.whl' \
       "$REPO_ROOT/sdk/$sdk/" "$out/sdk/"
   fi
 
