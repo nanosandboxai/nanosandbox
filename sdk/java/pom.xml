@@ -6,11 +6,34 @@
 
   <groupId>ai.nanosandbox</groupId>
   <artifactId>nanosandbox-java</artifactId>
-  <version>1.0.0</version>
+  <version>0.2.0</version>
   <packaging>jar</packaging>
 
   <name>nanosandbox-java</name>
   <description>JDK-only Java 21 protocol client for the nanosandbox helper (nanosb-protocol v1.0.0)</description>
+  <url>https://github.com/nanosandboxai/nanosandbox</url>
+
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <name>DevDone Labs</name>
+      <organization>nanosandboxai</organization>
+      <organizationUrl>https://github.com/nanosandboxai</organizationUrl>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:https://github.com/nanosandboxai/nanosandbox.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/nanosandboxai/nanosandbox.git</developerConnection>
+    <url>https://github.com/nanosandboxai/nanosandbox</url>
+  </scm>
 
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
