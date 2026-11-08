@@ -11,6 +11,12 @@ and the driver contract in `sdk/conformance/SPEC.md`.
 
 - Ruby 2.6+ (uses stdlib-only code; tested on the system Ruby 2.6.10).
 
+## Install
+
+```bash
+gem install nanosandbox
+```
+
 ## Usage
 
 ```ruby

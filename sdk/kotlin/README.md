@@ -14,6 +14,15 @@ and nullable parameters. The conformance driver mirrors
 - Gradle — the committed `./gradlew` wrapper (Gradle 9.8.2) downloads it.
 - Kotlin compiler 2.x (`kotlinc`) is only needed for the `build.sh` fallback.
 
+## Install
+
+`ai.nanosandbox:nanosandbox-kotlin` from the GitHub Pages Maven repository
+(`https://nanosandboxai.github.io/maven/`):
+
+```kotlin
+implementation("ai.nanosandbox:nanosandbox-kotlin:0.2.0")
+```
+
 ## Layout
 
 ```

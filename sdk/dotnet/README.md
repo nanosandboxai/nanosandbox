@@ -14,6 +14,12 @@ conformance suite (35/35).
 
 - .NET SDK 8.0+ (targets `net8.0`).
 
+## Install
+
+```bash
+dotnet add package Nanosandbox
+```
+
 ## Layout
 
 ```

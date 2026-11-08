@@ -15,6 +15,19 @@ contract in `sdk/conformance/SPEC.md`.
   single-file source launcher).
 - Maven 3.9+ for the test suite.
 
+## Install
+
+`ai.nanosandbox:nanosandbox-java` from the GitHub Pages Maven repository
+(`https://nanosandboxai.github.io/maven/`):
+
+```xml
+<dependency>
+  <groupId>ai.nanosandbox</groupId>
+  <artifactId>nanosandbox-java</artifactId>
+  <version>0.2.0</version>
+</dependency>
+```
+
 ## Layout
 
 ```
