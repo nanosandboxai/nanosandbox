@@ -115,6 +115,25 @@ plus a language-agnostic conformance harness, all speaking protocol **v1.0.0**
 READMEs under `sdk/<lang>/`.
 
 ```bash
+cargo add nanosandbox-sdk                              # Rust
+pip install nanosandbox-sdk                            # Python
+npm install nanosandbox-sdk                            # TypeScript/Node
+go get github.com/nanosandboxai/nanosandbox/sdk/go     # Go
+gem install nanosandbox                                # Ruby
+dotnet add package Nanosandbox                         # C#/.NET
+```
+
+Java and Kotlin publish a Maven repository to GitHub Pages
+(`ai.nanosandbox:nanosandbox-java` / `nanosandbox-kotlin`):
+
+```xml
+<repository>
+  <id>nanosandbox</id>
+  <url>https://nanosandboxai.github.io/maven/</url>
+</repository>
+```
+
+```bash
 # Run the conformance harness
 cargo build -p nanosb-conformance
 ```

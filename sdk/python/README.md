@@ -15,16 +15,14 @@ conformance suite (35/35).
 
 ## Install
 
-The package is a plain directory (no build step needed for local use):
+```bash
+pip install nanosandbox-sdk
+```
+
+For local development, install from the repo:
 
 ```bash
 pip install ./sdk/python          # or: pip install -e ./sdk/python
-```
-
-or put it on `sys.path`:
-
-```python
-import sys; sys.path.insert(0, "sdk/python")
 ```
 
 ## Usage

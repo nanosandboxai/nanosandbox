@@ -15,16 +15,14 @@ and the driver contract in `sdk/conformance/SPEC.md`.
 
 ## Install
 
-The SDK is a plain directory — copy it or add it to your project:
+```bash
+npm install nanosandbox-sdk
+```
+
+or vendor the sources directly:
 
 ```bash
 cp -r sdk/typescript/nanosandbox ./vendor/nanosandbox
-```
-
-or import it directly from the repo:
-
-```js
-import { SandboxClient } from "./sdk/typescript/nanosandbox/index.mjs";
 ```
 
 ## Usage

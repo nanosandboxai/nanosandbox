@@ -21,13 +21,13 @@ the retired C ABI — so all eight share one wire contract and one test corpus.
 | SDK | Directory | Runtime | Entry point | Install / run |
 |---|---|---|---|---|
 | Rust | [`rust/`](rust/README.md) | Rust | `nanosandbox-sdk` (re-exports `nanosb-client`) | `cargo add nanosandbox-sdk` |
-| Python | [`python/`](python/README.md) | Python ≥ 3.9 | `nanosandbox.SandboxClient` | `pip install ./sdk/python` |
+| Python | [`python/`](python/README.md) | Python ≥ 3.9 | `nanosandbox.SandboxClient` | `pip install nanosandbox-sdk` |
 | TypeScript/Node | [`typescript/`](typescript/README.md) | Node ≥ 24 | `nanosandbox-sdk` (ESM) | `import { SandboxClient } from "nanosandbox-sdk"` |
 | Go | [`go/`](go/README.md) | Go ≥ 1.27 | `github.com/nanosandboxai/nanosandbox/sdk/go/nanosandbox` | `go get github.com/nanosandboxai/nanosandbox/sdk/go` |
-| Ruby | [`ruby/`](ruby/README.md) | Ruby ≥ 2.6 | `nanosandbox` | `ruby -I sdk/ruby/lib` |
-| Java | [`java/`](java/README.md) | JDK ≥ 21 | `nanosandbox.SandboxClient` | Maven (`nanosandbox-java`) |
+| Ruby | [`ruby/`](ruby/README.md) | Ruby ≥ 2.6 | `nanosandbox` | `gem install nanosandbox` |
+| Java | [`java/`](java/README.md) | JDK ≥ 21 | `nanosandbox.SandboxClient` | `ai.nanosandbox:nanosandbox-java` (GitHub Pages Maven) |
 | C#/.NET | [`dotnet/`](dotnet/README.md) | .NET ≥ 8 | `SandboxClient` | `dotnet add package Nanosandbox` |
-| Kotlin | [`kotlin/`](kotlin/README.md) | JDK ≥ 21 + kotlinc | `nanosandbox.kt.KotlinClient` | jar (`nanosandbox-kotlin`) |
+| Kotlin | [`kotlin/`](kotlin/README.md) | JDK ≥ 21 | `nanosandbox.kt.KotlinClient` | `ai.nanosandbox:nanosandbox-kotlin` (GitHub Pages Maven) |
 
 Each README documents that SDK's install, full usage, and test commands.
 

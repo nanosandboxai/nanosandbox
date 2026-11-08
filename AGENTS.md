@@ -204,6 +204,32 @@ Before finishing any runtime change, exercise it through the **local CLI**
 | Install paths / bundles | `scripts/install.sh`, `install-deps/install.sh`, `scripts/package-sdk.sh` |
 | Host/shim supervisor entrypoint (`nanosb supervise`) | `src/main.rs` (`cmd_supervise`), `crates/host/src/deploy.rs`, `docs/runtime-capability-contract.md` |
 | libkrun fork (pin, commits, init-hook env) | `runtime/scripts/build-libkrun.sh` (`LIBKRUN_SHA`), `runtime/scripts/patches/README.md`, `nanosandboxai/libkrun`@`nanosandbox` |
+| SDK version (single source of truth) | `VERSION` + `scripts/set-sdk-version.sh` (`--check` = drift gate) |
+| SDK publish pipeline | `.github/workflows/sdk-{ci,release,smoke}.yml` + `scripts/sdk/{check-published,publish,install-smoke}.sh` |
+
+## SDK versioning & publishing
+
+The eight language SDKs share one version, held in the root [`VERSION`](VERSION)
+file. `scripts/set-sdk-version.sh <semver>` propagates it to every manifest
+(root `Cargo.toml`, `Cargo.lock` workspace members, Python, TypeScript, Java,
+Ruby gemspec, .NET csproj, Kotlin Gradle); `--check` fails on drift and runs as
+the `version-drift` gate in CI. Never hand-edit a single manifest.
+
+Publishing is tag-driven and independent of the product `v*` release:
+
+- `.github/workflows/sdk-ci.yml` — PR gate: the conformance harness artifact,
+  one job per language (unit + conformance + dry-run package), and `version-drift`.
+- `.github/workflows/sdk-release.yml` — `sdk-v*` tag (or `workflow_dispatch`
+  with `dry_run`) publishes every SDK behind the protected `sdk-release`
+  environment: crates.io / PyPI / npm / RubyGems / NuGet via OIDC, Go via a
+  `sdk/go/v*` tag, and Java + Kotlin as a Maven repository on GitHub Pages.
+  `scripts/sdk/publish.sh` skips already-published versions (idempotent).
+- `.github/workflows/sdk-smoke.yml` — installs each published SDK from its real
+  package manager in a scratch environment (`scripts/sdk/install-smoke.sh`).
+
+Registry targets: Rust/Python/npm as `nanosandbox-sdk`; Ruby `nanosandbox`;
+.NET `Nanosandbox`; Go module path unchanged; Java/Kotlin
+`ai.nanosandbox:nanosandbox-{java,kotlin}`.
 
 ## License
 
