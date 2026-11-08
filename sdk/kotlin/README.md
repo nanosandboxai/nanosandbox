@@ -10,14 +10,18 @@ and nullable parameters. The conformance driver mirrors
 
 ## Requirements
 
-- JDK 21+ (for `javac`/`jar` and the runtime).
-- Kotlin compiler 2.x (`kotlinc`), e.g. Homebrew's `kotlin` formula.
+- JDK 21+ (for the runtime).
+- Gradle — the committed `./gradlew` wrapper (Gradle 9.8.2) downloads it.
+- Kotlin compiler 2.x (`kotlinc`) is only needed for the `build.sh` fallback.
 
 ## Layout
 
 ```
 sdk/kotlin/
-├── build.sh                          # javac the Java SDK + shim, kotlinc the Kotlin, merge into one jar
+├── build.gradle.kts                  # Gradle build + maven-publish (canonical)
+├── settings.gradle.kts
+├── gradlew, gradle/wrapper/          # Gradle wrapper
+├── build.sh                          # no-Gradle fallback: javac + kotlinc -> one jar
 ├── README.md
 ├── src/nanosandbox/
 │   ├── KtJson.java                   # Java shim: Json factories under Kotlin-resolvable names
@@ -126,12 +130,16 @@ The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtim
 
 ## Building
 
+The canonical build is Gradle (wrapper committed):
+
 ```bash
-bash sdk/kotlin/build.sh
+./gradlew -p sdk/kotlin jar                # -> sdk/kotlin/build/libs/nanosandbox-kotlin-0.2.0.jar
+./gradlew -p sdk/kotlin publishToMavenLocal # installs ai.nanosandbox:nanosandbox-kotlin:0.2.0
 ```
 
-This produces `sdk/kotlin/nanosandbox-kotlin.jar` (self-contained: Kotlin
-runtime + Kotlin facade + Java SDK classes).
+The jar is self-contained: the Kotlin facade, the `KtJson` Java shim, and the
+Java SDK classes (`sdk/java`) in one artifact. `bash sdk/kotlin/build.sh`
+remains as a no-Gradle fallback that produces `sdk/kotlin/nanosandbox-kotlin.jar`.
 
 ## Testing
 
@@ -139,7 +147,7 @@ Smoke test — exercises the `KtJson` shim and the facade against an in-process
 fake NDJSON helper on a temp Unix socket:
 
 ```bash
-java -cp sdk/kotlin/nanosandbox-kotlin.jar nanosandbox.kt.SmokeTestKt
+./gradlew -p sdk/kotlin smokeTest
 # expected: all tests passed, exit code 0
 ```
 
@@ -147,14 +155,14 @@ Conformance driver — runs all 35 scenarios in `sdk/conformance/scenarios/`
 against the `nanosb-conformance` harness:
 
 ```bash
-java -cp sdk/kotlin/nanosandbox-kotlin.jar nanosandbox.kt.RunKt
-# NANOSB_CONFORMANCE_BIN=/path/to/nanosb-conformance \
-#   java -cp sdk/kotlin/nanosandbox-kotlin.jar nanosandbox.kt.RunKt
+cargo build -p nanosb-conformance     # the harness
+./gradlew -p sdk/kotlin conformance   # runs the driver from the repository root
 ```
 
-Run from the repository root (the driver resolves `sdk/conformance/scenarios`
-and `target/debug/nanosb-conformance` relative to the working directory).
-Expected output: `35 passed, 0 failed`, exit code 0.
+`conformance` runs from the repository root (the driver resolves
+`sdk/conformance/scenarios` and `target/debug/nanosb-conformance`); override the
+harness path with `NANOSB_CONFORMANCE_BIN`. Expected output: `35 passed, 0
+failed`, exit code 0.
 
 Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 
