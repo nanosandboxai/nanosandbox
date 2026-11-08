@@ -94,7 +94,9 @@ publishing {
     repositories {
         maven {
             name = "local-repo"
-            url = uri(layout.buildDirectory.dir("maven-repo"))
+            val target = providers.gradleProperty("mavenRepoUrl").orNull
+                ?: layout.buildDirectory.dir("maven-repo").get().asFile.absolutePath
+            url = uri(target)
         }
     }
 }
