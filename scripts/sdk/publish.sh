@@ -53,7 +53,11 @@ case "$sdk" in
   python)
     mkdir -p "$root/dist/python"
     note "build sdist+wheel"
-    python3 -m build "$root/sdk/python" --outdir "$root/dist/python"
+    if python3 -m build --version >/dev/null 2>&1; then
+      python3 -m build "$root/sdk/python" --outdir "$root/dist/python"
+    else
+      python3 -m pip wheel "$root/sdk/python" -w "$root/dist/python" --no-deps
+    fi
     if [ "$dry" = 0 ]; then
       note "twine upload"
       python3 -m twine upload --non-interactive "$root"/dist/python/*
