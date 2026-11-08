@@ -21,6 +21,11 @@
 
   <ItemGroup>
     <Compile Remove="conformance/**" />
+    <Compile Remove="nanosandbox/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="nanosandbox/Nanosandbox.csproj" />
   </ItemGroup>
 
 </Project>
