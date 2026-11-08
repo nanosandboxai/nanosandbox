@@ -1,13 +1,13 @@
-# nanosandbox (Rust SDK)
+# nanosandbox-sdk (Rust SDK)
 
 The Rust SDK for the [nanosandbox](https://github.com/nanosandboxai/nanosandbox)
 protocol helper. It re-exports the reference `nanosb-client` crate under the
-stable `nanosandbox` name, mirroring the other language SDKs.
+stable `nanosandbox-sdk` name, mirroring the other language SDKs.
 
 ## Usage
 
 ```rust
-use nanosandbox::{SandboxBuilder, SandboxClient};
+use nanosandbox_sdk::{SandboxBuilder, SandboxClient};
 
 let client = SandboxClient::local()?;
 let sandbox = client
@@ -19,7 +19,7 @@ assert_eq!(out.stdout, "hi\n");
 ## Building
 
 ```bash
-cargo build -p nanosandbox
+cargo build -p nanosandbox-sdk
 ```
 
 ## Testing

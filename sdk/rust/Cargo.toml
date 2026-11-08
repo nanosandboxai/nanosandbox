@@ -1,11 +1,14 @@
 [package]
-name = "nanosandbox"
+name = "nanosandbox-sdk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Rust SDK for the nanosandbox protocol helper (re-exports nanosb-client)"
+readme = "README.md"
+keywords = ["sandbox", "microvm", "isolation", "sdk", "libkrun"]
+categories = ["development-tools", "api-bindings"]
 
 [dependencies]
-nanosb-client = { path = "../../crates/client" }
+nanosb-client = { version = "0.2.0", path = "../../crates/client" }

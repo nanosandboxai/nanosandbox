@@ -2145,7 +2145,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nanosandbox"
+name = "nanosandbox-sdk"
 version = "0.2.0"
 dependencies = [
  "nanosb-client",
