@@ -47,6 +47,7 @@ sdk/kotlin/classes/
 sdk/kotlin/*.jar
 sdk/kotlin/build/
 sdk/kotlin/.gradle/
+sdk/kotlin/.kotlin/
 
 # packaging output
 dist/
