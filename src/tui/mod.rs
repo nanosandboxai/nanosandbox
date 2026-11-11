@@ -4,6 +4,7 @@ pub mod app;
 pub mod commands;
 pub mod event;
 pub mod grid;
+pub mod host_capacity;
 pub mod renderer;
 pub mod run;
 pub mod terminal;
@@ -11,6 +12,7 @@ pub mod tests;
 pub mod text_input;
 pub mod theme;
 pub mod upload;
+pub mod validation;
 
 #[cfg(test)]
 mod vm_test;

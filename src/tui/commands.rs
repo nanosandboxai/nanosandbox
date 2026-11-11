@@ -45,6 +45,10 @@ pub enum Command {
         env_file: Option<String>,
         /// Run agent commands as root inside the sandbox VM.
         run_as_root: bool,
+        /// Optional sandbox lifetime in seconds (overrides the 300s default).
+        timeout: Option<u64>,
+        /// Optional permission level: "default" | "accept-edits" | "allow-all".
+        permissions: Option<String>,
     },
     /// Switch focus to a specific panel index.
     Focus {
@@ -191,12 +195,12 @@ pub struct CommandHelpEntry {
 /// registry introspection, git, and finally session control.
 pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
     CommandHelpEntry {
-        pattern: "/add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
+        pattern: "/add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--timeout <secs>] [--permissions <level>] [--env-file <path>] [--use-env <KEY>]...",
         description: "Add a new agent panel (interactive by default; --headless runs headless)",
     },
     CommandHelpEntry {
         pattern: "/sandboxes",
-        description: "Toggle sandbox sidebar",
+        description: "Toggle sandbox sidebar (alias: /sb)",
     },
     CommandHelpEntry {
         pattern: "/focus <n>",
@@ -379,6 +383,7 @@ const ALL_COMMANDS: &[&str] = &[
     "/gitsync now",
     "/open",
     "/sandboxes",
+    "/sb",
     "/theme",
     "/theme nanosandbox",
     "/theme nanosandbox-light",
@@ -451,7 +456,7 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/mcp" => parse_mcp(&parts),
         "/env" => parse_env(&parts),
         "/kill" => parse_kill(&parts),
-        "/sandboxes" => ParseResult::Ok(Command::Sandboxes),
+        "/sandboxes" | "/sb" => ParseResult::Ok(Command::Sandboxes),
         "/reconnect" => ParseResult::Ok(Command::Reconnect),
         "/copy" => ParseResult::Ok(Command::Copy),
         "/zoom" => ParseResult::Ok(Command::Zoom),
@@ -498,14 +503,16 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         Some(a) => *a,
         None => {
             return ParseResult::Err(format!(
-                "Usage: /add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...\n\
+                "Usage: /add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--timeout <secs>] [--permissions <level>] [--env-file <path>] [--use-env <KEY>]...\n\
                  Supported agents: {}\n\
                  Interactive (default): /add claude\n\
                  With tag: /add claude --tag rc11\n\
                  With model: /add claude --model claude-sonnet-4-5-20250929\n\
                  Headless: /add claude --headless -p \"list files\"\n\
+                 With timeout: /add claude --timeout 1800\n\
                  With env file: /add claude --env-file .env.local\n\
-                 With runtime env: /add claude --use-env OPENAI_API_KEY",
+                 With runtime env: /add claude --use-env OPENAI_API_KEY\n\
+                 Permissions: /add claude --permissions allow-all",
                 SUPPORTED_AGENTS.join(", "),
             ));
         }
@@ -523,6 +530,8 @@ fn parse_add(parts: &[&str]) -> ParseResult {
     let mut use_env: Vec<String> = Vec::new();
     let mut env_file = None;
     let mut run_as_root = false;
+    let mut timeout = None;
+    let mut permissions = None;
     let mut i = 2;
 
     while i < parts.len() {
@@ -595,6 +604,51 @@ fn parse_add(parts: &[&str]) -> ParseResult {
                     return ParseResult::Err(
                         "--name requires a value\n\
                          Usage: /add <agent> --name <name>"
+                            .to_string(),
+                    )
+                }
+            },
+            "--timeout" => match parts.get(i + 1) {
+                Some(v) => match v.parse::<u64>() {
+                    Ok(t) => {
+                        timeout = Some(t);
+                        i += 2;
+                    }
+                    Err(_) => {
+                        return ParseResult::Err(format!(
+                            "--timeout requires a number of seconds\n\
+                             Usage: /add <agent> --timeout <seconds>\n\
+                             Got: {}",
+                            v
+                        ))
+                    }
+                },
+                None => {
+                    return ParseResult::Err(
+                        "--timeout requires a value\n\
+                         Usage: /add <agent> --timeout <seconds>"
+                            .to_string(),
+                    )
+                }
+            },
+            "--permissions" => match parts.get(i + 1) {
+                Some(v) => match v.parse::<sandbox::Permissions>() {
+                    Ok(_) => {
+                        permissions = Some(v.to_string());
+                        i += 2;
+                    }
+                    Err(_) => {
+                        return ParseResult::Err(
+                            "--permissions requires one of: default, accept-edits, allow-all\n\
+                             Usage: /add <agent> --permissions <level>"
+                                .to_string(),
+                        )
+                    }
+                },
+                None => {
+                    return ParseResult::Err(
+                        "--permissions requires a value\n\
+                         Usage: /add <agent> --permissions <level>"
                             .to_string(),
                     )
                 }
@@ -683,7 +737,7 @@ fn parse_add(parts: &[&str]) -> ParseResult {
             other => {
                 return ParseResult::Err(format!(
                     "Unknown option: {}\n\
-                     Usage: /add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
+                     Usage: /add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--timeout <secs>] [--permissions <level>] [--env-file <path>] [--use-env <KEY>]...",
                     other,
                 ));
             }
@@ -724,6 +778,8 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         use_env,
         env_file,
         run_as_root,
+        timeout,
+        permissions,
     })
 }
 
@@ -1004,8 +1060,56 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
+    }
+
+    #[test]
+    fn test_parse_add_permissions() {
+        assert_eq!(
+            parse_command_verbose("/add claude --permissions allow-all"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                tag: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: false,
+                interactive: true,
+                prompt: None,
+                model: None,
+                use_env: vec![],
+                env_file: None,
+                run_as_root: false,
+                timeout: None,
+                permissions: Some("allow-all".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_permissions_invalid_value() {
+        let result = parse_command_verbose("/add claude --permissions bananas");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("--permissions requires one of: default, accept-edits, allow-all"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_add_permissions_missing_value() {
+        let result = parse_command_verbose("/add claude --permissions");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("--permissions requires a value"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1026,6 +1130,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1049,6 +1155,8 @@ mod tests {
                     use_env: vec![],
                     env_file: None,
                     run_as_root: false,
+                    timeout: None,
+                    permissions: None,
                 }),
                 "`/add {}` should parse as a supported agent",
                 agent
@@ -1074,6 +1182,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1096,6 +1206,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: true,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1193,6 +1305,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1242,6 +1356,11 @@ mod tests {
     #[test]
     fn test_parse_sandboxes() {
         assert_eq!(parse_command("/sandboxes"), Some(Command::Sandboxes));
+    }
+
+    #[test]
+    fn test_parse_sb_alias() {
+        assert_eq!(parse_command("/sb"), Some(Command::Sandboxes));
     }
 
     #[test]
@@ -1338,6 +1457,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1360,6 +1481,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1403,6 +1526,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1426,6 +1551,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1459,6 +1586,8 @@ mod tests {
                 use_env: vec!["OPENAI_API_KEY".to_string(), "GITHUB_TOKEN".to_string()],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1489,6 +1618,8 @@ mod tests {
                 use_env: vec![],
                 env_file: Some(".env.local".to_string()),
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1519,6 +1650,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1944,6 +2077,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1979,6 +2114,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -2038,6 +2175,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -2108,6 +2247,8 @@ mod tests {
             use_env: vec![],
             env_file: None,
             run_as_root: false,
+            timeout: None,
+            permissions: None,
         }
     }
 

@@ -211,7 +211,7 @@ pub fn spawn_file_upload(
     mount_root: Option<PathBuf>,
     host_path: PathBuf,
     exec_sock: Option<PathBuf>,
-    panel_idx: usize,
+    panel_id: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
@@ -223,7 +223,7 @@ pub fn spawn_file_upload(
 
         let Some(mount_root) = mount_root else {
             let _ = tx.send(AppEvent::UploadFailed {
-                panel_idx,
+                panel_id,
                 error: "No project mount for this panel; uploads require a mounted workspace."
                     .to_string(),
             });
@@ -236,7 +236,7 @@ pub fn spawn_file_upload(
             Ok(meta) => {
                 if meta.file_type().is_symlink() {
                     let _ = tx.send(AppEvent::UploadFailed {
-                        panel_idx,
+                        panel_id,
                         error: format!("Symlink not allowed: {}", host_path.display()),
                     });
                     return;
@@ -244,7 +244,7 @@ pub fn spawn_file_upload(
             }
             Err(e) => {
                 let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
+                    panel_id,
                     error: format!("Stat {}: {}", host_path.display(), e),
                 });
                 return;
@@ -256,7 +256,7 @@ pub fn spawn_file_upload(
             Ok(meta) => {
                 if meta.len() > MAX_UPLOAD_SIZE {
                     let _ = tx.send(AppEvent::UploadFailed {
-                        panel_idx,
+                        panel_id,
                         error: format!(
                             "File too large: {} ({} MB, max {} MB)",
                             filename,
@@ -269,7 +269,7 @@ pub fn spawn_file_upload(
             }
             Err(e) => {
                 let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
+                    panel_id,
                     error: format!("Stat {}: {}", host_path.display(), e),
                 });
                 return;
@@ -280,7 +280,7 @@ pub fn spawn_file_upload(
             Ok(d) => d,
             Err(e) => {
                 let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
+                    panel_id,
                     error: format!("Read {}: {}", host_path.display(), e),
                 });
                 return;
@@ -288,7 +288,7 @@ pub fn spawn_file_upload(
         };
 
         let _ = tx.send(AppEvent::UploadStarted {
-            panel_idx,
+            panel_id,
             filename: filename.clone(),
         });
 
@@ -301,17 +301,14 @@ pub fn spawn_file_upload(
         match size {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
-                    panel_idx,
+                    panel_id,
                     filename,
                     remote_path,
                     size,
                 });
             }
             Err(e) => {
-                let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
-                    error: e,
-                });
+                let _ = tx.send(AppEvent::UploadFailed { panel_id, error: e });
             }
         }
     });
@@ -340,7 +337,7 @@ pub fn spawn_bytes_upload(
     data: Vec<u8>,
     filename: String,
     exec_sock: Option<PathBuf>,
-    panel_idx: usize,
+    panel_id: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
@@ -348,7 +345,7 @@ pub fn spawn_bytes_upload(
 
         let Some(mount_root) = mount_root else {
             let _ = tx.send(AppEvent::UploadFailed {
-                panel_idx,
+                panel_id,
                 error: "No project mount for this panel; uploads require a mounted workspace."
                     .to_string(),
             });
@@ -357,7 +354,7 @@ pub fn spawn_bytes_upload(
 
         if data.len() as u64 > MAX_UPLOAD_SIZE {
             let _ = tx.send(AppEvent::UploadFailed {
-                panel_idx,
+                panel_id,
                 error: format!(
                     "Data too large: {} ({} MB, max {} MB)",
                     filename,
@@ -369,7 +366,7 @@ pub fn spawn_bytes_upload(
         }
 
         let _ = tx.send(AppEvent::UploadStarted {
-            panel_idx,
+            panel_id,
             filename: filename.clone(),
         });
 
@@ -380,17 +377,14 @@ pub fn spawn_bytes_upload(
         match size {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
-                    panel_idx,
+                    panel_id,
                     filename,
                     remote_path,
                     size,
                 });
             }
             Err(e) => {
-                let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
-                    error: e,
-                });
+                let _ = tx.send(AppEvent::UploadFailed { panel_id, error: e });
             }
         }
     });

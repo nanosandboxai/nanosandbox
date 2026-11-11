@@ -118,7 +118,7 @@ async fn test_tui_vm_end_to_end() {
     loop {
         match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
             Ok(Some(ev)) => {
-                if matches!(&ev, AppEvent::TerminalData { panel_idx: 0, .. }) {
+                if matches!(&ev, AppEvent::TerminalData { panel_id: 0, .. }) {
                     saw_console_output = true;
                 }
                 let _ = handle_event(&mut app, ev, &tx).await;
