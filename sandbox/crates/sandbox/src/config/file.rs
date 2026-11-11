@@ -29,6 +29,8 @@ pub struct SandboxDefaults {
     pub cpus: Option<u32>,
     pub memory: Option<u32>,
     pub timeout: Option<u32>,
+    pub disk: Option<u64>,
+    pub max_pids: Option<u32>,
     /// Run agent commands as root inside the guest VM.
     /// Accepts both snake_case (`run_as_root`) and camelCase (`runAsRoot`).
     #[serde(alias = "runAsRoot")]
@@ -72,6 +74,8 @@ pub struct SandboxDefinition {
     pub cpus: Option<u32>,
     pub memory: Option<u32>,
     pub timeout: Option<u32>,
+    pub disk: Option<u64>,
+    pub max_pids: Option<u32>,
     /// Run agent commands as root inside the guest VM.
     /// Accepts both snake_case (`run_as_root`) and camelCase (`runAsRoot`).
     #[serde(alias = "runAsRoot")]
@@ -289,6 +293,12 @@ pub fn resolve_sandbox_configs(
         }
         if let Some(timeout) = def.timeout.or(defaults.timeout) {
             config.timeout_secs = timeout;
+        }
+        if let Some(disk) = def.disk.or(defaults.disk) {
+            config.disk_quota_mb = disk;
+        }
+        if let Some(max_pids) = def.max_pids.or(defaults.max_pids) {
+            config.max_pids = max_pids;
         }
         if let Some(run_as_root) = def.run_as_root.or(defaults.run_as_root) {
             config.run_as_root = run_as_root;
@@ -673,6 +683,8 @@ pub fn apply_cli_overrides(
     cpus: Option<u32>,
     memory: Option<u32>,
     timeout: Option<u32>,
+    disk: Option<u64>,
+    max_pids: Option<u32>,
     permissions: Option<super::Permissions>,
     cli_env: &[(String, String)],
 ) {
@@ -685,6 +697,12 @@ pub fn apply_cli_overrides(
         }
         if let Some(timeout) = timeout {
             config.sandbox.timeout_secs = timeout;
+        }
+        if let Some(disk) = disk {
+            config.sandbox.disk_quota_mb = disk;
+        }
+        if let Some(max_pids) = max_pids {
+            config.sandbox.max_pids = max_pids;
         }
         if let Some(perm) = permissions {
             config.permissions = perm;
@@ -1127,7 +1145,16 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let mut configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), None, &[]);
+        apply_cli_overrides(
+            &mut configs,
+            Some(8),
+            None,
+            Some(1200),
+            None,
+            None,
+            None,
+            &[],
+        );
         assert_eq!(configs[0].1.sandbox.cpus, 8);
         assert_eq!(configs[0].1.sandbox.memory_mb, 4096);
         assert_eq!(configs[0].1.sandbox.timeout_secs, 1200);
@@ -1571,7 +1598,7 @@ sandboxes:
             ("NEW_KEY".to_string(), "new_value".to_string()),
             ("EXISTING".to_string(), "overridden".to_string()),
         ];
-        apply_cli_overrides(&mut configs, None, None, None, None, &cli_env);
+        apply_cli_overrides(&mut configs, None, None, None, None, None, None, &cli_env);
         assert_eq!(configs[0].1.sandbox.env["NEW_KEY"], "new_value");
         assert_eq!(configs[0].1.sandbox.env["EXISTING"], "overridden");
     }

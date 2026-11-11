@@ -100,13 +100,14 @@ impl DeployPlanner {
         config_files.extend(skill_configs);
 
         // Agent command
-        let agent_cmd = AgentCommandBuilder::build(
+        let agent_cmd = AgentCommandBuilder::build_with_session(
             &agent_type,
             &resolved.prompt,
             config.auto_mode,
             config.interactive,
             config.permissions,
             config.model.as_deref(),
+            config.resume_session_id.as_deref(),
         );
 
         // Environment: start with sandbox env, overlay secrets (never persisted)
@@ -165,6 +166,7 @@ mod tests {
             agent_type: Some(AgentType::Claude),
             model: Some("claude-sonnet-4-5-20250929".to_string()),
             claude_settings: None,
+            resume_session_id: None,
         };
 
         let resolved = ResolvedAgentConfig {

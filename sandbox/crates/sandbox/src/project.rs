@@ -178,6 +178,31 @@ OneDrive/\n\
 .sublime-workspace\n\
 ";
 
+/// Agent-state directories that are nested virtiofs mounts inside the guest
+/// home (the workspace). Git must never walk them: they hold large caches,
+/// logs and SQLite databases and can stall or hang a `git add`/`status`/`commit`
+/// running over the workspace home.
+pub const AGENT_STATE_EXCLUDES: &str = "\
+# nanosandbox: keep git out of the agent-state mounts nested in the workspace home
+.claude/
+.codex/
+.agents/
+.cursor/
+.aider/
+.gemini/
+.nanosandbox/
+.config/cursor/
+.config/goose/
+.config/opencode/
+.config/crush/
+.local/share/goose/
+.local/share/opencode/
+.local/share/crush/
+.local/state/goose/
+.local/state/opencode/
+.cache/opencode/
+";
+
 /// How the project directory maps to git repos.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProjectLayout {
@@ -255,6 +280,27 @@ fn git_current_branch(repo_path: &Path) -> Result<Option<String>, String> {
     }
 }
 
+/// Append the agent-state exclude block to `<clone>/.git/info/exclude` so git
+/// skips the agent-state mounts nested inside the workspace home. Idempotent;
+/// best-effort.
+fn write_agent_state_excludes(clone: &Path) {
+    let info = clone.join(".git").join("info");
+    if std::fs::create_dir_all(&info).is_err() {
+        return;
+    }
+    let exclude = info.join("exclude");
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.contains("keep git out of the agent-state") {
+        return;
+    }
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(AGENT_STATE_EXCLUDES);
+    let _ = std::fs::write(&exclude, content);
+}
+
 /// Create a local clone of a repository on a new branch.
 ///
 /// 1. Clones from HEAD (no branch created in source repo)
@@ -316,6 +362,7 @@ fn git_clone_local(repo_path: &Path, clone_path: &Path, branch_name: &str) -> Re
             msg
         })?;
 
+    write_agent_state_excludes(clone_path);
     Ok(())
 }
 
@@ -390,6 +437,7 @@ fn git_clone_local_from_head(
             msg
         })?;
 
+    write_agent_state_excludes(clone_path);
     Ok(())
 }
 
@@ -442,6 +490,8 @@ fn snapshot_source_to_clone(source: &Path, clone: &Path) -> Result<(), String> {
         );
         msg
     })?;
+
+    write_agent_state_excludes(clone);
 
     // Stage all files (respecting .gitignore).
     let mut index = repo.index().map_err(|e| {
@@ -1853,6 +1903,8 @@ impl ProjectMount {
             return Err(msg);
         }
 
+        write_agent_state_excludes(clone_path);
+
         self.worktree_base = Some(clone_path.to_path_buf());
         self.created_branches = branches;
 
@@ -1945,6 +1997,28 @@ mod tests {
         assert!(DEFAULT_GITIGNORE.contains("target/"));
         assert!(DEFAULT_GITIGNORE.contains("__pycache__/"));
         assert!(DEFAULT_GITIGNORE.contains(".gradle/"));
+    }
+
+    #[test]
+    fn test_write_agent_state_excludes_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let clone = tmp.path().join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        let repo = git2::Repository::init(&clone).unwrap();
+        drop(repo);
+
+        write_agent_state_excludes(&clone);
+        let first = std::fs::read_to_string(clone.join(".git/info/exclude")).unwrap();
+        assert!(first.contains(".cursor/"), "must exclude .cursor");
+        assert!(
+            first.contains(".config/cursor/"),
+            "must exclude .config/cursor"
+        );
+        assert!(first.contains(".nanosandbox/"), "must exclude .nanosandbox");
+
+        write_agent_state_excludes(&clone);
+        let second = std::fs::read_to_string(clone.join(".git/info/exclude")).unwrap();
+        assert_eq!(first, second, "exclude must not be duplicated");
     }
 
     // ── Task 1: struct construction tests ────────────────────────────

@@ -74,6 +74,10 @@ impl ConfigGenerator {
                         content,
                     });
                 }
+                files.push(ConfigFile {
+                    relative_path: "claude/.claude.json".to_string(),
+                    content: Self::claude_trust_json().into_bytes(),
+                });
             }
             McpConfigFormat::Codex => {
                 if let Some(content) = Self::generate_codex(servers) {
@@ -82,6 +86,10 @@ impl ConfigGenerator {
                         content,
                     });
                 }
+                files.push(ConfigFile {
+                    relative_path: "codex/config.toml".to_string(),
+                    content: Self::codex_trust_toml().into_bytes(),
+                });
             }
             McpConfigFormat::Goose => {
                 if let Some(content) = Self::generate_goose(servers) {
@@ -195,6 +203,23 @@ impl ConfigGenerator {
         Some(content.into_bytes())
     }
 
+    /// Codex `config.toml` body that marks the workspace trusted so the
+    /// interactive agent skips its "trust the contents of this directory?" prompt.
+    fn codex_trust_toml() -> String {
+        "[projects.\"/home/developer\"]\ntrust_level = \"trusted\"\n".to_string()
+    }
+
+    /// `~/.claude/.claude.json` body marking the workspace trusted, so the
+    /// interactive agent skips its "do you trust the files in this folder?"
+    /// prompt. Claude reads this from `$CLAUDE_CONFIG_DIR/.claude.json`; the
+    /// runtime sets `CLAUDE_CONFIG_DIR=~/.claude` (see `build_env`).
+    fn claude_trust_json() -> String {
+        let doc = serde_json::json!({
+            "projects": { "/home/developer": { "hasTrustDialogAccepted": true } }
+        });
+        serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string())
+    }
+
     /// Generate Codex MCP config (TOML).
     ///
     /// Format:
@@ -270,12 +295,18 @@ impl ConfigGenerator {
     ///     timeout: 300
     /// ```
     fn generate_goose(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
-        if servers.is_empty() {
-            return None;
-        }
-
+        // Always write Goose's config, even with no MCP servers. The
+        // `GOOSE_TELEMETRY_ENABLED: false` line is what suppresses Goose's
+        // first-run "Would you like to send anonymous data?" prompt. If that
+        // prompt is shown, accepting it makes Goose restart its session, and
+        // the TUI then sees the agent's PTY exit and tears down the sandbox.
         let mut output = String::new();
         output.push_str("GOOSE_TELEMETRY_ENABLED: false\n\n");
+
+        if servers.is_empty() {
+            return Some(output.into_bytes());
+        }
+
         output.push_str("extensions:\n");
 
         let mut names: Vec<&String> = servers.keys().collect();
@@ -521,27 +552,48 @@ mod tests {
     fn test_generate_claude() {
         let servers = sample_servers();
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Claude);
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].relative_path, "claude/settings.json");
+        assert_eq!(files.len(), 2);
 
-        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        let settings = files
+            .iter()
+            .find(|f| f.relative_path == "claude/settings.json")
+            .expect("claude settings config");
+        let content = String::from_utf8(settings.content.clone()).unwrap();
         assert!(content.contains("mcpServers"));
         assert!(content.contains("github"));
         assert!(content.contains("npx"));
         assert!(content.contains("GITHUB_TOKEN"));
         assert!(content.contains("filesystem"));
+
+        let trust = files
+            .iter()
+            .find(|f| f.relative_path == "claude/.claude.json")
+            .expect("claude trust config");
+        let trust_content = String::from_utf8(trust.content.clone()).unwrap();
+        assert!(trust_content.contains("hasTrustDialogAccepted"));
+        assert!(trust_content.contains("/home/developer"));
     }
 
     #[test]
     fn test_generate_codex() {
         let servers = sample_servers();
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Codex);
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].relative_path, "codex/mcp_servers.toml");
 
-        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        let mcp = files
+            .iter()
+            .find(|f| f.relative_path == "codex/mcp_servers.toml")
+            .expect("codex mcp config");
+        let content = String::from_utf8(mcp.content.clone()).unwrap();
         assert!(content.contains("[mcp_servers.github]"));
         assert!(content.contains("command = \"npx\""));
+
+        let trust = files
+            .iter()
+            .find(|f| f.relative_path == "codex/config.toml")
+            .expect("codex trust config");
+        let trust_content = String::from_utf8(trust.content.clone()).unwrap();
+        assert!(trust_content.contains("trust_level = \"trusted\""));
+        assert!(trust_content.contains("/home/developer"));
     }
 
     #[test]
@@ -627,8 +679,36 @@ mod tests {
     #[test]
     fn test_generate_empty_servers() {
         let servers = HashMap::new();
-        let files = ConfigGenerator::generate_all(&servers, &AgentType::Claude);
+        let files = ConfigGenerator::generate_all(&servers, &AgentType::Opencode);
         assert!(files.is_empty(), "empty servers should produce no files");
+    }
+
+    #[test]
+    fn test_generate_claude_without_servers_still_writes_trust() {
+        let servers = HashMap::new();
+        let files = ConfigGenerator::generate_all(&servers, &AgentType::Claude);
+        assert_eq!(
+            files.len(),
+            1,
+            "claude must always write .claude.json so the workspace is pre-trusted"
+        );
+        assert_eq!(files[0].relative_path, "claude/.claude.json");
+        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        assert!(content.contains("hasTrustDialogAccepted"));
+    }
+
+    #[test]
+    fn test_generate_goose_without_servers_still_disables_telemetry() {
+        let servers = HashMap::new();
+        let files = ConfigGenerator::generate_all(&servers, &AgentType::Goose);
+        assert_eq!(
+            files.len(),
+            1,
+            "goose must always write config.yaml so telemetry stays disabled"
+        );
+        let content = String::from_utf8(files[0].content.clone()).unwrap();
+        assert!(content.contains("GOOSE_TELEMETRY_ENABLED: false"));
+        assert!(!content.contains("extensions:"));
     }
 
     #[test]

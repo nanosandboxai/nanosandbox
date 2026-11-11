@@ -400,6 +400,9 @@ pub struct AgentSandboxConfig {
     pub model: Option<String>,
     /// Claude-specific settings (theme, etc.) written to ~/.claude/settings.json.
     pub claude_settings: Option<ClaudeSettings>,
+    /// Agent-native session id to resume (e.g. codex `resume <id>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_session_id: Option<String>,
 }
 
 impl Default for AgentSandboxConfig {
@@ -417,6 +420,7 @@ impl Default for AgentSandboxConfig {
             agent_type: None,
             model: None,
             claude_settings: None,
+            resume_session_id: None,
         }
     }
 }
@@ -514,6 +518,29 @@ mod tests {
         assert!(
             !cfg.interactive,
             "missing interactive must default to false"
+        );
+    }
+
+    #[test]
+    fn agent_config_deserializes_without_resume_session_id() {
+        // Sessions saved before the `resume_session_id` field existed must still load.
+        let json = r#"{
+            "sandbox": {"name": "s", "image": "alpine"},
+            "mcp_servers": {},
+            "agent": null,
+            "skills": [],
+            "resolved_agent": null,
+            "auto_mode": false,
+            "permissions": "default",
+            "prompt": null,
+            "agent_type": null,
+            "model": null,
+            "claude_settings": null
+        }"#;
+        let cfg: AgentSandboxConfig = serde_json::from_str(json).expect("old session must load");
+        assert!(
+            cfg.resume_session_id.is_none(),
+            "missing resume_session_id must default to None"
         );
     }
 }

@@ -35,6 +35,32 @@ impl AgentCommandBuilder {
         permissions: Permissions,
         model: Option<&str>,
     ) -> AgentCommand {
+        Self::build_with_session(
+            agent_type,
+            prompt,
+            auto_mode,
+            interactive,
+            permissions,
+            model,
+            None,
+        )
+    }
+
+    /// Build the agent CLI command from configuration, optionally resuming an
+    /// agent-native session.
+    ///
+    /// * `resume_session_id` - When `Some(id)`, the agent is launched with its
+    ///   native resume flag (currently only codex honors this; other agents
+    ///   ignore it and behave as if `None`).
+    pub fn build_with_session(
+        agent_type: &AgentType,
+        prompt: &str,
+        auto_mode: bool,
+        interactive: bool,
+        permissions: Permissions,
+        model: Option<&str>,
+        resume_session_id: Option<&str>,
+    ) -> AgentCommand {
         let effective_permissions = permissions.effective(auto_mode);
 
         let interactive = interactive && !auto_mode;
@@ -43,9 +69,13 @@ impl AgentCommandBuilder {
             AgentType::Claude => {
                 Self::build_claude(prompt, interactive, effective_permissions, model)
             }
-            AgentType::Codex => {
-                Self::build_codex(prompt, interactive, effective_permissions, model)
-            }
+            AgentType::Codex => Self::build_codex(
+                prompt,
+                interactive,
+                effective_permissions,
+                model,
+                resume_session_id,
+            ),
             AgentType::Goose => {
                 Self::build_goose(prompt, interactive, effective_permissions, model)
             }
@@ -96,6 +126,25 @@ impl AgentCommandBuilder {
                 }
                 Permissions::Default => {}
             },
+            AgentType::Cursor => {
+                // Cursor's debug log lives at /tmp/cursor-agent-logs-<uid>/ with
+                // an absolute `latest.log` symlink the macOS virtiofs passthrough
+                // cannot resolve (ELOOP), which crashes the agent right after
+                // sign-in. Disable the debug log so it never touches that path.
+                env.insert(
+                    "CURSOR_AGENT_DISABLE_DEBUG_LOG".to_string(),
+                    "1".to_string(),
+                );
+            }
+            AgentType::Claude => {
+                // Relocate Claude's config dir to the mounted ~/.claude so the
+                // pre-seeded `.claude.json` trust file (see `config_gen`) is found
+                // and the workspace-trust dialog is auto-accepted.
+                env.insert(
+                    "CLAUDE_CONFIG_DIR".to_string(),
+                    "/home/developer/.claude".to_string(),
+                );
+            }
             _ => {}
         }
 
@@ -153,32 +202,60 @@ impl AgentCommandBuilder {
         interactive: bool,
         permissions: Permissions,
         model: Option<&str>,
+        resume_session_id: Option<&str>,
     ) -> AgentCommand {
         let mut args = Vec::new();
 
-        if !interactive {
+        if let Some(id) = resume_session_id {
+            if interactive {
+                args.push("resume".to_string());
+                args.push(id.to_string());
+            } else {
+                args.push("exec".to_string());
+                args.push("--skip-git-repo-check".to_string());
+
+                match permissions {
+                    Permissions::AllowAll | Permissions::AcceptEdits => {
+                        args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+                    }
+                    Permissions::Default => {}
+                }
+
+                args.push("--json".to_string());
+
+                if let Some(m) = model {
+                    args.push("--model".to_string());
+                    args.push(m.to_string());
+                }
+
+                args.push("resume".to_string());
+                args.push(id.to_string());
+
+                if !prompt.is_empty() {
+                    args.push(prompt.to_string());
+                }
+            }
+        } else if !interactive {
             args.push("exec".to_string());
             args.push("--skip-git-repo-check".to_string());
-        }
 
-        match permissions {
-            Permissions::AllowAll | Permissions::AcceptEdits => {
-                args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+            match permissions {
+                Permissions::AllowAll | Permissions::AcceptEdits => {
+                    args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+                }
+                Permissions::Default => {}
             }
-            Permissions::Default => {}
-        }
 
-        if !interactive {
             args.push("--json".to_string());
-        }
 
-        if let Some(m) = model {
-            args.push("--model".to_string());
-            args.push(m.to_string());
-        }
+            if let Some(m) = model {
+                args.push("--model".to_string());
+                args.push(m.to_string());
+            }
 
-        if !interactive && !prompt.is_empty() {
-            args.push(prompt.to_string());
+            if !prompt.is_empty() {
+                args.push(prompt.to_string());
+            }
         }
 
         AgentCommand {
@@ -226,6 +303,13 @@ impl AgentCommandBuilder {
         if !interactive && !prompt.is_empty() {
             args.push("--message".to_string());
             args.push(prompt.to_string());
+        }
+
+        if interactive {
+            // Skip cursor's interactive "Workspace Trust Required" prompt: the
+            // workspace is the sandbox's disposable clone, and that prompt can
+            // leave the agent stuck when the panel fails to deliver the keypress.
+            args.push("--trust".to_string());
         }
 
         match permissions {
@@ -337,6 +421,12 @@ impl AgentCommandBuilder {
             if !prompt.is_empty() {
                 args.push(prompt.to_string());
             }
+        }
+
+        if interactive {
+            // Skip Gemini's folder-trust prompt; the workspace is the sandbox's
+            // disposable clone, so there is nothing to confirm.
+            args.push("--skip-trust".to_string());
         }
 
         match permissions {
@@ -582,6 +672,28 @@ mod tests {
     }
 
     #[test]
+    fn test_build_env_cursor_disables_debug_log() {
+        let base = HashMap::new();
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Cursor, false, Permissions::Default, &base);
+        assert_eq!(
+            env.get("CURSOR_AGENT_DISABLE_DEBUG_LOG").map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn test_build_env_claude_sets_config_dir() {
+        let base = HashMap::new();
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Claude, false, Permissions::Default, &base);
+        assert_eq!(
+            env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
+            Some("/home/developer/.claude")
+        );
+    }
+
+    #[test]
     fn test_auto_mode_forces_allow_all() {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Claude,
@@ -651,6 +763,74 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_interactive_resume() {
+        let cmd = AgentCommandBuilder::build_with_session(
+            &AgentType::Codex,
+            "ignored",
+            false,
+            true,
+            Permissions::Default,
+            None,
+            Some("sess-1"),
+        );
+        assert_eq!(cmd.binary, "codex");
+        assert_eq!(cmd.args, vec!["resume".to_string(), "sess-1".to_string()]);
+    }
+
+    #[test]
+    fn test_codex_headless_resume() {
+        let cmd = AgentCommandBuilder::build_with_session(
+            &AgentType::Codex,
+            "continue the task",
+            false,
+            false,
+            Permissions::Default,
+            None,
+            Some("sess-1"),
+        );
+        assert_eq!(cmd.binary, "codex");
+        assert!(cmd.args.contains(&"exec".to_string()));
+        assert!(cmd.args.contains(&"resume".to_string()));
+        assert!(cmd.args.contains(&"sess-1".to_string()));
+        assert_eq!(cmd.args.last().unwrap(), "continue the task");
+
+        let idx_exec = cmd.args.iter().position(|a| a == "exec").unwrap();
+        let idx_skip = cmd
+            .args
+            .iter()
+            .position(|a| a == "--skip-git-repo-check")
+            .unwrap();
+        let idx_json = cmd.args.iter().position(|a| a == "--json").unwrap();
+        let idx_resume = cmd.args.iter().position(|a| a == "resume").unwrap();
+        assert!(
+            idx_resume > idx_exec && idx_resume > idx_skip && idx_resume > idx_json,
+            "resume must come after exec-only flags, got {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn test_codex_headless_resume_with_model_and_permissions() {
+        let cmd = AgentCommandBuilder::build_with_session(
+            &AgentType::Codex,
+            "continue",
+            false,
+            false,
+            Permissions::AllowAll,
+            Some("gpt-5"),
+            Some("sess-1"),
+        );
+        assert!(cmd
+            .args
+            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(cmd.args.contains(&"--model".to_string()));
+        assert!(cmd.args.contains(&"gpt-5".to_string()));
+        assert!(cmd.args.contains(&"resume".to_string()));
+        assert!(cmd.args.contains(&"sess-1".to_string()));
+        assert_eq!(cmd.args.last().unwrap(), "continue");
+    }
+
+    #[test]
     fn test_goose_interactive_uses_session() {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Goose,
@@ -675,6 +855,11 @@ mod tests {
         );
         assert!(!cmd.args.contains(&"--message".to_string()));
         assert!(!cmd.args.contains(&"ignored".to_string()));
+        assert!(
+            cmd.args.contains(&"--trust".to_string()),
+            "interactive cursor must pass --trust to skip the workspace-trust prompt, got {:?}",
+            cmd.args
+        );
     }
 
     #[test]
@@ -787,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gemini_interactive_is_bare() {
+    fn test_gemini_interactive_skips_trust() {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Gemini,
             "ignored",
@@ -797,10 +982,10 @@ mod tests {
             None,
         );
         assert_eq!(cmd.binary, "gemini");
-        assert!(
-            cmd.args.is_empty(),
-            "interactive gemini must be bare `gemini`, got {:?}",
-            cmd.args
+        assert_eq!(
+            cmd.args,
+            vec!["--skip-trust".to_string()],
+            "interactive gemini must pass --skip-trust to skip the folder-trust prompt"
         );
     }
 
@@ -882,7 +1067,7 @@ mod tests {
             (
                 AgentType::Cursor,
                 "cursor-agent",
-                &[],
+                &["--trust"],
                 &["--message", "do it"],
             ),
             (AgentType::Opencode, "opencode", &[], &["run", "do it"]),
@@ -892,7 +1077,7 @@ mod tests {
                 &[],
                 &["--message", "do it", "--yes", "--no-auto-commits"],
             ),
-            (AgentType::Gemini, "gemini", &[], &["-p", "do it"]),
+            (AgentType::Gemini, "gemini", &["--skip-trust"], &["-p", "do it"]),
             (AgentType::Crush, "crush", &[], &["run", "do it"]),
         ];
 
