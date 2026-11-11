@@ -496,7 +496,11 @@ async fn test_all_agents_version() {
     println!("\n========================================");
     println!("  Agents Registry Comprehensive Test");
     println!("========================================");
-    println!("Image pattern: {} (e.g. {})", agent_image("<agent>"), agent_image("claude"));
+    println!(
+        "Image pattern: {} (e.g. {})",
+        agent_image("<agent>"),
+        agent_image("claude")
+    );
     println!("Testing {} agents\n", AGENTS.len());
 
     // Check runtime - skip entire test if not met
@@ -672,7 +676,10 @@ async fn test_agent_extra_mounts_land() {
         .exec("cat", &["/home/developer/nanosb-mount-marker"])
         .expect("failed to exec cat on project marker");
     let state = client
-        .exec("cat", &["/home/developer/.config/opencode/nanosb-mount-marker"])
+        .exec(
+            "cat",
+            &["/home/developer/.config/opencode/nanosb-mount-marker"],
+        )
         .expect("failed to exec cat on state marker");
 
     let _ = sandbox.stop().await;
@@ -869,7 +876,11 @@ async fn test_agents_environment_report() {
     println!("[Platform]");
     println!("  OS: {}", std::env::consts::OS);
     println!("  Arch: {}", std::env::consts::ARCH);
-    println!("  Image pattern: {} (e.g. {})", agent_image("<agent>"), agent_image("claude"));
+    println!(
+        "  Image pattern: {} (e.g. {})",
+        agent_image("<agent>"),
+        agent_image("claude")
+    );
 
     // Runtime
     println!("\n[Runtime Status]");

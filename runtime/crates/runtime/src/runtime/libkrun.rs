@@ -351,8 +351,7 @@ fn create_guest_user(
     let home = format!("/home/{}", name);
 
     let etc_dir = rootfs_path.join("etc");
-    std::fs::create_dir_all(&etc_dir)
-        .map_err(|e| format!("mkdir {}: {}", etc_dir.display(), e))?;
+    std::fs::create_dir_all(&etc_dir).map_err(|e| format!("mkdir {}: {}", etc_dir.display(), e))?;
 
     let passwd_path = etc_dir.join("passwd");
     let mut passwd_data = std::fs::read_to_string(&passwd_path).unwrap_or_default();
@@ -1422,6 +1421,17 @@ impl LibkrunRuntime {
     }
 
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
+        self.expose_port_to(id, port, super::gvproxy::GUEST_IP)
+    }
+
+    /// Forward a guest port to the same host port via gvproxy, to an explicit
+    /// remote host inside the guest network stack (default [`super::gvproxy::GUEST_IP`]).
+    pub fn expose_port_to(
+        &self,
+        id: &str,
+        port: u16,
+        remote_host: &str,
+    ) -> std::result::Result<(), String> {
         let sandboxes = self.lock_sandboxes();
         let state = sandboxes
             .get(id)
@@ -1430,7 +1440,7 @@ impl LibkrunRuntime {
             .gvproxy
             .as_ref()
             .ok_or_else(|| "no gvproxy instance".to_string())?;
-        gvproxy.expose_port(port, port, "tcp")
+        gvproxy.expose_port_to(port, port, "tcp", remote_host)
     }
 
     /// Create a sandbox from a pre-prepared OCI bundle.

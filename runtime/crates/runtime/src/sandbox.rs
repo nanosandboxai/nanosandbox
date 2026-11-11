@@ -122,7 +122,10 @@ impl Sandbox {
             // Adopt the image's own ENV (notably PATH: agent CLIs install under
             // dirs like /root/.opencode/bin). Sandbox config wins on conflict.
             for (key, value) in &pulled.env {
-                config.env.entry(key.clone()).or_insert_with(|| value.clone());
+                config
+                    .env
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
             }
 
             // Create OCI bundle directory (empty rootfs)
@@ -203,7 +206,10 @@ impl Sandbox {
                 debug!("Pulling image: {}", config.image);
                 let pulled_image = image_manager.pull(&config.image).await?;
                 for (key, value) in &pulled_image.env {
-                    config.env.entry(key.clone()).or_insert_with(|| value.clone());
+                    config
+                        .env
+                        .entry(key.clone())
+                        .or_insert_with(|| value.clone());
                 }
 
                 // Create OCI bundle directory (empty rootfs)
@@ -426,10 +432,15 @@ impl Sandbox {
 
     /// Dynamically forward a guest port to the same host port via gvproxy.
     pub fn expose_port(&self, port: u16) -> std::result::Result<(), String> {
+        self.expose_port_to(port, crate::runtime::gvproxy::GUEST_IP)
+    }
+
+    /// Forward a guest port to an explicit remote host inside the guest stack.
+    pub fn expose_port_to(&self, port: u16, remote_host: &str) -> std::result::Result<(), String> {
         self.runtime
             .as_ref()
             .ok_or_else(|| "no runtime".to_string())
-            .and_then(|r| r.expose_port(&self.id, port))
+            .and_then(|r| r.expose_port_to(&self.id, port, remote_host))
     }
 
     /// Get the guest IP address for this sandbox.

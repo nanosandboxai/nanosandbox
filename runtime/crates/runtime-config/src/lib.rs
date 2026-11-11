@@ -115,7 +115,7 @@ pub struct SandboxConfig {
     #[serde(default = "default_workdir")]
     pub workdir: String,
 
-    /// Timeout in seconds
+    /// Timeout in seconds; `0` means "no timeout" (unlimited).
     #[serde(default = "default_timeout")]
     pub timeout_secs: u32,
 
@@ -184,6 +184,11 @@ pub struct SandboxConfig {
     /// Guest disk I/O limit in bytes/sec (0 = unlimited). Opt-in.
     #[serde(default)]
     pub io_bps: u64,
+
+    /// Per-sandbox disk cap in MB (0 = unlimited). The supervisor stops the
+    /// sandbox when its state dir + rootfs bundle exceed this.
+    #[serde(default)]
+    pub disk_quota_mb: u64,
 
     /// Give each boot a copy-on-write clone of the rootfs so guest writes never
     /// dirty the pristine template (default false = the template is the boot root).
@@ -270,8 +275,9 @@ fn default_workdir() -> String {
     "/home/developer".to_string()
 }
 
+/// Default sandbox timeout in seconds. `0` means "no timeout" (unlimited).
 fn default_timeout() -> u32 {
-    300
+    0
 }
 
 impl Default for SandboxConfig {
@@ -299,6 +305,7 @@ impl Default for SandboxConfig {
             max_inodes: 0,
             max_pids: 0,
             io_bps: 0,
+            disk_quota_mb: 0,
             fresh_rootfs: false,
             console: None,
             extra_mounts: Vec::new(),
@@ -444,6 +451,18 @@ impl SandboxConfigBuilder {
     /// Set the timeout
     pub fn timeout_secs(mut self, timeout: u32) -> Self {
         self.config.timeout_secs = timeout;
+        self
+    }
+
+    /// Set the per-sandbox disk cap in MB (0 = unlimited).
+    pub fn disk_quota_mb(mut self, disk_quota_mb: u64) -> Self {
+        self.config.disk_quota_mb = disk_quota_mb;
+        self
+    }
+
+    /// Set the guest process cap (0 = default 512).
+    pub fn max_pids(mut self, max_pids: u32) -> Self {
+        self.config.max_pids = max_pids;
         self
     }
 
@@ -962,6 +981,15 @@ mod tests {
         assert_eq!(proj.path, std::path::PathBuf::from("/tmp/myproject"));
         assert!(proj.branch.is_none());
         assert_eq!(proj.mount_point, "/home/developer");
+    }
+
+    #[test]
+    fn default_timeout_is_unlimited() {
+        assert_eq!(
+            SandboxConfig::default().timeout_secs,
+            0,
+            "the default sandbox timeout must be unlimited (0)"
+        );
     }
 
     #[test]

@@ -96,8 +96,18 @@ impl RuntimeBackend {
 
     /// Dynamically forward a guest port to the same host port via gvproxy.
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
+        self.expose_port_to(id, port, gvproxy::GUEST_IP)
+    }
+
+    /// Forward a guest port to an explicit remote host inside the guest stack.
+    pub fn expose_port_to(
+        &self,
+        id: &str,
+        port: u16,
+        remote_host: &str,
+    ) -> std::result::Result<(), String> {
         match self {
-            RuntimeBackend::Libkrun(r) => r.expose_port(id, port),
+            RuntimeBackend::Libkrun(r) => r.expose_port_to(id, port, remote_host),
         }
     }
 
@@ -195,6 +205,16 @@ impl Runtime {
     /// Dynamically forward a guest port to the same host port via gvproxy.
     pub fn expose_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
         self.backend.expose_port(id, port)
+    }
+
+    /// Forward a guest port to an explicit remote host inside the guest stack.
+    pub fn expose_port_to(
+        &self,
+        id: &str,
+        port: u16,
+        remote_host: &str,
+    ) -> std::result::Result<(), String> {
+        self.backend.expose_port_to(id, port, remote_host)
     }
 
     /// Get the guest IP address for a sandbox.
