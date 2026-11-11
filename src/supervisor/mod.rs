@@ -193,8 +193,43 @@ pub struct SuperviseArgs {
 /// 6. Listens on control socket
 /// 7. Enforces timeout
 /// 8. Cleans up on exit
+// Set when a SIGTERM/SIGINT arrives so the supervisor loop runs the same
+// cleanup path as a graceful stop instead of orphaning the gvproxy sidecar.
+static STOP_SIGNAL: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_stop_signal(_sig: libc::c_int) {
+    STOP_SIGNAL.store(true, Ordering::SeqCst);
+}
+
+/// Compute the supervisor deadline for a timeout in seconds. `0` means
+/// "no timeout" (unlimited) and yields `None`.
+fn deadline_for(timeout_secs: u64) -> Option<Instant> {
+    if timeout_secs == 0 {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_secs(timeout_secs))
+    }
+}
+
 pub fn run_supervisor(args: SuperviseArgs) -> ! {
     let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
+    // Install signal handlers early so a `kill` (SIGTERM/SIGINT) drains the
+    // loop and runs the same cleanup as a graceful stop.
+    unsafe {
+        let handler = handle_stop_signal as extern "C" fn(libc::c_int);
+        libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handler as libc::sighandler_t);
+    }
+
+    // Reject an empty sandbox name before touching the filesystem: `join("")`
+    // resolves to the sandboxes root, so the sandbox would share its config,
+    // state, logs, and control socket with every other empty-name sandbox and
+    // with the root itself. Fail loudly instead of corrupting shared state.
+    if args.sandbox_name.trim().is_empty() {
+        eprintln!("Error: sandbox name cannot be empty");
+        std::process::exit(1);
+    }
 
     // Detach from the parent process group unless the caller owns us
     // (`nanosb supervise --foreground` keeps us in the caller's tree).
@@ -289,6 +324,16 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     let started_at = chrono::Utc::now().to_rfc3339();
     let supervisor_pid = Some(std::process::id() as i32);
 
+    // Drop the pre-flight reservation for this sandbox so its own request is not
+    // double-counted; the running supervisor is counted from state.json instead.
+    nanosb_host::capacity::release_reservation(&args.sandbox_name);
+    if let Err(e) = nanosb_host::capacity::check_admission(config.memory_mb as u64, config.cpus) {
+        error!("admission denied for '{}': {}", args.sandbox_name, e);
+        eprintln!("admission denied: {e}");
+        write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
+        std::process::exit(1);
+    }
+
     // Write initial state
     let state = SupervisorState {
         sandbox_name: args.sandbox_name.clone(),
@@ -312,18 +357,36 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         }
     };
 
-    let mut sandbox = match rt.block_on(RuntimeSandbox::create(config)) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("Failed to create sandbox: {}", e);
-            write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
-            std::process::exit(1);
-        }
-    };
+    let config_disk_quota_mb = (config.disk_quota_mb > 0).then_some(config.disk_quota_mb);
 
-    if let Err(e) = rt.block_on(sandbox.start_next(console, extra_mounts)) {
+    // The sandbox handle is shared with the control-socket handler thread so it
+    // can expose ports on demand (e.g. an OAuth callback port). `RuntimeSandbox`
+    // is `Send`, so `Arc<Mutex<Option<RuntimeSandbox>>>` is `Send + Sync`. The
+    // `Option` lets the owner `take()` the sandbox out for the consuming
+    // `destroy()` while the handle stays shared.
+    let sandbox = Arc::new(Mutex::new(Some(
+        match rt.block_on(RuntimeSandbox::create(config)) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to create sandbox: {}", e);
+                write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
+                std::process::exit(1);
+            }
+        },
+    )));
+
+    if let Err(e) = rt.block_on(
+        sandbox
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .start_next(console, extra_mounts),
+    ) {
         error!("Failed to start sandbox (next mode): {}", e);
-        let _ = rt.block_on(sandbox.destroy());
+        if let Some(sb) = sandbox.lock().unwrap().take() {
+            let _ = rt.block_on(sb.destroy());
+        }
         write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
         std::process::exit(1);
     }
@@ -334,7 +397,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     drop(stdout_write);
     drop(stderr_write);
 
-    let vm_pid = sandbox.vm_pid();
+    let vm_pid = sandbox.lock().unwrap().as_ref().unwrap().vm_pid();
 
     // Update state with PID
     let state = SupervisorState {
@@ -348,6 +411,11 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         supervisor_pid,
     };
     write_state(&sandbox_dir, &state);
+
+    // Start the timeout clock only now that the VM is running, so image pull,
+    // rootfs extraction, and boot time are not charged against the budget.
+    // A timeout of 0 means "no timeout" (unlimited).
+    let deadline = deadline_for(args.timeout_secs);
 
     // Set up console log file
     let log_path = logs_dir.join("console.log");
@@ -438,6 +506,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         let volumes = volumes.clone();
         let exec_session = exec_session.clone();
         let active_waiters = active_waiters.clone();
+        let sandbox = sandbox.clone();
         std::thread::spawn(move || {
             accept_connections(
                 &listener,
@@ -456,14 +525,19 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
                 volumes,
                 exec_session,
                 active_waiters,
+                sandbox,
             );
         })
     });
 
-    // Wait for VM exit (console EOF), a stop request, or timeout.
-    let deadline = Instant::now() + Duration::from_secs(args.timeout_secs);
+    let disk_quota_mb = config_disk_quota_mb.or_else(nanosb_host::capacity::sandbox_disk_quota_mb);
+    let mut last_disk_check = Instant::now();
+    let mut monitored_paths: Vec<std::path::PathBuf> = vec![sandbox_dir.clone()];
+    if let Some(bundle) = sandbox.lock().unwrap().as_ref().unwrap().bundle_path() {
+        monitored_paths.push(bundle.clone());
+    }
     loop {
-        if stop_requested.load(Ordering::SeqCst) {
+        if stop_requested.load(Ordering::SeqCst) || STOP_SIGNAL.load(Ordering::SeqCst) {
             info!("Stop requested for sandbox '{}'", args.sandbox_name);
             break;
         }
@@ -471,19 +545,33 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
             info!("VM exited for sandbox '{}'", args.sandbox_name);
             break;
         }
-        if Instant::now() > deadline {
+        if deadline.is_some_and(|d| Instant::now() > d) {
             warn!(
                 "Sandbox '{}' timed out after {}s, stopping VM",
                 args.sandbox_name, args.timeout_secs
             );
             break;
         }
+        if let Some(quota_mb) = disk_quota_mb {
+            if last_disk_check.elapsed() >= Duration::from_secs(30) {
+                last_disk_check = Instant::now();
+                let used_mb =
+                    monitored_paths.iter().map(|p| dir_size(p)).sum::<u64>() / 1024 / 1024;
+                if used_mb > quota_mb {
+                    warn!(
+                        "Sandbox '{}' exceeded disk quota ({} MiB > {} MiB); stopping VM",
+                        args.sandbox_name, used_mb, quota_mb
+                    );
+                    break;
+                }
+            }
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
 
     // Cleanup
     running.store(false, Ordering::SeqCst);
-    let _ = rt.block_on(sandbox.stop());
+    let _ = rt.block_on(sandbox.lock().unwrap().as_mut().unwrap().stop());
     for t in vm_threads {
         let _ = t.join();
     }
@@ -491,14 +579,16 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     // Give the boot thread a moment to record the VM exit code, then read it.
     let mut vm_exit_code = None;
     for _ in 0..20 {
-        if let Some(code) = sandbox.vm_exit_code() {
+        if let Some(code) = sandbox.lock().unwrap().as_ref().unwrap().vm_exit_code() {
             vm_exit_code = Some(code);
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    let _ = rt.block_on(sandbox.destroy());
+    if let Some(sb) = sandbox.lock().unwrap().take() {
+        let _ = rt.block_on(sb.destroy());
+    }
 
     let exit_code = vm_exit_code.unwrap_or(0);
 
@@ -582,6 +672,24 @@ fn now_ms() -> u64 {
 }
 
 /// Whether a pid is alive (or exists but is not signalable, i.e. EPERM).
+/// Recursive logical size of a directory tree, in bytes.
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_dir() {
+                    total += dir_size(&p);
+                } else {
+                    total += meta.len();
+                }
+            }
+        }
+    }
+    total
+}
+
 fn pid_alive(pid: i32) -> bool {
     let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
@@ -804,6 +912,7 @@ fn accept_connections(
     volumes: Arc<volumes::VolumeRegistry>,
     exec_session: Arc<Mutex<Option<ExecHandle>>>,
     active_waiters: Arc<AtomicUsize>,
+    sandbox: Arc<Mutex<Option<RuntimeSandbox>>>,
 ) {
     listener.set_nonblocking(true).ok();
 
@@ -835,6 +944,7 @@ fn accept_connections(
                 let volumes = volumes.clone();
                 let exec_session = exec_session.clone();
                 let active_waiters = active_waiters.clone();
+                let sandbox = sandbox.clone();
 
                 std::thread::spawn(move || {
                     handle_connection(
@@ -854,6 +964,7 @@ fn accept_connections(
                         volumes,
                         exec_session,
                         active_waiters,
+                        sandbox,
                     );
                 });
             }
@@ -887,6 +998,7 @@ fn handle_connection(
     volumes: Arc<volumes::VolumeRegistry>,
     exec_session: Arc<Mutex<Option<ExecHandle>>>,
     active_waiters: Arc<AtomicUsize>,
+    sandbox: Arc<Mutex<Option<RuntimeSandbox>>>,
 ) {
     let _ = stream.set_nonblocking(false);
 
@@ -1116,6 +1228,29 @@ fn handle_connection(
                         let _ = stream.write_all(frame.as_bytes());
                         let _ = stream.write_all(b"\n");
                     }
+                    ControlRequest::ExposePort { port } => {
+                        // Forward to the guest's loopback (Codex's callback binds 127.0.0.1).
+                        let result = sandbox
+                            .lock()
+                            .map_err(|_| "sandbox lock poisoned".to_string())
+                            .and_then(|sb| {
+                                sb.as_ref()
+                                    .ok_or_else(|| "sandbox not started".to_string())
+                                    .and_then(|s| s.expose_port_to(port, "127.0.0.1"))
+                            });
+                        let resp = match result {
+                            Ok(()) => serde_json::to_string(&ControlResponse::Ok {
+                                version: PROTOCOL_VERSION.to_string(),
+                            })
+                            .unwrap_or_default(),
+                            Err(e) => serde_json::to_string(&ControlResponse::Error {
+                                message: format!("expose_port failed: {}", e),
+                            })
+                            .unwrap_or_default(),
+                        };
+                        let _ = stream.write_all(resp.as_bytes());
+                        let _ = stream.write_all(b"\n");
+                    }
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -1152,6 +1287,33 @@ fn read_current_state(sandbox_dir: &Path) -> SupervisorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dir_size_sums_nested_files() {
+        let dir = std::env::temp_dir().join(format!("nsb-dirsize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join("sub").join("b"), vec![0u8; 50]).unwrap();
+        assert_eq!(dir_size(&dir), 150);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deadline_for_zero_timeout_is_none() {
+        assert!(
+            deadline_for(0).is_none(),
+            "timeout_secs == 0 must mean no timeout (unlimited)"
+        );
+    }
+
+    #[test]
+    fn deadline_for_nonzero_timeout_is_some() {
+        assert!(
+            deadline_for(300).is_some(),
+            "explicit timeouts must still produce a deadline"
+        );
+    }
 
     #[test]
     fn test_scrollback_ring_basic() {

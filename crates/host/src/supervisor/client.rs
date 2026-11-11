@@ -166,11 +166,42 @@ impl SupervisorClient {
         self.send_request(&ControlRequest::Status {})
     }
 
-    /// Stop the sandbox.
+    /// Stop the sandbox. Idempotent: a sandbox that already reached a terminal
+    /// state is reported as successfully stopped instead of "not running".
     pub fn stop(&self, force: bool) -> ClientResult<()> {
-        match self.send_request(&ControlRequest::Stop { force: Some(force) })? {
-            ControlResponse::Ok { .. } => Ok(()),
-            ControlResponse::Error { message } => Err(ClientError::RequestFailed(message)),
+        if !self.is_running() {
+            return Ok(());
+        }
+        match self.send_request(&ControlRequest::Stop { force: Some(force) }) {
+            Ok(ControlResponse::Ok { .. }) => Ok(()),
+            Ok(ControlResponse::Error { message }) => Err(ClientError::RequestFailed(message)),
+            Err(ClientError::NotRunning(msg)) => {
+                // The supervisor may have hit its deadline between the liveness
+                // check and this request; a terminal state means the stop won.
+                if self
+                    .read_state()
+                    .map(|s| !s.state.is_active())
+                    .unwrap_or(true)
+                {
+                    Ok(())
+                } else {
+                    Err(ClientError::NotRunning(msg))
+                }
+            }
+            Err(e) => Err(e),
+            _ => Err(ClientError::ProtocolError(
+                "unexpected response".to_string(),
+            )),
+        }
+    }
+
+    /// Dynamically forward a guest port to the same host port via gvproxy.
+    /// The supervisor forwards to the guest's loopback so a callback server
+    /// that binds loopback-only is reachable from the host browser.
+    pub fn expose_port(&self, port: u16) -> ClientResult<()> {
+        match self.send_request(&ControlRequest::ExposePort { port }) {
+            Ok(ControlResponse::Ok { .. }) => Ok(()),
+            Ok(ControlResponse::Error { message }) => Err(ClientError::RequestFailed(message)),
             _ => Err(ClientError::ProtocolError(
                 "unexpected response".to_string(),
             )),

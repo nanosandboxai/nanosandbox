@@ -115,6 +115,11 @@ fn spawn_supervisor_child(
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
     let supervisor_log_err = supervisor_log.try_clone()?;
+
+    let (need_mb, need_cpus) = sandbox_resources(&sp.config_json);
+    nanosb_host::capacity::reserve(&sp.name, need_mb, need_cpus)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("__supervise")
         .arg(&sp.name)
@@ -130,8 +135,21 @@ fn spawn_supervisor_child(
     if foreground {
         cmd.arg("--foreground");
     }
-    cmd.spawn()
-        .map_err(|e| anyhow::anyhow!("failed to spawn supervisor: {}", e))
+    match cmd.spawn() {
+        Ok(child) => Ok(child),
+        Err(e) => {
+            nanosb_host::capacity::release_reservation(&sp.name);
+            Err(anyhow::anyhow!("failed to spawn supervisor: {}", e))
+        }
+    }
+}
+
+/// Extract `(memory_mb, cpus)` from a serialized sandbox config JSON.
+fn sandbox_resources(config_json: &str) -> (u64, u32) {
+    let v: serde_json::Value = serde_json::from_str(config_json).unwrap_or_default();
+    let memory_mb = v.get("memory_mb").and_then(|x| x.as_u64()).unwrap_or(0);
+    let cpus = v.get("cpus").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    (memory_mb, cpus)
 }
 
 /// Poll until the supervisor reports `Running`, `Error`, or the timeout elapses.
@@ -369,7 +387,10 @@ mod tests {
             "github".to_string(),
             sandbox::McpServerConfig {
                 command: "npx".to_string(),
-                args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-github".to_string(),
+                ],
                 env: HashMap::new(),
                 enabled: true,
             },
