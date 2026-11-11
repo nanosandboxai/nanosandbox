@@ -32,7 +32,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #   - background workload exec agent (KRUN_EXEC_AGENT)
 # Base upstream tag: v1.19.5.
 LIBKRUN_TAG="nanosandbox"
-LIBKRUN_SHA="9649afdf0a8f22a44c1c55c0e9f76168934439f9"
+LIBKRUN_SHA="e43537c1922f64281468409fd770040d356de342"
 
 # Nanosandbox libkrun fork (source of truth)
 LIBKRUN_REPO="https://github.com/nanosandboxai/libkrun.git"
