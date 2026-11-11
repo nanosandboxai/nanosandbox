@@ -95,12 +95,34 @@ Notes:
 - `sandbox.yml` env values take precedence over startup env for matching keys.
 - Local `.env` is auto-loaded only when no `sandbox.yml` is active.
 - `/add` does not import startup env automatically; select keys explicitly with `--use-env`.
+- `/add --permissions <default|accept-edits|allow-all>` sets the per-agent
+  permission level: `allow-all` runs the agent unattended, `accept-edits` and
+  `default` require human approval of edits. `--headless` always forces `allow-all`.
+- `/add` pre-accepts the agent's workspace-trust prompt (Cursor `--trust`,
+  Gemini `--skip-trust`, Codex `trust_level`, Claude `hasTrustDialogAccepted`),
+  since the mounted workspace is a disposable per-sandbox clone.
+- On agent failure the panel keeps the agent's last output and shows the exit
+  reason as a banner (no pre-flight credential popup).
 - Type `/help` in the TUI for the full command list. The command surface is
   generated from a single table, so it is always in sync with what the TUI
   accepts.
 - Agent, MCP, and skill configuration is **declarative**: it lives in
   `sandbox.yml` and is applied by redeploying (`nanosb apply`). There is no
   in-TUI hot-reload.
+- `/add` validates that the agent has the credentials it needs before it
+  creates the sandbox. Validation is **advisory** for agents that support
+  browser sign-in (all built-in agents): a missing variable is shown as a hint
+  but the agent still starts and signs in through the auto-opened browser URL.
+  Agents without a browser sign-in path are blocked, so they cannot start and
+  immediately exit with code 1. See
+  [Prerequisite validation](https://nanosandboxai.github.io/docs/cli/tui-mode#prerequisite-validation)
+  for the per-agent requirements and the browser sign-in hosts.
+- When the TUI opens a browser sign-in URL that carries a `localhost` OAuth
+  callback port (e.g. Codex's `redirect_uri=http://localhost:1455/auth/callback`),
+  it first forwards that port to the guest's loopback via gvproxy so the
+  browser redirect reaches the callback server inside the VM. Device-code flows
+  remain the fallback for agents whose callback binds loopback and cannot be
+  forwarded.
 
 ```bash
 # Add panel and import selected startup env keys
@@ -112,6 +134,8 @@ Notes:
 # Headless (auto-approved run): --headless (or the alias --auto-mode) with -p
 /add opencode --headless -p "list files"
 /add aider --headless -p "refactor the module"
+# Explicit permission level: default | accept-edits | allow-all
+/add claude --permissions allow-all
 ```
 
 ### Language SDKs
@@ -186,6 +210,7 @@ nanosb rm [-f] <sandbox>       # Remove a sandbox
 nanosb describe <sandbox>      # Show a sandbox's resolved configuration
 nanosb apply [-f sandbox.yml]  # Apply sandbox.yml (redeploy); supports --dry-run/--prune
 nanosb doctor                  # Check runtime prerequisites
+nanosb capacity                # Show host capacity, admission budget, and usage
 nanosb cleanup [--dry-run]     # Clean up stale project clones
 nanosb sessions [--project P]  # List saved sessions
 nanosb projects                # List registered projects
@@ -207,6 +232,8 @@ nanosb supervise [--foreground] --name <n> --spec <spec.json>  # Spawn a supervi
 | `--cpus <n>` | Override CPU cores |
 | `--memory <mb>` | Override memory (MB) |
 | `--timeout <secs>` | Override timeout (seconds) |
+| `--disk <mb>` | Override per-sandbox disk quota (MB) |
+| `--max-pids <n>` | Override guest process cap |
 | `--permissions <level>` | Agent permissions: default, accept-edits, allow-all |
 | `-e KEY=VALUE` | Inject environment variable |
 | `--env-file <path>` | Load env vars from file |
@@ -228,6 +255,30 @@ nanosb supervise [--foreground] --name <n> --spec <spec.json>  # Spawn a supervi
 | `NANOSB_REGISTRY_PATH` | Path to the agents registry (default: `~/.nanosandbox/agents-registry`) |
 | `NANOSB_GUEST_BIN_DIR` | Directory holding `exec-agent` (default: `$NANOSB_HOME/guest-bin`) |
 | `NANOSB_BINARY_PATH` | Path to the `nanosb` binary used to spawn the supervisor |
+| `NANOSB_MAX_VMS` | Admission budget: max concurrent sandboxes (default: `2 × CPU count`) |
+| `NANOSB_MEMORY_BUDGET_MB` | Admission budget: total memory (MiB; default: 80% of host RAM) |
+| `NANOSB_CPU_BUDGET` | Admission budget: total vCPU (default: `2 × CPU count`) |
+| `NANOSB_DISK_BUDGET_MB` | Admission budget: minimum free disk (MiB) required to start (default: 2048) |
+| `NANOSB_SANDBOX_DISK_MB` | Default per-sandbox disk cap (MiB) when `disk` is unset |
+| `NANOSB_ADMISSION` | Set to `off` to disable admission control |
+
+## Resource management & admission control
+
+Every sandbox request (`cpus`, `memory`, `timeout`, `disk`, `max_pids`) is
+checked against a host budget before it starts, so the TUI and headless modes
+cannot run more sandboxes than the machine allows. Budgets are auto-derived and
+overridable via the `NANOSB_*` environment variables above.
+
+- Inspect capacity, budget, and live usage: `nanosb capacity` (or `--format json`).
+- The TUI sandbox sidebar (open by default; toggle with `/sb`) shows a host
+  header and per-sandbox `cpu / mem / disk` numbers, flagging `tight` or
+  `OVER RAM` when requests exceed available memory.
+- The same budget governs `nanosb run`, `nanosb apply`, the TUI, and the
+  supervisor; concurrent spawns are serialized with short-lived reservations.
+- `disk` and `max_pids` are per-sandbox and enforced by the supervisor / guest
+  cgroup. `max_inodes` and `io_bps` are reserved and not enforced.
+
+Full details: <https://nanosandboxai.github.io/docs/architecture/resource-management>.
 
 ## sandbox.yml
 
@@ -238,6 +289,8 @@ defaults:
   cpus: 2
   memory: 4096
   timeout: 600
+  disk: 20480             # per-sandbox disk quota in MB (0 = unlimited)
+  max_pids: 512           # guest process cap (0 = default 512)
   permissions: default
   workdir: /home/developer  # guest working directory (default: the guest home)
   workspace:
@@ -277,6 +330,8 @@ sandboxes:
   codex:
     image: codex
     cpus: 4
+    disk: 40960             # per-sandbox override: 40 GB
+    max_pids: 1024          # per-sandbox override
     run_as_root: false
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}

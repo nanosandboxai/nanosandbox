@@ -203,6 +203,29 @@ grep -rn "<the symbol/command/field you changed>" --include='*.md' . \
 
 Vendored content under `runtime/deps/**` is out of scope.
 
+### Web documentation sync (MANDATORY)
+
+The public documentation site (`https://nanosandboxai.github.io`) is a separate
+repository: `nanosandboxai/nanosandboxai.github.io`, with its Markdown sources
+under `content/docs/**/*.md`. **Every change that alters the CLI surface,
+`sandbox.yml` schema, environment variables, defaults, or user-visible behavior
+MUST also update the corresponding page(s) there** — repo docs and web docs move
+together, never as a follow-up.
+
+Minimum web-doc touch-points for a new/renamed surface:
+
+- New/changed **CLI command or flag** → `content/docs/cli/commands.md` and, for
+  global flags, `content/docs/cli/global-flags.md`.
+- New/changed **`sandbox.yml` field** → `content/docs/cli/configuration.md`.
+- New/changed **env var or admission/resource behavior** →
+  `content/docs/cli/tui-mode.md` and `content/docs/architecture/resource-management.md`.
+- New **concept or subsystem** → a page under `content/docs/architecture/`,
+  registered in that folder's `_meta.json`.
+
+Do not merge a feature whose web docs are missing. When a feature spans both
+repositories, open the web-docs change in the same PR series and link it from the
+primary issue/PR.
+
 ## libkrun fork — check for new changes on every runtime change (MANDATORY)
 
 The runtime boots via a **fork** of libkrun — `nanosandboxai/libkrun`, branch
