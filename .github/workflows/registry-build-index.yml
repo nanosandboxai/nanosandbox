@@ -38,7 +38,7 @@ jobs:
         run: python3 -m json.tool agents-registry/index.json > /dev/null
 
       - name: Upload generated index
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: registry-index
           path: agents-registry/index.json
