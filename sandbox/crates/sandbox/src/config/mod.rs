@@ -63,6 +63,10 @@ pub enum AgentType {
     Codex,
     Goose,
     Cursor,
+    Opencode,
+    Aider,
+    Gemini,
+    Crush,
 }
 
 impl AgentType {
@@ -71,6 +75,10 @@ impl AgentType {
         AgentType::Codex,
         AgentType::Goose,
         AgentType::Cursor,
+        AgentType::Opencode,
+        AgentType::Aider,
+        AgentType::Gemini,
+        AgentType::Crush,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -79,6 +87,10 @@ impl AgentType {
             AgentType::Codex => "codex",
             AgentType::Goose => "goose",
             AgentType::Cursor => "cursor",
+            AgentType::Opencode => "opencode",
+            AgentType::Aider => "aider",
+            AgentType::Gemini => "gemini",
+            AgentType::Crush => "crush",
         }
     }
 }
@@ -97,8 +109,12 @@ impl std::str::FromStr for AgentType {
             "codex" => Ok(AgentType::Codex),
             "goose" => Ok(AgentType::Goose),
             "cursor" | "cursor-agent" => Ok(AgentType::Cursor),
+            "opencode" | "open-code" => Ok(AgentType::Opencode),
+            "aider" => Ok(AgentType::Aider),
+            "gemini" | "gemini-cli" => Ok(AgentType::Gemini),
+            "crush" => Ok(AgentType::Crush),
             _ => Err(format!(
-                "unknown agent type '{}': expected claude, codex, goose, or cursor",
+                "unknown agent type '{}': expected claude, codex, goose, cursor, opencode, aider, gemini, or crush",
                 s
             )),
         }
@@ -145,10 +161,62 @@ pub struct AgentDefaultsFile(pub HashMap<String, AgentComputeDefaults>);
 /// the largest (~1.5-2 GB); other agents are comfortable at 2 GB.
 fn builtin_agent_defaults() -> HashMap<AgentType, AgentComputeDefaults> {
     let mut m = HashMap::new();
-    m.insert(AgentType::Claude, AgentComputeDefaults { cpus: 2, memory_mb: 4096 });
-    m.insert(AgentType::Codex, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
-    m.insert(AgentType::Goose, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
-    m.insert(AgentType::Cursor, AgentComputeDefaults { cpus: 2, memory_mb: 2048 });
+    m.insert(
+        AgentType::Claude,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 4096,
+        },
+    );
+    m.insert(
+        AgentType::Codex,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::Goose,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::Cursor,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::Opencode,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::Aider,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::Gemini,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::Crush,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
     m
 }
 
@@ -191,7 +259,10 @@ pub fn load_agent_defaults() -> HashMap<AgentType, AgentComputeDefaults> {
 pub fn agent_compute_for(agent_type: AgentType) -> AgentComputeDefaults {
     load_agent_defaults()
         .remove(&agent_type)
-        .unwrap_or(AgentComputeDefaults { cpus: 2, memory_mb: 2048 })
+        .unwrap_or(AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        })
 }
 
 fn default_enabled() -> bool {
@@ -329,6 +400,9 @@ pub struct AgentSandboxConfig {
     pub model: Option<String>,
     /// Claude-specific settings (theme, etc.) written to ~/.claude/settings.json.
     pub claude_settings: Option<ClaudeSettings>,
+    /// Agent-native session id to resume (e.g. codex `resume <id>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_session_id: Option<String>,
 }
 
 impl Default for AgentSandboxConfig {
@@ -346,6 +420,7 @@ impl Default for AgentSandboxConfig {
             agent_type: None,
             model: None,
             claude_settings: None,
+            resume_session_id: None,
         }
     }
 }
@@ -395,7 +470,7 @@ impl AgentSandboxConfigBuilder {
         self.config.sandbox.project = Some(runtime::ProjectConfig {
             path: path.into(),
             branch: branch.map(String::from),
-            mount_point: "/workspace".to_string(),
+            mount_point: "/home/developer".to_string(),
             auto_sync: false,
         });
         self
@@ -440,6 +515,32 @@ mod tests {
             "claude_settings": null
         }"#;
         let cfg: AgentSandboxConfig = serde_json::from_str(json).expect("old session must load");
-        assert!(!cfg.interactive, "missing interactive must default to false");
+        assert!(
+            !cfg.interactive,
+            "missing interactive must default to false"
+        );
+    }
+
+    #[test]
+    fn agent_config_deserializes_without_resume_session_id() {
+        // Sessions saved before the `resume_session_id` field existed must still load.
+        let json = r#"{
+            "sandbox": {"name": "s", "image": "alpine"},
+            "mcp_servers": {},
+            "agent": null,
+            "skills": [],
+            "resolved_agent": null,
+            "auto_mode": false,
+            "permissions": "default",
+            "prompt": null,
+            "agent_type": null,
+            "model": null,
+            "claude_settings": null
+        }"#;
+        let cfg: AgentSandboxConfig = serde_json::from_str(json).expect("old session must load");
+        assert!(
+            cfg.resume_session_id.is_none(),
+            "missing resume_session_id must default to None"
+        );
     }
 }

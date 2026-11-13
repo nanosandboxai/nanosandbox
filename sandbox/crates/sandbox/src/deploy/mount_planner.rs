@@ -6,8 +6,18 @@
 //! ~/.nanosandbox/sandboxes/{name}/
 //!   config/   → RO-mounted at various guest paths (MCP configs, skills, prompts)
 //!   state/    → RW-mounted at agent state dirs
-//! workspace/  → RW-mounted at /workspace (project mount)
+//! workspace/  → RW-mounted at the guest home (project mount)
 //! ```
+//!
+//! # Mount ordering and nesting
+//!
+//! The project mount is emitted FIRST, before any mount that lives under it.
+//! When the project is mounted at the guest home (`/home/developer`), the
+//! per-agent state/config mounts (`.claude`, `.codex`, ...) are emitted as
+//! separate mounts on top of it. The guest init applies `KRUN_EXTRA_MOUNTS` in
+//! array order, and a Linux nested virtiofs mount is visible on top of its
+//! parent — so agent state stays in `~/.nanosandbox/sandboxes/{name}/state/`,
+//! NEVER inside the project/repo (which would pollute shared-mode repos).
 //!
 //! # Per-agent state directories (RW)
 //!
@@ -15,8 +25,12 @@
 //! |---------|-----------------------------------------------------------------|
 //! | Claude  | ~/.claude                                                       |
 //! | Codex   | ~/.codex, ~/.agents                                              |
-//! | Goose   | ~/.config/goose, ~/.local/share/goose                            |
-//! | Cursor  | ~/.cursor                                                       |
+//! | Goose   | ~/.config/goose, ~/.local/share/goose, ~/.local/state/goose       |
+//! | Cursor  | ~/.cursor, ~/.config/cursor                                      |
+//! | Opencode| ~/.config/opencode, ~/.local/share/opencode, ~/.local/state/opencode, ~/.cache/opencode |
+//! | Aider   | ~/.aider                                                        |
+//! | Gemini  | ~/.gemini                                                       |
+//! | Crush   | ~/.config/crush, ~/.local/share/crush                            |
 //! | All     | ~/.nanosandbox (shared agent metadata)                           |
 //!
 //! # Per-agent config directories (RO)
@@ -40,7 +54,7 @@ use crate::config::{AgentSandboxConfig, AgentType};
 pub struct PlannedMount {
     /// Host path (under `~/.nanosandbox/sandboxes/{name}/` or user-specified).
     pub host_path: PathBuf,
-    /// Guest path (inside the VM, e.g. `/workspace`, `/home/developer/.claude`).
+    /// Guest path (inside the VM, e.g. `/home/developer`, `/home/developer/.claude`).
     pub guest_path: String,
     /// Whether the mount is read-only.
     pub readonly: bool,
@@ -65,8 +79,41 @@ fn agent_state_dirs(agent_type: AgentType) -> Vec<&'static str> {
         AgentType::Goose => vec![
             "/home/developer/.config/goose",
             "/home/developer/.local/share/goose",
+            // Goose writes telemetry consent, logs, and session state here.
+            // Without its own mount it falls through to the shared project
+            // mount and sandboxes sharing that workspace share one telemetry
+            // installation id / log directory.
+            "/home/developer/.local/state/goose",
         ],
-        AgentType::Cursor => vec!["/home/developer/.cursor"],
+        AgentType::Cursor => vec![
+            "/home/developer/.cursor",
+            // The CLI writes its login (`auth.json`: accessToken/refreshToken) to
+            // ~/.config/cursor on Linux, separate from ~/.cursor (cli-config.json +
+            // per-project data). Without this mount the login write falls through to
+            // the workspace/ephemeral home, so the subscription login is not persisted.
+            "/home/developer/.config/cursor",
+        ],
+        AgentType::Opencode => vec![
+            "/home/developer/.config/opencode",
+            "/home/developer/.local/share/opencode",
+            // OpenCode's managed background service (the `serve --service`
+            // server the TUI talks to) registers itself here. If this dir is
+            // not shadowed, it falls through to the shared project mount at
+            // /home/developer and every sandbox sharing that workspace fights
+            // over one `service.json`, producing a "Restarting service..."
+            // loop. Keep it per-sandbox like the other state dirs.
+            "/home/developer/.local/state/opencode",
+            // Model metadata, npm/packages caches, and downloaded binaries.
+            "/home/developer/.cache/opencode",
+        ],
+        AgentType::Aider => vec!["/home/developer/.aider"],
+        AgentType::Gemini => vec!["/home/developer/.gemini"],
+        AgentType::Crush => vec![
+            "/home/developer/.config/crush",
+            // Crush keeps its actual session/config data in the XDG data dir,
+            // not under ~/.config/crush.
+            "/home/developer/.local/share/crush",
+        ],
     }
 }
 
@@ -82,6 +129,10 @@ fn agent_config_guest_paths(agent_type: AgentType) -> Vec<(&'static str, &'stati
         ],
         AgentType::Goose => vec![("/home/developer/.config/goose", "goose")],
         AgentType::Cursor => vec![("/home/developer/.cursor", "cursor")],
+        AgentType::Opencode => vec![("/home/developer/.config/opencode", "opencode")],
+        AgentType::Aider => vec![("/home/developer/.aider", "aider")],
+        AgentType::Gemini => vec![("/home/developer/.gemini", "gemini")],
+        AgentType::Crush => vec![("/home/developer/.config/crush", "crush")],
     }
 }
 
@@ -95,10 +146,18 @@ pub fn merged_config_path(relative_path: &str) -> Option<String> {
         "agents" => ".agents",
         "goose" => ".config_goose",
         "cursor" => ".cursor",
+        "opencode" => ".config_opencode",
+        "aider" => ".aider",
+        "gemini" => ".gemini",
+        "crush" => ".config_crush",
         _ => return None,
     };
     Some(format!("{}/{}", state_dir, rest))
 }
+
+/// The guest user's home directory. Pure agent images ship no `developer`
+/// user, so the runtime creates it at this fixed non-root home.
+pub const GUEST_HOME: &str = "/home/developer";
 
 /// Mount planner: computes the full set of virtiofs mounts for a sandbox.
 pub struct MountPlanner;
@@ -119,23 +178,33 @@ impl MountPlanner {
     ) -> Vec<PlannedMount> {
         let mut mounts = Vec::new();
 
+        // The workspace mount point defaults to the guest home. When a project
+        // is configured its `mount_point` wins.
+        let workspace_guest_path = config
+            .sandbox
+            .project
+            .as_ref()
+            .map(|p| p.mount_point.clone())
+            .unwrap_or_else(|| GUEST_HOME.to_string());
+
+        // Determine the workspace host path (project clone or config path).
+        let workspace_host = workspace_host_path
+            .map(|p| p.to_path_buf())
+            .or_else(|| config.sandbox.project.as_ref().map(|p| p.path.clone()));
+
         // 1. Workspace mount (RW)
-        if let Some(ws_path) = workspace_host_path {
+        if let Some(ws_host) = &workspace_host {
             mounts.push(PlannedMount {
-                host_path: ws_path.to_path_buf(),
-                guest_path: "/workspace".to_string(),
-                readonly: false,
-            });
-        } else if let Some(ref project) = config.sandbox.project {
-            // Project mount from config
-            mounts.push(PlannedMount {
-                host_path: project.path.clone(),
-                guest_path: project.mount_point.clone(),
+                host_path: ws_host.clone(),
+                guest_path: workspace_guest_path.clone(),
                 readonly: false,
             });
         }
 
-        // 2. Agent state directories (RW) — each gets its own mount
+        // 2. Agent state directories (RW) — each gets its own mount. These are
+        //    emitted AFTER the workspace mount so the guest init mounts them on
+        //    TOP of the project at the home (nested virtiofs mounts) instead of
+        //    the project shadowing them.
         let state_base = sandbox_dir.join("state");
         for guest_dir in agent_state_dirs(*agent_type) {
             let dir_name = guest_dir
@@ -232,10 +301,10 @@ mod tests {
         let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
         let mounts = MountPlanner::plan(&config, &AgentType::Goose, sandbox_dir, None);
 
-        // Goose: 2 merged state mounts + nanosandbox shared
+        // Goose: 3 merged state mounts + nanosandbox shared
         assert!(
-            mounts.len() >= 3,
-            "goose should have at least 3 mounts, got {}",
+            mounts.len() >= 4,
+            "goose should have at least 4 mounts, got {}",
             mounts.len()
         );
 
@@ -254,6 +323,18 @@ mod tests {
             "goose local/share state mount should exist"
         );
         assert!(!goose_state.unwrap().readonly, "state mount should be RW");
+
+        let goose_local_state = mounts
+            .iter()
+            .find(|m| m.guest_path == "/home/developer/.local/state/goose");
+        assert!(
+            goose_local_state.is_some(),
+            "goose .local/state/goose mount should exist (telemetry/logs)"
+        );
+        assert!(
+            !goose_local_state.unwrap().readonly,
+            "goose local/state mount should be RW"
+        );
     }
 
     #[test]
@@ -263,6 +344,10 @@ mod tests {
             AgentType::Codex,
             AgentType::Goose,
             AgentType::Cursor,
+            AgentType::Opencode,
+            AgentType::Aider,
+            AgentType::Gemini,
+            AgentType::Crush,
         ] {
             let config = make_config(Some(agent_type));
             let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
@@ -297,16 +382,79 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_with_workspace() {
+    fn test_plan_with_workspace_at_home_uses_nested_state_mounts() {
         let config = make_config(Some(AgentType::Claude));
         let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
-        let ws = Path::new("/home/user/project");
-        let mounts = MountPlanner::plan(&config, &AgentType::Claude, sandbox_dir, Some(ws));
+        let ws = tempfile::tempdir().unwrap();
+        let ws_path = ws.path();
+        let mounts = MountPlanner::plan(&config, &AgentType::Claude, sandbox_dir, Some(ws_path));
 
-        let ws_mount = mounts.iter().find(|m| m.guest_path == "/workspace");
-        assert!(ws_mount.is_some(), "should have workspace mount");
-        assert_eq!(ws_mount.unwrap().host_path, Path::new("/home/user/project"));
-        assert!(!ws_mount.unwrap().readonly, "workspace should be RW");
+        // The workspace defaults to the guest home. State is NOT folded into it —
+        // the project mount comes first and the per-agent state mounts are
+        // emitted afterwards so the guest init nests them on top of the home.
+        let ws_idx = mounts
+            .iter()
+            .position(|m| m.guest_path == GUEST_HOME)
+            .expect("should have workspace mount at home");
+        assert_eq!(mounts[ws_idx].host_path, ws_path);
+        assert!(!mounts[ws_idx].readonly, "workspace should be RW");
+
+        // Every nested state mount must exist, live after the workspace mount,
+        // and keep its host dir under the sandbox state dir (never the project).
+        for state_dir in ["/home/developer/.claude", "/home/developer/.nanosandbox"] {
+            let idx = mounts
+                .iter()
+                .position(|m| m.guest_path == state_dir)
+                .unwrap_or_else(|| panic!("missing nested state mount {}", state_dir));
+            assert!(
+                idx > ws_idx,
+                "state mount {} (index {}) must come after workspace mount (index {})",
+                state_dir,
+                idx,
+                ws_idx
+            );
+            let host = &mounts[idx].host_path;
+            assert!(
+                host.starts_with(sandbox_dir),
+                "state mount host {:?} must live under the sandbox dir",
+                host
+            );
+        }
+        // No state/config dirs folded into the workspace host dir.
+        assert!(
+            !ws_path.join(".claude").exists(),
+            "state must not be written into the workspace"
+        );
+        assert_eq!(
+            mounts[ws_idx + 1].host_path,
+            sandbox_dir.join("state").join(".claude")
+        );
+    }
+
+    #[test]
+    fn test_plan_with_workspace_at_custom_mount_point_keeps_state_mounts() {
+        let mut config = make_config(Some(AgentType::Claude));
+        config.sandbox.project = Some(runtime::ProjectConfig {
+            path: PathBuf::from("/home/user/project"),
+            branch: None,
+            mount_point: "/srv/project".to_string(),
+            auto_sync: false,
+        });
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let mounts = MountPlanner::plan(&config, &AgentType::Claude, sandbox_dir, None);
+
+        let ws_mount = mounts.iter().find(|m| m.guest_path == "/srv/project");
+        assert!(
+            ws_mount.is_some(),
+            "should have project mount at custom point"
+        );
+        // State mounts are NOT folded when the workspace is not at the home.
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.guest_path == "/home/developer/.claude"),
+            "state mount kept when workspace is not at home"
+        );
     }
 
     #[test]
@@ -337,15 +485,146 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_opencode_mounts() {
+        let config = make_config(Some(AgentType::Opencode));
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let mounts = MountPlanner::plan(&config, &AgentType::Opencode, sandbox_dir, None);
+
+        // Opencode: 4 merged state mounts + nanosandbox shared
+        assert!(
+            mounts.len() >= 5,
+            "opencode should have at least 5 mounts, got {}",
+            mounts.len()
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.guest_path == "/home/developer/.config/opencode"),
+            "should have .config/opencode mount"
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.guest_path == "/home/developer/.local/share/opencode"),
+            "should have .local/share/opencode state mount (session DB persistence)"
+        );
+        let state_mount = mounts
+            .iter()
+            .find(|m| m.guest_path == "/home/developer/.local/share/opencode")
+            .expect("opencode state mount must exist");
+        assert!(!state_mount.readonly, "state mount should be RW");
+
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.guest_path == "/home/developer/.local/state/opencode"),
+            "should have .local/state/opencode mount (managed-service registration)"
+        );
+        let service_state = mounts
+            .iter()
+            .find(|m| m.guest_path == "/home/developer/.local/state/opencode")
+            .expect("opencode service state mount must exist");
+        assert!(!service_state.readonly, "service state mount should be RW");
+
+        let cache_mount = mounts
+            .iter()
+            .find(|m| m.guest_path == "/home/developer/.cache/opencode")
+            .expect("opencode cache mount must exist");
+        assert!(!cache_mount.readonly, "cache mount should be RW");
+    }
+
+    #[test]
+    fn test_agent_state_dirs_opencode_includes_local_share() {
+        let dirs = agent_state_dirs(AgentType::Opencode);
+        assert_eq!(
+            dirs,
+            vec![
+                "/home/developer/.config/opencode",
+                "/home/developer/.local/share/opencode",
+                "/home/developer/.local/state/opencode",
+                "/home/developer/.cache/opencode",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_plan_aider_mounts() {
+        let config = make_config(Some(AgentType::Aider));
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let mounts = MountPlanner::plan(&config, &AgentType::Aider, sandbox_dir, None);
+
+        assert!(
+            mounts.len() >= 2,
+            "aider should have at least 2 mounts, got {}",
+            mounts.len()
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.guest_path == "/home/developer/.aider"),
+            "should have .aider mount"
+        );
+    }
+
+    #[test]
+    fn test_plan_gemini_mounts() {
+        let config = make_config(Some(AgentType::Gemini));
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let mounts = MountPlanner::plan(&config, &AgentType::Gemini, sandbox_dir, None);
+
+        assert!(
+            mounts.len() >= 2,
+            "gemini should have at least 2 mounts, got {}",
+            mounts.len()
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.guest_path == "/home/developer/.gemini"),
+            "should have .gemini mount"
+        );
+    }
+
+    #[test]
+    fn test_plan_crush_mounts() {
+        let config = make_config(Some(AgentType::Crush));
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let mounts = MountPlanner::plan(&config, &AgentType::Crush, sandbox_dir, None);
+
+        assert!(
+            mounts.len() >= 3,
+            "crush should have at least 3 mounts, got {}",
+            mounts.len()
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.guest_path == "/home/developer/.config/crush"),
+            "should have .config/crush mount"
+        );
+        let crush_data = mounts
+            .iter()
+            .find(|m| m.guest_path == "/home/developer/.local/share/crush");
+        assert!(
+            crush_data.is_some(),
+            "crush .local/share/crush mount should exist (real data dir)"
+        );
+        assert!(
+            !crush_data.unwrap().readonly,
+            "crush data mount should be RW"
+        );
+    }
+
+    #[test]
     fn test_plan_cursor_mounts() {
         let config = make_config(Some(AgentType::Cursor));
         let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
         let mounts = MountPlanner::plan(&config, &AgentType::Cursor, sandbox_dir, None);
 
-        // Cursor: 1 merged state mount + nanosandbox shared
+        // Cursor: 2 merged state mounts + nanosandbox shared
         assert!(
-            mounts.len() >= 2,
-            "cursor should have at least 2 mounts, got {}",
+            mounts.len() >= 3,
+            "cursor should have at least 3 mounts, got {}",
             mounts.len()
         );
 
@@ -354,6 +633,18 @@ mod tests {
                 .iter()
                 .any(|m| m.guest_path == "/home/developer/.cursor"),
             "should have .cursor mount"
+        );
+
+        let auth_mount = mounts
+            .iter()
+            .find(|m| m.guest_path == "/home/developer/.config/cursor");
+        assert!(
+            auth_mount.is_some(),
+            "should have .config/cursor mount (subscription login persistence)"
+        );
+        assert!(
+            !auth_mount.unwrap().readonly,
+            ".config/cursor login mount should be RW"
         );
     }
 

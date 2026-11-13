@@ -287,20 +287,14 @@ impl TextInput {
                     }
                 }
                 let segment = &self.text[vl.byte_start..self.cursor];
-                let col: usize = segment
-                    .chars()
-                    .map(|c| c.width().unwrap_or(0).max(1))
-                    .sum();
+                let col: usize = segment.chars().map(|c| c.width().unwrap_or(0).max(1)).sum();
                 return (i, col);
             }
         }
         // Fallback: cursor at end of last line.
         if let Some(last) = lines.last() {
             let segment = &self.text[last.byte_start..self.cursor.min(self.text.len())];
-            let col: usize = segment
-                .chars()
-                .map(|c| c.width().unwrap_or(0).max(1))
-                .sum();
+            let col: usize = segment.chars().map(|c| c.width().unwrap_or(0).max(1)).sum();
             (lines.len() - 1, col)
         } else {
             (0, 0)
@@ -494,7 +488,13 @@ mod tests {
         }
         let lines = ti.visual_lines(10);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0], VisualLine { byte_start: 0, byte_end: 5 });
+        assert_eq!(
+            lines[0],
+            VisualLine {
+                byte_start: 0,
+                byte_end: 5
+            }
+        );
     }
 
     #[test]
@@ -505,8 +505,20 @@ mod tests {
         }
         let lines = ti.visual_lines(5);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], VisualLine { byte_start: 0, byte_end: 5 });
-        assert_eq!(lines[1], VisualLine { byte_start: 5, byte_end: 8 });
+        assert_eq!(
+            lines[0],
+            VisualLine {
+                byte_start: 0,
+                byte_end: 5
+            }
+        );
+        assert_eq!(
+            lines[1],
+            VisualLine {
+                byte_start: 5,
+                byte_end: 8
+            }
+        );
     }
 
     #[test]
@@ -517,8 +529,20 @@ mod tests {
         }
         let lines = ti.visual_lines(10);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], VisualLine { byte_start: 0, byte_end: 2 });
-        assert_eq!(lines[1], VisualLine { byte_start: 3, byte_end: 5 });
+        assert_eq!(
+            lines[0],
+            VisualLine {
+                byte_start: 0,
+                byte_end: 2
+            }
+        );
+        assert_eq!(
+            lines[1],
+            VisualLine {
+                byte_start: 3,
+                byte_end: 5
+            }
+        );
     }
 
     #[test]
@@ -529,9 +553,27 @@ mod tests {
         }
         let lines = ti.visual_lines(5);
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], VisualLine { byte_start: 0, byte_end: 5 });
-        assert_eq!(lines[1], VisualLine { byte_start: 5, byte_end: 8 });
-        assert_eq!(lines[2], VisualLine { byte_start: 9, byte_end: 11 });
+        assert_eq!(
+            lines[0],
+            VisualLine {
+                byte_start: 0,
+                byte_end: 5
+            }
+        );
+        assert_eq!(
+            lines[1],
+            VisualLine {
+                byte_start: 5,
+                byte_end: 8
+            }
+        );
+        assert_eq!(
+            lines[2],
+            VisualLine {
+                byte_start: 9,
+                byte_end: 11
+            }
+        );
     }
 
     #[test]
@@ -539,7 +581,13 @@ mod tests {
         let ti = TextInput::new();
         let lines = ti.visual_lines(10);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0], VisualLine { byte_start: 0, byte_end: 0 });
+        assert_eq!(
+            lines[0],
+            VisualLine {
+                byte_start: 0,
+                byte_end: 0
+            }
+        );
     }
 
     #[test]
@@ -550,8 +598,20 @@ mod tests {
         }
         let lines = ti.visual_lines(10);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], VisualLine { byte_start: 0, byte_end: 2 });
-        assert_eq!(lines[1], VisualLine { byte_start: 3, byte_end: 3 });
+        assert_eq!(
+            lines[0],
+            VisualLine {
+                byte_start: 0,
+                byte_end: 2
+            }
+        );
+        assert_eq!(
+            lines[1],
+            VisualLine {
+                byte_start: 3,
+                byte_end: 3
+            }
+        );
     }
 
     #[test]

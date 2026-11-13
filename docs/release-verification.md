@@ -78,8 +78,8 @@ Expect (macOS arm64):
 ## 4. Boot and run a sandbox end-to-end
 
 ```bash
-nanosb pull ghcr.io/nanosandboxai/agents-registry/claude:latest
-nanosb run ghcr.io/nanosandboxai/agents-registry/claude:latest -- echo "hello from the VM"
+nanosb pull ghcr.io/nanosandboxai/nanosandbox/claude:latest
+nanosb run ghcr.io/nanosandboxai/nanosandbox/claude:latest -- echo "hello from the VM"
 ```
 
 Expect a running microVM that executes the command and a clean teardown.

@@ -6,6 +6,8 @@
 # Cargo local config (contains path overrides for local dev)
 .cargo/config.toml
 
+/tmp
+
 # IDE
 .idea/
 .vscode/

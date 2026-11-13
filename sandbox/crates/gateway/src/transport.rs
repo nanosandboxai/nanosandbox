@@ -48,7 +48,6 @@ impl Transport {
         F: Fn(&str, bool) + Send + Sync,
     {
         let addr = self.gateway_addr.as_ref().ok_or(Error::NotAvailable)?;
-        crate::http::http_post_sse(addr, path, json_body, on_output)
-            .map_err(Error::HttpFailed)
+        crate::http::http_post_sse(addr, path, json_body, on_output).map_err(Error::HttpFailed)
     }
 }

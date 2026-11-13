@@ -1,7 +1,9 @@
 //! Application state for the TUI.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 
 use sandbox::AgentsRegistryClient;
@@ -278,8 +280,29 @@ pub enum PanelBackend {
     Legacy { sandbox: Arc<Mutex<Sandbox>> },
 }
 
+/// Live resource sample for a single sandbox, formatted for sidebar display.
+///
+/// `memory_used_bytes` is the supervisor/VMM process RSS (host-side), not the
+/// guest's internal usage; `disk_used_bytes` is the logical size of the sandbox
+/// state directory. `memory_limit_bytes` is the configured VM memory limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SandboxMetrics {
+    /// Supervisor process CPU utilization (percent).
+    pub cpu_percent: f64,
+    /// Supervisor process resident set size (bytes).
+    pub memory_used_bytes: u64,
+    /// Configured VM memory limit (bytes); 0 when unknown.
+    pub memory_limit_bytes: u64,
+    /// Logical size of the sandbox state directory (bytes).
+    pub disk_used_bytes: u64,
+}
+
 /// State for a single agent panel.
 pub struct AgentPanel {
+    /// Stable, monotonic identifier for this panel. Unlike a positional index,
+    /// this never changes when other panels are removed, so in-flight async
+    /// events can always be routed back to the correct panel.
+    pub panel_id: u64,
     /// Agent type key (e.g. "claude", "codex") — used for CLI command resolution.
     pub agent_name: String,
     /// Display name shown in panel title. Falls back to agent_name if not set.
@@ -313,6 +336,9 @@ pub struct AgentPanel {
     /// Pending URLs waiting to be opened after a short debounce delay.
     /// Key: dedup key, Value: (full URL, timestamp of last growth).
     pub pending_urls: HashMap<String, (String, std::time::Instant)>,
+    /// OAuth callback ports already forwarded to the guest for this panel, so
+    /// the same port is not re-exposed on every tick.
+    pub forwarded_ports: HashSet<u16>,
     /// Active project mount for this panel's sandbox.
     pub project_mount: Option<sandbox::ProjectMount>,
     /// Last known HEAD SHA in the clone (for commit auto-sync detection).
@@ -330,6 +356,10 @@ pub struct AgentPanel {
     pub loading_error: Option<String>,
     /// Whether a reconnect is in progress (suppresses auto-kill on disconnect).
     pub reconnecting: bool,
+    /// Consecutive automatic reconnect attempts after transient console read
+    /// errors, bounded by [`super::run::MAX_RECONNECT_ATTEMPTS`]. Reset to 0 on
+    /// a successful connection.
+    pub reconnect_attempts: u8,
     /// Whether this panel is visible in the grid. Hidden panels keep running.
     pub visible: bool,
     /// Whether auto/headless mode is enabled for this panel's agent.
@@ -359,12 +389,18 @@ pub struct AgentPanel {
     /// Overlay notification shown on top of the terminal (message, is_error, remaining ticks).
     /// Replaces previous notification; auto-dismissed after countdown reaches 0.
     pub notification: Option<(String, bool, u8)>,
+    /// Set when the agent process has exited (human-readable reason). The panel
+    /// keeps its last terminal screen so the failure output stays visible.
+    pub exited: Option<String>,
+    /// Latest live resource sample for this sandbox (None until first poll).
+    pub metrics: Option<SandboxMetrics>,
 }
 
 impl AgentPanel {
     /// Create a new agent panel with the given name.
     pub fn new(agent_name: &str) -> Self {
         Self {
+            panel_id: 0,
             agent_name: agent_name.to_string(),
             display_name: None,
             backend: None,
@@ -380,6 +416,7 @@ impl AgentPanel {
             last_terminal_size: (80, 24),
             opened_urls: HashSet::new(),
             pending_urls: HashMap::new(),
+            forwarded_ports: HashSet::new(),
             project_mount: None,
             last_known_head: None,
             base_commit: None,
@@ -388,6 +425,7 @@ impl AgentPanel {
             loading_message: None,
             loading_error: None,
             reconnecting: false,
+            reconnect_attempts: 0,
             visible: true,
             auto_mode: false,
             interactive: false,
@@ -401,6 +439,8 @@ impl AgentPanel {
             had_interaction: false,
             selected_agent_session_id: None,
             notification: None,
+            exited: None,
+            metrics: None,
         }
     }
 
@@ -442,12 +482,30 @@ impl AgentPanel {
     pub fn set_supervisor(&mut self, name: String) {
         self.backend = Some(PanelBackend::Supervisor { name });
     }
+
+    /// Configured VM memory in bytes (0 when no config is known).
+    pub fn configured_memory_bytes(&self) -> u64 {
+        self.original_config
+            .as_ref()
+            .map(|c| c.sandbox.memory_mb as u64 * 1024 * 1024)
+            .unwrap_or(0)
+    }
+
+    /// Configured vCPU count (0 when no config is known).
+    pub fn configured_cpus(&self) -> u32 {
+        self.original_config
+            .as_ref()
+            .map(|c| c.sandbox.cpus)
+            .unwrap_or(0)
+    }
 }
 
 /// Top-level application state.
 pub struct App {
     /// The set of agent panels.
     pub panels: Vec<AgentPanel>,
+    /// Monotonic counter used to assign stable `panel_id`s to new panels.
+    pub next_panel_id: u64,
     /// Index of the currently focused panel.
     pub focused_panel: usize,
     /// Whether the application should exit.
@@ -518,12 +576,215 @@ pub struct App {
     /// Startup runtime env pool (`.env`, `--env-file`, `--env`).
     /// This is in-memory only for the current process.
     pub runtime_env_pool: HashMap<String, String>,
+    /// True while a background metrics poll is in flight (prevents overlap).
+    /// The dedicated metrics poller thread is sequential, so polls never
+    /// overlap; this flag is cleared when samples arrive and is kept for
+    /// API/test compatibility.
+    pub metrics_poll_in_flight: bool,
+    /// Best-effort host capacity, detected once at TUI startup (None in tests).
+    pub host_capacity: Option<super::host_capacity::HostCapacity>,
+    /// Set when the UI state changed and the next frame should be redrawn.
+    /// The event loop only calls `terminal.draw` when this is set, so a burst
+    /// of events (e.g. terminal chunks) doesn't trigger a redraw per event.
+    pub needs_render: bool,
+    /// Shared target list for the dedicated metrics poller thread
+    /// ((supervisor name, memory limit) pairs). Updated by the Tick handler.
+    pub metrics_targets: Arc<StdMutex<Vec<(String, u64)>>>,
+    /// Shutdown flag for the dedicated metrics poller thread.
+    pub metrics_shutdown: Arc<AtomicBool>,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Snapshot of the per-panel data needed to detect and sync new commits.
+/// Built on the async side and consumed by [`compute_project_commits`] on
+/// a blocking thread, so git subprocesses never run on the event loop.
+pub struct CommitSyncInput {
+    /// Clone worktree path (None when the panel has no project mount).
+    pub worktree: Option<std::path::PathBuf>,
+    /// (source repo, branch) pairs created for this panel's clone.
+    pub created_branches: Vec<(std::path::PathBuf, String)>,
+    /// Last known HEAD SHA in the clone.
+    pub last_known_head: Option<String>,
+    /// Per-panel sync override (None = use global setting).
+    pub sync_override: Option<bool>,
+}
+
+/// Result of a commit-sync pass, applied back to the app on the async side.
+pub struct CommitSyncResult {
+    /// (panel_idx, message) pairs for system notifications.
+    pub notifications: Vec<(usize, String)>,
+    /// (panel_idx, new_head) pairs to record as `last_known_head`.
+    pub updated_heads: Vec<(usize, String)>,
+    /// (panel_idx, new_base) pairs to record as `base_commit` (first poll).
+    pub updated_bases: Vec<(usize, String)>,
+}
+
+/// Compute the modified files list for a worktree without touching `App`.
+/// Returns (files, refusal message) where the refusal message is set when
+/// the clone's `.git` is not a real directory.
+pub fn compute_sidebar_modified_files(
+    worktree_path: Option<&std::path::Path>,
+) -> (Vec<String>, Option<String>) {
+    if let Some(wt) = worktree_path {
+        if !crate::gitcmd::has_real_git_dir(wt) {
+            return (
+                Vec::new(),
+                Some("Refusing: clone .git is not a real directory".to_string()),
+            );
+        }
+    }
+    let files = match worktree_path {
+        Some(wt) => {
+            let output = crate::gitcmd::host_git()
+                .args(["status", "--porcelain"])
+                .current_dir(wt)
+                .output();
+            match output {
+                Ok(out) => String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| l.to_string())
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+        None => Vec::new(),
+    };
+    (files, None)
+}
+
+/// Compute the committed files list (`git diff <base>..HEAD`) for a
+/// worktree without touching `App`.
+pub fn compute_sidebar_committed_files(
+    worktree_path: Option<&std::path::Path>,
+    base: Option<&str>,
+) -> Vec<String> {
+    if let Some(wt) = worktree_path {
+        if !crate::gitcmd::has_real_git_dir(wt) {
+            return Vec::new();
+        }
+    }
+    match (worktree_path, base) {
+        (Some(wt), Some(base_sha)) => {
+            let range = format!("{}..HEAD", base_sha);
+            let output = crate::gitcmd::host_git()
+                .args(["diff", "--name-only", &range])
+                .current_dir(wt)
+                .output();
+            match output {
+                Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| l.to_string())
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Detect new commits in each panel's clone and sync them to source repos,
+/// without touching `App`. Returns the notifications plus the per-panel
+/// head/base updates that the async side must apply.
+pub fn compute_project_commits(
+    panels: &[CommitSyncInput],
+    global_auto_sync: bool,
+    notify_on_commit: bool,
+) -> CommitSyncResult {
+    let mut result = CommitSyncResult {
+        notifications: Vec::new(),
+        updated_heads: Vec::new(),
+        updated_bases: Vec::new(),
+    };
+    for (panel_idx, panel) in panels.iter().enumerate() {
+        let wt_base = match panel.worktree.as_ref() {
+            Some(wt) => wt,
+            None => continue,
+        };
+        if !crate::gitcmd::has_real_git_dir(wt_base) {
+            continue;
+        }
+        let output = match crate::gitcmd::host_git()
+            .args(["rev-parse", "HEAD"])
+            .current_dir(wt_base)
+            .output()
+        {
+            Ok(out) if out.status.success() => out,
+            _ => continue,
+        };
+        let current_head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if current_head.is_empty() {
+            continue;
+        }
+        if panel.last_known_head.is_none() {
+            result.updated_bases.push((panel_idx, current_head.clone()));
+            result.updated_heads.push((panel_idx, current_head));
+            continue;
+        }
+        if panel.last_known_head.as_deref() == Some(&current_head) {
+            continue;
+        }
+        let auto_sync = panel.sync_override.unwrap_or(global_auto_sync);
+        let subject = crate::gitcmd::host_git()
+            .args(["log", "--format=%s", "-1"])
+            .current_dir(wt_base)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let short_sha = &current_head[..7.min(current_head.len())];
+        if auto_sync {
+            let (source_path, branch_name) = match panel.created_branches.first() {
+                Some((src, branch)) => (src.clone(), branch.clone()),
+                None => {
+                    if notify_on_commit {
+                        result.notifications.push((
+                            panel_idx,
+                            format!(
+                                "New commit {}: {} (use /gitsync now to sync)",
+                                short_sha, subject
+                            ),
+                        ));
+                    }
+                    result.updated_heads.push((panel_idx, current_head));
+                    continue;
+                }
+            };
+            let short_id = branch_name
+                .trim_start_matches("refs/heads/")
+                .trim_start_matches("nanosb/");
+            let nanosb_ref = format!("refs/nanosb/{}", short_id);
+            let refspec = format!("+refs/heads/{}:{}", branch_name, nanosb_ref);
+            let fetch_ok = crate::gitcmd::host_git()
+                .args(["fetch", &wt_base.to_string_lossy(), &refspec])
+                .current_dir(&source_path)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if fetch_ok {
+                result.notifications.push((
+                    panel_idx,
+                    format!("Synced {} to {}: {}", short_sha, nanosb_ref, subject),
+                ));
+            }
+        } else if notify_on_commit {
+            result.notifications.push((
+                panel_idx,
+                format!(
+                    "New commit {}: {} (use /gitsync now to sync)",
+                    short_sha, subject
+                ),
+            ));
+        }
+        result.updated_heads.push((panel_idx, current_head));
+    }
+    result
 }
 
 impl App {
@@ -533,10 +794,11 @@ impl App {
         let (theme, theme_name) = super::theme::Theme::resolve(&settings.ui.theme);
         Self {
             panels: Vec::new(),
+            next_panel_id: 1,
             focused_panel: 0,
             should_quit: false,
             show_mcp_sidebar: false,
-            show_sandbox_sidebar: false,
+            show_sandbox_sidebar: true,
             zoomed: false,
             show_welcome: true,
             global_input: TextInput::new(),
@@ -566,7 +828,29 @@ impl App {
             command_history: CommandHistory::new(),
             pending_reconnect: None,
             runtime_env_pool: HashMap::new(),
+            metrics_poll_in_flight: false,
+            host_capacity: None,
+            needs_render: false,
+            metrics_targets: Arc::new(StdMutex::new(Vec::new())),
+            metrics_shutdown: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Push a new panel onto the panel list, assigning it a fresh stable
+    /// `panel_id` from the monotonic counter. Returns the panel's positional
+    /// index (used for focus and rendering).
+    pub fn push_panel(&mut self, mut panel: AgentPanel) -> usize {
+        panel.panel_id = self.next_panel_id;
+        self.next_panel_id += 1;
+        self.panels.push(panel);
+        self.panels.len() - 1
+    }
+
+    /// Resolve a stable `panel_id` to its current positional index in
+    /// `self.panels`. Returns `None` if no panel with that id exists (e.g. it
+    /// was removed by `kill_panel_at`).
+    pub fn panel_index_by_id(&self, id: u64) -> Option<usize> {
+        self.panels.iter().position(|p| p.panel_id == id)
     }
 
     /// Set a temporary status message that appears on the status bar for ~3 seconds.
@@ -600,40 +884,19 @@ impl App {
 
     /// Refresh the cached modified files list from the focused panel's project mount.
     pub fn refresh_sidebar_modified_files(&mut self) {
-        let panel = self.panels.get(self.focused_panel);
-        let worktree_path = panel
+        let worktree_path = self
+            .panels
+            .get(self.focused_panel)
             .and_then(|p| p.project_mount.as_ref())
-            .and_then(|pm| pm.worktree_base.as_ref());
-
-        // Guard: refuse if .git is not a real directory.
-        if let Some(wt) = worktree_path {
-            if !crate::gitcmd::has_real_git_dir(wt) {
-                self.sidebar_modified_files = Vec::new();
-                self.set_status_message("Refusing: clone .git is not a real directory");
-                return;
-            }
-        }
-
-        self.sidebar_modified_files = match worktree_path {
-            Some(wt) => {
-                let output = crate::gitcmd::host_git()
-                    .args(["status", "--porcelain"])
-                    .current_dir(wt)
-                    .output();
-                match output {
-                    Ok(out) => String::from_utf8_lossy(&out.stdout)
-                        .lines()
-                        .filter(|l| !l.is_empty())
-                        .map(|l| l.to_string())
-                        .collect(),
-                    Err(_) => Vec::new(),
-                }
-            }
-            None => Vec::new(),
-        };
+            .and_then(|pm| pm.worktree_base.as_deref());
+        let (files, refusal) = compute_sidebar_modified_files(worktree_path);
+        self.sidebar_modified_files = files;
         // Reset scroll if list shrank
         if self.sidebar_files_scroll >= self.sidebar_modified_files.len() {
             self.sidebar_files_scroll = 0;
+        }
+        if let Some(msg) = refusal {
+            self.set_status_message(msg);
         }
     }
 
@@ -642,44 +905,15 @@ impl App {
     /// Runs `git diff --name-only <base_commit>..HEAD` in the clone to find all
     /// files changed by sandbox commits since the branch starting point.
     pub fn refresh_sidebar_committed_files(&mut self) {
-        let panel = self.panels.get(self.focused_panel);
-        let (worktree_path, base) = match panel {
-            Some(p) => {
-                let wt = p
-                    .project_mount
-                    .as_ref()
-                    .and_then(|pm| pm.worktree_base.as_ref());
-                let base = p.base_commit.as_deref();
-                (wt, base)
-            }
-            None => (None, None),
+        let (worktree_path, base) = {
+            let panel = self.panels.get(self.focused_panel);
+            let wt = panel
+                .and_then(|p| p.project_mount.as_ref())
+                .and_then(|pm| pm.worktree_base.as_deref());
+            let base = panel.and_then(|p| p.base_commit.as_deref());
+            (wt, base)
         };
-
-        if let Some(wt) = worktree_path {
-            if !crate::gitcmd::has_real_git_dir(wt) {
-                self.sidebar_committed_files = Vec::new();
-                return;
-            }
-        }
-
-        self.sidebar_committed_files = match (worktree_path, base) {
-            (Some(wt), Some(base_sha)) => {
-                let range = format!("{}..HEAD", base_sha);
-                let output = crate::gitcmd::host_git()
-                    .args(["diff", "--name-only", &range])
-                    .current_dir(wt)
-                    .output();
-                match output {
-                    Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-                        .lines()
-                        .filter(|l| !l.is_empty())
-                        .map(|l| l.to_string())
-                        .collect(),
-                    _ => Vec::new(),
-                }
-            }
-            _ => Vec::new(),
-        };
+        self.sidebar_committed_files = compute_sidebar_committed_files(worktree_path, base);
         // Reset scroll if list shrank
         if self.sidebar_committed_scroll >= self.sidebar_committed_files.len() {
             self.sidebar_committed_scroll = 0;
@@ -693,118 +927,55 @@ impl App {
     /// the clone back to the source repo so it's immediately visible locally.
     /// Returns a list of (panel_idx, message) pairs for system notifications.
     pub fn sync_project_commits(&mut self) -> Vec<(usize, String)> {
-        let mut notifications = Vec::new();
+        let inputs = self.commit_sync_inputs();
         let global_auto_sync = self.settings.gitsync.auto_sync;
         let notify_on_commit = self.settings.gitsync.notify_on_commit;
-
-        for (panel_idx, panel) in self.panels.iter_mut().enumerate() {
-            let pm = match panel.project_mount.as_ref() {
-                Some(pm) => pm,
-                None => continue,
-            };
-            let wt_base = match pm.worktree_base.as_ref() {
-                Some(wt) => wt,
-                None => continue,
-            };
-
-            // Refuse to run host git on a clone whose .git is not a real dir.
-            if !crate::gitcmd::has_real_git_dir(wt_base) {
-                continue;
-            }
-
-            // Get current HEAD SHA in clone.
-            let output = match crate::gitcmd::host_git()
-                .args(["rev-parse", "HEAD"])
-                .current_dir(wt_base)
-                .output()
-            {
-                Ok(out) if out.status.success() => out,
-                _ => continue,
-            };
-            let current_head = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if current_head.is_empty() {
-                continue;
-            }
-
-            // First poll — record HEAD as baseline for committed-files diff.
-            if panel.last_known_head.is_none() {
-                panel.base_commit = Some(current_head.clone());
-                panel.last_known_head = Some(current_head);
-                continue;
-            }
-
-            // No change — skip.
-            if panel.last_known_head.as_deref() == Some(&current_head) {
-                continue;
-            }
-
-            // Determine if auto-sync is active for this panel.
-            let auto_sync = panel.sync_override.unwrap_or(global_auto_sync);
-
-            // Get commit info for notification.
-            let subject = crate::gitcmd::host_git()
-                .args(["log", "--format=%s", "-1"])
-                .current_dir(wt_base)
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-            let short_sha = &current_head[..7.min(current_head.len())];
-
-            if auto_sync {
-                // Fetch from clone to source (existing behavior).
-                let (source_path, branch_name) = match pm.created_branches.first() {
-                    Some((src, branch)) => (src.clone(), branch.clone()),
-                    None => {
-                        // If branches not yet created (deferred setup), just notify.
-                        if notify_on_commit {
-                            notifications.push((
-                                panel_idx,
-                                format!(
-                                    "New commit {}: {} (use /gitsync now to sync)",
-                                    short_sha, subject
-                                ),
-                            ));
-                        }
-                        panel.last_known_head = Some(current_head);
-                        continue;
-                    }
-                };
-
-                // Fetch clone branch to namespaced ref in source (no --force needed).
-                let short_id = branch_name
-                    .trim_start_matches("refs/heads/")
-                    .trim_start_matches("nanosb/");
-                let nanosb_ref = format!("refs/nanosb/{}", short_id);
-                let refspec = format!("+refs/heads/{}:{}", branch_name, nanosb_ref);
-                let fetch_ok = crate::gitcmd::host_git()
-                    .args(["fetch", &wt_base.to_string_lossy(), &refspec])
-                    .current_dir(&source_path)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-
-                if fetch_ok {
-                    notifications.push((
-                        panel_idx,
-                        format!("Synced {} to {}: {}", short_sha, nanosb_ref, subject),
-                    ));
-                }
-            } else if notify_on_commit {
-                // Notify only — don't fetch.
-                notifications.push((
-                    panel_idx,
-                    format!(
-                        "New commit {}: {} (use /gitsync now to sync)",
-                        short_sha, subject
-                    ),
-                ));
-            }
-
-            panel.last_known_head = Some(current_head);
-        }
-
+        let result = compute_project_commits(&inputs, global_auto_sync, notify_on_commit);
+        let notifications = result.notifications.clone();
+        self.apply_commit_sync(result);
         notifications
+    }
+
+    /// Build the per-panel snapshot consumed by [`compute_project_commits`].
+    pub fn commit_sync_inputs(&self) -> Vec<CommitSyncInput> {
+        self.panels
+            .iter()
+            .map(|p| CommitSyncInput {
+                worktree: p
+                    .project_mount
+                    .as_ref()
+                    .and_then(|pm| pm.worktree_base.clone()),
+                created_branches: p
+                    .project_mount
+                    .as_ref()
+                    .map(|pm| pm.created_branches.clone())
+                    .unwrap_or_default(),
+                last_known_head: p.last_known_head.clone(),
+                sync_override: p.sync_override,
+            })
+            .collect()
+    }
+
+    /// Apply a commit-sync result computed off the event loop.
+    pub fn apply_commit_sync(&mut self, result: CommitSyncResult) {
+        for (panel_idx, message) in result.notifications {
+            if let Some(panel) = self.panels.get_mut(panel_idx) {
+                panel.chat_history.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: message,
+                });
+            }
+        }
+        for (panel_idx, head) in result.updated_heads {
+            if let Some(panel) = self.panels.get_mut(panel_idx) {
+                panel.last_known_head = Some(head);
+            }
+        }
+        for (panel_idx, base) in result.updated_bases {
+            if let Some(panel) = self.panels.get_mut(panel_idx) {
+                panel.base_commit = Some(base);
+            }
+        }
     }
 
     /// Switch input focus to the global command bar.

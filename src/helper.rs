@@ -24,7 +24,6 @@ pub fn persist_mount(sandbox_dir: &std::path::Path, mount: &Mount) -> anyhow::Re
     Ok(())
 }
 
-
 /// Enforce `SandboxSpec.pull_policy` against the local image cache before the
 /// supervisor pulls.
 ///

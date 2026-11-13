@@ -23,6 +23,14 @@ use tracing::{debug, info, warn};
 /// Guest IP address assigned by gvproxy DHCP.
 pub const GUEST_IP: &str = "192.168.127.2";
 
+/// Build the JSON body for a gvproxy `/services/forwarder/expose` request.
+fn forward_body(host_port: u16, remote_host: &str, guest_port: u16, protocol: &str) -> String {
+    format!(
+        r#"{{"local":"127.0.0.1:{}","remote":"{}:{}","protocol":"{}"}}"#,
+        host_port, remote_host, guest_port, protocol
+    )
+}
+
 /// A running gvproxy instance associated with a sandbox.
 pub struct GvproxyInstance {
     /// The gvproxy child process.
@@ -61,6 +69,22 @@ impl GvproxyInstance {
         guest_port: u16,
         protocol: &str,
     ) -> Result<(), String> {
+        self.expose_port_to(host_port, guest_port, protocol, GUEST_IP)
+    }
+
+    /// Expose a guest port on a host port via gvproxy's HTTP control API,
+    /// forwarding to an explicit remote host inside the guest network stack.
+    ///
+    /// `remote_host` is the address gvproxy forwards to inside the guest. The
+    /// default is [`GUEST_IP`] (`192.168.127.2`); pass `127.0.0.1` to reach a
+    /// loopback-bound server (e.g. Codex's OAuth callback).
+    pub fn expose_port_to(
+        &self,
+        host_port: u16,
+        guest_port: u16,
+        protocol: &str,
+        remote_host: &str,
+    ) -> Result<(), String> {
         let proto = match protocol {
             "tcp" | "udp" => protocol,
             _ => {
@@ -75,14 +99,11 @@ impl GvproxyInstance {
             }
         };
 
-        let body = format!(
-            r#"{{"local":"127.0.0.1:{}","remote":"{}:{}","protocol":"{}"}}"#,
-            host_port, GUEST_IP, guest_port, proto
-        );
+        let body = forward_body(host_port, remote_host, guest_port, proto);
 
         info!(
-            "Exposing port via gvproxy: host:{} -> guest:{} ({})",
-            host_port, guest_port, proto
+            "Exposing port via gvproxy: host:{} -> {}:{} ({})",
+            host_port, remote_host, guest_port, proto
         );
 
         // Connect to the Unix control socket and POST the expose request
@@ -479,5 +500,28 @@ impl GvproxyManager {
             }
             Err(e) => Err(format!("Failed to check gvproxy status: {}", e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_body_defaults_to_guest_ip() {
+        let body = forward_body(1455, GUEST_IP, 1455, "tcp");
+        assert_eq!(
+            body,
+            r#"{"local":"127.0.0.1:1455","remote":"192.168.127.2:1455","protocol":"tcp"}"#
+        );
+    }
+
+    #[test]
+    fn forward_body_uses_loopback_remote() {
+        let body = forward_body(1455, "127.0.0.1", 1455, "tcp");
+        assert_eq!(
+            body,
+            r#"{"local":"127.0.0.1:1455","remote":"127.0.0.1:1455","protocol":"tcp"}"#
+        );
     }
 }

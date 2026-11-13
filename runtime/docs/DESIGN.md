@@ -64,7 +64,7 @@ pub struct SandboxConfig {
     /// Unique name for the sandbox
     pub name: String,
     
-    /// OCI image reference (e.g., "ghcr.io/nanosandboxai/agents-registry/claude:latest")
+    /// OCI image reference (e.g., "ghcr.io/nanosandboxai/nanosandbox/claude:latest")
     pub image: String,
     
     /// CPU cores to allocate
@@ -241,7 +241,7 @@ async fn main() -> Result<()> {
     // Create sandbox
     let config = SandboxConfig::builder()
         .name("my-sandbox")
-        .image("ghcr.io/nanosandboxai/agents-registry/claude:latest")
+        .image("ghcr.io/nanosandboxai/nanosandbox/claude:latest")
         .cpus(2)
         .memory_mb(4096)
         .build();
@@ -281,8 +281,8 @@ sandbox.exec_stream("long-running-command", |chunk| {
 let config = SandboxConfig::builder()
     .name("dev-sandbox")
     .image("node:20")
-    .mount("/home/user/project", "/workspace")
-    .workdir("/workspace")
+    .mount("/home/user/project", "/home/developer")
+    .workdir("/home/developer")
     .build();
 
 let sandbox = Sandbox::create(config).await?;

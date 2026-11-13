@@ -32,14 +32,33 @@ if [ -f "$HERE/LICENSE" ]; then
   cp -f "$HERE/LICENSE" "$NANOSB_HOME/LICENSE"
 fi
 
-# Lazy re-sign: if the helper's signature is invalid (e.g. after a copy with a
-# quarantine xattr), re-sign ad-hoc so the hypervisor entitlement is present.
+# Lazy re-sign: only re-sign (ad-hoc, WITH the hypervisor entitlement) when the
+# helper is not already validly signed with that entitlement. Re-signing an
+# already-Developer-ID-signed / notarized helper ad-hoc would strip its signature
+# and invalidate notarization, so a valid signature is left alone. An ad-hoc
+# re-sign without --entitlements would leave the entitlement missing, so the
+# entitlement plist is always applied when re-signing.
 if command -v codesign >/dev/null 2>&1; then
-  if ! codesign --verify --quiet "$NANOSB_HOME/bin/nanosb-runtime" 2>/dev/null; then
+  helper="$NANOSB_HOME/bin/nanosb-runtime"
+  if ! { codesign --verify --deep --strict "$helper" 2>/dev/null \
+           && codesign -d --entitlements :- "$helper" 2>/dev/null \
+                | grep -q 'com.apple.security.hypervisor'; }; then
     echo "re-signing helper (lazy)"
-    xattr -dr com.apple.quarantine "$NANOSB_HOME/bin/nanosb-runtime" 2>/dev/null || true
-    codesign --force --sign - "$NANOSB_HOME/bin/nanosb-runtime" \
+    xattr -dr com.apple.quarantine "$helper" 2>/dev/null || true
+    entitlements="$(mktemp /tmp/nanosb-entitlements.XXXXXX.plist)"
+    cat > "$entitlements" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.hypervisor</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+    codesign --force --sign - --entitlements "$entitlements" "$helper" \
       || echo "warning: re-sign failed; the helper may need manual signing"
+    rm -f "$entitlements"
   fi
 fi
 

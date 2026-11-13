@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Pinned agent CLI versions (npm-installed agents: claude, codex, gemini, crush)
+  - package-ecosystem: npm
+    directory: /agents-registry/docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Base image + Dockerfile base images (node:22-slim, etc.)
+  - package-ecosystem: docker
+    directory: /agents-registry/docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions used across workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"

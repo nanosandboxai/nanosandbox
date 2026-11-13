@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
+# check-docs.sh — docs-accuracy gate.
+#
+# Two layers:
+#   1. Surface-based checks via scripts/docs/check-docs-surface.py, which
+#      validates fenced-block commands/flags, relative links, and the
+#      Windows/WHPX/HCS platform guard against scripts/docs/cli-surface.json
+#      (regenerated from src/main.rs + src/tui/commands.rs).
+#   2. Grep-based spot checks on README + component docs (below).
+#
+# Usage: scripts/check-docs.sh [DOCS_DIR]
+#   DOCS_DIR  optional markdown tree to check (default: docs). CI passes
+#             test/check-docs/fixtures to assert the negative fixture fails.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+DOCS_DIR="${1:-docs}"
 
 fail=0
 pass() { printf 'ok   %s\n' "$1"; }
@@ -10,6 +24,15 @@ bad()  { printf 'FAIL %s\n' "$1"; fail=1; }
 has()  { if grep -qE -- "$2" "$3"; then pass "$1"; else bad "$1 (missing /$2/ in $3)"; fi; }
 hasnt(){ if grep -qE -- "$2" "$3"; then bad "$1 (found /$2/ in $3)"; else pass "$1"; fi; }
 
+# --- regenerate the CLI/TUI surface from source ---------------------------
+python3 scripts/docs/extract-cli-surface.py
+
+# --- surface-based accuracy checks ----------------------------------------
+if ! python3 scripts/docs/check-docs-surface.py --docs-dir "$DOCS_DIR"; then
+  fail=1
+fi
+
+# --- grep-based spot checks (README + component docs) ---------------------
 has   "README: Linux/KVM support documented"      "KVM" README.md
 has   "README: links Linux live verification"     "live-verification-linux" README.md
 hasnt "README: no stale 'Linux not supported'"    "Linux is not yet supported" README.md

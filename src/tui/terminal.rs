@@ -127,6 +127,49 @@ impl SshTerminal {
     }
 }
 
+/// Scan a chunk of terminal output for query sequences that expect a reply and
+/// return the bytes to send back to the application. The panel's vt100 parser
+/// has no response callbacks, so these queries (device attributes, status
+/// reports, and the OSC 11 background-colour query that modern TUIs such as
+/// Cursor's emit) would otherwise go unanswered and stall the app.
+pub fn query_responses(screen: &vt100::Screen, data: &[u8]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] != 0x1b {
+            i += 1;
+            continue;
+        }
+        let rest = &data[i..];
+        if rest.starts_with(b"\x1b]11;?") {
+            out.push(b"\x1b]11;rgb:0000/0000/0000\x07".to_vec());
+            i += 6;
+        } else if rest.starts_with(b"\x1b[6n") {
+            let (row, col) = screen.cursor_position();
+            out.push(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes());
+            i += 4;
+        } else if rest.starts_with(b"\x1b[5n") {
+            out.push(b"\x1b[0n".to_vec());
+            i += 4;
+        } else if rest.starts_with(b"\x1b[0c") {
+            out.push(b"\x1b[?1;2c".to_vec());
+            i += 4;
+        } else if rest.starts_with(b"\x1b[c") {
+            out.push(b"\x1b[?1;2c".to_vec());
+            i += 3;
+        } else if rest.starts_with(b"\x1b[>0c") {
+            out.push(b"\x1b[>0;136;0c".to_vec());
+            i += 5;
+        } else if rest.starts_with(b"\x1b[>c") {
+            out.push(b"\x1b[>0;136;0c".to_vec());
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Handle for interacting with an active SSH terminal session.
 ///
 /// Stored in `AgentPanel` — used to send keystrokes and resize events
@@ -146,7 +189,7 @@ pub async fn connect_console(
     sandbox_name: String,
     cols: u16,
     rows: u16,
-    panel_idx: usize,
+    panel_id: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<SshTerminalHandle, String> {
     use crate::supervisor::client::{AttachConnection, SupervisorClient};
@@ -198,7 +241,7 @@ pub async fn connect_console(
         match conn.next_frame() {
             Ok(Some(AttachFrame::Output { data })) => {
                 let _ = tx_read.send(AppEvent::TerminalData {
-                    panel_idx,
+                    panel_id,
                     data: data.into_bytes(),
                 });
             }
@@ -208,20 +251,25 @@ pub async fn connect_console(
                 } else {
                     None
                 };
-                let _ = tx_read.send(AppEvent::SshDisconnected { panel_idx, error });
+                let _ = tx_read.send(AppEvent::SshDisconnected { panel_id, error });
                 break;
             }
             Ok(None) => {
                 let _ = tx_read.send(AppEvent::SshDisconnected {
-                    panel_idx,
+                    panel_id,
                     error: None,
                 });
                 break;
             }
             Err(e) => {
-                let _ = tx_read.send(AppEvent::SshDisconnected {
-                    panel_idx,
-                    error: Some(e.to_string()),
+                // A console read failure is usually transient (e.g. the event
+                // loop was briefly blocked) and the sandbox may be perfectly
+                // healthy, so report it as a retryable error rather than a
+                // disconnect. Only `AttachFrame::Exit` / clean EOF genuinely
+                // end the session.
+                let _ = tx_read.send(AppEvent::ConsoleReadError {
+                    panel_id,
+                    error: e.to_string(),
                 });
                 break;
             }
@@ -248,7 +296,7 @@ pub async fn connect_exec_pty(
     args: Vec<String>,
     cols: u16,
     rows: u16,
-    panel_idx: usize,
+    panel_id: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<SshTerminalHandle, String> {
     use runtime::exec::{ExecClient, ExecEvent, ExecOptions};
@@ -295,7 +343,7 @@ pub async fn connect_exec_pty(
             match handle.next_event(Some(std::time::Duration::from_millis(50))) {
                 Ok(Some(ExecEvent::Output(chunk))) => {
                     let _ = tx_read.send(AppEvent::TerminalData {
-                        panel_idx,
+                        panel_id,
                         data: chunk.data.into_bytes(),
                     });
                 }
@@ -305,12 +353,12 @@ pub async fn connect_exec_pty(
                     } else {
                         None
                     };
-                    let _ = tx_read.send(AppEvent::SshDisconnected { panel_idx, error });
+                    let _ = tx_read.send(AppEvent::SshDisconnected { panel_id, error });
                     return;
                 }
                 Ok(Some(ExecEvent::Error { message })) => {
                     let _ = tx_read.send(AppEvent::SshDisconnected {
-                        panel_idx,
+                        panel_id,
                         error: Some(message),
                     });
                     return;
@@ -318,7 +366,7 @@ pub async fn connect_exec_pty(
                 Ok(Some(ExecEvent::Started { .. })) => {}
                 Ok(None) => {
                     let _ = tx_read.send(AppEvent::SshDisconnected {
-                        panel_idx,
+                        panel_id,
                         error: None,
                     });
                     return;
@@ -595,6 +643,20 @@ const AUTH_DOMAINS: &[&str] = &[
     "cursor.sh",               // Cursor IDE (legacy domain)
     "cursor.com",              // Cursor IDE (device flow sign-in)
     "www.cursor.com",          // Cursor IDE (www redirect)
+    // Gemini CLI (Google OAuth)
+    "accounts.google.com",   // Gemini CLI OAuth authorize
+    "oauth2.googleapis.com", // Gemini CLI OAuth token refresh
+    // Goose
+    "block.github.io", // Goose OAuth authorize
+    "goose.ai",        // Goose OAuth callback/redirect host
+    // OpenCode
+    "opencode.ai",      // OpenCode OAuth authorize
+    "auth.opencode.ai", // OpenCode OAuth token exchange
+    // Crush
+    "charm.sh", // Crush OAuth authorize
+    "crush.ai", // Crush OAuth callback/redirect host
+    // Aider
+    "aider.chat", // Aider OAuth authorize
     // GitHub (SSO provider for multiple agents)
     "github.com", // GitHub device flow (Codex, Copilot)
 ];
@@ -626,6 +688,7 @@ pub fn is_auth_url(url: &str) -> bool {
 const DEVICE_CODE_PATHS: &[&str] = &[
     "/login/device", // GitHub device flow
     "/loginlink",    // Cursor device flow
+    "/codex/device", // Codex CLI device flow (codex login --device-auth)
     "/device",       // Generic device code
 ];
 
@@ -647,6 +710,25 @@ pub fn is_device_code_url(url: &str) -> bool {
     DEVICE_CODE_PATHS
         .iter()
         .any(|p| path.eq_ignore_ascii_case(p) || path.starts_with(&format!("{}/", p)))
+}
+
+/// Whether a device-code URL is complete enough to open in the browser.
+///
+/// Some device-code flows carry the one-time code in the query string
+/// (Cursor's `/loginlink?user_code=…`). Opening a truncated URL without that
+/// code sends the user to a page that cannot complete the redirect. GitHub's
+/// `/login/device` and Codex's `/codex/device` display the code separately and
+/// are complete without a query parameter.
+pub fn device_code_url_is_complete(url: &str) -> bool {
+    if !is_device_code_url(url) {
+        return false;
+    }
+    // These device flows show the code on the page; no query param needed.
+    if url.contains("/login/device") || url.contains("/codex/device") {
+        return true;
+    }
+    // Cursor's /loginlink carries the code in the query string.
+    url.contains('?')
 }
 
 /// Extract the `redirect_uri` localhost port from an OAuth URL.
@@ -1191,6 +1273,29 @@ mod tests {
     }
 
     #[test]
+    fn test_is_auth_url_covers_all_builtin_agents() {
+        // Every built-in agent that supports browser sign-in must have at
+        // least one whitelisted auth domain, otherwise its advisory hint can
+        // never be acted on.
+        for domain in [
+            "accounts.google.com", // gemini
+            "oauth2.googleapis.com",
+            "block.github.io", // goose
+            "goose.ai",
+            "opencode.ai", // opencode
+            "auth.opencode.ai",
+            "charm.sh", // crush
+            "crush.ai",
+            "aider.chat", // aider
+        ] {
+            assert!(
+                is_auth_url(&format!("https://{domain}/authorize?code=abc")),
+                "{domain} should be whitelisted"
+            );
+        }
+    }
+
+    #[test]
     fn test_is_device_code_url() {
         assert!(is_device_code_url("https://github.com/login/device"));
         assert!(is_device_code_url("https://cursor.com/loginlink"));
@@ -1205,5 +1310,88 @@ mod tests {
         assert!(!is_device_code_url("https://cursor.com/"));
         // HTTP not supported.
         assert!(!is_device_code_url("http://cursor.com/loginlink"));
+    }
+
+    #[test]
+    fn test_is_device_code_url_codex() {
+        // Codex CLI device flow (codex login --device-auth).
+        assert!(is_device_code_url("https://auth.openai.com/codex/device"));
+        assert!(is_device_code_url(
+            "https://auth.openai.com/codex/device?user_code=ABCD"
+        ));
+    }
+
+    #[test]
+    fn test_device_code_url_is_complete() {
+        // Codex/GitHub device pages show the code separately: complete without a query.
+        assert!(device_code_url_is_complete(
+            "https://auth.openai.com/codex/device"
+        ));
+        assert!(device_code_url_is_complete(
+            "https://github.com/login/device"
+        ));
+        // Cursor's loginlink carries the code in the query: incomplete without it.
+        assert!(!device_code_url_is_complete("https://cursor.com/loginlink"));
+        assert!(device_code_url_is_complete(
+            "https://cursor.com/loginlink?user_code=ABCD"
+        ));
+        // Non-device URLs are never "complete" as device-code URLs.
+        assert!(!device_code_url_is_complete(
+            "https://auth.openai.com/oauth/authorize"
+        ));
+    }
+
+    #[test]
+    fn test_extract_oauth_callback_port_percent_encoded() {
+        let url = "https://auth.openai.com/oauth/authorize?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
+        assert_eq!(extract_oauth_callback_port(url), Some(1455));
+    }
+
+    #[test]
+    fn test_extract_oauth_callback_port_plain() {
+        let url = "https://auth.openai.com/oauth/authorize?client_id=x&redirect_uri=http://localhost:1457/auth/callback";
+        assert_eq!(extract_oauth_callback_port(url), Some(1457));
+    }
+
+    #[test]
+    fn test_extract_oauth_callback_port_missing_redirect_uri() {
+        let url = "https://auth.openai.com/oauth/authorize?client_id=x";
+        assert_eq!(extract_oauth_callback_port(url), None);
+    }
+
+    #[test]
+    fn test_extract_oauth_callback_port_non_localhost() {
+        let url = "https://auth.openai.com/oauth/authorize?client_id=x&redirect_uri=http%3A%2F%2Fexample.com%3A1455%2Fauth%2Fcallback";
+        assert_eq!(extract_oauth_callback_port(url), None);
+    }
+
+    #[test]
+    fn test_query_responses_answers_common_queries() {
+        let parser = vt100::Parser::new(24, 80, 0);
+        let data = b"hi\x1b]11;?\x07mid\x1b[c\x1b[>c\x1b[6n";
+        let resp = query_responses(parser.screen(), data);
+        assert!(
+            resp.iter()
+                .any(|r| r.as_slice() == b"\x1b]11;rgb:0000/0000/0000\x07"),
+            "must answer OSC 11 background-colour query, got {resp:?}"
+        );
+        assert!(
+            resp.iter().any(|r| r.as_slice() == b"\x1b[?1;2c"),
+            "must answer primary DA, got {resp:?}"
+        );
+        assert!(
+            resp.iter().any(|r| r.as_slice() == b"\x1b[>0;136;0c"),
+            "must answer secondary DA, got {resp:?}"
+        );
+        assert!(
+            resp.iter().any(|r| r.ends_with(b"R")),
+            "must answer cursor-position report, got {resp:?}"
+        );
+    }
+
+    #[test]
+    fn test_query_responses_ignores_plain_text() {
+        let parser = vt100::Parser::new(24, 80, 0);
+        assert!(query_responses(parser.screen(), b"plain output, no queries").is_empty());
     }
 }

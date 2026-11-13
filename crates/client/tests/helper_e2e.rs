@@ -53,11 +53,7 @@ fn start_daemon() -> Daemon {
         assert!(Instant::now() < deadline, "helper socket never appeared");
         std::thread::sleep(Duration::from_millis(50));
     }
-    Daemon {
-        child,
-        socket,
-        dir,
-    }
+    Daemon { child, socket, dir }
 }
 
 #[test]
@@ -67,20 +63,34 @@ fn end_to_end_lifecycle_exec_fs_logs_metrics() {
     let client = SandboxClient::connect(&daemon.socket).expect("connect");
     assert!(!client.capabilities().is_empty());
 
-    let image = std::env::var("NANOSB_TEST_IMAGE").unwrap_or_else(|_| "library/alpine:latest".into());
+    let image =
+        std::env::var("NANOSB_TEST_IMAGE").unwrap_or_else(|_| "library/alpine:latest".into());
     let name = format!("sdk-e2e-{}", std::process::id());
     let sandbox = client
-        .create_with(SandboxBuilder::new(&image).name(&name).cpus(2).memory_mb(1024))
+        .create_with(
+            SandboxBuilder::new(&image)
+                .name(&name)
+                .cpus(2)
+                .memory_mb(1024),
+        )
         .expect("create");
 
-    assert_eq!(sandbox.state().unwrap(), nanosb_protocol::SandboxState::Running);
+    assert_eq!(
+        sandbox.state().unwrap(),
+        nanosb_protocol::SandboxState::Running
+    );
 
     let out = sandbox.exec("echo", &["hello-from-sdk"]).expect("exec");
     assert_eq!(out.exit_code, 0);
     assert_eq!(out.stdout.trim(), "hello-from-sdk");
 
-    sandbox.fs_write("/tmp/nanosc", b"written-by-sdk").expect("fs_write");
-    assert_eq!(sandbox.fs_read_to_string("/tmp/nanosc").unwrap(), "written-by-sdk");
+    sandbox
+        .fs_write("/tmp/nanosc", b"written-by-sdk")
+        .expect("fs_write");
+    assert_eq!(
+        sandbox.fs_read_to_string("/tmp/nanosc").unwrap(),
+        "written-by-sdk"
+    );
     assert!(sandbox.fs_exists("/tmp/nanosc").unwrap());
     sandbox.fs_mkdir("/tmp/nanosc-dir", true).unwrap();
     assert!(sandbox.fs_stat("/tmp/nanosc-dir").unwrap().is_dir);

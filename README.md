@@ -54,7 +54,7 @@ The binary will be at `target/release/nanosb`.
 nanosb doctor
 
 # Pull an agent image
-nanosb pull ghcr.io/nanosandboxai/agents-registry/claude:latest
+nanosb pull ghcr.io/nanosandboxai/nanosandbox/claude:latest
 
 # Run a sandbox from sandbox.yml in the current directory
 nanosb
@@ -95,16 +95,47 @@ Notes:
 - `sandbox.yml` env values take precedence over startup env for matching keys.
 - Local `.env` is auto-loaded only when no `sandbox.yml` is active.
 - `/add` does not import startup env automatically; select keys explicitly with `--use-env`.
+- `/add --permissions <default|accept-edits|allow-all>` sets the per-agent
+  permission level: `allow-all` runs the agent unattended, `accept-edits` and
+  `default` require human approval of edits. `--headless` always forces `allow-all`.
+- `/add` pre-accepts the agent's workspace-trust prompt (Cursor `--trust`,
+  Gemini `--skip-trust`, Codex `trust_level`, Claude `hasTrustDialogAccepted`),
+  since the mounted workspace is a disposable per-sandbox clone.
+- On agent failure the panel keeps the agent's last output and shows the exit
+  reason as a banner (no pre-flight credential popup).
 - Type `/help` in the TUI for the full command list. The command surface is
   generated from a single table, so it is always in sync with what the TUI
   accepts.
 - Agent, MCP, and skill configuration is **declarative**: it lives in
   `sandbox.yml` and is applied by redeploying (`nanosb apply`). There is no
   in-TUI hot-reload.
+- `/add` validates that the agent has the credentials it needs before it
+  creates the sandbox. Validation is **advisory** for agents that support
+  browser sign-in (all built-in agents): a missing variable is shown as a hint
+  but the agent still starts and signs in through the auto-opened browser URL.
+  Agents without a browser sign-in path are blocked, so they cannot start and
+  immediately exit with code 1. See
+  [Prerequisite validation](https://nanosandboxai.github.io/docs/cli/tui-mode#prerequisite-validation)
+  for the per-agent requirements and the browser sign-in hosts.
+- When the TUI opens a browser sign-in URL that carries a `localhost` OAuth
+  callback port (e.g. Codex's `redirect_uri=http://localhost:1455/auth/callback`),
+  it first forwards that port to the guest's loopback via gvproxy so the
+  browser redirect reaches the callback server inside the VM. Device-code flows
+  remain the fallback for agents whose callback binds loopback and cannot be
+  forwarded.
 
 ```bash
 # Add panel and import selected startup env keys
 /add claude --use-env OPENAI_API_KEY --use-env GITHUB_TOKEN
+
+# Supported agents: claude, codex, goose, cursor, opencode, aider, gemini, crush
+# Interactive (the default): opens the agent's TUI
+/add opencode
+# Headless (auto-approved run): --headless (or the alias --auto-mode) with -p
+/add opencode --headless -p "list files"
+/add aider --headless -p "refactor the module"
+# Explicit permission level: default | accept-edits | allow-all
+/add claude --permissions allow-all
 ```
 
 ### Language SDKs
@@ -179,6 +210,7 @@ nanosb rm [-f] <sandbox>       # Remove a sandbox
 nanosb describe <sandbox>      # Show a sandbox's resolved configuration
 nanosb apply [-f sandbox.yml]  # Apply sandbox.yml (redeploy); supports --dry-run/--prune
 nanosb doctor                  # Check runtime prerequisites
+nanosb capacity                # Show host capacity, admission budget, and usage
 nanosb cleanup [--dry-run]     # Clean up stale project clones
 nanosb sessions [--project P]  # List saved sessions
 nanosb projects                # List registered projects
@@ -200,6 +232,8 @@ nanosb supervise [--foreground] --name <n> --spec <spec.json>  # Spawn a supervi
 | `--cpus <n>` | Override CPU cores |
 | `--memory <mb>` | Override memory (MB) |
 | `--timeout <secs>` | Override timeout (seconds) |
+| `--disk <mb>` | Override per-sandbox disk quota (MB) |
+| `--max-pids <n>` | Override guest process cap |
 | `--permissions <level>` | Agent permissions: default, accept-edits, allow-all |
 | `-e KEY=VALUE` | Inject environment variable |
 | `--env-file <path>` | Load env vars from file |
@@ -221,6 +255,30 @@ nanosb supervise [--foreground] --name <n> --spec <spec.json>  # Spawn a supervi
 | `NANOSB_REGISTRY_PATH` | Path to the agents registry (default: `~/.nanosandbox/agents-registry`) |
 | `NANOSB_GUEST_BIN_DIR` | Directory holding `exec-agent` (default: `$NANOSB_HOME/guest-bin`) |
 | `NANOSB_BINARY_PATH` | Path to the `nanosb` binary used to spawn the supervisor |
+| `NANOSB_MAX_VMS` | Admission budget: max concurrent sandboxes (default: `2 × CPU count`) |
+| `NANOSB_MEMORY_BUDGET_MB` | Admission budget: total memory (MiB; default: 80% of host RAM) |
+| `NANOSB_CPU_BUDGET` | Admission budget: total vCPU (default: `2 × CPU count`) |
+| `NANOSB_DISK_BUDGET_MB` | Admission budget: minimum free disk (MiB) required to start (default: 2048) |
+| `NANOSB_SANDBOX_DISK_MB` | Default per-sandbox disk cap (MiB) when `disk` is unset |
+| `NANOSB_ADMISSION` | Set to `off` to disable admission control |
+
+## Resource management & admission control
+
+Every sandbox request (`cpus`, `memory`, `timeout`, `disk`, `max_pids`) is
+checked against a host budget before it starts, so the TUI and headless modes
+cannot run more sandboxes than the machine allows. Budgets are auto-derived and
+overridable via the `NANOSB_*` environment variables above.
+
+- Inspect capacity, budget, and live usage: `nanosb capacity` (or `--format json`).
+- The TUI sandbox sidebar (open by default; toggle with `/sb`) shows a host
+  header and per-sandbox `cpu / mem / disk` numbers, flagging `tight` or
+  `OVER RAM` when requests exceed available memory.
+- The same budget governs `nanosb run`, `nanosb apply`, the TUI, and the
+  supervisor; concurrent spawns are serialized with short-lived reservations.
+- `disk` and `max_pids` are per-sandbox and enforced by the supervisor / guest
+  cgroup. `max_inodes` and `io_bps` are reserved and not enforced.
+
+Full details: <https://nanosandboxai.github.io/docs/architecture/resource-management>.
 
 ## sandbox.yml
 
@@ -231,8 +289,10 @@ defaults:
   cpus: 2
   memory: 4096
   timeout: 600
+  disk: 20480             # per-sandbox disk quota in MB (0 = unlimited)
+  max_pids: 512           # guest process cap (0 = default 512)
   permissions: default
-  workdir: /workspace     # guest working directory (default: /workspace)
+  workdir: /home/developer  # guest working directory (default: the guest home)
   workspace:
     mode: isolated        # isolated (default) | shared
     fresh_rootfs: false
@@ -264,31 +324,68 @@ sandboxes:
     project:
       path: .
       branch: main
-      mount_point: /workspace
+      mount_point: /home/developer
       auto_sync: false
 
   codex:
     image: codex
     cpus: 4
+    disk: 40960             # per-sandbox override: 40 GB
+    max_pids: 1024          # per-sandbox override
     run_as_root: false
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     auto_mode: true
-    prompt: "Refactor the module in /workspace."
+    prompt: "Refactor the module in /home/developer."
 
   cursor:
     type: cursor
     image: cursor
     interactive: true
+
+  goose:
+    type: goose
+    image: goose
+
+  opencode:
+    type: opencode
+    image: opencode
+    auto_mode: true
+    prompt: "Scan the project in /home/developer for TODOs."
+
+  aider:
+    type: aider
+    image: aider
+
+  gemini:
+    type: gemini
+    image: gemini
+    env:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+
+  crush:
+    type: crush
+    image: crush
+    auto_mode: true
+    prompt: "Add tests for the parser and run them."
 ```
 
-Bare image names (e.g., `claude`, `codex`) are automatically resolved to `ghcr.io/nanosandboxai/agents-registry/<name>:latest`.
+Bare agent image names (`claude`, `codex`, `goose`, `cursor`, `opencode`,
+`aider`, `gemini`, `crush`) are automatically resolved to
+`ghcr.io/nanosandboxai/nanosandbox/<name>:latest`; any other bare name
+resolves to the matching Docker Hub library image.
+
+The guest working directory and the project mount point default to the guest
+user's **home directory** (`/home/developer`). There is no mandatory
+`/workspace`: set `workdir` or `project.mount_point` explicitly when your agent
+should start in a different directory.
 
 ### Interactive agent panels
 
-By default an agent panel runs **headless**: the agent's output is captured as
-structured events. Set `interactive: true` to instead run the agent's own
-interactive UI in the panel, on a real TTY (keystrokes are forwarded to it):
+By default an agent panel runs **interactively**: the agent's own interactive UI
+opens in the panel, on a real TTY (keystrokes are forwarded to it). Set
+`interactive: false` in `sandbox.yml` or use `--headless -p <prompt>` from the
+TUI to run the agent headless, with its output captured as structured events:
 
 ```yaml
 sandboxes:
@@ -300,11 +397,41 @@ sandboxes:
 Or per panel from the TUI:
 
 ```
-/add claude --image localhost:5050/claude:latest --interactive
+/add claude --image localhost:5050/claude:latest         # interactive (default)
+/add claude --headless -p "audit the codebase"           # headless
 ```
 
-`interactive` and `auto_mode` are mutually exclusive. Interactive panels are
-backed by the in-guest exec agent's PTY (the same channel as `nanosb exec --tty`).
+`--auto-mode` is accepted as a backwards-compatible alias of `--headless`.
+Interactive panels are backed by the in-guest exec agent's PTY (the same channel
+as `nanosb exec --tty`).
+
+### Supported agents
+
+Nanosandbox ships images for eight agent CLIs in
+`ghcr.io/nanosandboxai/nanosandbox/`. At boot, nanosb runs the agent's CLI
+inside the VM with the invocation below (bare when interactive, with the listed
+flags when headless). API keys are injected from the panel environment via
+`/add --use-env <KEY>` or `nanosb --env <KEY>=...`:
+
+| Agent | Default image | Interactive | Headless (default permissions) | API key env var(s) |
+|-------|----------------|-------------|--------------------------------|--------------------|
+| Claude | `.../claude:latest` | `claude` | `claude --print <prompt> --verbose --output-format stream-json --include-partial-messages` | `ANTHROPIC_API_KEY` (required) |
+| Codex | `.../codex:latest` | `codex` | `codex exec --skip-git-repo-check --json <prompt>` | `OPENAI_API_KEY` (required) |
+| Goose | `.../goose:latest` | `goose session` | `goose run --text <prompt>` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+| Cursor | `.../cursor:latest` | `cursor-agent` | `cursor-agent --message <prompt>` | none declared |
+| OpenCode | `.../opencode:latest` | `opencode` | `opencode run <prompt>` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+| Aider | `.../aider:latest` | `aider` | `aider --message <prompt> --yes --no-auto-commits` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+| Gemini CLI | `.../gemini:latest` | `gemini` | `gemini -p <prompt>` | `GEMINI_API_KEY` (required) |
+| Crush | `.../crush:latest` | `crush` | `crush run <prompt>` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+
+Image references above are shorthand for
+`ghcr.io/nanosandboxai/nanosandbox/<name>:latest`. Permission flags are
+added per agent rather than globally: `allow-all` (or auto-mode) adds
+`--dangerously-skip-permissions` for claude, `--dangerously-bypass-approvals-and-sandbox`
+for codex, `--auto` for opencode, `--approval-mode yolo` for gemini, and
+`--force` (plus `--trust --approve-mcps` in auto-mode) for cursor; goose instead
+sets the `GOOSE_MODE` env var (`auto` for allow-all, `smart_approve` for
+accept-edits); crush adds `--yolo` to its interactive TUI under allow-all.
 
 ### Reviewing and applying agent changes
 

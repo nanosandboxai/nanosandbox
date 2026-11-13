@@ -5,6 +5,9 @@ use std::time::Duration;
 use ratatui::crossterm::event::{self, Event as CrosstermEvent};
 use tokio::sync::mpsc;
 
+use super::app::SandboxMetrics;
+use super::host_capacity::HostCapacity;
+
 /// Events that the TUI application can handle.
 pub enum AppEvent {
     /// A terminal input event (key press, mouse, resize, etc.).
@@ -13,43 +16,53 @@ pub enum AppEvent {
     Tick,
     /// Sandbox creation started for a panel: index and status message.
     SandboxCreating {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Human-readable status message.
         message: String,
     },
     /// Sandbox creation or startup failed.
     SandboxFailed {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Error description.
         error: String,
     },
     /// SSH terminal connected and shell is active.
     SshConnected {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Handle for sending keystrokes and resize events.
         handle: super::terminal::SshTerminalHandle,
     },
     /// Data received from SSH channel for a panel's terminal.
     TerminalData {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Raw bytes from the SSH channel.
         data: Vec<u8>,
     },
     /// SSH connection failed or disconnected.
     SshDisconnected {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Error description (None for clean disconnect).
         error: Option<String>,
     },
+    /// A transient failure reading from the SSH console/exec channel (e.g. the
+    /// event loop was briefly blocked). The sandbox may still be healthy, so
+    /// the handler retries with backoff instead of treating this as a genuine
+    /// disconnect.
+    ConsoleReadError {
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
+        /// Error description.
+        error: String,
+    },
     /// A supervised sandbox with this name is already running; attach via console.
     SupervisorReady {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Supervisor sandbox name.
         name: String,
         /// Short identifier for display.
@@ -69,15 +82,15 @@ pub enum AppEvent {
     },
     /// File upload to sandbox started (for immediate feedback).
     UploadStarted {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Filename being uploaded.
         filename: String,
     },
     /// File upload to sandbox completed successfully.
     UploadComplete {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Original filename.
         filename: String,
         /// Remote path inside the VM.
@@ -87,11 +100,32 @@ pub enum AppEvent {
     },
     /// File upload to sandbox failed.
     UploadFailed {
-        /// Panel index.
-        panel_idx: usize,
+        /// Stable panel id (never changes when other panels are removed).
+        panel_id: u64,
         /// Error description.
         error: String,
     },
+    /// Live resource samples for sandboxes, keyed by supervisor name.
+    MetricsUpdated {
+        /// (supervisor name, sample) pairs.
+        samples: Vec<(String, SandboxMetrics)>,
+    },
+    /// Host capacity detected off the event loop (spawns `df`/`sysctl`).
+    HostCapacityUpdated {
+        /// Detected host resources.
+        capacity: HostCapacity,
+    },
+    /// Sidebar file lists refreshed off the event loop (git subprocesses).
+    SidebarFilesUpdated {
+        /// Modified files (`git status --porcelain`) for the focused panel.
+        modified: Vec<String>,
+        /// Committed files (`git diff <base>..HEAD`) for the focused panel.
+        committed: Vec<String>,
+        /// Refusal message when the clone's `.git` is not a real directory.
+        refusal: Option<String>,
+    },
+    /// Commit auto-sync pass completed off the event loop.
+    CommitSyncResult(super::app::CommitSyncResult),
 }
 
 /// Spawn a background task that reads terminal events and forwards them to the channel.

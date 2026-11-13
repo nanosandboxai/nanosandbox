@@ -272,8 +272,12 @@ fn generate_linux_config(config: &SandboxConfig) -> serde_json::Value {
     let cpu_quota = (config.cpus as i64) * 100000;
     let cpu_period = 100000_i64; // 100ms period (standard)
 
-    // PIDs limit to prevent fork bombs
-    let pids_limit = 512_i64;
+    // PIDs limit to prevent fork bombs; per-sandbox override wins when set.
+    let pids_limit = if config.max_pids > 0 {
+        config.max_pids as i64
+    } else {
+        512_i64
+    };
 
     json!({
         "resources": {
@@ -511,7 +515,7 @@ mod tests {
         let oci_config = generate_config(&config, Path::new("rootfs"));
 
         assert_eq!(oci_config["ociVersion"], OCI_VERSION);
-        assert_eq!(oci_config["process"]["cwd"], "/workspace");
+        assert_eq!(oci_config["process"]["cwd"], "/home/developer");
         assert_eq!(oci_config["root"]["path"], "rootfs");
     }
 

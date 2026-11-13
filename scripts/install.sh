@@ -63,8 +63,8 @@ info "Platform: ${OS} ${ARCH}"
 # Resolve "latest" to the most recent release tag, including prereleases.
 # Required because GitHub's /releases/latest/ redirect only matches stable
 # (non-prerelease) releases — if the repo has only prereleases, the /latest/
-# URL returns 404.
-resolve_deps_version() {
+# URL returns 404. Used for both the runtime deps and the nanosb CLI binary.
+resolve_latest_tag() {
     curl -fsSL \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/${RELEASE_REPO}/releases" \
@@ -78,7 +78,7 @@ install_deps() {
 
     local resolved_version="$DEPS_VERSION"
     if [[ "$DEPS_VERSION" == "latest" ]]; then
-        resolved_version="$(resolve_deps_version || true)"
+        resolved_version="$(resolve_latest_tag || true)"
         if [[ -z "$resolved_version" ]]; then
             warn "Could not resolve latest release tag"
             info "Install libkrunfw + gvproxy manually — see:"
@@ -132,11 +132,12 @@ download_binary() {
     # Pick the right release asset for the current platform.
     local asset
     case "${OS}-${ARCH}" in
-        Darwin-arm64)            asset="nanosb" ;;
-        Linux-x86_64|Linux-amd64) asset="nanosb-linux-amd64" ;;
+        Darwin-arm64)               asset="nanosb" ;;
+        Linux-x86_64|Linux-amd64)   asset="nanosb-linux-amd64" ;;
+        Linux-aarch64|Linux-arm64)  asset="nanosb-linux-arm64" ;;
         *)
             warn "No pre-built binary for ${OS} ${ARCH}."
-            info "Available pre-built targets: macOS arm64, Linux x86_64."
+            info "Available pre-built targets: macOS arm64, Linux x86_64/arm64."
             info "For other platforms, build from source:"
             info "  git clone https://github.com/nanosandboxai/nanosandbox.git"
             info "  cd nanosandbox && cargo build --release -p nanosb-cli"
@@ -144,12 +145,22 @@ download_binary() {
             ;;
     esac
 
-    local url
+    # GitHub's /releases/latest/ 404s when the newest release is a prerelease —
+    # resolve a concrete tag (prerelease-aware) and download from the tagged URL.
+    local tag
     if [[ "$NANOSB_VERSION" == "latest" ]]; then
-        url="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset}"
+        tag="$(resolve_latest_tag || true)"
+        if [[ -z "$tag" ]]; then
+            warn "Could not resolve latest release tag"
+            info "Build from source instead — see project README"
+            return 0
+        fi
+        info "Resolved latest → ${tag}"
     else
-        url="https://github.com/${RELEASE_REPO}/releases/download/v${NANOSB_VERSION}/${asset}"
+        tag="v${NANOSB_VERSION}"
     fi
+
+    local url="https://github.com/${RELEASE_REPO}/releases/download/${tag}/${asset}"
 
     if command -v nanosb &>/dev/null; then
         success "nanosb already installed: $(nanosb --version 2>/dev/null || echo 'unknown')"
@@ -183,12 +194,22 @@ install_config() {
         return 0
     fi
 
-    local url
+    # GitHub's /releases/latest/ 404s when the newest release is a prerelease —
+    # resolve a concrete tag (prerelease-aware) and download from the tagged URL.
+    local tag
     if [[ "$NANOSB_VERSION" == "latest" ]]; then
-        url="https://github.com/${RELEASE_REPO}/releases/latest/download/agent_defaults.yaml"
+        tag="$(resolve_latest_tag || true)"
+        if [[ -z "$tag" ]]; then
+            warn "Could not resolve latest release tag"
+            warn "Using built-in defaults"
+            return 0
+        fi
+        info "Resolved latest → ${tag}"
     else
-        url="https://github.com/${RELEASE_REPO}/releases/download/v${NANOSB_VERSION}/agent_defaults.yaml"
+        tag="v${NANOSB_VERSION}"
     fi
+
+    local url="https://github.com/${RELEASE_REPO}/releases/download/${tag}/agent_defaults.yaml"
 
     info "Downloading agent_defaults.yaml..."
     if curl -fsSL "$url" -o "$dest"; then
@@ -217,6 +238,20 @@ codesign_binary() {
 
     if [[ ! -f "$binary_path" ]]; then
         info "nanosb binary not found — skipping codesign"
+        return 0
+    fi
+
+    # Only re-sign when necessary. Release binaries are Developer-ID signed and
+    # notarized in CI with the hypervisor entitlement already applied — re-signing
+    # one ad-hoc would STRIP the Developer ID signature and invalidate
+    # notarization, so Gatekeeper blocks the primary install. Skip whenever the
+    # binary is already validly signed with the hypervisor entitlement (a prior
+    # dev re-sign also satisfies this). Only unsigned / ad-hoc / un-entitled
+    # binaries (local dev builds) get re-signed ad-hoc with the entitlement.
+    if codesign --verify --deep --strict "$binary_path" 2>/dev/null \
+        && codesign -d --entitlements :- "$binary_path" 2>/dev/null \
+            | grep -q 'com.apple.security.hypervisor'; then
+        info "Already validly signed with com.apple.security.hypervisor — skipping re-sign"
         return 0
     fi
 
@@ -267,12 +302,20 @@ install_exec_agent() {
     esac
 
     local asset="exec-agent-${arch}"
-    local url
+    local tag
     if [[ "$NANOSB_VERSION" == "latest" ]]; then
-        url="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset}"
+        tag="$(resolve_latest_tag || true)"
+        if [[ -z "$tag" ]]; then
+            warn "Could not resolve latest release tag"
+            warn "Sandboxes need it at ${dest} to run."
+            return 0
+        fi
+        info "Resolved latest → ${tag}"
     else
-        url="https://github.com/${RELEASE_REPO}/releases/download/v${NANOSB_VERSION}/${asset}"
+        tag="v${NANOSB_VERSION}"
     fi
+
+    local url="https://github.com/${RELEASE_REPO}/releases/download/${tag}/${asset}"
 
     info "Downloading ${asset}..."
     if curl -fsSL "$url" -o "$dest"; then
