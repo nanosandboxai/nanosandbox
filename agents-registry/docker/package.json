@@ -7,6 +7,6 @@
     "@anthropic-ai/claude-code": "2.1.318",
     "@openai/codex": "0.166.0",
     "@google/gemini-cli": "0.67.0",
-    "@charmland/crush": "0.99.0"
+    "@charmland/crush": "0.100.0"
   }
 }
