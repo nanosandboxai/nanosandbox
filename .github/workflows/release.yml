@@ -36,7 +36,7 @@ jobs:
 
       - name: Cache kernel bundles
         id: kernel-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             kernel-x86_64.c
@@ -315,7 +315,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -375,7 +375,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -437,7 +437,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
