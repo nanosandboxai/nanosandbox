@@ -71,7 +71,7 @@ jobs:
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
 
       - name: Build and push base image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: agents-registry
           file: agents-registry/docker/Dockerfile.base
@@ -151,7 +151,7 @@ jobs:
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
 
       - name: Build and push agent image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: agents-registry
           file: agents-registry/docker/Dockerfile.${{ matrix.agent }}
