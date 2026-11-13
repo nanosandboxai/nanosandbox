@@ -48,7 +48,7 @@ jobs:
           fi
 
       - name: Upload synced models
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: registry-models
           path: agents-registry/models/models.json

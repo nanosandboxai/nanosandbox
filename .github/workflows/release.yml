@@ -82,7 +82,7 @@ jobs:
           ls -lh kernel-x86_64.c kernel-aarch64.c
 
       - name: Upload kernel bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kernel-bundles
           path: |
@@ -190,7 +190,7 @@ jobs:
           cd dist && sha256sum ./*.tar.gz > checksums-linux-${{ matrix.arch }}.sha256
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/
@@ -296,7 +296,7 @@ jobs:
           cd dist && shasum -a 256 ./*.tar.gz > checksums-darwin-arm64.sha256
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-darwin-arm64
           path: dist/
@@ -355,7 +355,7 @@ jobs:
         run: cp target/x86_64-unknown-linux-gnu/release/nanosb nanosb-linux-amd64
 
       - name: Upload Linux binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nanosb-linux-amd64
           path: nanosb-linux-amd64
@@ -415,7 +415,7 @@ jobs:
         run: cp target/aarch64-unknown-linux-gnu/release/nanosb nanosb-linux-arm64
 
       - name: Upload Linux arm64 binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nanosb-linux-arm64
           path: nanosb-linux-arm64
@@ -497,7 +497,7 @@ jobs:
         run: cp target/aarch64-apple-darwin/release/nanosb nanosb
 
       - name: Upload macOS binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nanosb-darwin-arm64
           path: nanosb
@@ -537,7 +537,7 @@ jobs:
           file exec-agent-aarch64 exec-agent-x86_64
 
       - name: Upload exec-agent artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: exec-agent
           path: |
@@ -596,7 +596,7 @@ jobs:
           ls -la dist-archives
 
       - name: Upload SDK bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdk-bundles
           path: dist-archives/*.tar.gz
