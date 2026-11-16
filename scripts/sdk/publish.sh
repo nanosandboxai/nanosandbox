@@ -80,7 +80,8 @@ case "$sdk" in
     (cd "$root/sdk/ruby" && gem build nanosandbox.gemspec --output "$root/dist/ruby/nanosandbox-$ver.gem")
     if [ "$dry" = 0 ]; then
       note "gem push"
-      gem push "$root/dist/ruby/nanosandbox-$ver.gem"
+      GEM_HOST_API_KEY="$(printf '%s' "${GEM_HOST_API_KEY:-}" | tr -d '\r\n')" \
+        gem push "$root/dist/ruby/nanosandbox-$ver.gem"
     fi
     ;;
 
