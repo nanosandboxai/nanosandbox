@@ -75,7 +75,7 @@ go      run ./sdk/go/conformance/run.go
 ruby    -I sdk/ruby/lib sdk/ruby/conformance/run.rb
 java    -cp <build> Run
 dotnet  run --project sdk/dotnet/conformance
-java    -cp sdk/kotlin/nanosandbox-kotlin.jar nanosandbox.kt.RunKt
+java    -cp sdk/kotlin/nanosandbox-sdk-kotlin.jar nanosandbox.kt.RunKt
 ```
 
 Expected: `35 passed, 0 failed`.

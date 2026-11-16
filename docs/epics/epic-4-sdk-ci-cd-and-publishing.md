@@ -105,11 +105,11 @@ SDK publishing jobs to `release.yml`). Steps:
    - **TypeScript** → npm: `npm publish --provenance --access public`
      (**OIDC provenance**; remove `"private": true`).
    - **Java** → GitHub-hosted Maven repository (GitHub Pages;
-     `ai.nanosandbox:nanosandbox-java`): build the Maven layout with `mvn deploy`
+     `ai.nanosandbox:nanosandbox-sdk`): build the Maven layout with `mvn deploy`
      to a local dir and publish it to a `gh-pages` branch. No registration, no
      GPG, no namespace verification.
    - **Kotlin** → same GitHub-hosted Maven repository (artifact
-     `ai.nanosandbox:nanosandbox-kotlin`).
+     `ai.nanosandbox:nanosandbox-sdk-kotlin`).
    - **C#/.NET** → NuGet: `dotnet pack -c Release` + `dotnet nuget push`
      (`NUGET_API_KEY`; optional `dotnet nuget sign`).
    - **Ruby** → RubyGems: `gem build sdk/ruby/nanosandbox.gemspec` +
@@ -159,7 +159,7 @@ the existing `registry-*.yml` flows.
   the environment that holds it; least privilege; no secret in logs.
 - **WS7 — Docs**: per-ecosystem install snippets (`pip install nanosandbox`,
   `npm i nanosandbox`, `cargo add nanosandbox`, `go get …/sdk/go`,
-  `gem install nanosandbox`, `dotnet add package Nanosandbox`, Maven/Kotlin
+  `gem install nanosandbox-sdk`, `dotnet add package nanosandbox-sdk`, Maven/Kotlin
   coordinates), checked into each SDK README + `docs/install/`.
 
 ## 6. Acceptance criteria

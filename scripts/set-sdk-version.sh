@@ -56,7 +56,7 @@ write_all() {
   perl -0pi -e 's/(\nversion = ")[^"]+(")/${1}'"$v"'${2}/' "$CARGO_TOML"
   perl -i -pe 's/^version = "[^"]+"/version = "'"$v"'"/' "$PYPROJECT"
   perl -i -pe 's/^  "version": "[^"]+"/  "version": "'"$v"'"/' "$PKGJSON"
-  perl -0pi -e 's/(<artifactId>nanosandbox-java<\/artifactId>\s*\n\s*<version>)[^<]+(<\/version>)/${1}'"$v"'${2}/' "$POM"
+  perl -0pi -e 's/(<artifactId>nanosandbox-sdk<\/artifactId>\s*\n\s*<version>)[^<]+(<\/version>)/${1}'"$v"'${2}/' "$POM"
   perl -i -pe 's/(spec\.version\s*= ")[^"]+(")/${1}'"$v"'${2}/' "$GEMSPEC"
   perl -i -pe 's/(<Version>)[^<]+(<\/Version>)/${1}'"$v"'${2}/' "$CSPROJ"
   perl -i -pe 's/^version = "[^"]+"/version = "'"$v"'"/' "$GRADLE"

@@ -142,13 +142,13 @@ The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtim
 The canonical build is Gradle (wrapper committed):
 
 ```bash
-./gradlew -p sdk/kotlin jar                # -> sdk/kotlin/build/libs/nanosandbox-kotlin-0.2.0.jar
-./gradlew -p sdk/kotlin publishToMavenLocal # installs ai.nanosandbox:nanosandbox-kotlin:0.2.0
+./gradlew -p sdk/kotlin jar                # -> sdk/kotlin/build/libs/nanosandbox-sdk-kotlin-0.2.0.jar
+./gradlew -p sdk/kotlin publishToMavenLocal # installs ai.nanosandbox:nanosandbox-sdk-kotlin:0.2.0
 ```
 
 The jar is self-contained: the Kotlin facade, the `KtJson` Java shim, and the
 Java SDK classes (`sdk/java`) in one artifact. `bash sdk/kotlin/build.sh`
-remains as a no-Gradle fallback that produces `sdk/kotlin/nanosandbox-kotlin.jar`.
+remains as a no-Gradle fallback that produces `sdk/kotlin/nanosandbox-sdk-kotlin.jar`.
 
 ## Testing
 
@@ -176,5 +176,5 @@ failed`, exit code 0.
 Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 
 ```bash
-NANOSB_E2E=1 java -cp sdk/kotlin/nanosandbox-kotlin.jar nanosandbox.kt.E2EKt
+NANOSB_E2E=1 java -cp sdk/kotlin/nanosandbox-sdk-kotlin.jar nanosandbox.kt.E2EKt
 ```

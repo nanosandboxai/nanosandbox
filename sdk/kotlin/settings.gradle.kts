@@ -1,1 +1,1 @@
-rootProject.name = "nanosandbox-kotlin"
+rootProject.name = "nanosandbox-sdk-kotlin"

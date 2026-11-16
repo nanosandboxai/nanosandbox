@@ -61,7 +61,7 @@ cached image); it is `#[ignore]`/env-gated and runnable on demand.
 | Go | `StartRuntime` (`sdk/go/nanosandbox/runtime.go`) | `sdk/go/e2e/e2e_test.go` | `NANOSB_E2E=1 go test ./sdk/go/e2e -run TestLiveMicroVMSmoke` | **PASS** |
 | Ruby | `Nanosandbox::ManagedRuntime` | `sdk/ruby/test/test_e2e.rb` | `NANOSB_E2E=1 ruby -I sdk/ruby/lib sdk/ruby/test/test_e2e.rb` | **PASS** |
 | Java | `nanosandbox.ManagedRuntime` | `sdk/java/src/test/java/nanosandbox/E2ETest.java` | `NANOSB_E2E=1 mvn -f sdk/java/pom.xml test -Dtest=E2ETest` | **PASS** |
-| Kotlin | `nanosandbox.ManagedRuntime` | `sdk/kotlin/e2e/E2E.kt` | `NANOSB_E2E=1 java -cp sdk/kotlin/nanosandbox-kotlin.jar nanosandbox.kt.E2EKt` | **PASS** |
+| Kotlin | `nanosandbox.ManagedRuntime` | `sdk/kotlin/e2e/E2E.kt` | `NANOSB_E2E=1 java -cp sdk/kotlin/nanosandbox-sdk-kotlin.jar nanosandbox.kt.E2EKt` | **PASS** |
 | C#/.NET | `ManagedRuntime` | `sdk/dotnet/tests/E2ETest.cs` | `NANOSB_E2E=1 dotnet test sdk/dotnet --filter E2ETest` | **PASS** |
 
 All eight verified on macOS arm64 against a real microVM (2026-10-11).
