@@ -48,16 +48,12 @@ jobs:
         sdk: [rust, python, typescript, ruby, dotnet, go]
     permissions:
       contents: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - if: matrix.sdk == 'rust'
         uses: dtolnay/rust-toolchain@1.94.0
-      - if: matrix.sdk == 'rust' && needs.plan.outputs.dry == 'false'
-        uses: rust-lang/crates-io-auth-action@v1
-        id: crates
       - if: matrix.sdk == 'python'
         uses: actions/setup-python@v5
         with:
@@ -84,8 +80,12 @@ jobs:
       - name: publish
         run: scripts/sdk/publish.sh ${{ matrix.sdk }} ${{ needs.plan.outputs.version }} ${{ needs.plan.outputs.dry == 'true' && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.crates.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
 
   publish-jvm:
     name: publish java + kotlin
