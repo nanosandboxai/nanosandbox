@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 Gem::Specification.new do |spec|
-  spec.name          = "nanosandbox"
+  spec.name          = "nanosandbox-sdk"
   spec.version       = "0.2.0"
   spec.authors       = ["DevDone Labs"]
   spec.summary       = "Ruby SDK for the nanosandbox protocol helper"

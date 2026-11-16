@@ -36,7 +36,7 @@ read_version() {
     cargo-toml) awk '/^\[workspace\.package\]/{f=1} f&&/^version *=/{gsub(/[^0-9A-Za-z.-]/,"",$3); print $3; exit}' "$CARGO_TOML" ;;
     python)     awk -F'"' '/^version *=/{print $2; exit}' "$PYPROJECT" ;;
     typescript) awk -F'"' '/^  "version":/{print $4; exit}' "$PKGJSON" ;;
-    java)       awk -F'[<>]' '/<artifactId>nanosandbox-java<\/artifactId>/{f=1} f&&/<version>/{print $3; exit}' "$POM" ;;
+    java)       awk -F'[<>]' '/<artifactId>nanosandbox-sdk<\/artifactId>/{f=1} f&&/<version>/{print $3; exit}' "$POM" ;;
     ruby)       awk -F'"' '/spec\.version/{print $2; exit}' "$GEMSPEC" ;;
     dotnet)     awk -F'[<>]' '/<Version>/{print $3; exit}' "$CSPROJ" ;;
     kotlin)     awk -F'"' '/^version = /{print $2; exit}' "$GRADLE" ;;

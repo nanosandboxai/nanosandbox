@@ -17,13 +17,13 @@ contract in `sdk/conformance/SPEC.md`.
 
 ## Install
 
-`ai.nanosandbox:nanosandbox-java` from the GitHub Pages Maven repository
+`ai.nanosandbox:nanosandbox-sdk` from the GitHub Pages Maven repository
 (`https://nanosandboxai.github.io/maven/`):
 
 ```xml
 <dependency>
   <groupId>ai.nanosandbox</groupId>
-  <artifactId>nanosandbox-java</artifactId>
+  <artifactId>nanosandbox-sdk</artifactId>
   <version>0.2.0</version>
 </dependency>
 ```

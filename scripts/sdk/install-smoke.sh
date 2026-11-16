@@ -84,7 +84,7 @@ EOF
     if [ "$mode" = artifact ]; then
       gem install --local "$artifact" --no-document
     else
-      gem install nanosandbox -v "$ver" --no-document
+      gem install nanosandbox-sdk -v "$ver" --no-document
     fi
     ruby -e 'require "nanosandbox"; abort "no client" unless defined?(Nanosandbox::SandboxClient); puts "ok"'
     ;;
@@ -107,7 +107,7 @@ EOF
   <dependencies>
     <dependency>
       <groupId>ai.nanosandbox</groupId>
-      <artifactId>nanosandbox-java</artifactId>
+      <artifactId>nanosandbox-sdk</artifactId>
       <version>$ver</version>
     </dependency>
   </dependencies>
@@ -140,7 +140,7 @@ repositories {
     maven { url = uri("https://nanosandboxai.github.io/maven/") }
 }
 dependencies {
-    implementation("ai.nanosandbox:nanosandbox-kotlin:$ver")
+    implementation("ai.nanosandbox:nanosandbox-sdk-kotlin:$ver")
 }
 application {
     mainClass.set("MainKt")
@@ -158,9 +158,9 @@ EOF
     (cd "$work" && dotnet new console -n app -o app >/dev/null)
     if [ "$mode" = artifact ]; then
       dotnet nuget add source "$(cd "$(dirname "$artifact")" && pwd)" -n local >/dev/null
-      (cd "$work/app" && dotnet add package Nanosandbox --version "$ver" && dotnet build -c Release)
+      (cd "$work/app" && dotnet add package nanosandbox-sdk --version "$ver" && dotnet build -c Release)
     else
-      (cd "$work/app" && dotnet add package Nanosandbox --version "$ver" && dotnet build -c Release)
+      (cd "$work/app" && dotnet add package nanosandbox-sdk --version "$ver" && dotnet build -c Release)
     fi
     ;;
 

@@ -14,7 +14,7 @@ and the driver contract in `sdk/conformance/SPEC.md`.
 ## Install
 
 ```bash
-gem install nanosandbox
+gem install nanosandbox-sdk
 ```
 
 ## Usage

@@ -17,7 +17,7 @@ conformance suite (35/35).
 ## Install
 
 ```bash
-dotnet add package Nanosandbox
+dotnet add package nanosandbox-sdk
 ```
 
 ## Layout

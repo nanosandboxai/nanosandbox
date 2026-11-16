@@ -227,9 +227,9 @@ Publishing is tag-driven and independent of the product `v*` release:
 - `.github/workflows/sdk-smoke.yml` — installs each published SDK from its real
   package manager in a scratch environment (`scripts/sdk/install-smoke.sh`).
 
-Registry targets: Rust/Python/npm as `nanosandbox-sdk`; Ruby `nanosandbox`;
-.NET `Nanosandbox`; Go module path unchanged; Java/Kotlin
-`ai.nanosandbox:nanosandbox-{java,kotlin}`.
+Registry targets: Rust/Python/npm/Ruby/.NET as `nanosandbox-sdk`; Go module path
+unchanged; Java `ai.nanosandbox:nanosandbox-sdk`, Kotlin
+`ai.nanosandbox:nanosandbox-sdk-kotlin`.
 
 ## License
 

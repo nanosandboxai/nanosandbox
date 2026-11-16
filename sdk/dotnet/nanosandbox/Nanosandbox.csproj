@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 
-    <PackageId>Nanosandbox</PackageId>
+    <PackageId>nanosandbox-sdk</PackageId>
     <Version>0.2.0</Version>
     <Authors>DevDone Labs</Authors>
     <Description>BCL-only .NET protocol client for the nanosandbox helper (nanosb-protocol v1.0.0).</Description>

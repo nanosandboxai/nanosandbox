@@ -77,11 +77,11 @@ case "$sdk" in
   ruby)
     mkdir -p "$root/dist/ruby"
     note "gem build"
-    (cd "$root/sdk/ruby" && gem build nanosandbox.gemspec --output "$root/dist/ruby/nanosandbox-$ver.gem")
+    (cd "$root/sdk/ruby" && gem build nanosandbox.gemspec --output "$root/dist/ruby/nanosandbox-sdk-$ver.gem")
     if [ "$dry" = 0 ]; then
       note "gem push"
       GEM_HOST_API_KEY="$(printf '%s' "${GEM_HOST_API_KEY:-}" | tr -d '\r\n')" \
-        gem push "$root/dist/ruby/nanosandbox-$ver.gem"
+        gem push "$root/dist/ruby/nanosandbox-sdk-$ver.gem"
     fi
     ;;
 
@@ -90,7 +90,7 @@ case "$sdk" in
     dotnet pack "$root/sdk/dotnet/nanosandbox/Nanosandbox.csproj" -c Release -o "$root/dist/dotnet"
     if [ "$dry" = 0 ]; then
       note "dotnet nuget push"
-      dotnet nuget push "$root/dist/dotnet/Nanosandbox.$ver.nupkg" \
+      dotnet nuget push "$root/dist/dotnet/nanosandbox-sdk.$ver.nupkg" \
         --api-key "${NUGET_API_KEY:?NUGET_API_KEY is required}" \
         --source https://api.nuget.org/v3/index.json
     fi

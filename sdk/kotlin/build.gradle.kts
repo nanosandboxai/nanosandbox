@@ -66,10 +66,10 @@ tasks.register<JavaExec>("conformance") {
 publishing {
     publications {
         create<MavenPublication>("maven") {
-            artifactId = "nanosandbox-kotlin"
+            artifactId = "nanosandbox-sdk-kotlin"
             from(components["java"])
             pom {
-                name.set("nanosandbox-kotlin")
+                name.set("nanosandbox-sdk-kotlin")
                 description.set("Kotlin facade over the nanosandbox Java SDK (nanosb-protocol v1.0.0)")
                 url.set("https://github.com/nanosandboxai/nanosandbox")
                 licenses {

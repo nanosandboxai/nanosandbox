@@ -5,11 +5,11 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>ai.nanosandbox</groupId>
-  <artifactId>nanosandbox-java</artifactId>
+  <artifactId>nanosandbox-sdk</artifactId>
   <version>0.2.0</version>
   <packaging>jar</packaging>
 
-  <name>nanosandbox-java</name>
+  <name>nanosandbox-sdk</name>
   <description>JDK-only Java 21 protocol client for the nanosandbox helper (nanosb-protocol v1.0.0)</description>
   <url>https://github.com/nanosandboxai/nanosandbox</url>
 

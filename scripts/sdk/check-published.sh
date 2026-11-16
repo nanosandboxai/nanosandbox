@@ -17,10 +17,10 @@ case "$sdk" in
   rust)            url="https://crates.io/api/v1/crates/nanosandbox-sdk/$ver" ;;
   python)          url="https://pypi.org/pypi/nanosandbox-sdk/$ver/json" ;;
   typescript|npm)  url="https://registry.npmjs.org/nanosandbox-sdk/$ver" ;;
-  ruby)            url="https://rubygems.org/api/v2/rubygems/nanosandbox/versions/$ver.json" ;;
-  dotnet)          url="https://api.nuget.org/v3-flatcontainer/nanosandbox/$ver/nanosandbox.$ver.nupkg" ;;
-  java)            url="https://nanosandboxai.github.io/maven/ai/nanosandbox/nanosandbox-java/$ver/nanosandbox-java-$ver.pom"; pattern='<project' ;;
-  kotlin)          url="https://nanosandboxai.github.io/maven/ai/nanosandbox/nanosandbox-kotlin/$ver/nanosandbox-kotlin-$ver.pom"; pattern='<project' ;;
+  ruby)            url="https://rubygems.org/api/v2/rubygems/nanosandbox-sdk/versions/$ver.json" ;;
+  dotnet)          url="https://api.nuget.org/v3-flatcontainer/nanosandbox-sdk/$ver/nanosandbox-sdk.$ver.nupkg" ;;
+  java)            url="https://nanosandboxai.github.io/maven/ai/nanosandbox/nanosandbox-sdk/$ver/nanosandbox-sdk-$ver.pom"; pattern='<project' ;;
+  kotlin)          url="https://nanosandboxai.github.io/maven/ai/nanosandbox/nanosandbox-sdk-kotlin/$ver/nanosandbox-sdk-kotlin-$ver.pom"; pattern='<project' ;;
   go)              url="https://proxy.golang.org/github.com/nanosandboxai/nanosandbox/sdk/go/@v/v${ver}.info" ;;
   *) echo "unknown sdk: $sdk" >&2; exit 2 ;;
 esac

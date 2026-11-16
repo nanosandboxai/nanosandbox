@@ -213,9 +213,9 @@ the existing `registry-*.yml` flows.
 ## 9. Decisions (locked 2026-11-06)
 
 - **D1 Tag namespace:** `sdk-v*` (does not match the product `v*` triggers).
-- **D2 Names:** Rust/Python/npm → `nanosandbox-sdk`; Ruby → `nanosandbox`;
-  .NET → `Nanosandbox`; Go module path unchanged; Java/Kotlin →
-  `ai.nanosandbox:nanosandbox-{java,kotlin}`.
+- **D2 Names:** Rust/Python/npm/Ruby/.NET → `nanosandbox-sdk`; Go module path
+  unchanged; Java → `ai.nanosandbox:nanosandbox-sdk`, Kotlin →
+  `ai.nanosandbox:nanosandbox-sdk-kotlin`.
 - **D3 JVM target:** GitHub-hosted Maven repository (GitHub Pages) — no Maven
   Central, no GPG, no Sonatype account, no fallback.
 - **D4 Kotlin build:** introduce a Gradle `maven-publish` build in `sdk/kotlin`.
