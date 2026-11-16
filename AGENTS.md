@@ -222,7 +222,7 @@ Publishing is tag-driven and independent of the product `v*` release:
 - `.github/workflows/sdk-release.yml` — `sdk-v*` tag (or `workflow_dispatch`
   with `dry_run`) publishes every SDK behind the protected `sdk-release`
   environment: crates.io / PyPI / npm / RubyGems / NuGet via OIDC, Go via a
-  `sdk/go/v*` tag, and Java + Kotlin as a Maven repository on GitHub Pages.
+  `sdk/go/v*` tag, and Java + Kotlin to Maven Central.
   `scripts/sdk/publish.sh` skips already-published versions (idempotent).
 - `.github/workflows/sdk-smoke.yml` — installs each published SDK from its real
   package manager in a scratch environment (`scripts/sdk/install-smoke.sh`).

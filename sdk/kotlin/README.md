@@ -16,8 +16,7 @@ and nullable parameters. The conformance driver mirrors
 
 ## Install
 
-`ai.nanosandbox:nanosandbox-sdk-kotlin` from the GitHub Pages Maven repository
-(`https://nanosandboxai.github.io/maven/`):
+`ai.nanosandbox:nanosandbox-sdk-kotlin` from Maven Central:
 
 ```kotlin
 implementation("ai.nanosandbox:nanosandbox-sdk-kotlin:0.2.0")

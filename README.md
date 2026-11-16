@@ -120,18 +120,11 @@ pip install nanosandbox-sdk                            # Python
 npm install nanosandbox-sdk                            # TypeScript/Node
 go get github.com/nanosandboxai/nanosandbox/sdk/go     # Go
 gem install nanosandbox-sdk                            # Ruby
-dotnet add package nanosandbox-sdk                     # C#/.NET
+dotnet add package Nanosandbox.Sdk                     # C#/.NET
 ```
 
-Java and Kotlin publish a Maven repository to GitHub Pages
-(`ai.nanosandbox:nanosandbox-sdk` / `nanosandbox-sdk-kotlin`):
-
-```xml
-<repository>
-  <id>nanosandbox</id>
-  <url>https://nanosandboxai.github.io/maven/</url>
-</repository>
-```
+Java and Kotlin publish to Maven Central (`ai.nanosandbox:nanosandbox-sdk` /
+`nanosandbox-sdk-kotlin`) — no extra repository needed.
 
 ```bash
 # Run the conformance harness

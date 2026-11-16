@@ -18,9 +18,9 @@ case "$sdk" in
   python)          url="https://pypi.org/pypi/nanosandbox-sdk/$ver/json" ;;
   typescript|npm)  url="https://registry.npmjs.org/nanosandbox-sdk/$ver" ;;
   ruby)            url="https://rubygems.org/api/v2/rubygems/nanosandbox-sdk/versions/$ver.json" ;;
-  dotnet)          url="https://api.nuget.org/v3-flatcontainer/nanosandbox-sdk/$ver/nanosandbox-sdk.$ver.nupkg" ;;
-  java)            url="https://nanosandboxai.github.io/maven/ai/nanosandbox/nanosandbox-sdk/$ver/nanosandbox-sdk-$ver.pom"; pattern='<project' ;;
-  kotlin)          url="https://nanosandboxai.github.io/maven/ai/nanosandbox/nanosandbox-sdk-kotlin/$ver/nanosandbox-sdk-kotlin-$ver.pom"; pattern='<project' ;;
+  dotnet)          url="https://api.nuget.org/v3-flatcontainer/nanosandbox.sdk/$ver/nanosandbox.sdk.$ver.nupkg" ;;
+  java)            url="https://repo1.maven.org/maven2/ai/nanosandbox/nanosandbox-sdk/$ver/nanosandbox-sdk-$ver.pom" ;;
+  kotlin)          url="https://repo1.maven.org/maven2/ai/nanosandbox/nanosandbox-sdk-kotlin/$ver/nanosandbox-sdk-kotlin-$ver.pom" ;;
   go)              url="https://proxy.golang.org/github.com/nanosandboxai/nanosandbox/sdk/go/@v/v${ver}.info" ;;
   *) echo "unknown sdk: $sdk" >&2; exit 2 ;;
 esac

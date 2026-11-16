@@ -16,6 +16,7 @@ java {
         languageVersion.set(JavaLanguageVersion.of(21))
     }
     withSourcesJar()
+    withJavadocJar()
 }
 
 sourceSets {

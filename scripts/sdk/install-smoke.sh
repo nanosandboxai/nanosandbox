@@ -98,12 +98,6 @@ EOF
   <artifactId>smoke</artifactId>
   <version>1.0.0</version>
   <properties><maven.compiler.release>21</maven.compiler.release></properties>
-  <repositories>
-    <repository>
-      <id>nanosandbox-pages</id>
-      <url>https://nanosandboxai.github.io/maven/</url>
-    </repository>
-  </repositories>
   <dependencies>
     <dependency>
       <groupId>ai.nanosandbox</groupId>
@@ -137,7 +131,6 @@ plugins {
 }
 repositories {
     mavenCentral()
-    maven { url = uri("https://nanosandboxai.github.io/maven/") }
 }
 dependencies {
     implementation("ai.nanosandbox:nanosandbox-sdk-kotlin:$ver")
@@ -158,9 +151,9 @@ EOF
     (cd "$work" && dotnet new console -n app -o app >/dev/null)
     if [ "$mode" = artifact ]; then
       dotnet nuget add source "$(cd "$(dirname "$artifact")" && pwd)" -n local >/dev/null
-      (cd "$work/app" && dotnet add package nanosandbox-sdk --version "$ver" && dotnet build -c Release)
+      (cd "$work/app" && dotnet add package Nanosandbox.Sdk --version "$ver" && dotnet build -c Release)
     else
-      (cd "$work/app" && dotnet add package nanosandbox-sdk --version "$ver" && dotnet build -c Release)
+      (cd "$work/app" && dotnet add package Nanosandbox.Sdk --version "$ver" && dotnet build -c Release)
     fi
     ;;
 

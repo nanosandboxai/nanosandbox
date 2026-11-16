@@ -104,12 +104,10 @@ SDK publishing jobs to `release.yml`). Steps:
      (**trusted publishing / OIDC**, no token).
    - **TypeScript** → npm: `npm publish --provenance --access public`
      (**OIDC provenance**; remove `"private": true`).
-   - **Java** → GitHub-hosted Maven repository (GitHub Pages;
-     `ai.nanosandbox:nanosandbox-sdk`): build the Maven layout with `mvn deploy`
-     to a local dir and publish it to a `gh-pages` branch. No registration, no
-     GPG, no namespace verification.
-   - **Kotlin** → same GitHub-hosted Maven repository (artifact
-     `ai.nanosandbox:nanosandbox-sdk-kotlin`).
+   - **Java** → Maven Central (`ai.nanosandbox:nanosandbox-sdk`): build the
+     Maven layout, GPG-sign it, and upload the bundle to the Sonatype Central
+     Portal (secret `MAVEN_TOKEN` + a GPG key).
+   - **Kotlin** → Maven Central (`ai.nanosandbox:nanosandbox-sdk-kotlin`).
    - **C#/.NET** → NuGet: `dotnet pack -c Release` + `dotnet nuget push`
      (`NUGET_API_KEY`; optional `dotnet nuget sign`).
    - **Ruby** → RubyGems: `gem build sdk/ruby/nanosandbox.gemspec` +
@@ -131,8 +129,8 @@ SDK publishing jobs to `release.yml`). Steps:
 - **Python**: `readme`, `license`, `authors`, `[project.urls]`, `classifiers`.
 - **TypeScript**: drop `private`, add `repository`, `files`, `license`,
   `publishConfig.access=public`.
-- **Java/Kotlin**: `licenses`, `developers`, `scm` (the GitHub-hosted Maven
-  repository needs no `distributionManagement` and no GPG).
+- **Java/Kotlin**: `licenses`, `developers`, `scm`; sources + javadoc jars;
+  GPG-signed for Maven Central.
 - **.NET**: `PackageId`, `Version`, `Authors`, `Description`, `PackageLicenseExpression`,
   `RepositoryUrl`, `PackageReadmeFile`, `IncludeSymbols`.
 - **Ruby**: new `nanosandbox.gemspec` (`name`, `version`, `summary`,
@@ -198,9 +196,8 @@ the existing `registry-*.yml` flows.
 - **R1 Registry namespace (RESOLVED)** — `nanosandbox` is taken on npm, PyPI and
   crates.io by an unrelated project, so the SDKs publish as `nanosandbox-sdk`
   (Rust/Python/npm); Ruby keeps `nanosandbox`, .NET keeps `Nanosandbox`.
-- **R2 Maven Central groupId (DROPPED)** — Maven Central is out of scope; the JVM
-  SDKs publish to a GitHub-hosted Maven repository (GitHub Pages) that needs no
-  namespace verification and no GPG key.
+- **R2 Maven Central groupId** — requires a verified `ai.nanosandbox` namespace
+  on the Central Portal and a GPG key.
 - **R3 Toolchain availability in CI** — Kotlin needs `kotlinc` (no official
   GitHub action); use a Gradle wrapper or `sdkman`. Go submodule tagging is easy
   to get wrong.
@@ -216,8 +213,8 @@ the existing `registry-*.yml` flows.
 - **D2 Names:** Rust/Python/npm/Ruby/.NET → `nanosandbox-sdk`; Go module path
   unchanged; Java → `ai.nanosandbox:nanosandbox-sdk`, Kotlin →
   `ai.nanosandbox:nanosandbox-sdk-kotlin`.
-- **D3 JVM target:** GitHub-hosted Maven repository (GitHub Pages) — no Maven
-  Central, no GPG, no Sonatype account, no fallback.
+- **D3 JVM target:** Maven Central via the Sonatype Central Portal (token +
+  GPG).
 - **D4 Kotlin build:** introduce a Gradle `maven-publish` build in `sdk/kotlin`.
 - **D5 Mirroring:** none in v1 (the registry / GitHub Pages repo is the
   distribution).

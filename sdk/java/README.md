@@ -17,8 +17,7 @@ contract in `sdk/conformance/SPEC.md`.
 
 ## Install
 
-`ai.nanosandbox:nanosandbox-sdk` from the GitHub Pages Maven repository
-(`https://nanosandboxai.github.io/maven/`):
+`ai.nanosandbox:nanosandbox-sdk` from Maven Central:
 
 ```xml
 <dependency>

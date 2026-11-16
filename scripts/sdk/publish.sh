@@ -90,7 +90,7 @@ case "$sdk" in
     dotnet pack "$root/sdk/dotnet/nanosandbox/Nanosandbox.csproj" -c Release -o "$root/dist/dotnet"
     if [ "$dry" = 0 ]; then
       note "dotnet nuget push"
-      dotnet nuget push "$root/dist/dotnet/nanosandbox-sdk.$ver.nupkg" \
+      dotnet nuget push "$root/dist/dotnet/Nanosandbox.Sdk.$ver.nupkg" \
         --api-key "${NUGET_API_KEY:?NUGET_API_KEY is required}" \
         --source https://api.nuget.org/v3/index.json
     fi
