@@ -1,0 +1,99 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "ai.nanosandbox",
+    "module": "nanosandbox-kotlin",
+    "version": "0.2.0",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.8.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.jvm.version": 21,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "files": [
+        {
+          "name": "nanosandbox-kotlin-0.2.0.jar",
+          "url": "nanosandbox-kotlin-0.2.0.jar",
+          "size": 39088,
+          "sha512": "ea2c885998dd630d180d32fa207d05a52c52195f8619c8fa2409219be2d2ce5ce4fcc7704dd3de3dde4ac582a8d2b8a1f145db77c2d4a14fbe0fc6f2d55128ee",
+          "sha256": "f1fadd3ded0011617003f7277924a020d336f966c71520594dc14dd5c7998598",
+          "sha1": "db5184f9cf21901e2bd6578c348b36b8b89d8533",
+          "md5": "ace9628ffccce46c28547f9c25e57e48"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.jvm.version": 21,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib"
+        }
+      ],
+      "dependencyConstraints": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "nanosandbox-kotlin-0.2.0.jar",
+          "url": "nanosandbox-kotlin-0.2.0.jar",
+          "size": 39088,
+          "sha512": "ea2c885998dd630d180d32fa207d05a52c52195f8619c8fa2409219be2d2ce5ce4fcc7704dd3de3dde4ac582a8d2b8a1f145db77c2d4a14fbe0fc6f2d55128ee",
+          "sha256": "f1fadd3ded0011617003f7277924a020d336f966c71520594dc14dd5c7998598",
+          "sha1": "db5184f9cf21901e2bd6578c348b36b8b89d8533",
+          "md5": "ace9628ffccce46c28547f9c25e57e48"
+        }
+      ]
+    },
+    {
+      "name": "sourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "nanosandbox-kotlin-0.2.0-sources.jar",
+          "url": "nanosandbox-kotlin-0.2.0-sources.jar",
+          "size": 3944,
+          "sha512": "bdf79a9ae362717631a3ff0ad37fe11fea0832c1c53aa3e2b160f5ed94b6b45631d4fd84363ec3c9fff800da30c405bb818c2c9464b19f7d616c67bcc4f41137",
+          "sha256": "1e83947703e46b4bd72fae1679277e87def707b6471c13d114790310aee38527",
+          "sha1": "74d0b5efb353524ed11c9fc4abfd2cddfcb0810b",
+          "md5": "8e41d0c8da883ce83137f22085576d10"
+        }
+      ]
+    }
+  ]
+}
