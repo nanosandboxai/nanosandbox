@@ -58,9 +58,30 @@ if [ "$dry" = 1 ]; then
 fi
 
 note "uploading to Sonatype Central Portal"
-curl -fS -X POST "https://central.sonatype.com/api/v1/publisher/upload" \
-  --user "$MAVEN_TOKEN" \
+# Portal auth = `Authorization: Bearer base64(username:password)`; accept either
+# the raw "username:password" pair or an already base64-encoded token.
+if printf '%s' "$MAVEN_TOKEN" | grep -q ':'; then
+  MAVEN_TOKEN="$(printf '%s' "$MAVEN_TOKEN" | base64 | tr -d '\n')"
+fi
+auth=(-H "Authorization: Bearer $MAVEN_TOKEN")
+
+deployment_id="$(curl -fS -X POST "https://central.sonatype.com/api/v1/publisher/upload" \
+  "${auth[@]}" \
   -F "bundle=@$bundle" \
-  -F "publishingType=AUTOMATIC"
-echo
+  -F "publishingType=AUTOMATIC" | tr -d '\r\n')"
+[ -n "$deployment_id" ] || { echo "error: Portal returned no deployment id" >&2; exit 1; }
+note "deployment $deployment_id submitted"
+
+# Wait (best-effort) for the deployment to reach PUBLISHED; only a FAILED
+# validation is fatal, so a slow/unparsable status never reds a good release.
+for _ in $(seq 1 60); do
+  status="$(curl -fsS "${auth[@]}" \
+    "https://central.sonatype.com/api/v1/publisher/status?id=$deployment_id" 2>/dev/null || true)"
+  state="$(printf '%s' "$status" | sed -nE 's/.*"deploymentState" *: *"([A-Z_]+)".*/\1/p')"
+  case "$state" in
+    PUBLISHED) note "deployment $deployment_id PUBLISHED"; break ;;
+    FAILED) echo "error: deployment $deployment_id FAILED: $status" >&2; exit 1 ;;
+    *) note "deployment $deployment_id state=${state:-unknown}; waiting"; sleep 5 ;;
+  esac
+done
 note "submitted (version $ver)"
