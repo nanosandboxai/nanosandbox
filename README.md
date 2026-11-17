@@ -123,7 +123,7 @@ gem install nanosandbox-sdk                            # Ruby
 dotnet add package Nanosandbox.Sdk                     # C#/.NET
 ```
 
-Java and Kotlin publish to Maven Central (`io.github.nanosandboxai:nanosandbox-sdk` /
+Java and Kotlin publish to Maven Central (`ai.nanosandbox:nanosandbox-sdk` /
 `nanosandbox-sdk-kotlin`) — no extra repository needed.
 
 ```bash

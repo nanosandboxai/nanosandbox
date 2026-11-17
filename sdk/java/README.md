@@ -17,11 +17,11 @@ contract in `sdk/conformance/SPEC.md`.
 
 ## Install
 
-`io.github.nanosandboxai:nanosandbox-sdk` from Maven Central:
+`ai.nanosandbox:nanosandbox-sdk` from Maven Central:
 
 ```xml
 <dependency>
-  <groupId>io.github.nanosandboxai</groupId>
+  <groupId>ai.nanosandbox</groupId>
   <artifactId>nanosandbox-sdk</artifactId>
   <version>0.2.0</version>
 </dependency>

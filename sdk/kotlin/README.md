@@ -16,10 +16,10 @@ and nullable parameters. The conformance driver mirrors
 
 ## Install
 
-`io.github.nanosandboxai:nanosandbox-sdk-kotlin` from Maven Central:
+`ai.nanosandbox:nanosandbox-sdk-kotlin` from Maven Central:
 
 ```kotlin
-implementation("io.github.nanosandboxai:nanosandbox-sdk-kotlin:0.2.0")
+implementation("ai.nanosandbox:nanosandbox-sdk-kotlin:0.2.0")
 ```
 
 ## Layout
@@ -142,7 +142,7 @@ The canonical build is Gradle (wrapper committed):
 
 ```bash
 ./gradlew -p sdk/kotlin jar                # -> sdk/kotlin/build/libs/nanosandbox-sdk-kotlin-0.2.0.jar
-./gradlew -p sdk/kotlin publishToMavenLocal # installs io.github.nanosandboxai:nanosandbox-sdk-kotlin:0.2.0
+./gradlew -p sdk/kotlin publishToMavenLocal # installs ai.nanosandbox:nanosandbox-sdk-kotlin:0.2.0
 ```
 
 The jar is self-contained: the Kotlin facade, the `KtJson` Java shim, and the

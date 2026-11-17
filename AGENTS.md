@@ -232,7 +232,7 @@ Publishing is tag-driven and independent of the product `v*` release:
 
 Registry targets: Rust/Python/npm/Ruby as `nanosandbox-sdk`; .NET as
 `Nanosandbox.Sdk`; Go module path unchanged; Java
-`io.github.nanosandboxai:nanosandbox-sdk`, Kotlin `io.github.nanosandboxai:nanosandbox-sdk-kotlin`.
+`ai.nanosandbox:nanosandbox-sdk`, Kotlin `ai.nanosandbox:nanosandbox-sdk-kotlin`.
 
 ## License
 
