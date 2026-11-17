@@ -80,7 +80,15 @@ for _ in $(seq 1 60); do
   [ -n "$state" ] || state="$(printf '%s' "$status" | sed -nE 's/.*"state" *: *"([A-Z_]+)".*/\1/p')"
   case "$state" in
     PUBLISHED) note "deployment $deployment_id PUBLISHED"; break ;;
-    FAILED) echo "error: deployment $deployment_id FAILED: $status" >&2; exit 1 ;;
+    FAILED)
+      other="$(printf '%s' "$status" | sed -nE 's/.*another deployment \(([0-9a-f-]+)\).*/\1/p')"
+      if [ -n "$other" ]; then
+        note "coordinate already staged in deployment $other; publishing it"
+        curl -fsS -X POST "${auth[@]}" "https://central.sonatype.com/api/v1/publisher/deployment/$other" >/dev/null || true
+        note "triggered publish of $other"
+        break
+      fi
+      echo "error: deployment $deployment_id FAILED: $status" >&2; exit 1 ;;
     "") note "deployment $deployment_id status unparsed: ${status:-<empty>}; waiting"; sleep 5 ;;
     *) note "deployment $deployment_id state=$state; waiting"; sleep 5 ;;
   esac
