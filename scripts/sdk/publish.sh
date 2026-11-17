@@ -129,14 +129,15 @@ case "$sdk" in
   go)
     if [ "$dry" = 1 ]; then
       note "dry-run: would tag sdk/go/v$ver"
-      go list -m "github.com/nanosandboxai/nanosandbox/sdk/go" >/dev/null 2>&1 || true
+    elif git ls-remote --tags --exit-code origin "sdk/go/v$ver" >/dev/null 2>&1; then
+      note "skip: sdk/go/v$ver already tagged"
     else
       note "tag sdk/go/v$ver"
       git tag "sdk/go/v$ver"
       git push origin "sdk/go/v$ver"
-      note "warm proxy.golang.org"
-      curl -fsS "https://proxy.golang.org/github.com/nanosandboxai/nanosandbox/sdk/go/@v/v$ver.info" >/dev/null || true
     fi
+    note "warm proxy.golang.org"
+    curl -fsS "https://proxy.golang.org/github.com/nanosandboxai/nanosandbox/sdk/go/@v/v$ver.info" >/dev/null || true
     ;;
 
   *)
