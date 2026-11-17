@@ -78,10 +78,12 @@ for _ in $(seq 1 60); do
   status="$(curl -fsS "${auth[@]}" \
     "https://central.sonatype.com/api/v1/publisher/status?id=$deployment_id" 2>/dev/null || true)"
   state="$(printf '%s' "$status" | sed -nE 's/.*"deploymentState" *: *"([A-Z_]+)".*/\1/p')"
+  [ -n "$state" ] || state="$(printf '%s' "$status" | sed -nE 's/.*"state" *: *"([A-Z_]+)".*/\1/p')"
   case "$state" in
     PUBLISHED) note "deployment $deployment_id PUBLISHED"; break ;;
     FAILED) echo "error: deployment $deployment_id FAILED: $status" >&2; exit 1 ;;
-    *) note "deployment $deployment_id state=${state:-unknown}; waiting"; sleep 5 ;;
+    "") note "deployment $deployment_id status unparsed: ${status:-<empty>}; waiting"; sleep 5 ;;
+    *) note "deployment $deployment_id state=$state; waiting"; sleep 5 ;;
   esac
 done
 note "submitted (version $ver)"
