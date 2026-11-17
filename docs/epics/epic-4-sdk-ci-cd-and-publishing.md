@@ -2,6 +2,10 @@
 
 Status: in-progress (2026-11-06)
 Date: 2026-10-11
+Note (2026-11-16): publishing is implemented with registry **token secrets**, not
+OIDC Trusted Publishing as §4.4 / AC5 / AC8 describe; JVM SDKs publish to **Maven
+Central** (Sonatype Central Portal, GPG-signed) and are not mirrored to GitHub
+Pages. See `docs/plans/2026-11-06-sdk-publishing-ga.md` for the operational runbook.
 Related: `docs/epics/epic-1-multi-language-sdk.md` (the SDKs), `docs/conformance-report.md`, `docs/runtime-setup.md`, `.github/workflows/{ci,release}.yml`
 
 ## 1. Context

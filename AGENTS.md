@@ -220,16 +220,19 @@ Publishing is tag-driven and independent of the product `v*` release:
 - `.github/workflows/sdk-ci.yml` — PR gate: the conformance harness artifact,
   one job per language (unit + conformance + dry-run package), and `version-drift`.
 - `.github/workflows/sdk-release.yml` — `sdk-v*` tag (or `workflow_dispatch`
-  with `dry_run`) publishes every SDK behind the protected `sdk-release`
-  environment: crates.io / PyPI / npm / RubyGems / NuGet via OIDC, Go via a
-  `sdk/go/v*` tag, and Java + Kotlin to Maven Central.
+  with `dry_run`) publishes every SDK behind the `sdk-release` environment using
+  registry token secrets: `CARGO_REGISTRY_TOKEN` (crates.io), `PYPI_API_TOKEN`
+  (PyPI), `NPM_TOKEN` (npm), `RUBYGEMS_API_KEY` (RubyGems), `NUGET_API_KEY`
+  (NuGet), Go via a `sdk/go/v*` tag, and Java + Kotlin to Maven Central
+  (`MAVEN_TOKEN` plus a mandatory GPG key via `MAVEN_GPG_PRIVATE_KEY` /
+  `MAVEN_GPG_PASSPHRASE`).
   `scripts/sdk/publish.sh` skips already-published versions (idempotent).
 - `.github/workflows/sdk-smoke.yml` — installs each published SDK from its real
   package manager in a scratch environment (`scripts/sdk/install-smoke.sh`).
 
-Registry targets: Rust/Python/npm/Ruby/.NET as `nanosandbox-sdk`; Go module path
-unchanged; Java `ai.nanosandbox:nanosandbox-sdk`, Kotlin
-`ai.nanosandbox:nanosandbox-sdk-kotlin`.
+Registry targets: Rust/Python/npm/Ruby as `nanosandbox-sdk`; .NET as
+`Nanosandbox.Sdk`; Go module path unchanged; Java
+`ai.nanosandbox:nanosandbox-sdk`, Kotlin `ai.nanosandbox:nanosandbox-sdk-kotlin`.
 
 ## License
 

@@ -1,23 +1,36 @@
 # SDK publishing — GA runbook
 
-Status: pipeline complete; the real publish is gated only on external
-credential provisioning. Branch: `feat/sdk-publishing`.
+Status: pipeline implemented (`.github/workflows/sdk-release.yml`); the real
+publish is gated only on registry credential provisioning. Branch:
+`feat/sdk-publishing`.
 Related: `docs/epics/epic-4-sdk-ci-cd-and-publishing.md`.
 
-## 1. One-time provisioning (org admin)
+## 1. Secret provisioning (org admin)
 
-| Registry | Provisioning | Job |
+`publish` (matrix) and `publish-jvm` authenticate every registry with a
+repository Actions **token secret** (no OIDC / `id-token: write`):
+
+| Registry | Secret | Job |
 |---|---|---|
-| crates.io | After a first manual `cargo publish` of `nanosb-protocol`/`nanosb-client`/`nanosandbox-sdk`, add a Trusted Publisher (repo `nanosandboxai/nanosandbox`, workflow `sdk-release.yml`) | `publish` (rust) |
-| PyPI | Add a Trusted Publisher for project `nanosandbox-sdk` (workflow `sdk-release.yml`, environment `sdk-release`) | `publish` (python) |
-| npm | Add a Trusted Publisher for `nanosandbox-sdk` | `publish` (typescript) |
-| RubyGems | Add a Trusted Publisher for gem `nanosandbox` | `publish` (ruby) |
-| NuGet | Add a Trusted Publisher for `Nanosandbox` and/or set the `NUGET_API_KEY` secret | `publish` (dotnet) |
-| GitHub Pages | A `gh-pages` branch hosting the Maven repository at `https://nanosandboxai.github.io/maven/` | `publish-jvm` |
-| GitHub | Protected environment `sdk-release` (required reviewers) | all publish jobs |
+| crates.io | `CARGO_REGISTRY_TOKEN` — token auth requires a **verified email** on the owning account | `publish` (rust) |
+| PyPI | `PYPI_API_TOKEN` (exported as `TWINE_PASSWORD`) | `publish` (python) |
+| npm | `NPM_TOKEN` (exported as `NODE_AUTH_TOKEN`) | `publish` (typescript) |
+| RubyGems | `RUBYGEMS_API_KEY` | `publish` (ruby) |
+| NuGet | `NUGET_API_KEY` — must be scoped to allow the `Nanosandbox.Sdk` id | `publish` (dotnet) |
+| Maven Central | `MAVEN_TOKEN` (Central Portal `username:password` user token) **and** `MAVEN_GPG_PRIVATE_KEY` (+ `MAVEN_GPG_PASSPHRASE`) | `publish-jvm` |
+| GitHub | Environment `sdk-release` | all publish jobs |
 
-crates.io / PyPI / npm / RubyGems use OIDC (`id-token: write`); the only
-long-lived secret is `NUGET_API_KEY`.
+Notes:
+
+- **Maven Central cannot publish without a GPG key** — the Central Portal requires
+  a `.asc` signature for every file. Add `MAVEN_GPG_PRIVATE_KEY` (ASCII-armored
+  private key), set `MAVEN_GPG_PASSPHRASE` if the key has one, distribute the
+  matching public key to a keyserver, and register its fingerprint for the
+  `ai.nanosandbox` namespace.
+- **crates.io token auth requires a verified email** on the token's account.
+  Trusted Publishing (OIDC) bypasses that check but cannot create a new crate, so
+  a *first* publish must be done with the token once the email is verified.
+- Go has no registry: `publish.sh go` pushes the `sdk/go/v<version>` module tag.
 
 ## 2. Dress rehearsal (publishes nothing)
 
@@ -36,8 +49,8 @@ done
 ```
 
 Expected: `dist/` holds `nanosandbox_sdk-0.2.0-*.whl`, `nanosandbox-sdk-0.2.0.tgz`,
-`nanosandbox-0.2.0.gem`, `Nanosandbox.0.2.0.nupkg`, and
-`dist/maven-repo/ai/nanosandbox/nanosandbox-{java,kotlin}/0.2.0/*`. No registry
+`nanosandbox-sdk-0.2.0.gem`, `Nanosandbox.Sdk.0.2.0.nupkg`, and
+`dist/maven-repo/ai/nanosandbox/nanosandbox-{sdk,sdk-kotlin}/0.2.0/*`. No registry
 receives a version.
 
 ## 3. GA
@@ -48,7 +61,8 @@ git tag sdk-v0.2.0 && git push origin sdk-v0.2.0
 ```
 
 The workflow runs: `plan` (verify VERSION) → `publish` (matrix) → `publish-jvm`
-(Maven layout → GitHub Pages) → `smoke` (matrix) → GitHub Release.
+(build the Maven layout → GPG-sign → upload to the Sonatype Central Portal) →
+`smoke` (matrix) → GitHub Release.
 
 Verify:
 
@@ -61,11 +75,9 @@ done   # each prints "already published: <sdk> 0.2.0"
 ## 4. Recovery
 
 - Registries reject re-publishing a version: to fix a bad release, bump `VERSION`
-  and cut a new `sdk-v*` tag (never re-tag).
+  and cut a new `sdk-v*` tag (**never re-tag**).
 - Publish jobs are independent (`fail-fast: false`); re-dispatch re-runs them and
   `scripts/sdk/publish.sh` skips already-published versions.
-- The JVM Pages deploy runs only when not dry-run and overwrites the layout
-  idempotently.
 
 ## 5. Acceptance checklist
 

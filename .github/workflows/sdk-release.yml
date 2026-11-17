@@ -102,9 +102,11 @@ jobs:
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
       - name: build Maven repository layout (java + kotlin)
+        # --dry-run only bypasses the already-published short-circuit here; the
+        # layout must always be staged for the Portal upload step below.
         run: |
-          scripts/sdk/publish.sh java ${{ needs.plan.outputs.version }}
-          scripts/sdk/publish.sh kotlin ${{ needs.plan.outputs.version }}
+          scripts/sdk/publish.sh java ${{ needs.plan.outputs.version }} --dry-run
+          scripts/sdk/publish.sh kotlin ${{ needs.plan.outputs.version }} --dry-run
       - name: publish to Maven Central
         env:
           MAVEN_TOKEN: ${{ secrets.MAVEN_TOKEN }}

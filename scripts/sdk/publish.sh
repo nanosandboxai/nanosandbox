@@ -18,19 +18,32 @@ ver="${2:?usage: publish.sh <sdk> <version> [--dry-run]}"
 dry=0
 [ "${3:-}" = "--dry-run" ] && dry=1
 
-if "$here/check-published.sh" "$sdk" "$ver" >/dev/null 2>&1; then
+# --dry-run always builds for inspection (AC6); only a real publish skips.
+if [ "$dry" = 0 ] && "$here/check-published.sh" "$sdk" "$ver" >/dev/null 2>&1; then
   echo "skip: $sdk $ver already published"
   exit 0
 fi
 
 note() { printf 'publish[%s] %s\n' "$sdk" "$*"; }
 
+# Publish one crate, retrying ONLY transient failures (network / 429 / 5xx).
+# Permanent errors (auth, unverified email, duplicate version, invalid manifest)
+# fail immediately — retrying them just burns time and hides the real cause.
 publish_crate() {
-  local c="$1" i
-  for i in 1 2 3 4 5; do
-    if cargo publish -p "$c"; then return 0; fi
-    note "retry cargo publish -p $c (attempt $i)"
-    sleep 20
+  local c="$1" attempt out
+  for attempt in 1 2 3 4 5; do
+    if out="$(cargo publish -p "$c" 2>&1)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    printf '%s\n' "$out" >&2
+    if printf '%s' "$out" | grep -qiE 'rate.?limit|too many requests|status (408|429|5[0-9][0-9])|timed out|connection (reset|refused|closed)|could not connect|network|temporary failure|error sending request'; then
+      note "transient error publishing $c; retrying (attempt $attempt)"
+      sleep $((attempt * 15))
+    else
+      note "permanent error publishing $c; not retrying"
+      return 1
+    fi
   done
   return 1
 }
