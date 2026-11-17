@@ -108,10 +108,10 @@ SDK publishing jobs to `release.yml`). Steps:
      (**trusted publishing / OIDC**, no token).
    - **TypeScript** → npm: `npm publish --provenance --access public`
      (**OIDC provenance**; remove `"private": true`).
-   - **Java** → Maven Central (`ai.nanosandbox:nanosandbox-sdk`): build the
+   - **Java** → Maven Central (`io.github.nanosandboxai:nanosandbox-sdk`): build the
      Maven layout, GPG-sign it, and upload the bundle to the Sonatype Central
      Portal (secret `MAVEN_TOKEN` + a GPG key).
-   - **Kotlin** → Maven Central (`ai.nanosandbox:nanosandbox-sdk-kotlin`).
+   - **Kotlin** → Maven Central (`io.github.nanosandboxai:nanosandbox-sdk-kotlin`).
    - **C#/.NET** → NuGet: `dotnet pack -c Release` + `dotnet nuget push`
      (`NUGET_API_KEY`; optional `dotnet nuget sign`).
    - **Ruby** → RubyGems: `gem build sdk/ruby/nanosandbox.gemspec` +
@@ -200,7 +200,7 @@ the existing `registry-*.yml` flows.
 - **R1 Registry namespace (RESOLVED)** — `nanosandbox` is taken on npm, PyPI and
   crates.io by an unrelated project, so the SDKs publish as `nanosandbox-sdk`
   (Rust/Python/npm); Ruby keeps `nanosandbox`, .NET keeps `Nanosandbox`.
-- **R2 Maven Central groupId** — requires a verified `ai.nanosandbox` namespace
+- **R2 Maven Central groupId** — requires a verified `io.github.nanosandboxai` namespace
   on the Central Portal and a GPG key.
 - **R3 Toolchain availability in CI** — Kotlin needs `kotlinc` (no official
   GitHub action); use a Gradle wrapper or `sdkman`. Go submodule tagging is easy
@@ -215,8 +215,8 @@ the existing `registry-*.yml` flows.
 
 - **D1 Tag namespace:** `sdk-v*` (does not match the product `v*` triggers).
 - **D2 Names:** Rust/Python/npm/Ruby/.NET → `nanosandbox-sdk`; Go module path
-  unchanged; Java → `ai.nanosandbox:nanosandbox-sdk`, Kotlin →
-  `ai.nanosandbox:nanosandbox-sdk-kotlin`.
+  unchanged; Java → `io.github.nanosandboxai:nanosandbox-sdk`, Kotlin →
+  `io.github.nanosandboxai:nanosandbox-sdk-kotlin`.
 - **D3 JVM target:** Maven Central via the Sonatype Central Portal (token +
   GPG).
 - **D4 Kotlin build:** introduce a Gradle `maven-publish` build in `sdk/kotlin`.

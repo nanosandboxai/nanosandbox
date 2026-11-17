@@ -4,7 +4,7 @@ plugins {
     `maven-publish`
 }
 
-group = "ai.nanosandbox"
+group = "io.github.nanosandboxai"
 version = "0.2.0"
 
 repositories {

@@ -100,7 +100,7 @@ EOF
   <properties><maven.compiler.release>21</maven.compiler.release></properties>
   <dependencies>
     <dependency>
-      <groupId>ai.nanosandbox</groupId>
+      <groupId>io.github.nanosandboxai</groupId>
       <artifactId>nanosandbox-sdk</artifactId>
       <version>$ver</version>
     </dependency>
@@ -133,7 +133,7 @@ repositories {
     mavenCentral()
 }
 dependencies {
-    implementation("ai.nanosandbox:nanosandbox-sdk-kotlin:$ver")
+    implementation("io.github.nanosandboxai:nanosandbox-sdk-kotlin:$ver")
 }
 application {
     mainClass.set("MainKt")
