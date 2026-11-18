@@ -106,6 +106,15 @@ with ManagedRuntime() as rt:
 The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtime`
 → `PATH` → the repo `target/debug/nanosb-runtime`.
 
+If the helper is missing, `ManagedRuntime` auto-provisions it: it runs the shared
+`ensure-runtime.sh` provisioner (located via `NANOSB_PROVISIONER` → the repo
+`scripts/sdk/ensure-runtime.sh`, or an embedded copy shipped with the package),
+which downloads, verifies, and installs the runtime into `$NANOSB_HOME`, pinned
+to the SDK's release version. So `pip install nanosandbox-sdk` is the only step
+needed. Config comes from the environment: `NANOSB_HOME`, `NANOSB_VERSION`
+(required to download), `NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`,
+`NANOSB_OFFLINE=1` to never download, and `NANOSB_PROVISIONER`.
+
 ## Testing
 
 Unit tests (in-process fake helper, no VM):

@@ -143,9 +143,10 @@ The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtim
 If the helper is missing, `start()` auto-provisions it by running the
 `ensure-runtime.sh` provisioner (resolved from `NANOSB_PROVISIONER`, then the
 repo's `scripts/sdk/ensure-runtime.sh`, then an embedded copy shipped with the
-SDK), which downloads + verifies + installs the runtime under `$NANOSB_HOME`.
-Config env: `NANOSB_HOME`, `NANOSB_VERSION` (required to download),
-`NANOSB_RUNTIME_URL`, `NANOSB_OFFLINE`, `NANOSB_RUNTIME_SHA256`.
+SDK), which downloads + verifies + installs the runtime under `$NANOSB_HOME`,
+pinned to the SDK's release version. Config env: `NANOSB_HOME`, `NANOSB_VERSION`
+(required to download), `NANOSB_RUNTIME_URL`, `NANOSB_OFFLINE`,
+`NANOSB_RUNTIME_SHA256`, and `NANOSB_PROVISIONER`.
 
 ## Testing
 

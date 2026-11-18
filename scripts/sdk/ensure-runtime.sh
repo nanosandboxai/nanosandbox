@@ -69,7 +69,16 @@ chmod +x "$home/bin/nanosb-runtime" 2>/dev/null || true
 [ -f "$home/guest-bin/exec-agent" ] && chmod +x "$home/guest-bin/exec-agent" || true
 
 if [ "$os" = darwin ] && command -v codesign >/dev/null 2>&1; then
-  codesign --force --sign - "$home/bin/nanosb-runtime" 2>/dev/null || true
+  # Re-sign ad-hoc. macOS requires the com.apple.security.hypervisor entitlement
+  # for Hypervisor.framework; pass it when the bundle (or repo) ships a plist so
+  # the re-sign does not strip it.
+  ent="$home/entitlements.plist"
+  [ -f "$ent" ] || ent="$(cd "$(dirname "$0")/.." && pwd)/../entitlements.plist"
+  if [ -f "$ent" ]; then
+    codesign --force --sign - --entitlements "$ent" "$home/bin/nanosb-runtime" 2>/dev/null || true
+  else
+    codesign --force --sign - "$home/bin/nanosb-runtime" 2>/dev/null || true
+  fi
 fi
 
 [ -x "$bin" ] || { echo "ensure-runtime: install failed ($bin not executable)" >&2; exit 1; }

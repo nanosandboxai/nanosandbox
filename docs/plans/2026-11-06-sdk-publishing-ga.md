@@ -64,6 +64,14 @@ The workflow runs: `plan` (verify VERSION) → `publish` (matrix) → `publish-j
 (build the Maven layout → GPG-sign → upload to the Sonatype Central Portal) →
 `smoke` (matrix) → GitHub Release.
 
+The SDKs **auto-provision the runtime** on first use (each `ManagedRuntime`
+downloads + verifies + installs it, pinned to the SDK release version). Because
+the runtime version is pinned to `VERSION`, the release MUST also publish a
+**per-platform runtime bundle asset** `nanosandbox-runtime-<os>-<arch>.tar.gz`
+for each supported platform at `v${VERSION}` — otherwise the SDKs cannot resolve
+their runtime. Bundle layout: `bin/nanosb-runtime`, `bin/gvproxy`,
+`libs/libkrunfw*.dylib`, `guest-bin/exec-agent`, `entitlements.plist`.
+
 Verify:
 
 ```bash

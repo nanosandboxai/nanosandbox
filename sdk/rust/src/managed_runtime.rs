@@ -27,7 +27,8 @@
 //! Config comes from the environment: `NANOSB_RUNTIME_BIN`, `NANOSB_HOME`,
 //! `NANOSB_PROVISIONER`, `NANOSB_VERSION` (required to download),
 //! `NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`, and `NANOSB_OFFLINE=1` to
-//! never download.
+//! never download. When `NANOSB_VERSION` is not set, the SDK pins it to its own
+//! version (`CARGO_PKG_VERSION`), so a `0.2.0` crate provisions runtime v0.2.0.
 
 use std::env;
 use std::fmt;
@@ -253,7 +254,14 @@ fn run_provisioner() -> Result<()> {
 }
 
 fn run_bash(script: &Path) -> Result<()> {
-    let status = Command::new("bash").arg(script).status()?;
+    let mut cmd = Command::new("bash");
+    cmd.arg(script);
+    // Pin the runtime version to the SDK's own version unless the user set
+    // NANOSB_VERSION, so a 0.2.0 crate provisions the matching runtime v0.2.0.
+    if env::var_os("NANOSB_VERSION").map_or(true, |v| v.is_empty()) {
+        cmd.env("NANOSB_VERSION", env!("CARGO_PKG_VERSION"));
+    }
+    let status = cmd.status()?;
     if status.success() {
         Ok(())
     } else {

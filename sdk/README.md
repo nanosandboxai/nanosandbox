@@ -57,13 +57,20 @@ Or let the SDK **start the helper for you** via `ManagedRuntime` (locates/spawns
 | Kotlin | `val rt = nanosandbox.ManagedRuntime.start()` |
 | C#/.NET | `using (var rt = ManagedRuntime.start()) { ... }` |
 
-Every `ManagedRuntime` resolves the helper via `NANOSB_RUNTIME_BIN` →
-`$NANOSB_HOME/bin/nanosb-runtime` → `PATH` → the repo `target/debug/nanosb-runtime`.
-When the helper is missing, it **auto-provisions** via the shared
-`scripts/sdk/ensure-runtime.sh` provisioner (located via `NANOSB_PROVISIONER`,
-the package/repo, or an embedded copy shipped with the SDK), downloading and
-verifying the per-platform runtime bundle under `$NANOSB_HOME` — so the
-package-manager install is the only step needed.
+Every `ManagedRuntime` — **in all eight SDKs, Rust included** — resolves the
+helper via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtime` → `PATH` →
+the repo `target/debug/nanosb-runtime`. When the helper is missing, it
+**auto-provisions** via the shared `scripts/sdk/ensure-runtime.sh` provisioner
+(located via `NANOSB_PROVISIONER`, the package/repo, or an embedded copy shipped
+with the SDK), downloading and verifying the per-platform runtime bundle under
+`$NANOSB_HOME`, pinned to the SDK's release version — so the package-manager
+install is the only step needed.
+
+Provisioning is configured by environment variables: `NANOSB_HOME` (install
+root, default `~/.nanosandbox`), `NANOSB_VERSION` (runtime version to download,
+pinned to the SDK's release version), `NANOSB_RUNTIME_URL` (release base URL),
+`NANOSB_RUNTIME_SHA256` (expected sha256, verified), `NANOSB_OFFLINE=1` (never
+download), and `NANOSB_PROVISIONER` (explicit provisioner path).
 
 ## Conformance suite
 

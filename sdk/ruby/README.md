@@ -68,12 +68,12 @@ opening `ok` ack, then frames until the terminal frame (`guest exit/error` or
 
 `Nanosandbox::ManagedRuntime` locates and starts the real `nanosb-runtime` helper
 so you can boot and manage microVMs without launching it yourself. If the helper
-is not installed, `ManagedRuntime` provisions it: it runs the shared
+is not installed, `ManagedRuntime` auto-provisions it: it runs the shared
 `ensure-runtime.sh` provisioner, which downloads the per-platform runtime bundle
 (nanosb-runtime + libkrunfw + gvproxy + exec-agent) from the release, verifies
-it, and installs it under `$NANOSB_HOME`. So `gem install nanosandbox-sdk` is
-the only step needed — the first `ManagedRuntime.open` downloads and installs
-the runtime automatically.
+it, and installs it under `$NANOSB_HOME`, pinned to the SDK's release version.
+So `gem install nanosandbox-sdk` is the only step needed — the first
+`ManagedRuntime.open` downloads and installs the runtime automatically.
 
 ```ruby
 require "nanosandbox"
@@ -94,10 +94,11 @@ an embedded copy shipped in the gem. Provisioning is configured by env:
 | Variable | Description |
 |---|---|
 | `NANOSB_HOME` | Install root (default `~/.nanosandbox`) |
-| `NANOSB_VERSION` | Runtime version to install (required to download) |
+| `NANOSB_VERSION` | Runtime version to install (defaults to the SDK's own version, e.g. `0.2.0`) |
 | `NANOSB_RUNTIME_URL` | Release base URL (default the GitHub release) |
 | `NANOSB_RUNTIME_SHA256` | Expected sha256 of the bundle (optional, verified) |
 | `NANOSB_OFFLINE` | `1` = never download (fail if missing) |
+| `NANOSB_PROVISIONER` | Explicit path to the provisioner script |
 
 ## Testing
 

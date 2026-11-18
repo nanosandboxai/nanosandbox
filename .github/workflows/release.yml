@@ -6,6 +6,8 @@ name: Release
 #   - nanosb CLI binaries (macOS arm64, Linux x86_64)
 #   - CLI install/uninstall scripts + default config
 #   - runtime dependencies (libkrunfw + gvproxy) for Linux/macOS
+#   - the SDK runtime bundle `nanosandbox-runtime-<os>-<arch>.tar.gz` (+ .sha256),
+#     auto-provisioned by the language SDKs via scripts/sdk/ensure-runtime.sh
 #   - dependency installer scripts (install-deps.sh)
 #   - checksums
 #
@@ -98,7 +100,9 @@ jobs:
   build-runtime-linux:
     name: Runtime deps Linux ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    needs: build-kernels
+    needs:
+      - build-kernels
+      - build-exec-agent
     strategy:
       fail-fast: false
       matrix:
@@ -159,6 +163,39 @@ jobs:
       - name: Build runtime (zigbuild)
         run: cargo zigbuild --release -p runtime --target ${{ matrix.rust_target }}
 
+      - name: Download exec-agent artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: exec-agent
+          path: artifacts/exec-agent
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build SDK runtime helper (nanosb-runtime, Linux x86_64)
+        if: matrix.arch == 'amd64'
+        run: cargo zigbuild --release -p nanosb-cli --bin nanosb-runtime --no-default-features --features runtime-host --target x86_64-unknown-linux-gnu.2.28
+
+      - name: Assemble + build SDK runtime bundle (Linux x86_64)
+        if: matrix.arch == 'amd64'
+        run: |
+          H="$RUNNER_TEMP/sdk-home/.nanosandbox"
+          mkdir -p "$H/bin" "$H/libs" "$H/guest-bin"
+          cp runtime/deps/gvproxy/gvproxy "$H/bin/gvproxy"
+          cp runtime/deps/libkrunfw/libkrunfw.so.5 "$H/libs/"
+          ln -sf libkrunfw.so.5 "$H/libs/libkrunfw.so"
+          cp artifacts/exec-agent/exec-agent-x86_64 "$H/guest-bin/exec-agent"
+          chmod +x "$H/bin/gvproxy" "$H/guest-bin/exec-agent"
+          NANOSB_SRC_HOME="$H" \
+          NANOSB_RUNTIME_BIN="target/x86_64-unknown-linux-gnu.2.28/release/nanosb-runtime" \
+            scripts/sdk/build-runtime-bundle.sh "${{ steps.version.outputs.version }}" --out dist
+
       - name: Package artifacts
         run: |
           mkdir -p dist
@@ -198,7 +235,9 @@ jobs:
   build-runtime-macos:
     name: Runtime deps macOS arm64
     runs-on: macos-latest
-    needs: build-kernels
+    needs:
+      - build-kernels
+      - build-exec-agent
     env:
       HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
     steps:
@@ -251,6 +290,24 @@ jobs:
           cd runtime/deps/gvproxy
           GOWORK=off CGO_ENABLED=0 go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
 
+      - name: Download exec-agent artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: exec-agent
+          path: artifacts/exec-agent
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build SDK runtime helper (nanosb-runtime, macOS arm64)
+        run: cargo build --release -p nanosb-cli --bin nanosb-runtime --no-default-features --features runtime-host
+
       - name: Sign helper binaries (Developer ID, gated)
         if: env.HAS_SIGNING == 'true'
         env:
@@ -268,6 +325,17 @@ jobs:
           IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk 'NR==1{print $2}')"
           codesign --sign "$IDENTITY" --options runtime --timestamp --force runtime/deps/libkrunfw/libkrunfw.5.dylib
           codesign --sign "$IDENTITY" --options runtime --timestamp --force runtime/deps/gvproxy/gvproxy
+
+      - name: Assemble + build SDK runtime bundle (macOS arm64)
+        run: |
+          H="$RUNNER_TEMP/sdk-home/.nanosandbox"
+          mkdir -p "$H/bin" "$H/libs" "$H/guest-bin"
+          cp runtime/deps/gvproxy/gvproxy "$H/bin/gvproxy"
+          cp runtime/deps/libkrunfw/libkrunfw.5.dylib "$H/libs/"
+          ln -sf libkrunfw.5.dylib "$H/libs/libkrunfw.dylib"
+          cp artifacts/exec-agent/exec-agent-aarch64 "$H/guest-bin/exec-agent"
+          chmod +x "$H/bin/gvproxy" "$H/guest-bin/exec-agent"
+          NANOSB_SRC_HOME="$H" scripts/sdk/build-runtime-bundle.sh "${{ steps.version.outputs.version }}" --out dist
 
       - name: Package artifacts
         run: |
@@ -607,7 +675,7 @@ jobs:
 
           # Runtime deps bundles + standalone runtime/gvproxy archives
           find artifacts/release-linux-amd64 artifacts/release-linux-arm64 artifacts/release-darwin-arm64 \
-            -type f \( -name '*.tar.gz' -o -name 'checksums-*.sha256' \) -exec cp {} release/ \;
+            -type f \( -name '*.tar.gz' -o -name 'checksums-*.sha256' -o -name 'nanosandbox-runtime-*.tar.gz.sha256' \) -exec cp {} release/ \;
 
           chmod +x release/install.sh release/uninstall.sh release/install-deps.sh release/uninstall-deps.sh
 

@@ -2,16 +2,27 @@
 #
 # Nanosandbox CLI Installer
 #
-# Installs the nanosb CLI binary and its runtime dependencies.
+# Installs the nanosb CLI binary, the runtime (helper + gvproxy + libkrunfw +
+# exec-agent), and its runtime dependencies.
 # Everything is installed under ~/.nanosandbox/ (no sudo required):
 #
-#   ~/.nanosandbox/bin/nanosb     — CLI binary
-#   ~/.nanosandbox/bin/gvproxy    — networking daemon (via install-deps)
-#   ~/.nanosandbox/libs/          — shared libraries (via install-deps)
+#   ~/.nanosandbox/bin/nanosb        — CLI binary
+#   ~/.nanosandbox/bin/nanosb-runtime — slim SDK/helper runtime
+#   ~/.nanosandbox/bin/gvproxy       — networking daemon
+#   ~/.nanosandbox/libs/             — shared libraries (libkrunfw)
+#   ~/.nanosandbox/guest-bin/exec-agent — in-guest exec agent
 #
-#   1. Installs runtime dependencies via install-deps (libkrunfw + gvproxy)
-#   2. Downloads the nanosb binary
-#   3. Codesigns on macOS (Hypervisor.framework entitlement)
+#   1. Installs the SDK runtime bundle (nanosb-runtime + gvproxy + libkrunfw +
+#      exec-agent) from nanosandbox-runtime-<os>-<arch>.tar.gz
+#   2. Installs runtime dependencies via install-deps (libkrunfw + gvproxy)
+#   3. Downloads the nanosb binary
+#   4. Codesigns on macOS (Hypervisor.framework entitlement)
+#
+# Interop with the SDK provisioner (scripts/sdk/ensure-runtime.sh): this
+# installer and the SDK provisioner install the SAME runtime into the SAME
+# $NANOSB_HOME (default ~/.nanosandbox), in the exact bundle layout
+# (bin/nanosb-runtime, bin/gvproxy, libs/, guest-bin/exec-agent,
+# entitlements.plist). Running either satisfies the other.
 #
 # Usage:
 #   curl -fsSL https://github.com/nanosandboxai/nanosandbox/releases/latest/download/install.sh | bash
@@ -285,6 +296,62 @@ install_exec_agent() {
     fi
 }
 
+# ─── Step 5b: SDK runtime bundle (helper + gvproxy + libkrunfw + exec-agent) ──
+#
+# Downloads the same `nanosandbox-runtime-<os>-<arch>.tar.gz` bundle the SDK
+# provisioner (scripts/sdk/ensure-runtime.sh) auto-provisions, and unpacks it
+# into $NANOSANDBOX_HOME. This guarantees the exact bundle layout
+# (bin/nanosb-runtime, bin/gvproxy, libs/, guest-bin/exec-agent,
+# entitlements.plist) so running either this installer or the SDK provisioner
+# satisfies the other.
+
+install_runtime_bundle() {
+    header "Installing SDK runtime bundle"
+
+    local os arch
+    case "${OS}" in
+        Darwin) os="darwin" ;;
+        Linux)  os="linux" ;;
+        *)      os="" ;;
+    esac
+    case "${ARCH}" in
+        arm64|aarch64)  arch="arm64" ;;
+        x86_64|amd64)   arch="x86_64" ;;
+        *)              arch="" ;;
+    esac
+    if [[ -z "$os" || -z "$arch" ]]; then
+        warn "No SDK runtime bundle for ${OS} ${ARCH}."
+        return 0
+    fi
+
+    local asset="nanosandbox-runtime-${os}-${arch}.tar.gz"
+    local url
+    if [[ "$NANOSB_VERSION" == "latest" ]]; then
+        url="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset}"
+    else
+        url="https://github.com/${RELEASE_REPO}/releases/download/v${NANOSB_VERSION}/${asset}"
+    fi
+
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    info "Downloading ${asset}..."
+    if ! curl -fsSL "$url" -o "${tmpdir}/${asset}"; then
+        warn "Could not download ${asset} (release may not include it yet)"
+        info "The CLI still installs; the helper/gvproxy/libs/exec-agent may be absent."
+        rm -rf "$tmpdir"
+        return 0
+    fi
+
+    mkdir -p "$NANOSANDBOX_HOME"
+    tar xzf "${tmpdir}/${asset}" -C "$NANOSANDBOX_HOME"
+    chmod +x "$NANOSANDBOX_HOME/bin/nanosb-runtime" 2>/dev/null || true
+    chmod +x "$NANOSANDBOX_HOME/bin/gvproxy" 2>/dev/null || true
+    chmod +x "$NANOSANDBOX_HOME/guest-bin/exec-agent" 2>/dev/null || true
+    rm -rf "$tmpdir"
+
+    success "Installed SDK runtime bundle under ${NANOSANDBOX_HOME}"
+}
+
 # ─── /usr/local/bin symlink ──────────────────────────────────────────────────
 
 # Symlinks ~/.nanosandbox/bin/nanosb into /usr/local/bin so it's on PATH in
@@ -323,6 +390,7 @@ install_symlink() {
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
+install_runtime_bundle
 install_deps
 download_binary
 install_config
@@ -365,12 +433,13 @@ case "$OS" in
     *)      backend="$OS" ;;
 esac
 cat <<EOF
-  nanosb     → ${INSTALL_DIR}/nanosb
-  symlink    → /usr/local/bin/nanosb
-  libkrunfw  → ${NANOSANDBOX_HOME}/libs/
-  gvproxy    → ${INSTALL_DIR}/gvproxy
-  exec-agent → ${NANOSANDBOX_HOME}/guest-bin/exec-agent
-  backend    → ${backend}
+  nanosb        → ${INSTALL_DIR}/nanosb
+  nanosb-runtime → ${NANOSANDBOX_HOME}/bin/nanosb-runtime
+  symlink       → /usr/local/bin/nanosb
+  libkrunfw     → ${NANOSANDBOX_HOME}/libs/
+  gvproxy       → ${INSTALL_DIR}/gvproxy
+  exec-agent    → ${NANOSANDBOX_HOME}/guest-bin/exec-agent
+  backend       → ${backend}
 
   Run 'nanosb doctor' to verify the installation.
 EOF

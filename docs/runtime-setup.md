@@ -65,3 +65,39 @@ NANOSB_HOME=/opt/nanosb nanosb doctor
 ```
 
 This is also how CI/Linux runs use a prebuilt runtime instead of the bundled one.
+
+## SDK runtime bundle
+
+The language SDKs auto-provision the runtime: `ManagedRuntime` runs
+`scripts/sdk/ensure-runtime.sh`, which downloads the **SDK runtime bundle**
+`nanosandbox-runtime-<os>-<arch>.tar.gz` from
+`$NANOSB_RUNTIME_URL/v$NANOSB_VERSION/` and unpacks it into `$NANOSB_HOME`:
+
+```
+bin/nanosb-runtime      # the slim protocol helper
+bin/gvproxy             # networking sidecar
+libs/libkrunfw*.dylib   # kernel firmware (libkrunfw*.so* on Linux)
+guest-bin/exec-agent    # in-guest exec agent
+entitlements.plist      # macOS hypervisor entitlement
+```
+
+The release pipeline builds one bundle per platform (macOS arm64, Linux x86_64)
+from already-built pieces (helper from `target/release/nanosb-runtime`,
+gvproxy + libkrunfw + exec-agent from `$NANOSB_SRC_HOME`, `entitlements.plist`
+from the repo root) and attaches it to each GitHub release, along with a
+`.sha256` sidecar:
+
+```bash
+scripts/sdk/build-runtime-bundle.sh 0.2.0 --out dist
+# → dist/nanosandbox-runtime-darwin-arm64.tar.gz (+ .sha256)
+```
+
+### Interop with `scripts/install.sh`
+
+`scripts/install.sh` and the SDK provisioner install the **same runtime** into
+the **same `$NANOSB_HOME`** (default `~/.nanosandbox`) in the exact bundle
+layout above. Running `install.sh` installs the helper (`bin/nanosb-runtime`),
+`gvproxy`, `libkrunfw`, and `exec-agent`, so the SDK's
+`ensure-runtime.sh` finds its runtime already present and exits 0; conversely,
+running the SDK provisioner produces the files `install.sh` relies on. Either
+installation satisfies the other.

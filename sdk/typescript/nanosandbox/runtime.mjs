@@ -15,9 +15,16 @@
 // exec-agent) from the release, verifies it, and installs it under
 // `$NANOSB_HOME`. This makes `npm install nanosandbox-sdk` the only step
 // needed.
+//
+// Provisioning is configured by env. `NANOSB_VERSION` selects the runtime
+// version to download; when the user has not set it, the SDK pins it to its own
+// version (read from the package manifest), so `npm install
+// nanosandbox-sdk@0.2.0` provisions runtime v0.2.0. Other knobs:
+// `NANOSB_HOME`, `NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`, and
+// `NANOSB_OFFLINE=1` to never download.
 
 import { spawn, execFile, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -101,7 +108,16 @@ chmod +x "\$home/bin/nanosb-runtime" 2>/dev/null || true
 [ -f "\$home/guest-bin/exec-agent" ] && chmod +x "\$home/guest-bin/exec-agent" || true
 
 if [ "\$os" = darwin ] && command -v codesign >/dev/null 2>&1; then
-  codesign --force --sign - "\$home/bin/nanosb-runtime" 2>/dev/null || true
+  # Re-sign ad-hoc. macOS requires the com.apple.security.hypervisor entitlement
+  # for Hypervisor.framework; pass it when the bundle (or repo) ships a plist so
+  # the re-sign does not strip it.
+  ent="\$home/entitlements.plist"
+  [ -f "\$ent" ] || ent="\$(cd "\$(dirname "\$0")/.." && pwd)/../entitlements.plist"
+  if [ -f "\$ent" ]; then
+    codesign --force --sign - --entitlements "\$ent" "\$home/bin/nanosb-runtime" 2>/dev/null || true
+  else
+    codesign --force --sign - "\$home/bin/nanosb-runtime" 2>/dev/null || true
+  fi
 fi
 
 [ -x "\$bin" ] || { echo "ensure-runtime: install failed (\$bin not executable)" >&2; exit 1; }
@@ -143,17 +159,39 @@ function findProvisioner() {
   return null;
 }
 
+// The SDK's own release version, read from the package manifest. Used to pin
+// the runtime version when the user has not set NANOSB_VERSION, so `npm
+// install nanosandbox-sdk@0.2.0` provisions the matching runtime v0.2.0.
+function sdkVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
+    if (pkg && typeof pkg.version === "string" && pkg.version) return pkg.version;
+  } catch {
+    // not installed / manifest unreadable
+  }
+  return "0.2.0";
+}
+
+// Environment for the provisioner child process: inherits the caller's
+// environment and pins NANOSB_VERSION to the SDK's own version when the user
+// has not provided one. A user-provided NANOSB_VERSION is never overridden.
+function provisionerEnv() {
+  const env = { ...process.env };
+  if (!env.NANOSB_VERSION) env.NANOSB_VERSION = sdkVersion();
+  return env;
+}
+
 async function runProvisioner() {
   const script = findProvisioner();
   if (script) {
-    await execFileAsync("bash", [script], { stdio: "inherit" });
+    await execFileAsync("bash", [script], { stdio: "inherit", env: provisionerEnv() });
     return;
   }
   const dir = await mkdtemp(join(tmpdir(), "nanosandbox-ensure-"));
   const path = join(dir, "ensure-runtime.sh");
   try {
     await writeFile(path, EMBEDDED_PROVISIONER);
-    await execFileAsync("bash", [path], { stdio: "inherit" });
+    await execFileAsync("bash", [path], { stdio: "inherit", env: provisionerEnv() });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

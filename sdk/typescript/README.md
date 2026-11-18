@@ -126,9 +126,12 @@ The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtim
 If the helper is **not** installed, `ManagedRuntime.start()` auto-provisions it:
 it runs the shared `ensure-runtime.sh` provisioner (found via `NANOSB_PROVISIONER`
 → `scripts/sdk/ensure-runtime.sh` → an embedded copy), which downloads and
-verifies the per-platform runtime bundle into `$NANOSB_HOME` using `NANOSB_VERSION`,
-`NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`, and `NANOSB_OFFLINE`. So
-`npm install nanosandbox-sdk` is the only setup step needed.
+verifies the per-platform runtime bundle into `$NANOSB_HOME`, pinned to the SDK's
+release version. Config comes from the environment: `NANOSB_HOME`,
+`NANOSB_VERSION` (required to download), `NANOSB_RUNTIME_URL`,
+`NANOSB_RUNTIME_SHA256`, `NANOSB_OFFLINE=1` to never download, and
+`NANOSB_PROVISIONER`. So `npm install nanosandbox-sdk` is the only setup step
+needed.
 
 ## Testing
 

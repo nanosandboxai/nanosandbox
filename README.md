@@ -126,6 +126,15 @@ dotnet add package Nanosandbox.Sdk                     # C#/.NET
 Java and Kotlin publish to Maven Central (`ai.nanosandbox:nanosandbox-sdk` /
 `nanosandbox-sdk-kotlin`) — no extra repository needed.
 
+Every SDK **ships the runtime and auto-provisions it on first use** — there is
+no separate nanosandbox install step. `ManagedRuntime` locates the
+`nanosb-runtime` helper and, if it is missing, downloads and installs the
+runtime into `$NANOSB_HOME`, pinned to the SDK's release version. Tune this with
+the
+`NANOSB_VERSION` (version to download), `NANOSB_HOME` (install root, default
+`~/.nanosandbox`), and `NANOSB_OFFLINE=1` (never download) environment
+variables.
+
 ```bash
 # Run the conformance harness
 cargo build -p nanosb-conformance
@@ -360,7 +369,10 @@ snapshots, published ports, and an explicit security context. Design decisions:
 
 Self-contained per-language runtime bundles (helper + libkrunfw + gvproxy +
 `exec-agent` + SDK sources + `LICENSE`) can be produced with
-[`scripts/package-sdk.sh`](scripts/package-sdk.sh); see
+[`scripts/package-sdk.sh`](scripts/package-sdk.sh); the SDK runtime bundle the
+language SDKs auto-provision (`nanosandbox-runtime-<os>-<arch>.tar.gz`, helper +
+gvproxy + libkrunfw + exec-agent) is built with
+[`scripts/sdk/build-runtime-bundle.sh`](scripts/sdk/build-runtime-bundle.sh); see
 [`docs/runtime-setup.md`](docs/runtime-setup.md) for the runtime setup and bundle layout.
 
 ## License
