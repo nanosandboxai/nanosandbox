@@ -84,12 +84,10 @@ impl SandboxRegistry {
 
     /// Update a sandbox's status
     pub fn update_status(&self, id: &str, status: SandboxStatus) -> Result<()> {
-        let mut info = self
-            .get(id)?
-            .ok_or_else(|| {
-                error!("update_status(): sandbox '{}' not found in registry", id);
-                Error::SandboxNotFound(id.to_string())
-            })?;
+        let mut info = self.get(id)?.ok_or_else(|| {
+            error!("update_status(): sandbox '{}' not found in registry", id);
+            Error::SandboxNotFound(id.to_string())
+        })?;
 
         info.status = status;
         info.updated_at = Utc::now();

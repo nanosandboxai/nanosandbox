@@ -1,15 +1,13 @@
-ARG BASE_IMAGE=agents-registry/base:latest
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.description="Claude Code agent for nanosandbox sandboxes"
 
-RUN npm install -g @anthropic-ai/claude-code \
+# Pinned via agents-registry/docker/package.json (Dependabot-managed).
+ARG CLAUDE_VERSION=2.1.318
+
+# Pure install: Claude Code CLI + sanity check.
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
     && npm cache clean --force
 
 RUN claude --version && echo "Claude Code: OK"
-RUN rm -rf /workspace/*
-
-# Agents refuse --dangerously-skip-permissions as root; the microVM is the boundary.
-USER developer
-
-CMD ["claude"]

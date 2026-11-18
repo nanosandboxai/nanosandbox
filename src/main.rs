@@ -64,6 +64,14 @@ mod cli {
         #[arg(long, global = true)]
         pub timeout: Option<u32>,
 
+        /// Override per-sandbox disk quota (MB) for all sandboxes from config
+        #[arg(long, global = true)]
+        pub disk: Option<u64>,
+
+        /// Override max processes for all sandboxes from config
+        #[arg(long, global = true)]
+        pub max_pids: Option<u32>,
+
         /// Agent permission level: default, accept-edits, allow-all
         #[arg(long, global = true)]
         pub permissions: Option<String>,
@@ -222,6 +230,14 @@ mod cli {
             #[arg(long, default_value = "600")]
             timeout: u32,
 
+            /// Per-sandbox disk quota in MB (0 = unlimited)
+            #[arg(long, default_value = "0")]
+            disk: u64,
+
+            /// Max processes in the guest (0 = default 512)
+            #[arg(long, default_value = "0")]
+            max_pids: u32,
+
             /// Run agent commands as root inside the sandbox VM
             #[arg(long)]
             run_as_root: bool,
@@ -234,7 +250,7 @@ mod cli {
             #[arg(long)]
             home: Option<String>,
 
-            /// Working directory for the guest command (default: /workspace)
+            /// Working directory for the guest command (default: the guest home)
             #[arg(long)]
             workdir: Option<String>,
 
@@ -302,6 +318,9 @@ mod cli {
 
         /// Check runtime prerequisites
         Doctor,
+
+        /// Show host capacity, admission budget, and current resource usage
+        Capacity,
 
         /// Clean up stale project clones and list nanosb branches
         Cleanup {
@@ -603,6 +622,8 @@ mod cli {
                     cli.cpus,
                     cli.memory,
                     cli.timeout,
+                    cli.disk,
+                    cli.max_pids,
                     cli_permissions,
                     &[],
                 );
@@ -705,6 +726,8 @@ mod cli {
                 env_file,
                 ports,
                 timeout,
+                disk,
+                max_pids,
                 run_as_root,
                 user,
                 home,
@@ -724,6 +747,8 @@ mod cli {
                     env_file.as_deref(),
                     &port_pairs,
                     timeout,
+                    disk,
+                    max_pids,
                     user.as_deref(),
                     home.as_deref(),
                     workdir.as_deref(),
@@ -746,6 +771,7 @@ mod cli {
             Some(Commands::Stop { sandbox }) => cmd_stop(&sandbox, cli.verbose).await,
             Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
             Some(Commands::Doctor) => cmd_doctor(cli.format).await,
+            Some(Commands::Capacity) => cmd_capacity(cli.format).await,
             Some(Commands::Cleanup { project, dry_run }) => {
                 cmd_cleanup(project.as_deref(), dry_run).await
             }
@@ -756,9 +782,7 @@ mod cli {
                 CacheAction::Prune { all } => cmd_cache_prune(all, cli.format).await,
             },
             Some(Commands::Projects) => cmd_projects(cli.format).await,
-            Some(Commands::ProjectsForget { path }) => {
-                cmd_projects_forget(&path, cli.format).await
-            }
+            Some(Commands::ProjectsForget { path }) => cmd_projects_forget(&path, cli.format).await,
             Some(Commands::HostSupervise {
                 foreground,
                 name,
@@ -822,7 +846,10 @@ mod cli {
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf)?;
                 offset = len;
-                print!("{}", crate::strip_terminal_escapes(&String::from_utf8_lossy(&buf)));
+                print!(
+                    "{}",
+                    crate::strip_terminal_escapes(&String::from_utf8_lossy(&buf))
+                );
                 std::io::stdout().flush().ok();
             }
         }
@@ -969,18 +996,15 @@ mod cli {
             // Reject symlinks / non-regular / oversized files before reading.
             const MAX_ENV_FILE: u64 = 1 << 20;
             match std::fs::symlink_metadata(path) {
-                Ok(m) if m.file_type().is_symlink() => anyhow::bail!(
-                    "env file '{}' is a symlink; refusing",
-                    path
-                ),
+                Ok(m) if m.file_type().is_symlink() => {
+                    anyhow::bail!("env file '{}' is a symlink; refusing", path)
+                }
                 Ok(m) if !m.is_file() => {
                     anyhow::bail!("env file '{}' is not a regular file", path)
                 }
-                Ok(m) if m.len() > MAX_ENV_FILE => anyhow::bail!(
-                    "env file '{}' is too large ({} bytes)",
-                    path,
-                    m.len()
-                ),
+                Ok(m) if m.len() > MAX_ENV_FILE => {
+                    anyhow::bail!("env file '{}' is too large ({} bytes)", path, m.len())
+                }
                 Ok(_) => {}
                 Err(e) => anyhow::bail!("failed to access env file '{}': {}", path, e),
             }
@@ -1364,9 +1388,7 @@ mod cli {
     ///
     /// Returns `None` when the origin is unknown/pre-dates tracking. Returns an
     /// error when a key the sandbox needs is no longer available on the host.
-    fn resolve_boot_env(
-        origin: &nanosb_cli::deploy::Origin,
-    ) -> anyhow::Result<Option<String>> {
+    fn resolve_boot_env(origin: &nanosb_cli::deploy::Origin) -> anyhow::Result<Option<String>> {
         if origin.source.is_empty() {
             return Ok(None);
         }
@@ -1470,6 +1492,8 @@ mod cli {
         env_files: &[String],
         ports: &[(u16, u16)],
         timeout: u32,
+        disk: u64,
+        max_pids: u32,
         user: Option<&str>,
         home: Option<&str>,
         workdir: Option<&str>,
@@ -1488,6 +1512,8 @@ mod cli {
             .cpus(cpus)
             .memory_mb(memory)
             .timeout_secs(timeout)
+            .disk_quota_mb(disk)
+            .max_pids(max_pids)
             .runtime_mode(runtime::config::RuntimeMode::Next);
         if let Some(u) = user {
             builder = builder.user(u);
@@ -1517,7 +1543,9 @@ mod cli {
         // socket so `nanosb exec` can run commands in this sandbox.
         let mut extra_mounts: Vec<runtime::config::ExtraMount> = Vec::new();
         if exec {
-            let sandbox_dir = SupervisorClient::new(sandbox_name).sandbox_dir().to_path_buf();
+            let sandbox_dir = SupervisorClient::new(sandbox_name)
+                .sandbox_dir()
+                .to_path_buf();
             let agent_dir = sandbox_dir.join("agent");
             let guest_path = nanosb_cli::deploy::stage_exec_agent(&agent_dir)?;
             let exec_sock = sandbox_dir.join("exec.sock");
@@ -1534,8 +1562,7 @@ mod cli {
             // workload stays PID 1 and the agent runs resident alongside it.
             if command.is_empty() {
                 config.command = Some(guest_path);
-                config.command_args =
-                    vec![nanosb_cli::deploy::EXEC_VSOCK_PORT.to_string()];
+                config.command_args = vec![nanosb_cli::deploy::EXEC_VSOCK_PORT.to_string()];
             } else {
                 config.exec_agent = Some(guest_path);
             }
@@ -1552,9 +1579,7 @@ mod cli {
 
         let json_mode = matches!(format, OutputFormat::Json);
         if json_mode && follow {
-            eprintln!(
-                "warning: --follow is ignored in json mode (output captured in \"output\")"
-            );
+            eprintln!("warning: --follow is ignored in json mode (output captured in \"output\")");
         }
         spawn_supervisor(
             sandbox_name,
@@ -1666,6 +1691,8 @@ mod cli {
         env_file: Option<&str>,
         ports: &[(u16, u16)],
         timeout: u32,
+        disk: u64,
+        max_pids: u32,
         user: Option<&str>,
         home: Option<&str>,
         workdir: Option<&str>,
@@ -1690,6 +1717,8 @@ mod cli {
             &env_files,
             ports,
             timeout,
+            disk,
+            max_pids,
             user,
             home,
             workdir,
@@ -1759,7 +1788,11 @@ mod cli {
                     let r = unsafe { libc::poll(keyfds.as_mut_ptr(), 1, 50) };
                     if r > 0 && keyfds[0].revents & libc::POLLIN != 0 {
                         let n = unsafe {
-                            libc::read(0, stdin_buf.as_mut_ptr() as *mut libc::c_void, stdin_buf.len())
+                            libc::read(
+                                0,
+                                stdin_buf.as_mut_ptr() as *mut libc::c_void,
+                                stdin_buf.len(),
+                            )
                         };
                         if n > 0 {
                             let s = String::from_utf8_lossy(&stdin_buf[..n as usize]).to_string();
@@ -1847,13 +1880,18 @@ mod cli {
             let client = crate::supervisor::client::SupervisorClient::new(&name);
             let state = client.read_state();
             let running = client.is_running();
-            let status = match state.as_ref().map(|s| &s.state) {
-                Some(crate::supervisor::SandboxState::Running) => "Running",
-                Some(crate::supervisor::SandboxState::Starting) => "Starting",
-                Some(crate::supervisor::SandboxState::Stopped) => "Stopped",
-                Some(crate::supervisor::SandboxState::Error) => "Error",
-                None if running => "Running",
-                None => "Stopped",
+            // `is_running` is authoritative: a persisted `running` state whose
+            // supervisor is gone (dead/reused PID) must not display as Running.
+            let status = if running {
+                match state.as_ref().map(|s| &s.state) {
+                    Some(crate::supervisor::SandboxState::Starting) => "Starting",
+                    _ => "Running",
+                }
+            } else {
+                match state.as_ref().map(|s| &s.state) {
+                    Some(crate::supervisor::SandboxState::Error) => "Error",
+                    _ => "Stopped",
+                }
             }
             .to_string();
             if !all && status != "Running" {
@@ -2101,11 +2139,7 @@ mod cli {
     }
 
     /// Spawn a supervisor for a sandbox spec (host-side / shim entrypoint).
-    async fn cmd_supervise(
-        name: &str,
-        spec_path: &str,
-        foreground: bool,
-    ) -> anyhow::Result<()> {
+    async fn cmd_supervise(name: &str, spec_path: &str, foreground: bool) -> anyhow::Result<()> {
         let raw = if spec_path == "-" {
             use std::io::Read;
             let mut s = String::new();
@@ -2148,6 +2182,156 @@ mod cli {
         // SIGCHLD-correct: reap and map the supervisor exit to the task exit.
         let status = child.wait()?;
         std::process::exit(nanosb_cli::deploy::exit_code_from_status(status));
+    }
+
+    async fn cmd_capacity(format: OutputFormat) -> anyhow::Result<()> {
+        use nanosb_host::capacity::{format_bytes, scan_usage, HostBudget, HostCapacity};
+
+        let cap = HostCapacity::detect();
+        let budget = HostBudget::resolve();
+        let usage = scan_usage();
+
+        let mut rows: Vec<(String, u32, u64, String)> = Vec::new();
+        for dir in supervisor_sandbox_dirs() {
+            let Some(name) = dir.file_name().map(|n| n.to_string_lossy().to_string()) else {
+                continue;
+            };
+            let cfg_path = dir.join("config.json");
+            if !cfg_path.exists() {
+                continue;
+            }
+            let (cpus, memory_mb) = std::fs::read_to_string(&cfg_path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .map(|v| {
+                    (
+                        v.get("cpus").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                        v.get("memory_mb").and_then(|x| x.as_u64()).unwrap_or(0),
+                    )
+                })
+                .unwrap_or((0, 0));
+            let client = crate::supervisor::client::SupervisorClient::new(&name);
+            let state = client.read_state();
+            let running = client.is_running();
+            let status = if running {
+                match state.as_ref().map(|s| &s.state) {
+                    Some(crate::supervisor::SandboxState::Starting) => "Starting",
+                    _ => "Running",
+                }
+            } else {
+                match state.as_ref().map(|s| &s.state) {
+                    Some(crate::supervisor::SandboxState::Error) => "Error",
+                    _ => "Stopped",
+                }
+            }
+            .to_string();
+            rows.push((name, cpus, memory_mb, status));
+        }
+
+        match format {
+            OutputFormat::Json => {
+                let json = serde_json::json!({
+                    "host": {
+                        "cpu_count": cap.cpu_count,
+                        "memory_total_bytes": cap.memory_total_bytes,
+                        "memory_available_bytes": cap.memory_available_bytes,
+                        "disk_free_bytes": cap.disk_free_bytes,
+                    },
+                    "budget": {
+                        "enabled": budget.enabled,
+                        "max_vms": budget.max_vms,
+                        "memory_mb": budget.memory_mb,
+                        "cpus": budget.cpus,
+                        "disk_min_free_mb": budget.disk_min_free_mb,
+                        "sandbox_disk_mb": budget.sandbox_disk_mb,
+                    },
+                    "usage": {
+                        "vms": usage.vms,
+                        "memory_mb": usage.memory_mb,
+                        "cpus": usage.cpus,
+                    },
+                    "sandboxes": rows.iter().map(|(n, c, m, s)| serde_json::json!({
+                        "name": n, "cpus": c, "memory_mb": m, "status": s
+                    })).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+            OutputFormat::Text => {
+                println!("Host capacity");
+                println!("  CPUs:      {}", cap.cpu_count);
+                println!(
+                    "  Memory:    {}",
+                    cap.memory_total_bytes
+                        .map(format_bytes)
+                        .unwrap_or_else(|| "unknown".to_string())
+                );
+                if let Some(a) = cap.memory_available_bytes {
+                    println!("  Available: {}", format_bytes(a));
+                }
+                println!(
+                    "  Disk free: {}",
+                    cap.disk_free_bytes
+                        .map(format_bytes)
+                        .unwrap_or_else(|| "unknown".to_string())
+                );
+                println!();
+                println!("Admission budget (NANOSB_* overrides; NANOSB_ADMISSION=off disables)");
+                println!("  Enabled:   {}", budget.enabled);
+                println!(
+                    "  Max VMs:   {}",
+                    budget
+                        .max_vms
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "unlimited".to_string())
+                );
+                println!(
+                    "  Memory:    {}",
+                    budget
+                        .memory_mb
+                        .map(|v| format!("{v} MiB"))
+                        .unwrap_or_else(|| "unlimited".to_string())
+                );
+                println!(
+                    "  CPUs:      {}",
+                    budget
+                        .cpus
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "unlimited".to_string())
+                );
+                println!(
+                    "  Disk min:  {}",
+                    budget
+                        .disk_min_free_mb
+                        .map(|v| format!("{v} MiB"))
+                        .unwrap_or_else(|| "unlimited".to_string())
+                );
+                println!(
+                    "  Sandbox disk: {}",
+                    budget
+                        .sandbox_disk_mb
+                        .map(|v| format!("{v} MiB"))
+                        .unwrap_or_else(|| "unlimited".to_string())
+                );
+                println!();
+                println!("Usage (live supervisors)");
+                println!("  VMs:       {}", usage.vms);
+                println!("  Memory:    {} MiB", usage.memory_mb);
+                println!("  CPUs:      {}", usage.cpus);
+                println!();
+                if rows.is_empty() {
+                    println!("No sandboxes.");
+                } else {
+                    println!(
+                        "{:<24} {:>5} {:>11}  {}",
+                        "NAME", "CPUS", "MEMORY", "STATUS"
+                    );
+                    for (n, c, m, s) in &rows {
+                        println!("{:<24} {:>5} {:>11}  {}", n, c, format!("{m} MiB"), s);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn cmd_doctor(format: OutputFormat) -> anyhow::Result<()> {
@@ -2416,10 +2600,7 @@ mod cli {
                         continue;
                     }
                     if dry_run {
-                        println!(
-                            "Would clean clone: {}",
-                            entry.file_name().to_string_lossy()
-                        );
+                        println!("Would clean clone: {}", entry.file_name().to_string_lossy());
                         continue;
                     }
                     if !nanosb_cli::gitcmd::has_real_git_dir(&clone_path) {
@@ -2540,7 +2721,8 @@ mod cli {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if let Some(panels) = v.get("panels").and_then(|p| p.as_array()) {
                                     for p in panels {
-                                        if let Some(cp) = p.get("clone_path").and_then(|c| c.as_str())
+                                        if let Some(cp) =
+                                            p.get("clone_path").and_then(|c| c.as_str())
                                         {
                                             referenced.insert(std::path::PathBuf::from(cp));
                                         }
@@ -2563,8 +2745,7 @@ mod cli {
                 }
                 let name = dir.file_name().map(|n| n.to_string_lossy().to_string());
                 let Some(name) = name else { continue };
-                let running =
-                    crate::supervisor::client::SupervisorClient::new(&name).is_running();
+                let running = crate::supervisor::client::SupervisorClient::new(&name).is_running();
                 if running {
                     continue;
                 }
@@ -2609,11 +2790,43 @@ mod cli {
             }
         }
 
+        // 3. Orphaned gvproxy processes left behind when a supervisor died
+        // without running its cleanup (PPID 1 = reparented to init).
+        let mut killed_gvproxy = 0usize;
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(["-eo", "pid,ppid,command"])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let mut fields = line.split_whitespace();
+                let Some(pid) = fields.next().and_then(|p| p.parse::<i32>().ok()) else {
+                    continue;
+                };
+                let Some(ppid) = fields.next().and_then(|p| p.parse::<i32>().ok()) else {
+                    continue;
+                };
+                let rest: String = fields.collect::<Vec<_>>().join(" ");
+                if ppid != 1 || !rest.contains("gvproxy") {
+                    continue;
+                }
+                killed_gvproxy += 1;
+                if dry_run {
+                    println!("Would kill orphaned gvproxy (pid {})", pid);
+                } else {
+                    unsafe {
+                        libc::kill(pid, libc::SIGTERM);
+                    }
+                    println!("Killed orphaned gvproxy (pid {})", pid);
+                }
+            }
+        }
+
         println!(
-            "\n{}: {} supervisor dir(s), {} clone tree(s).",
+            "\n{}: {} supervisor dir(s), {} clone tree(s), {} orphaned gvproxy process(es).",
             if dry_run { "GC dry-run" } else { "GC complete" },
             removed_dirs,
-            removed_clones
+            removed_clones,
+            killed_gvproxy
         );
         Ok(())
     }
@@ -2719,7 +2932,9 @@ mod cli {
         match format {
             OutputFormat::Text => {
                 if projects.is_empty() {
-                    println!("No projects registered. Launch nanosb with --project to register one.");
+                    println!(
+                        "No projects registered. Launch nanosb with --project to register one."
+                    );
                     return Ok(());
                 }
 
@@ -2780,10 +2995,7 @@ mod cli {
                 if removed {
                     println!("Removed '{}' from project registry.", path.display());
                 } else {
-                    println!(
-                        "Project '{}' was not in the registry.",
-                        path.display()
-                    );
+                    println!("Project '{}' was not in the registry.", path.display());
                 }
             }
             OutputFormat::Json => {
@@ -2896,7 +3108,8 @@ mod escape_tests {
     }
 }
 
-fn main() -> anyhow::Result<()> {    // Handle internal subprocess commands BEFORE starting the tokio runtime.
+fn main() -> anyhow::Result<()> {
+    // Handle internal subprocess commands BEFORE starting the tokio runtime.
     //
     // This is critical on macOS: the TUI uses a multi-threaded tokio runtime,
     // and Hypervisor.framework's hv_vm_create() fails when called from a

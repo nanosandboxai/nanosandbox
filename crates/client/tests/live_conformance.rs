@@ -82,12 +82,18 @@ fn live_conformance_smoke() {
     let client = SandboxClient::connect(&daemon.socket).expect("connect");
     assert!(!client.capabilities().is_empty());
 
-    let image = std::env::var("NANOSB_TEST_IMAGE").unwrap_or_else(|_| "library/alpine:latest".into());
+    let image =
+        std::env::var("NANOSB_TEST_IMAGE").unwrap_or_else(|_| "library/alpine:latest".into());
     let name = daemon.name.clone();
 
     // ── lifecycle: create boots a real microVM ─────────────────────────
     let sandbox = client
-        .create_with(SandboxBuilder::new(&image).name(&name).cpus(2).memory_mb(1024))
+        .create_with(
+            SandboxBuilder::new(&image)
+                .name(&name)
+                .cpus(2)
+                .memory_mb(1024),
+        )
         .expect("create");
     assert_eq!(sandbox.state().unwrap(), SandboxState::Running);
 
@@ -103,7 +109,9 @@ fn live_conformance_smoke() {
     assert_eq!(out.stdout.trim(), "hello-from-live");
 
     // fs
-    sandbox.fs_write("/tmp/live-conformance", b"written-by-live").expect("fs_write");
+    sandbox
+        .fs_write("/tmp/live-conformance", b"written-by-live")
+        .expect("fs_write");
     assert_eq!(
         sandbox.fs_read_to_string("/tmp/live-conformance").unwrap(),
         "written-by-live"
@@ -121,18 +129,26 @@ fn live_conformance_smoke() {
     assert!(client.list(true).unwrap().iter().any(|s| s.name == name));
 
     // ── secrets (AC7: values are never returned) ───────────────────────
-    sandbox.secret_set("LIVE_TOKEN", "s3cr3t").expect("secret_set");
+    sandbox
+        .secret_set("LIVE_TOKEN", "s3cr3t")
+        .expect("secret_set");
     let secrets = sandbox.secret_list().unwrap();
     assert!(secrets.iter().any(|s| s.key == "LIVE_TOKEN"));
     assert!(secrets.iter().all(|s| s.value.is_none()));
     sandbox.secret_remove("LIVE_TOKEN").expect("secret_remove");
-    assert!(sandbox.secret_list().unwrap().iter().all(|s| s.key != "LIVE_TOKEN"));
+    assert!(sandbox
+        .secret_list()
+        .unwrap()
+        .iter()
+        .all(|s| s.key != "LIVE_TOKEN"));
 
     // ── pause / resume (SIGSTOP / SIGCONT on the VM process) ───────────
     sandbox.pause().expect("pause");
     assert_eq!(sandbox.state().unwrap(), SandboxState::Running);
     sandbox.resume().expect("resume");
-    let after = sandbox.exec("echo", &["after-resume"]).expect("exec after resume");
+    let after = sandbox
+        .exec("echo", &["after-resume"])
+        .expect("exec after resume");
     assert_eq!(after.exit_code, 0);
     assert_eq!(after.stdout.trim(), "after-resume");
 
@@ -144,13 +160,25 @@ fn live_conformance_smoke() {
         "the helper must advertise the Volumes capability"
     );
     let vol = sandbox
-        .volume_create(VolumeBuilder::new(&vol_name).dir(vol_dir.to_string_lossy().to_string()).build())
+        .volume_create(
+            VolumeBuilder::new(&vol_name)
+                .dir(vol_dir.to_string_lossy().to_string())
+                .build(),
+        )
         .expect("volume_create via helper socket");
     assert_eq!(vol.name, vol_name);
-    assert!(sandbox.volume_list().unwrap().iter().any(|v| v.name == vol_name));
+    assert!(sandbox
+        .volume_list()
+        .unwrap()
+        .iter()
+        .any(|v| v.name == vol_name));
     assert_eq!(sandbox.volume_get(&vol_name).unwrap().name, vol_name);
     sandbox.volume_remove(&vol_name).expect("volume_remove");
-    assert!(sandbox.volume_list().unwrap().iter().all(|v| v.name != vol_name));
+    assert!(sandbox
+        .volume_list()
+        .unwrap()
+        .iter()
+        .all(|v| v.name != vol_name));
 
     // ── snapshots (AC6): disk-only, served through the helper socket ────
     assert!(

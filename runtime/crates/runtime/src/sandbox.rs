@@ -80,7 +80,7 @@ impl Sandbox {
     /// The callback is invoked at each phase of sandbox creation with a
     /// human-readable message (e.g. "Pulling image...", "Preparing rootfs...").
     pub async fn create_with_progress(
-        config: SandboxConfig,
+        mut config: SandboxConfig,
         on_progress: Option<&ProgressFn>,
     ) -> Result<Self> {
         let progress = |msg: &str| {
@@ -119,6 +119,14 @@ impl Sandbox {
             progress("Pulling image...");
             debug!("Pulling image: {}", config.image);
             let pulled = image_manager.pull(&config.image).await?;
+            // Adopt the image's own ENV (notably PATH: agent CLIs install under
+            // dirs like /root/.opencode/bin). Sandbox config wins on conflict.
+            for (key, value) in &pulled.env {
+                config
+                    .env
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
 
             // Create OCI bundle directory (empty rootfs)
             let bundles_dir = image_manager.cache_dir().join("bundles");
@@ -169,7 +177,7 @@ impl Sandbox {
 
     /// Create a sandbox with a pre-existing image manager and progress callback.
     pub async fn create_with_manager_progress(
-        config: SandboxConfig,
+        mut config: SandboxConfig,
         image_manager: Arc<ImageManager>,
         on_progress: Option<&ProgressFn>,
     ) -> Result<Self> {
@@ -197,6 +205,12 @@ impl Sandbox {
                 progress("Pulling image...");
                 debug!("Pulling image: {}", config.image);
                 let pulled_image = image_manager.pull(&config.image).await?;
+                for (key, value) in &pulled_image.env {
+                    config
+                        .env
+                        .entry(key.clone())
+                        .or_insert_with(|| value.clone());
+                }
 
                 // Create OCI bundle directory (empty rootfs)
                 let bundles_dir = image_manager.cache_dir().join("bundles");
@@ -418,10 +432,15 @@ impl Sandbox {
 
     /// Dynamically forward a guest port to the same host port via gvproxy.
     pub fn expose_port(&self, port: u16) -> std::result::Result<(), String> {
+        self.expose_port_to(port, crate::runtime::gvproxy::GUEST_IP)
+    }
+
+    /// Forward a guest port to an explicit remote host inside the guest stack.
+    pub fn expose_port_to(&self, port: u16, remote_host: &str) -> std::result::Result<(), String> {
         self.runtime
             .as_ref()
             .ok_or_else(|| "no runtime".to_string())
-            .and_then(|r| r.expose_port(&self.id, port))
+            .and_then(|r| r.expose_port_to(&self.id, port, remote_host))
     }
 
     /// Get the guest IP address for this sandbox.
@@ -472,9 +491,7 @@ impl Sandbox {
 
         // Create and start the container again
         debug!("Creating container via runtime");
-        runtime
-            .create(&self.id, &self.config, bundle_path)
-            .await?;
+        runtime.create(&self.id, &self.config, bundle_path).await?;
 
         debug!("Starting container via runtime");
         runtime.start(&self.id).await?;

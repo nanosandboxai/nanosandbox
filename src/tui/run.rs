@@ -1,7 +1,8 @@
 //! Main event loop for the TUI.
 
 use std::collections::HashMap;
-use std::io::{self, IsTerminal};
+use std::io::{self, BufRead, IsTerminal};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,6 +30,12 @@ use super::app::{
 use super::commands::{self, Command};
 use super::event::{spawn_terminal_event_reader, AppEvent};
 use super::renderer;
+
+/// Maximum consecutive automatic reconnect attempts after transient console
+/// read errors before a panel is treated as genuinely disconnected.
+pub(crate) const MAX_RECONNECT_ATTEMPTS: u8 = 3;
+/// Delay between automatic reconnect attempts (simple fixed backoff).
+const RECONNECT_BACKOFF_MS: u64 = 300;
 
 /// Cross-platform stderr redirection helpers.
 ///
@@ -105,6 +112,16 @@ pub enum EventOutcome {
         /// Path to the clone directory to open.
         path: std::path::PathBuf,
     },
+}
+
+/// RAII guard that signals the dedicated metrics poller thread to exit when
+/// dropped, so the thread never outlives the TUI (including early returns).
+struct MetricsShutdownGuard(Arc<AtomicBool>);
+
+impl Drop for MetricsShutdownGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 pub async fn run_tui(
@@ -266,6 +283,7 @@ pub async fn run_tui(
     let mut app = App::new();
     app.project_path = project_path.clone();
     app.runtime_env_pool = runtime_env_pool;
+    app.host_capacity = Some(super::host_capacity::HostCapacity::detect());
 
     // Auto-register the current project in the project registry.
     if let Some(ref pp) = project_path {
@@ -346,6 +364,68 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
         });
     }
 
+    // Spawn the dedicated metrics poller on its own OS thread. It owns a
+    // channel and loops on an interval, so socket polling never runs on the
+    // async event loop nor on the shared Tokio blocking pool used by the
+    // terminal reader. The thread is sequential, so polls never overlap.
+    {
+        let metrics_tx = tx.clone();
+        let metrics_targets = app.metrics_targets.clone();
+        let metrics_shutdown = app.metrics_shutdown.clone();
+        std::thread::Builder::new()
+            .name("metrics-poller".to_string())
+            .spawn(move || {
+                let interval = Duration::from_secs(2);
+                loop {
+                    // Sleep in small increments so shutdown is prompt.
+                    let mut slept = Duration::ZERO;
+                    while slept < interval {
+                        if metrics_shutdown.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                        slept += Duration::from_millis(100);
+                    }
+                    if metrics_shutdown.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let targets = metrics_targets.lock().unwrap().clone();
+                    if targets.is_empty() {
+                        continue;
+                    }
+                    let mut samples = Vec::new();
+                    for (name, limit) in targets {
+                        let Ok(client) = nanosb_client::SandboxClient::for_sandbox(&name) else {
+                            continue;
+                        };
+                        let Ok(m) = client.sandbox(&name).metrics() else {
+                            continue;
+                        };
+                        samples.push((
+                            name,
+                            super::app::SandboxMetrics {
+                                cpu_percent: m.cpu_percent,
+                                memory_used_bytes: m.memory_used_bytes,
+                                memory_limit_bytes: limit,
+                                disk_used_bytes: m.disk_used_bytes,
+                            },
+                        ));
+                    }
+                    if metrics_shutdown.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    if metrics_tx
+                        .send(AppEvent::MetricsUpdated { samples })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            })
+            .expect("failed to spawn metrics poller thread");
+    }
+    let _metrics_shutdown_guard = MetricsShutdownGuard(app.metrics_shutdown.clone());
+
     // Initial render.
     terminal.draw(|frame| renderer::render(frame, &mut app))?;
 
@@ -407,8 +487,12 @@ Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-regist
             break;
         }
 
-        // Re-render after every event.
-        terminal.draw(|frame| renderer::render(frame, &mut app))?;
+        // Render only when something changed (Tick or an explicit dirty flag),
+        // never after every single event.
+        if app.needs_render {
+            terminal.draw(|frame| renderer::render(frame, &mut app))?;
+            app.needs_render = false;
+        }
     }
 
     // Restore terminal before cleanup so the user sees progress messages.
@@ -550,6 +634,12 @@ pub async fn handle_event(
     event: AppEvent,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> EventOutcome {
+    // Mark the UI dirty for every event except high-frequency terminal data,
+    // which is throttled to the Tick cadence so a burst of chunks doesn't
+    // trigger a full redraw per chunk.
+    if !matches!(&event, AppEvent::TerminalData { .. }) {
+        app.needs_render = true;
+    }
     match event {
         AppEvent::Terminal(crossterm_event) => {
             match crossterm_event {
@@ -610,18 +700,23 @@ pub async fn handle_event(
                 CrosstermEvent::FocusLost => {}
             }
         }
-        AppEvent::SandboxCreating { panel_idx, message } => {
-            if let Some(panel) = app.panels.get_mut(panel_idx) {
-                panel.loading_message = Some(message);
+        AppEvent::SandboxCreating { panel_id, message } => {
+            if let Some(panel_idx) = app.panel_index_by_id(panel_id) {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.loading_message = Some(message);
+                }
             }
         }
         AppEvent::SupervisorReady {
-            panel_idx,
+            panel_id,
             name,
             short_id,
             project_mount,
             exec_pty,
         } => {
+            let Some(panel_idx) = app.panel_index_by_id(panel_id) else {
+                return EventOutcome::Continue;
+            };
             if let Some(panel) = app.panels.get_mut(panel_idx) {
                 panel.backend = None;
                 panel.set_supervisor(name.clone());
@@ -637,18 +732,12 @@ pub async fn handle_event(
             let (pty_cols, pty_rows) = {
                 let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
                 let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
-                super::grid::estimate_panel_inner_size(
-                    term_size.0,
-                    term_size.1,
-                    app.visible_panel_count(),
-                    has_sidebar,
-                    app.zoomed,
-                )
+                super::grid::estimate_panel_inner_size(term_size.0, term_size.1, has_sidebar)
             };
 
             let tx = tx.clone();
             tokio::spawn(async move {
-                let max_attempts = 10;
+                let max_attempts = 90;
                 let mut last_err = String::new();
                 for attempt in 1..=max_attempts {
                     let delay = if attempt == 1 { 300 } else { 1000 };
@@ -656,7 +745,13 @@ pub async fn handle_event(
                     let result = match exec_pty.clone() {
                         Some((sock, program, args)) => {
                             super::terminal::connect_exec_pty(
-                                sock, program, args, pty_cols, pty_rows, panel_idx, tx.clone(),
+                                sock,
+                                program,
+                                args,
+                                pty_cols,
+                                pty_rows,
+                                panel_id,
+                                tx.clone(),
                             )
                             .await
                         }
@@ -665,7 +760,7 @@ pub async fn handle_event(
                                 name.clone(),
                                 pty_cols,
                                 pty_rows,
-                                panel_idx,
+                                panel_id,
                                 tx.clone(),
                             )
                             .await
@@ -673,7 +768,7 @@ pub async fn handle_event(
                     };
                     match result {
                         Ok(handle) => {
-                            let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
+                            let _ = tx.send(AppEvent::SshConnected { panel_id, handle });
                             return;
                         }
                         Err(e) => {
@@ -682,7 +777,7 @@ pub async fn handle_event(
                     }
                 }
                 let _ = tx.send(AppEvent::SshDisconnected {
-                    panel_idx,
+                    panel_id,
                     error: Some(format!(
                         "Console attach failed after {} attempts: {}",
                         max_attempts, last_err
@@ -690,36 +785,45 @@ pub async fn handle_event(
                 });
             });
         }
-        AppEvent::SandboxFailed { panel_idx, error } => {
-            if let Some(panel) = app.panels.get_mut(panel_idx) {
-                panel.loading_error = Some(error);
-            }
-        }
-        AppEvent::SshConnected { panel_idx, handle } => {
-            if let Some(panel) = app.panels.get_mut(panel_idx) {
-                let was_reconnecting = panel.reconnecting;
-                if was_reconnecting && panel.terminal.is_some() {
-                    // Reconnect: keep the existing terminal screen intact
-                    // so the user doesn't see any flicker. Only attach
-                    // the new SSH handle.
-                    panel.terminal_handle = Some(handle);
-                } else {
-                    // Fresh connection: create new terminal.
-                    let (cols, rows) = panel.last_terminal_size;
-                    panel.terminal = Some(super::terminal::SshTerminal::new(cols, rows));
-                    panel.terminal_handle = Some(handle);
+        AppEvent::SandboxFailed { panel_id, error } => {
+            if let Some(panel_idx) = app.panel_index_by_id(panel_id) {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.loading_error = Some(error);
                 }
-                panel.mode = if panel.auto_mode {
-                    PanelMode::Headless
-                } else {
-                    PanelMode::Terminal
-                };
-                panel.reconnecting = false;
-                panel.loading_message = None;
-                panel.loading_error = None;
             }
         }
-        AppEvent::TerminalData { panel_idx, data } => {
+        AppEvent::SshConnected { panel_id, handle } => {
+            if let Some(panel_idx) = app.panel_index_by_id(panel_id) {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    let was_reconnecting = panel.reconnecting;
+                    if was_reconnecting && panel.terminal.is_some() {
+                        // Reconnect: keep the existing terminal screen intact
+                        // so the user doesn't see any flicker. Only attach
+                        // the new SSH handle.
+                        panel.terminal_handle = Some(handle);
+                    } else {
+                        // Fresh connection: create new terminal.
+                        let (cols, rows) = panel.last_terminal_size;
+                        panel.terminal = Some(super::terminal::SshTerminal::new(cols, rows));
+                        panel.terminal_handle = Some(handle);
+                    }
+                    panel.mode = if panel.auto_mode {
+                        PanelMode::Headless
+                    } else {
+                        PanelMode::Terminal
+                    };
+                    panel.reconnecting = false;
+                    panel.reconnect_attempts = 0;
+                    panel.loading_message = None;
+                    panel.loading_error = None;
+                    panel.exited = None;
+                }
+            }
+        }
+        AppEvent::TerminalData { panel_id, data } => {
+            let Some(panel_idx) = app.panel_index_by_id(panel_id) else {
+                return EventOutcome::Continue;
+            };
             // Clear selection if terminal content changes in the selected panel
             // (but not while user is actively dragging).
             if app
@@ -738,6 +842,11 @@ pub async fn handle_event(
                     // Still feed vt100 for /terminal fallback + URL extraction.
                     if let Some(ref mut term) = panel.terminal {
                         term.process_bytes(&data);
+                        for r in super::terminal::query_responses(term.screen(), &data) {
+                            if let Some(ref h) = panel.terminal_handle {
+                                let _ = h.write_tx.send(r);
+                            }
+                        }
 
                         let urls = super::terminal::extract_urls_from_screen(term.screen());
                         let now = std::time::Instant::now();
@@ -745,7 +854,8 @@ pub async fn handle_event(
                             if !super::terminal::is_auth_url(&url) {
                                 continue;
                             }
-                            if !url.contains('?') && !super::terminal::is_device_code_url(&url)
+                            if !url.contains('?')
+                                && !super::terminal::device_code_url_is_complete(&url)
                             {
                                 continue;
                             }
@@ -767,6 +877,11 @@ pub async fn handle_event(
                     }
                 } else if let Some(ref mut term) = panel.terminal {
                     term.process_bytes(&data);
+                    for r in super::terminal::query_responses(term.screen(), &data) {
+                        if let Some(ref h) = panel.terminal_handle {
+                            let _ = h.write_tx.send(r);
+                        }
+                    }
 
                     // Extract URLs from the parsed vt100 screen, then
                     // validate the hostname.  TUI apps (ink.js) re-render
@@ -781,11 +896,12 @@ pub async fn handle_event(
                             continue;
                         }
                         // OAuth authorize URLs always have query parameters
-                        // (?client_id=...).  Truncated URLs from partial screen
+                        // (?client_id=...). Truncated URLs from partial screen
                         // renders won't have reached the '?' yet — skip them.
-                        // Exception: device-code flow URLs (e.g. github.com/login/device,
-                        // cursor.com/loginlink) are complete without query params.
-                        if !url.contains('?') && !super::terminal::is_device_code_url(&url) {
+                        // Device-code URLs are only complete when their code
+                        // query param has arrived (see device_code_url_is_complete).
+                        if !url.contains('?') && !super::terminal::device_code_url_is_complete(&url)
+                        {
                             continue;
                         }
                         let key = super::terminal::url_dedup_key(&url);
@@ -809,7 +925,10 @@ pub async fn handle_event(
                 }
             }
         }
-        AppEvent::SshDisconnected { panel_idx, error } => {
+        AppEvent::SshDisconnected { panel_id, error } => {
+            let Some(panel_idx) = app.panel_index_by_id(panel_id) else {
+                return EventOutcome::Continue;
+            };
             // Check if this is a reconnect attempt that failed.
             let is_reconnecting = app.panels.get(panel_idx).is_some_and(|p| p.reconnecting);
             let is_headless = app
@@ -855,25 +974,197 @@ pub async fn handle_event(
                     app.set_status_message(msg);
                 }
             } else {
-                // Genuine disconnect: kill sandbox and close panel.
-                if let Some((name, sandbox_arc, supervisor_name)) =
-                    kill_panel_at(app, panel_idx)
-                {
+                // The agent's PTY exited. If the supervisor is still running the
+                // sandbox itself is healthy, so keep the panel and report the
+                // exit instead of tearing down the VM. Agents that restart their
+                // own session (e.g. Goose after its telemetry prompt) otherwise
+                // look like a disconnect and lose the sandbox.
+                let alive = app
+                    .panels
+                    .get(panel_idx)
+                    .and_then(|p| p.supervisor_name().map(|n| n.to_string()))
+                    .map(|n| crate::supervisor::client::SupervisorClient::new(&n).is_running())
+                    .unwrap_or(false);
+
+                if !alive {
+                    // Keep the panel (and its frozen output) so the failure is
+                    // visible; still stop the dead supervisor / destroy the sandbox.
+                    let (name, supervisor_name, sandbox_arc) =
+                        match app.panels.get_mut(panel_idx) {
+                            Some(panel) => {
+                                if let Some(mut pm) = panel.project_mount.take() {
+                                    let _ = pm.teardown();
+                                }
+                                let sname = panel.supervisor_name().map(str::to_string);
+                                let arc = panel.take_sandbox();
+                                (panel.agent_name.clone(), sname, arc)
+                            }
+                            None => (String::new(), None, None),
+                        };
                     if let Some(sb) = sandbox_arc {
                         spawn_sandbox_destroy(sb);
                     }
                     if let Some(sname) = supervisor_name {
                         spawn_supervisor_stop(sname);
                     }
-
-                    let msg = if let Some(err) = error {
-                        format!("'{}' disconnected: {}", name, err)
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        let reason = error.unwrap_or_else(|| "sandbox ended".to_string());
+                        panel.terminal_handle = None;
+                        panel.exited = Some(format!("{} \u{2014} sandbox ended", reason));
+                        if panel.terminal.is_some() {
+                            panel.mode = PanelMode::Terminal;
+                        } else {
+                            panel.mode = PanelMode::Loading;
+                            panel.loading_error = Some(reason);
+                        }
+                    }
+                    app.set_status_message(format!("'{}' sandbox ended; see panel output.", name));
+                } else if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    let name = panel.agent_name.clone();
+                    let reason =
+                        error.unwrap_or_else(|| "agent exited (no exit code)".to_string());
+                    panel.terminal_handle = None;
+                    panel.reconnecting = false;
+                    panel.exited = Some(reason.clone());
+                    if panel.terminal.is_some() {
+                        // Keep the frozen terminal screen so the agent's real
+                        // error output stays visible to the user.
+                        panel.mode = PanelMode::Terminal;
                     } else {
-                        format!("'{}' session ended.", name)
-                    };
-                    app.set_status_message(msg);
+                        panel.mode = PanelMode::Loading;
+                        panel.loading_error = Some(reason);
+                    }
+                    panel.loading_tick = 0;
+                    app.set_status_message(format!("'{}' agent exited; see panel output.", name));
                 }
             }
+        }
+        AppEvent::ConsoleReadError { panel_id, error } => {
+            let Some(panel_idx) = app.panel_index_by_id(panel_id) else {
+                return EventOutcome::Continue;
+            };
+            let is_headless = app
+                .panels
+                .get(panel_idx)
+                .is_some_and(|p| p.mode == PanelMode::Headless);
+
+            if is_headless {
+                // Headless panels keep their output and are not retried: a read
+                // failure here means the headless agent session ended.
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    if let Some(ref mut hs) = panel.headless_state {
+                        if hs.status != "completed" && hs.status != "error" {
+                            hs.agent_text.push_str(&format!("\n[process] {}\n", error));
+                            hs.finish("error");
+                        }
+                    }
+                    panel.terminal_handle = None;
+                    let name = panel.agent_name.clone();
+                    app.set_status_message(format!("'{}' headless agent exited: {}", name, error));
+                }
+            } else {
+                // Only tear down when the supervised sandbox is really gone, or
+                // when automatic reconnects are exhausted. A healthy sandbox
+                // must never be killed because a single read failed.
+                let alive = app
+                    .panels
+                    .get(panel_idx)
+                    .and_then(|p| p.supervisor_name().map(|n| n.to_string()))
+                    .map(|n| crate::supervisor::client::SupervisorClient::new(&n).is_running())
+                    .unwrap_or(false);
+                let attempts_exhausted = app.panels.get(panel_idx).is_some_and(|p| {
+                    p.reconnecting && p.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS
+                });
+
+                if !alive || attempts_exhausted {
+                    if let Some((name, sandbox_arc, supervisor_name)) =
+                        kill_panel_at(app, panel_idx)
+                    {
+                        if let Some(sb) = sandbox_arc {
+                            spawn_sandbox_destroy(sb);
+                        }
+                        if let Some(sname) = supervisor_name {
+                            spawn_supervisor_stop(sname);
+                        }
+                        let msg = if !alive {
+                            format!("'{}' disconnected: {}", name, error)
+                        } else {
+                            format!(
+                                "'{}' dropped after {} reconnect attempts: {}",
+                                name, MAX_RECONNECT_ATTEMPTS, error
+                            )
+                        };
+                        app.set_status_message(msg);
+                    }
+                } else {
+                    // Transient read failure with a healthy sandbox behind it:
+                    // keep the panel and reconnect after a short delay. The
+                    // retry budget is bounded by MAX_RECONNECT_ATTEMPTS.
+                    if let Some(panel) = app.panels.get_mut(panel_idx) {
+                        panel.reconnecting = true;
+                        panel.reconnect_attempts = panel.reconnect_attempts.saturating_add(1);
+                    }
+                    let (pty_cols, pty_rows) = {
+                        let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
+                        let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
+                        super::grid::estimate_panel_inner_size(
+                            term_size.0,
+                            term_size.1,
+                            has_sidebar,
+                        )
+                    };
+                    let console_name = app.panels[panel_idx]
+                        .supervisor_name()
+                        .map(|s| s.to_string());
+                    let exec_pty = app.panels[panel_idx].exec_pty.clone();
+                    if let Some(name) = console_name {
+                        spawn_panel_reconnect(
+                            tx.clone(),
+                            panel_id,
+                            name,
+                            exec_pty,
+                            pty_cols,
+                            pty_rows,
+                            Duration::from_millis(RECONNECT_BACKOFF_MS),
+                        );
+                    }
+                }
+            }
+        }
+        AppEvent::MetricsUpdated { samples } => {
+            app.metrics_poll_in_flight = false;
+            for (name, sample) in samples {
+                if let Some(panel) = app
+                    .panels
+                    .iter_mut()
+                    .find(|p| p.supervisor_name() == Some(name.as_str()))
+                {
+                    panel.metrics = Some(sample);
+                }
+            }
+        }
+        AppEvent::HostCapacityUpdated { capacity } => {
+            app.host_capacity = Some(capacity);
+        }
+        AppEvent::SidebarFilesUpdated {
+            modified,
+            committed,
+            refusal,
+        } => {
+            app.sidebar_modified_files = modified;
+            app.sidebar_committed_files = committed;
+            if app.sidebar_files_scroll >= app.sidebar_modified_files.len() {
+                app.sidebar_files_scroll = 0;
+            }
+            if app.sidebar_committed_scroll >= app.sidebar_committed_files.len() {
+                app.sidebar_committed_scroll = 0;
+            }
+            if let Some(msg) = refusal {
+                app.set_status_message(msg);
+            }
+        }
+        AppEvent::CommitSyncResult(result) => {
+            app.apply_commit_sync(result);
         }
         AppEvent::Tick => {
             // Increment loading animation counter and tick down panel notifications.
@@ -910,6 +1201,7 @@ pub async fn handle_event(
                             "Auth URL debounce elapsed; opening in host browser"
                         );
                         panel.opened_urls.insert(key);
+                        forward_oauth_callback_port(panel, &url).await;
                         tracing::debug!(
                             panel = %panel.agent_name,
                             url = %url,
@@ -937,40 +1229,84 @@ pub async fn handle_event(
                 }
             }
             app.sidebar_tick_counter = app.sidebar_tick_counter.wrapping_add(1);
+            if app.sidebar_tick_counter.is_multiple_of(40) {
+                // Detect host capacity off the event loop (spawns df/sysctl).
+                let tx = tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let capacity = super::host_capacity::HostCapacity::detect();
+                    let _ = tx.send(AppEvent::HostCapacityUpdated { capacity });
+                });
+            }
             if app.sidebar_tick_counter.is_multiple_of(8) {
                 // Refresh file lists when sidebar is visible (~every 2s).
                 if app.show_sandbox_sidebar {
-                    app.refresh_sidebar_modified_files();
-                    app.refresh_sidebar_committed_files();
-                }
-                // Auto-sync commits from all panel clones to source repos.
-                let notifications = app.sync_project_commits();
-                for (panel_idx, message) in notifications {
-                    if let Some(panel) = app.panels.get_mut(panel_idx) {
-                        panel.chat_history.push(ChatMessage {
-                            role: MessageRole::System,
-                            content: message,
+                    let (worktree, base) = {
+                        let panel = app.panels.get(app.focused_panel);
+                        let wt = panel
+                            .and_then(|p| p.project_mount.as_ref())
+                            .and_then(|pm| pm.worktree_base.clone());
+                        let base = panel.and_then(|p| p.base_commit.clone());
+                        (wt, base)
+                    };
+                    let tx = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let (modified, refusal) =
+                            super::app::compute_sidebar_modified_files(worktree.as_deref());
+                        let committed = super::app::compute_sidebar_committed_files(
+                            worktree.as_deref(),
+                            base.as_deref(),
+                        );
+                        let _ = tx.send(AppEvent::SidebarFilesUpdated {
+                            modified,
+                            committed,
+                            refusal,
                         });
-                    }
+                    });
                 }
+                // Update the dedicated metrics poller's target list. The
+                // poller thread is sequential, so polls never overlap.
+                let targets: Vec<(String, u64)> = if app.show_sandbox_sidebar {
+                    app.panels
+                        .iter()
+                        .filter_map(|p| {
+                            p.supervisor_name()
+                                .map(|n| (n.to_string(), p.configured_memory_bytes()))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                *app.metrics_targets.lock().unwrap() = targets;
+                // Auto-sync commits from all panel clones to source repos.
+                let inputs = app.commit_sync_inputs();
+                let global_auto_sync = app.settings.gitsync.auto_sync;
+                let notify_on_commit = app.settings.gitsync.notify_on_commit;
+                let tx = tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = super::app::compute_project_commits(
+                        &inputs,
+                        global_auto_sync,
+                        notify_on_commit,
+                    );
+                    let _ = tx.send(AppEvent::CommitSyncResult(result));
+                });
             }
         }
         AppEvent::OpenTuiTool { binary, path } => {
             return EventOutcome::RunTuiTool { binary, path };
         }
-        AppEvent::UploadStarted {
-            panel_idx,
-            filename,
-        } => {
+        AppEvent::UploadStarted { panel_id, filename } => {
             let msg = format!("Uploading {}...", filename);
             // Show immediately; stays until replaced by Complete/Failed.
             // 120 ticks × 250ms = 30s (generous timeout, replaced on completion).
-            if let Some(panel) = app.panels.get_mut(panel_idx) {
-                panel.notification = Some((msg, false, 120));
+            if let Some(panel_idx) = app.panel_index_by_id(panel_id) {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.notification = Some((msg, false, 120));
+                }
             }
         }
         AppEvent::UploadComplete {
-            panel_idx,
+            panel_id,
             filename,
             remote_path,
             size,
@@ -983,15 +1319,19 @@ pub async fn handle_event(
             );
             // Show overlay notification on the panel (replaces previous, auto-dismisses).
             // 16 ticks × 250ms = 4s.
-            if let Some(panel) = app.panels.get_mut(panel_idx) {
-                panel.notification = Some((msg, false, 16));
+            if let Some(panel_idx) = app.panel_index_by_id(panel_id) {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.notification = Some((msg, false, 16));
+                }
             }
         }
-        AppEvent::UploadFailed { panel_idx, error } => {
+        AppEvent::UploadFailed { panel_id, error } => {
             let msg = format!("Upload failed: {}", error);
             // 24 ticks × 250ms = 6s (errors stay longer).
-            if let Some(panel) = app.panels.get_mut(panel_idx) {
-                panel.notification = Some((msg, true, 24));
+            if let Some(panel_idx) = app.panel_index_by_id(panel_id) {
+                if let Some(panel) = app.panels.get_mut(panel_idx) {
+                    panel.notification = Some((msg, true, 24));
+                }
             }
         }
     }
@@ -1093,7 +1433,7 @@ fn kill_panel_at(
 /// attach to its console instead of starting a duplicate VM.
 fn try_attach_supervisor(
     sandbox_name: &str,
-    panel_idx: usize,
+    panel_id: u64,
     tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) -> bool {
     if sandbox_name.is_empty() {
@@ -1102,7 +1442,7 @@ fn try_attach_supervisor(
     if crate::supervisor::client::SupervisorClient::new(sandbox_name).is_running() {
         let short_id = sandbox_name.chars().take(8).collect::<String>();
         let _ = tx.send(AppEvent::SupervisorReady {
-            panel_idx,
+            panel_id,
             name: sandbox_name.to_string(),
             short_id,
             project_mount: None,
@@ -1127,6 +1467,53 @@ fn sandbox_state_dir(name: &str) -> std::path::PathBuf {
     supervisor_sandbox_dir(name).join("state")
 }
 
+/// Forward an OAuth callback port from the host to the guest before the
+/// browser opens the auth URL. Codex's callback server binds loopback-only
+/// inside the VM, so the host's `127.0.0.1:<port>` must be forwarded to the
+/// guest's loopback or the redirect hits nothing (`ERR_CONNECTION_REFUSED`).
+///
+/// The port is forwarded once per panel (tracked in `forwarded_ports`); a
+/// failure logs a warning but never blocks opening the URL.
+async fn forward_oauth_callback_port(panel: &mut AgentPanel, url: &str) {
+    let Some(port) = super::terminal::extract_oauth_callback_port(url) else {
+        return;
+    };
+    if panel.forwarded_ports.contains(&port) {
+        return;
+    }
+    let result = match &panel.backend {
+        Some(super::app::PanelBackend::Legacy { sandbox }) => sandbox
+            .lock()
+            .await
+            .expose_port(port)
+            .map_err(|e| e.to_string()),
+        Some(super::app::PanelBackend::Supervisor { name }) => {
+            crate::supervisor::client::SupervisorClient::new(name)
+                .expose_port(port)
+                .map_err(|e| e.to_string())
+        }
+        None => return,
+    };
+    match result {
+        Ok(()) => {
+            panel.forwarded_ports.insert(port);
+            tracing::debug!(
+                panel = %panel.agent_name,
+                port,
+                "Forwarded OAuth callback port to guest"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                panel = %panel.agent_name,
+                port,
+                error = %e,
+                "Failed to forward OAuth callback port; opening URL anyway"
+            );
+        }
+    }
+}
+
 /// Spawn a supervisor-managed sandbox for a TUI panel and attach its console.
 ///
 /// Mirrors `nanosb run`'s next-mode path: plan the deploy, materialize mounts
@@ -1134,7 +1521,7 @@ fn sandbox_state_dir(name: &str) -> std::path::PathBuf {
 /// `Running`, then emit `AppEvent::SupervisorReady` so the panel attaches.
 async fn spawn_supervisor_panel(
     config: sandbox::AgentSandboxConfig,
-    panel_idx: usize,
+    panel_id: u64,
     tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) {
     use crate::deploy;
@@ -1143,7 +1530,7 @@ async fn spawn_supervisor_panel(
     let sandbox_dir = supervisor_sandbox_dir(&name);
 
     let _ = tx.send(AppEvent::SandboxCreating {
-        panel_idx,
+        panel_id,
         message: "Planning deploy...".into(),
     });
 
@@ -1153,7 +1540,7 @@ async fn spawn_supervisor_panel(
             Ok(pm) => pm,
             Err(e) => {
                 let _ = tx.send(AppEvent::SandboxFailed {
-                    panel_idx,
+                    panel_id,
                     error: format!("Failed to set up project mount: {}", e),
                 });
                 return;
@@ -1169,7 +1556,7 @@ async fn spawn_supervisor_panel(
             let _ = pm.teardown();
         }
         let _ = tx.send(AppEvent::SandboxFailed {
-            panel_idx,
+            panel_id,
             error: format!("Failed to materialize deploy plan: {}", e),
         });
         return;
@@ -1215,7 +1602,7 @@ async fn spawn_supervisor_panel(
                     let _ = pm.teardown();
                 }
                 let _ = tx.send(AppEvent::SandboxFailed {
-                    panel_idx,
+                    panel_id,
                     error: format!("Interactive mode needs the exec agent: {}", e),
                 });
                 return;
@@ -1227,7 +1614,7 @@ async fn spawn_supervisor_panel(
         Ok(json) => json,
         Err(e) => {
             let _ = tx.send(AppEvent::SandboxFailed {
-                panel_idx,
+                panel_id,
                 error: format!("Failed to serialize config: {}", e),
             });
             return;
@@ -1237,7 +1624,7 @@ async fn spawn_supervisor_panel(
         Ok(pair) => pair,
         Err(e) => {
             let _ = tx.send(AppEvent::SandboxFailed {
-                panel_idx,
+                panel_id,
                 error: format!("Failed to prepare boot env: {}", e),
             });
             return;
@@ -1255,7 +1642,7 @@ async fn spawn_supervisor_panel(
         Ok(json) => json,
         Err(e) => {
             let _ = tx.send(AppEvent::SandboxFailed {
-                panel_idx,
+                panel_id,
                 error: format!("Failed to serialize mounts: {}", e),
             });
             return;
@@ -1263,7 +1650,7 @@ async fn spawn_supervisor_panel(
     };
 
     let _ = tx.send(AppEvent::SandboxCreating {
-        panel_idx,
+        panel_id,
         message: "Booting microVM...".into(),
     });
 
@@ -1277,7 +1664,7 @@ async fn spawn_supervisor_panel(
         rc.timeout_secs,
     ) {
         let _ = tx.send(AppEvent::SandboxFailed {
-            panel_idx,
+            panel_id,
             error: format!("Failed to spawn supervisor: {}", e),
         });
         return;
@@ -1286,17 +1673,17 @@ async fn spawn_supervisor_panel(
     let client = crate::supervisor::client::SupervisorClient::new(&name);
     if let Err(e) = deploy::wait_supervisor_running(&client, 60).await {
         let _ = tx.send(AppEvent::SandboxFailed {
-            panel_idx,
+            panel_id,
             error: format!("Supervisor did not start: {}", e),
         });
         return;
     }
 
     let short_id = name.chars().take(8).collect::<String>();
-    let exec_pty = interactive_exec
-        .map(|(program, args)| (sandbox_dir.join("exec.sock"), program, args));
+    let exec_pty =
+        interactive_exec.map(|(program, args)| (sandbox_dir.join("exec.sock"), program, args));
     let _ = tx.send(AppEvent::SupervisorReady {
-        panel_idx,
+        panel_id,
         name,
         short_id,
         project_mount,
@@ -1328,8 +1715,62 @@ fn spawn_supervisor_stop(name: String) {
     });
 }
 
+/// Spawn a background task that re-attaches to `panel_id`'s supervised
+/// sandbox after `delay` via the same console/exec path as the initial attach.
+/// On success it sends `AppEvent::SshConnected` (the handler resets the retry
+/// counter); on failure it sends `AppEvent::ConsoleReadError` so the handler
+/// can retry within the bounded budget or give up.
+fn spawn_panel_reconnect(
+    tx: mpsc::UnboundedSender<AppEvent>,
+    panel_id: u64,
+    console_name: String,
+    exec_pty: Option<(std::path::PathBuf, String, Vec<String>)>,
+    cols: u16,
+    rows: u16,
+    delay: Duration,
+) {
+    tokio::spawn(async move {
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        let result = match exec_pty {
+            Some((sock, program, args)) => {
+                super::terminal::connect_exec_pty(
+                    sock,
+                    program,
+                    args,
+                    cols,
+                    rows,
+                    panel_id,
+                    tx.clone(),
+                )
+                .await
+            }
+            None => {
+                super::terminal::connect_console(console_name, cols, rows, panel_id, tx.clone())
+                    .await
+            }
+        };
+        match result {
+            Ok(handle) => {
+                let _ = tx.send(AppEvent::SshConnected { panel_id, handle });
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::ConsoleReadError {
+                    panel_id,
+                    error: format!("console reconnect failed: {}", e),
+                });
+            }
+        }
+    });
+}
+
 /// Handle a single key event.
-pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<AppEvent>) {
+pub(crate) async fn handle_key_event(
+    app: &mut App,
+    key: KeyEvent,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
     // Pending reconnect confirmation: intercept y/n before anything else.
     if app.pending_reconnect.is_some() {
         match key.code {
@@ -1599,13 +2040,13 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
                             // pasting the raw host path as text.
                             let files = super::upload::detect_file_paths(&text);
                             if !files.is_empty() {
-                                if let Some((panel_idx, mount_root, exec_sock)) = upload_info.clone() {
+                                if let Some((panel_id, mount_root, exec_sock)) = upload_info.clone() {
                                     for f in files {
                                         super::upload::spawn_file_upload(
                                             mount_root.clone(),
                                             f,
                                             exec_sock.clone(),
-                                            panel_idx,
+                                            panel_id,
                                             tx.clone(),
                                         );
                                     }
@@ -1630,7 +2071,7 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
                                 return;
                             }
 
-                            if let Some((panel_idx, mount_root, exec_sock)) = upload_info {
+                            if let Some((panel_id, mount_root, exec_sock)) = upload_info {
                                 if mount_root.is_none() {
                                     tracing::debug!("Clipboard paste produced empty text and no mount");
                                     return;
@@ -1641,14 +2082,14 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
                                 .await;
                                 if let Ok(Ok((png_bytes, filename))) = image {
                                     tracing::debug!(
-                                        panel_idx,
+                                        panel_id,
                                         filename = %filename,
                                         bytes = png_bytes.len(),
                                         "Clipboard image detected; starting upload"
                                     );
                                     super::upload::spawn_bytes_upload(
                                         mount_root, png_bytes, filename, exec_sock,
-                                        panel_idx, tx,
+                                        panel_id, tx,
                                     );
                                     return;
                                 }
@@ -1958,7 +2399,11 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent, tx: &mpsc::Un
 }
 
 /// Handle a parsed slash command.
-pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::UnboundedSender<AppEvent>) {
+pub(crate) async fn handle_command(
+    app: &mut App,
+    cmd: Command,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
     match cmd {
         Command::Quit => {
             if app.input_focus == InputFocus::Panel {
@@ -2074,6 +2519,9 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
         }
         Command::McpToggle => {
             app.show_mcp_sidebar = !app.show_mcp_sidebar;
+            if app.show_mcp_sidebar {
+                app.show_sandbox_sidebar = false;
+            }
         }
         Command::AddAgent {
             agent,
@@ -2089,6 +2537,8 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
             use_env,
             env_file,
             run_as_root,
+            timeout,
+            permissions,
         } => {
             add_agent(
                 app,
@@ -2105,6 +2555,8 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 &use_env,
                 env_file.as_deref(),
                 run_as_root,
+                timeout,
+                permissions.as_deref(),
                 tx,
             );
         }
@@ -2114,6 +2566,7 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
         Command::Sandboxes => {
             app.show_sandbox_sidebar = !app.show_sandbox_sidebar;
             if app.show_sandbox_sidebar {
+                app.show_mcp_sidebar = false;
                 app.refresh_sidebar_modified_files();
             }
         }
@@ -2123,22 +2576,20 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
             let (pty_cols, pty_rows) = {
                 let term_size = ratatui::crossterm::terminal::size().unwrap_or((160, 40));
                 let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
-                super::grid::estimate_panel_inner_size(
-                    term_size.0,
-                    term_size.1,
-                    app.visible_panel_count(),
-                    has_sidebar,
-                    app.zoomed,
-                )
+                super::grid::estimate_panel_inner_size(term_size.0, term_size.1, has_sidebar)
             };
             if let Some(panel) = app.panels.get_mut(panel_idx) {
+                let panel_id = panel.panel_id;
                 panel.terminal = None;
                 panel.terminal_handle = None;
                 panel.opened_urls.clear();
                 panel.pending_urls.clear();
+                panel.forwarded_ports.clear();
                 panel.reconnecting = true;
+                panel.reconnect_attempts = 0;
                 panel.mode = PanelMode::Loading;
                 panel.loading_error = None;
+                panel.exited = None;
                 panel.loading_tick = 0;
 
                 let console_name = panel.supervisor_name().map(|s| s.to_string());
@@ -2150,25 +2601,34 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                         let result = match exec_pty {
                             Some((sock, program, args)) => {
                                 super::terminal::connect_exec_pty(
-                                    sock, program, args, pty_cols, pty_rows, panel_idx,
+                                    sock,
+                                    program,
+                                    args,
+                                    pty_cols,
+                                    pty_rows,
+                                    panel_id,
                                     tx.clone(),
                                 )
                                 .await
                             }
                             None => {
                                 super::terminal::connect_console(
-                                    name, pty_cols, pty_rows, panel_idx, tx.clone(),
+                                    name,
+                                    pty_cols,
+                                    pty_rows,
+                                    panel_id,
+                                    tx.clone(),
                                 )
                                 .await
                             }
                         };
                         match result {
                             Ok(handle) => {
-                                let _ = tx.send(AppEvent::SshConnected { panel_idx, handle });
+                                let _ = tx.send(AppEvent::SshConnected { panel_id, handle });
                             }
                             Err(e) => {
                                 let _ = tx.send(AppEvent::SshDisconnected {
-                                    panel_idx,
+                                    panel_id,
                                     error: Some(format!("Console reconnect failed: {}", e)),
                                 });
                             }
@@ -2278,8 +2738,8 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                     .panels
                     .get(panel_idx)
                     .and_then(|p| p.project_mount.as_ref())
-                    .map(|pm| {
-                        match (pm.worktree_base.as_ref(), pm.created_branches.first()) {
+                    .map(
+                        |pm| match (pm.worktree_base.as_ref(), pm.created_branches.first()) {
                             (Some(wt), Some((_src, branch))) => {
                                 let short_id = branch
                                     .trim_start_matches("refs/heads/")
@@ -2292,8 +2752,8 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                                 )
                             }
                             _ => "dry-run: nothing to sync (no clone/branch yet).".to_string(),
-                        }
-                    })
+                        },
+                    )
                     .unwrap_or_else(|| "dry-run: no panel.".to_string());
                 push_panel_message(app, info);
                 return;
@@ -2387,18 +2847,16 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                             // Fetch current state to namespaced ref (no --force needed).
                             if let Some(ref wt_base) = pm.worktree_base {
                                 if let Some((source, branch)) = pm.created_branches.first() {
-                                    let short_id = branch.trim_start_matches("refs/heads/").trim_start_matches("nanosb/");
+                                    let short_id = branch
+                                        .trim_start_matches("refs/heads/")
+                                        .trim_start_matches("nanosb/");
                                     let nanosb_ref = format!("refs/nanosb/{}", short_id);
                                     let refspec = format!("+refs/heads/{}:{}", branch, nanosb_ref);
                                     let wt = wt_base.clone();
                                     let src = source.clone();
                                     let ok = tokio::task::spawn_blocking(move || {
                                         crate::gitcmd::host_git()
-                                            .args([
-                                                "fetch",
-                                                &wt.to_string_lossy(),
-                                                &refspec,
-                                            ])
+                                            .args(["fetch", &wt.to_string_lossy(), &refspec])
                                             .current_dir(&src)
                                             .output()
                                             .map(|o| o.status.success())
@@ -2457,6 +2915,8 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                             app.theme = Theme::by_name(tn);
                             app.theme_name = tn;
                             app.settings.ui.theme = tn.to_string();
+                            // Don't persist during tests (would clobber the real config).
+                            #[cfg(not(test))]
                             let _ = app.settings.save();
                             app.set_status_message(format!("Theme set to '{}'.", tn));
                         }
@@ -2566,7 +3026,10 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                     } else {
                         app.set_system_message(ChatMessage {
                             role: MessageRole::System,
-                            content: format!("Project '{}' was not in the registry.", path.display()),
+                            content: format!(
+                                "Project '{}' was not in the registry.",
+                                path.display()
+                            ),
                         });
                     }
                 }
@@ -2604,7 +3067,10 @@ pub(crate) async fn handle_command(app: &mut App, cmd: Command, tx: &mpsc::Unbou
                 .unwrap_or_else(|| app.panels[idx].agent_name.clone());
             if let Some(sname) = app.panels[idx].supervisor_name().map(str::to_string) {
                 spawn_supervisor_stop(sname);
-                app.set_status_message(format!("Stopped '{}'. Panel kept; use /kill to remove.", name));
+                app.set_status_message(format!(
+                    "Stopped '{}'. Panel kept; use /kill to remove.",
+                    name
+                ));
                 app.panels[idx].mode = PanelMode::Loading;
                 app.panels[idx].loading_message = Some("Sandbox stopped.".into());
             } else {
@@ -2639,7 +3105,9 @@ fn handle_project_switch(app: &mut App, target: Option<&str>) {
         Some(t) => {
             // Numeric => registry index (1-based).
             if let Ok(n) = t.parse::<usize>() {
-                projects.get(n.saturating_sub(1)).map(|e| std::path::PathBuf::from(&e.path))
+                projects
+                    .get(n.saturating_sub(1))
+                    .map(|e| std::path::PathBuf::from(&e.path))
             } else {
                 let p = std::path::PathBuf::from(t);
                 if p.is_dir() {
@@ -2658,7 +3126,11 @@ fn handle_project_switch(app: &mut App, target: Option<&str>) {
             let mut reg = registry;
             let name = reg.register(&canonical);
             app.project_path = Some(canonical.clone());
-            app.set_status_message(format!("Active project: {} ({})", name, canonical.display()));
+            app.set_status_message(format!(
+                "Active project: {} ({})",
+                name,
+                canonical.display()
+            ));
         }
         None => {
             if projects.is_empty() {
@@ -2880,7 +3352,13 @@ fn handle_diff(app: &mut App, stat: bool) {
         if stat {
             cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--stat", range]);
         } else {
-            cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--name-status", range]);
+            cmd.args([
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--name-status",
+                range,
+            ]);
         }
         let out = cmd.current_dir(repo).output().ok()?;
         out.status
@@ -2982,7 +3460,10 @@ fn handle_discard(app: &mut App) {
     if let Some(sock) = exec_sock {
         let client = runtime::exec::ExecClient::new(sock);
         if client.is_available() {
-            if let Ok(r) = client.exec("git", &["-C", "/workspace", "reset", "--hard", &base]) {
+            if let Ok(r) = client.exec(
+                "git",
+                &["-C", sandbox::deploy::GUEST_HOME, "reset", "--hard", &base],
+            ) {
                 if r.exit_code == 0 {
                     push_panel_message(
                         app,
@@ -3003,10 +3484,14 @@ fn handle_discard(app: &mut App) {
         .current_dir(&wt)
         .output();
     match out {
-        Ok(o) if o.status.success() => {
-            push_panel_message(app, format!("Discarded agent changes; clone reset to {}.", short))
-        }
-        Ok(o) => app.set_status_message(format!("Discard failed: {}", String::from_utf8_lossy(&o.stderr))),
+        Ok(o) if o.status.success() => push_panel_message(
+            app,
+            format!("Discarded agent changes; clone reset to {}.", short),
+        ),
+        Ok(o) => app.set_status_message(format!(
+            "Discard failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        )),
         Err(e) => app.set_status_message(format!("Discard failed: {}", e)),
     }
 }
@@ -3021,8 +3506,16 @@ fn handle_mounts(app: &mut App) {
         }
     };
     let mut lines = vec!["Mounts for this panel:".to_string()];
-    match panel.project_mount.as_ref().and_then(|pm| pm.worktree_base.as_ref()) {
-        Some(wt) => lines.push(format!("  RW  {}  ->  /workspace", wt.display())),
+    match panel
+        .project_mount
+        .as_ref()
+        .and_then(|pm| pm.worktree_base.as_ref())
+    {
+        Some(wt) => lines.push(format!(
+            "  RW  {}  ->  {}",
+            wt.display(),
+            sandbox::deploy::GUEST_HOME
+        )),
         None => lines.push("  (no project mount; sandbox has its own rootfs only)".to_string()),
     }
     if let Some(pm) = panel.project_mount.as_ref() {
@@ -3188,7 +3681,7 @@ fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
 /// Get the SSH port and key path from the focused panel, if available.
 fn panel_mount_root(
     app: &App,
-) -> Option<(usize, Option<std::path::PathBuf>, Option<std::path::PathBuf>)> {
+) -> Option<(u64, Option<std::path::PathBuf>, Option<std::path::PathBuf>)> {
     let idx = app.focused_panel;
     let panel = app.panels.get(idx)?;
     let mount_root = panel
@@ -3199,7 +3692,7 @@ fn panel_mount_root(
         .supervisor_name()
         .map(|n| supervisor_sandbox_dir(n).join("exec.sock"))
         .filter(|p| p.exists());
-    Some((idx, mount_root, exec_sock))
+    Some((panel.panel_id, mount_root, exec_sock))
 }
 
 /// Handle a bracketed paste event.
@@ -3226,38 +3719,35 @@ fn handle_paste_event(app: &mut App, text: String, tx: &mpsc::UnboundedSender<Ap
     // In Terminal mode: if the paste is empty (image-only clipboard via Cmd+V),
     // check the clipboard for an image to upload.
     if text.is_empty() {
-        if let Some((panel_idx, mount_root, exec_sock)) = panel_mount_root(app) {
+        if let Some((panel_id, mount_root, exec_sock)) = panel_mount_root(app) {
             if mount_root.is_none() {
                 tracing::debug!("Empty paste ignored: no project mount for panel");
                 return;
             }
             let tx = tx.clone();
             tokio::spawn(async move {
-                tracing::debug!(panel_idx, "Empty paste; checking clipboard image");
+                tracing::debug!(panel_id, "Empty paste; checking clipboard image");
                 let result = tokio::task::spawn_blocking(super::upload::read_clipboard_image).await;
                 match result {
                     Ok(Ok((png_bytes, filename))) => {
                         tracing::debug!(
-                            panel_idx,
+                            panel_id,
                             filename = %filename,
                             bytes = png_bytes.len(),
                             "Empty paste resolved to clipboard image upload"
                         );
                         super::upload::spawn_bytes_upload(
-                            mount_root, png_bytes, filename, exec_sock, panel_idx, tx,
+                            mount_root, png_bytes, filename, exec_sock, panel_id, tx,
                         );
                     }
                     Ok(Err(e)) => {
-                        tracing::debug!(panel_idx, error = %e, "No clipboard image for empty paste");
-                        let _ = tx.send(AppEvent::UploadFailed {
-                            panel_idx,
-                            error: e,
-                        });
+                        tracing::debug!(panel_id, error = %e, "No clipboard image for empty paste");
+                        let _ = tx.send(AppEvent::UploadFailed { panel_id, error: e });
                     }
                     Err(e) => {
-                        tracing::warn!(panel_idx, error = %e, "Clipboard image task failed for empty paste");
+                        tracing::warn!(panel_id, error = %e, "Clipboard image task failed for empty paste");
                         let _ = tx.send(AppEvent::UploadFailed {
-                            panel_idx,
+                            panel_id,
                             error: format!("Clipboard task panicked: {}", e),
                         });
                     }
@@ -3430,13 +3920,15 @@ fn find_panel_at(app: &App, x: u16, y: u16) -> Option<(usize, ratatui::layout::R
 }
 
 /// Known agent type names for CLI command resolution and API key detection.
-const KNOWN_AGENTS: &[&str] = &["claude", "codex", "goose", "cursor"];
+const KNOWN_AGENTS: &[&str] = &[
+    "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
+];
 
 /// Detect the base agent type from a Docker image name.
 ///
 /// Extracts a known agent name from image patterns like:
 /// - `localhost:5050/agent-claude:latest` → `"claude"`
-/// - `ghcr.io/nanosandboxai/agents-registry/codex:v1` → `"codex"`
+/// - `ghcr.io/nanosandboxai/nanosandbox/codex:v1` → `"codex"`
 /// - `nanosb-goose:latest` → `"goose"`
 /// Parse raw SSH bytes as NDJSON and update the headless state.
 ///
@@ -4466,12 +4958,43 @@ fn detect_agent_type_from_image(image: &str) -> Option<String> {
     None
 }
 
-/// Required API key environment variables for known agents.
+/// API key environment variables to auto-detect from the host for each agent.
+///
+/// Mirrors [`super::validation::agent_requirements`] so a key the validator
+/// accepts is also one the TUI knows to copy out of the host environment.
 fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
     match agent {
-        "claude" => vec![("ANTHROPIC_API_KEY", true)],
-        "codex" => vec![("OPENAI_API_KEY", true)],
-        "goose" => vec![("OPENAI_API_KEY", false), ("ANTHROPIC_API_KEY", false)],
+        "claude" => vec![
+            ("ANTHROPIC_API_KEY", true),
+            ("CLAUDE_CODE_OAUTH_TOKEN", false),
+        ],
+        "codex" => vec![("OPENAI_API_KEY", true), ("CODEX_API_KEY", false)],
+        "goose" => vec![
+            ("OPENAI_API_KEY", false),
+            ("ANTHROPIC_API_KEY", false),
+            ("GOOGLE_API_KEY", false),
+            ("OPENROUTER_API_KEY", false),
+        ],
+        "opencode" => vec![
+            ("OPENAI_API_KEY", false),
+            ("ANTHROPIC_API_KEY", false),
+            ("GOOGLE_API_KEY", false),
+            ("OPENROUTER_API_KEY", false),
+        ],
+        "aider" => vec![
+            ("OPENAI_API_KEY", false),
+            ("ANTHROPIC_API_KEY", false),
+            ("GEMINI_API_KEY", false),
+            ("DEEPSEEK_API_KEY", false),
+        ],
+        "gemini" => vec![("GEMINI_API_KEY", true), ("GOOGLE_API_KEY", false)],
+        "crush" => vec![
+            ("OPENAI_API_KEY", false),
+            ("ANTHROPIC_API_KEY", false),
+            ("GOOGLE_API_KEY", false),
+            ("OPENROUTER_API_KEY", false),
+        ],
+        "cursor" => vec![("CURSOR_API_KEY", true)],
         _ => vec![],
     }
 }
@@ -4535,6 +5058,8 @@ fn add_agent(
     use_env_keys: &[String],
     env_file: Option<&str>,
     run_as_root: bool,
+    timeout: Option<u64>,
+    permissions: Option<&str>,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     // Build image reference. --tag overrides the default "latest" tag
@@ -4550,9 +5075,17 @@ fn add_agent(
 
     let mut panel = AgentPanel::new(agent);
 
-    // Headless mode setup.
+    // Explicit --permissions level (validated by the parser); None keeps the
+    // Default unless auto_mode forces AllowAll below.
+    let parsed_permissions = permissions.and_then(|s| s.parse::<sandbox::Permissions>().ok());
+
+    // Mode setup: interactive is the default (parser passes interactive=true);
+    // --headless sets auto_mode so the headless/auto-approved path wins.
     panel.auto_mode = auto_mode;
     panel.interactive = interactive && !auto_mode;
+    if let Some(p) = parsed_permissions {
+        panel.permissions = p;
+    }
     if auto_mode {
         panel.permissions = sandbox::Permissions::AllowAll;
         let task = prompt.unwrap_or("(no prompt)");
@@ -4591,16 +5124,26 @@ fn add_agent(
         }
     }
 
-    // Goose requires GOOSE_PROVIDER to be set — auto-detect from available keys.
+    // Goose needs both GOOSE_PROVIDER *and* GOOSE_MODEL — a provider alone is
+    // not enough (Goose exits 1 with "No model configured" otherwise). Infer
+    // both from an available provider key unless the user set them explicitly.
     if agent == "goose" && !panel.env.contains_key("GOOSE_PROVIDER") {
         if panel.env.contains_key("ANTHROPIC_API_KEY") {
             panel
                 .env
                 .insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
+            panel
+                .env
+                .entry("GOOSE_MODEL".to_string())
+                .or_insert_with(|| "claude-sonnet-4-5-20250929".to_string());
         } else if panel.env.contains_key("OPENAI_API_KEY") {
             panel
                 .env
                 .insert("GOOSE_PROVIDER".to_string(), "openai".to_string());
+            panel
+                .env
+                .entry("GOOSE_MODEL".to_string())
+                .or_insert_with(|| "gpt-4o".to_string());
         }
     }
 
@@ -4631,6 +5174,10 @@ fn add_agent(
     // Set model selection.
     panel.model = model.map(String::from);
 
+    // Credentials are not validated up front: the agent's own error output is
+    // surfaced in the panel (see the SshDisconnected handler), which is a more
+    // accurate reason than a pre-flight hint, and avoids a blocking popup.
+
     // Build sandbox config.
     // Compute defaults are loaded from built-in agent profiles (and optional
     // user overrides in ~/.nanosandbox/agent_defaults.yaml).
@@ -4658,8 +5205,16 @@ fn add_agent(
         panel.agent_type = Some(agent_type);
     }
 
-    if let Some(n) = name {
-        builder = builder.name(n);
+    // An empty name maps the sandbox dir to the shared sandboxes root (see
+    // `run_supervisor`), so always resolve a concrete name when one is omitted.
+    let resolved_name = match name {
+        Some(n) => n.to_string(),
+        None => generate_sandbox_name(agent),
+    };
+    builder = builder.name(&resolved_name);
+
+    if let Some(t) = timeout {
+        builder = builder.timeout_secs(t.min(u32::MAX as u64) as u32);
     }
 
     if let Some(ref pp) = project_path {
@@ -4667,6 +5222,10 @@ fn add_agent(
     }
 
     let mut config = builder.build();
+
+    if let Some(p) = parsed_permissions {
+        config.permissions = p;
+    }
 
     // Propagate the resolved agent type onto the config so downstream deploy
     // planning (`deploy_plan_for` -> `has_agent`) actually builds the agent
@@ -4682,12 +5241,17 @@ fn add_agent(
         proj.auto_sync = app.settings.gitsync.auto_sync;
     }
 
-    // Store the config for session persistence.
+    // Store the config for session persistence. The panel title keeps the
+    // user-supplied name when present, otherwise the agent name; the unique
+    // sandbox name stays internal so two panels never collide on disk.
     panel.original_config = Some(config.clone());
-    panel.display_name = name.map(String::from);
+    panel.display_name = Some(
+        name.map(str::to_string)
+            .unwrap_or_else(|| agent.to_string()),
+    );
 
-    app.panels.push(panel);
-    let panel_idx = app.panels.len() - 1;
+    let panel_idx = app.push_panel(panel);
+    let panel_id = app.panels[panel_idx].panel_id;
     app.focused_panel = panel_idx;
     app.show_welcome = false;
     app.focus_panel_input();
@@ -4695,10 +5259,10 @@ fn add_agent(
     // Spawn sandbox creation in the background so the event loop stays responsive.
     let tx = tx.clone();
     tokio::spawn(async move {
-        if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
+        if try_attach_supervisor(&config.sandbox.name, panel_id, &tx) {
             return;
         }
-        spawn_supervisor_panel(config, panel_idx, &tx).await;
+        spawn_supervisor_panel(config, panel_id, &tx).await;
     });
 }
 
@@ -4722,6 +5286,7 @@ pub(crate) fn add_agent_from_config(
     let mut panel = AgentPanel::new(&agent_type);
     panel.display_name = Some(display_name.clone());
     panel.auto_mode = config.auto_mode;
+    // Interactive is the config/tui default; auto_mode (headless) wins.
     panel.interactive = config.interactive && !config.auto_mode;
     panel.permissions = config.permissions;
     panel.model = config.model.clone();
@@ -4760,6 +5325,48 @@ pub(crate) fn add_agent_from_config(
         }
     }
 
+    // Goose needs both provider and model; infer them from an available key
+    // unless the sandbox.yml env already set them.
+    if agent_type == "goose" && !panel.env.contains_key("GOOSE_PROVIDER") {
+        if panel.env.contains_key("ANTHROPIC_API_KEY") {
+            panel
+                .env
+                .insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
+            panel
+                .env
+                .entry("GOOSE_MODEL".to_string())
+                .or_insert_with(|| "claude-sonnet-4-5-20250929".to_string());
+        } else if panel.env.contains_key("OPENAI_API_KEY") {
+            panel
+                .env
+                .insert("GOOSE_PROVIDER".to_string(), "openai".to_string());
+            panel
+                .env
+                .entry("GOOSE_MODEL".to_string())
+                .or_insert_with(|| "gpt-4o".to_string());
+        }
+    }
+
+    // Reject the panel before creating a sandbox if the agent has no credentials.
+    // Agents that support browser sign-in are advisory: the hint is shown but
+    // the panel is allowed to start and sign in through the auto-opened URL.
+    match super::validation::validate_agent(&agent_type, &panel.env) {
+        super::validation::ValidationResult::Ok => {}
+        super::validation::ValidationResult::Advisory(msg) => {
+            app.set_system_message(ChatMessage {
+                role: MessageRole::System,
+                content: msg,
+            });
+        }
+        super::validation::ValidationResult::Blocking(msg) => {
+            app.set_system_message(ChatMessage {
+                role: MessageRole::System,
+                content: msg,
+            });
+            return;
+        }
+    }
+
     // If config doesn't have a project but --project flag was set,
     // inject it into the config so the sandbox mounts it.
     if config.sandbox.project.is_none() {
@@ -4767,7 +5374,7 @@ pub(crate) fn add_agent_from_config(
             config.sandbox.project = Some(sandbox::ProjectConfig {
                 path: project_path.clone(),
                 branch: None,
-                mount_point: "/workspace".to_string(),
+                mount_point: sandbox::deploy::GUEST_HOME.to_string(),
                 auto_sync: app.settings.gitsync.auto_sync,
             });
         }
@@ -4781,25 +5388,67 @@ pub(crate) fn add_agent_from_config(
     // Store the runtime config for session persistence.
     panel.original_config = Some(config.clone());
 
-    app.panels.push(panel);
-    let panel_idx = app.panels.len() - 1;
+    let panel_idx = app.push_panel(panel);
+    let panel_id = app.panels[panel_idx].panel_id;
     app.focused_panel = panel_idx;
     app.show_welcome = false;
     app.focus_panel_input();
 
     let tx = tx.clone();
     tokio::spawn(async move {
-        if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
+        if try_attach_supervisor(&config.sandbox.name, panel_id, &tx) {
             return;
         }
-        spawn_supervisor_panel(config, panel_idx, &tx).await;
+        spawn_supervisor_panel(config, panel_id, &tx).await;
     });
 }
 fn normalize_agent_name(agent_name: &str) -> &str {
     match agent_name {
         "claude-code" => "claude",
         "cursor-agent" => "cursor",
+        "open-code" => "opencode",
+        "gemini-cli" => "gemini",
         _ => agent_name,
+    }
+}
+
+/// Generate a unique, valid sandbox name for an agent panel.
+///
+/// The name is the sandbox directory, so it must be a lowercase
+/// alphanumeric-with-hyphens slug and must be unique: an empty or repeated
+/// name would make two panels share state, logs, and a control socket. The
+/// short UUID suffix keeps names unique while the panel title stays readable.
+fn generate_sandbox_name(agent: &str) -> String {
+    let base = sanitize_sandbox_name(agent);
+    let uuid = uuid::Uuid::new_v4().to_string();
+    format!("{base}-{}", &uuid[..8])
+}
+
+/// Reduce an agent name to a valid sandbox-name slug (max 55 chars, leaving
+/// room for the 9-char `-<uuid8>` suffix within the 64-char limit).
+fn sanitize_sandbox_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' {
+            out.push(ch);
+        } else if ch.is_ascii_uppercase() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    let trimmed = if trimmed.is_empty() {
+        "sandbox"
+    } else {
+        trimmed
+    };
+    let truncated: String = trimmed.chars().take(55).collect();
+    let final_name = truncated.trim_end_matches('-');
+    if final_name.is_empty() {
+        "sandbox".to_string()
+    } else {
+        final_name.to_string()
     }
 }
 
@@ -4903,12 +5552,104 @@ fn detect_goose_session_id_from_state(
     }
 }
 
+fn query_newest_opencode_session_id(
+    conn: &rusqlite::Connection,
+    table: &str,
+    db_path: &std::path::Path,
+) -> std::result::Result<Option<String>, String> {
+    let sql = format!(
+        "SELECT id FROM {} ORDER BY time_updated DESC LIMIT 1",
+        table
+    );
+    match conn.query_row(&sql, [], |row| row.get::<_, String>(0)) {
+        Ok(id) if !id.is_empty() => Ok(Some(id)),
+        Ok(_) => Ok(None),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!(
+            "failed to query opencode session DB ({}): {}",
+            db_path.display(),
+            e
+        )),
+    }
+}
+
+fn detect_opencode_session_id_from_state(
+    state_root: &std::path::Path,
+) -> std::result::Result<Option<String>, String> {
+    let db_path = state_root.join(".local_share_opencode/opencode.db");
+    if !db_path.exists() {
+        return Ok(None);
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| {
+        format!(
+            "failed to open opencode session DB ({}): {}",
+            db_path.display(),
+            e
+        )
+    })?;
+
+    // Prefer the current `session_v2` table; fall back to the legacy `session`
+    // table when the query errors (e.g. table missing) or returns no rows.
+    match query_newest_opencode_session_id(&conn, "session_v2", &db_path) {
+        Ok(Some(id)) => Ok(Some(id)),
+        Ok(None) | Err(_) => query_newest_opencode_session_id(&conn, "session", &db_path),
+    }
+}
+
+fn detect_codex_session_id_from_state(
+    state_root: &std::path::Path,
+) -> std::result::Result<Option<String>, String> {
+    let sessions_dir = state_root.join(".codex/sessions");
+    if !sessions_dir.exists() {
+        return Ok(None);
+    }
+
+    for path in collect_state_files(&sessions_dir) {
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+            continue;
+        }
+
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let mut reader = std::io::BufReader::new(file);
+        let mut first_line = String::new();
+        if reader.read_line(&mut first_line).is_err() || first_line.is_empty() {
+            continue;
+        }
+
+        let id = extract_json_string_field(&first_line, "session_id")
+            .or_else(|| extract_json_string_field(&first_line, "id"));
+        if let Some(id) = id {
+            return Ok(Some(id));
+        }
+    }
+
+    Ok(None)
+}
+
 fn detect_agent_session_id_from_state(
     agent_name: &str,
     state_root: &std::path::Path,
 ) -> std::result::Result<Option<String>, String> {
     if normalize_agent_name(agent_name) == "goose" {
         return detect_goose_session_id_from_state(state_root);
+    }
+    if normalize_agent_name(agent_name) == "opencode" {
+        return detect_opencode_session_id_from_state(state_root);
+    }
+    if normalize_agent_name(agent_name) == "codex" {
+        return detect_codex_session_id_from_state(state_root);
     }
 
     if !state_root.exists() {
@@ -4919,6 +5660,10 @@ fn detect_agent_session_id_from_state(
         "claude" => state_root.join(".claude"),
         "codex" => state_root.join(".codex"),
         "cursor" => state_root.join(".cursor"),
+        "opencode" => state_root.join(".config_opencode"),
+        "aider" => state_root.join(".aider"),
+        "gemini" => state_root.join(".gemini"),
+        "crush" => state_root.join(".config_crush"),
         _ => state_root.to_path_buf(),
     };
 
@@ -5031,10 +5776,10 @@ fn resume_session(
         if let Some(ref clone_path) = sp.clone_path {
             if clone_path.exists() {
                 // Add VirtioFS mount for existing clone directly.
-                config
-                    .sandbox
-                    .mounts
-                    .push(sandbox::Mount::virtiofs(clone_path, "/workspace"));
+                config.sandbox.mounts.push(sandbox::Mount::virtiofs(
+                    clone_path,
+                    sandbox::deploy::GUEST_HOME,
+                ));
                 // Do NOT set config.sandbox.project — this skips setup_project_mount().
                 config.sandbox.project = None;
 
@@ -5048,7 +5793,7 @@ fn resume_session(
                 config.sandbox.project = Some(sandbox::ProjectConfig {
                     path: panel_project_path,
                     branch: sp.branches.first().map(|(_, b)| b.clone()),
-                    mount_point: "/workspace".to_string(),
+                    mount_point: sandbox::deploy::GUEST_HOME.to_string(),
                     auto_sync: app.settings.gitsync.auto_sync,
                 });
             }
@@ -5085,8 +5830,17 @@ fn resume_session(
             panel.selected_agent_session_id.as_deref(),
         );
 
-        app.panels.push(panel);
-        let panel_idx = app.panels.len() - 1;
+        // Persist the resume id on the config so the spawned agent command
+        // carries it and the saved session records it.
+        config.resume_session_id = if panel.is_resumed {
+            panel.selected_agent_session_id.clone()
+        } else {
+            None
+        };
+        panel.original_config = Some(config.clone());
+
+        let panel_idx = app.push_panel(panel);
+        let panel_id = app.panels[panel_idx].panel_id;
         app.focused_panel = panel_idx;
         app.show_welcome = false;
         app.focus_panel_input();
@@ -5094,10 +5848,10 @@ fn resume_session(
         // Spawn sandbox creation in background.
         let tx = tx.clone();
         tokio::spawn(async move {
-            if try_attach_supervisor(&config.sandbox.name, panel_idx, &tx) {
+            if try_attach_supervisor(&config.sandbox.name, panel_id, &tx) {
                 return;
             }
-            spawn_supervisor_panel(config, panel_idx, &tx).await;
+            spawn_supervisor_panel(config, panel_id, &tx).await;
         });
     }
 
@@ -5607,11 +6361,11 @@ mod tests {
     #[test]
     fn test_detect_agent_type_ghcr() {
         assert_eq!(
-            detect_agent_type_from_image("ghcr.io/nanosandboxai/agents-registry/claude:v1.0"),
+            detect_agent_type_from_image("ghcr.io/nanosandboxai/nanosandbox/claude:v1.0"),
             Some("claude".to_string())
         );
         assert_eq!(
-            detect_agent_type_from_image("ghcr.io/nanosandboxai/agents-registry/codex:latest"),
+            detect_agent_type_from_image("ghcr.io/nanosandboxai/nanosandbox/codex:latest"),
             Some("codex".to_string())
         );
     }
@@ -5637,6 +6391,38 @@ mod tests {
         assert_eq!(
             detect_agent_type_from_image("codex:latest"),
             Some("codex".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_agent_type_new_agents() {
+        assert_eq!(
+            detect_agent_type_from_image("localhost:5050/agent-opencode:latest"),
+            Some("opencode".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("localhost:5050/agent-aider:latest"),
+            Some("aider".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("localhost:5050/agent-gemini:latest"),
+            Some("gemini".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("localhost:5050/agent-crush:latest"),
+            Some("crush".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("ghcr.io/nanosandboxai/nanosandbox/opencode:latest"),
+            Some("opencode".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("nanosb-gemini:v2"),
+            Some("gemini".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("crush"),
+            Some("crush".to_string())
         );
     }
 
@@ -5712,6 +6498,173 @@ mod tests {
         let detected =
             detect_goose_session_id_from_state(&clone_dir).expect("missing db should not fail");
         assert_eq!(detected, None);
+        let _ = fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn test_detect_opencode_session_id_from_sqlite_db() {
+        let clone_dir = make_temp_dir("opencode-session-db");
+        let db_dir = clone_dir.join(".local_share_opencode");
+        fs::create_dir_all(&db_dir).expect("failed to create opencode state dir");
+        let db_path = db_dir.join("opencode.db");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("failed to open sqlite db");
+        conn.execute_batch(
+            "
+            CREATE TABLE session_v2 (
+                id TEXT PRIMARY KEY,
+                time_updated INTEGER
+            );
+            INSERT INTO session_v2 (id, time_updated) VALUES
+                ('older-session', 1000),
+                ('newest-session', 2000);
+            ",
+        )
+        .expect("failed to seed session_v2");
+
+        let detected = detect_opencode_session_id_from_state(&clone_dir)
+            .expect("opencode sqlite detection should not fail");
+        assert_eq!(detected, Some("newest-session".to_string()));
+
+        let _ = fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn test_detect_opencode_session_id_no_db_returns_none() {
+        let clone_dir = make_temp_dir("opencode-no-db");
+        let detected =
+            detect_opencode_session_id_from_state(&clone_dir).expect("missing db should not fail");
+        assert_eq!(detected, None);
+        let _ = fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn test_detect_opencode_session_id_falls_back_to_legacy_session_table() {
+        let clone_dir = make_temp_dir("opencode-legacy-db");
+        let db_dir = clone_dir.join(".local_share_opencode");
+        fs::create_dir_all(&db_dir).expect("failed to create opencode state dir");
+        let db_path = db_dir.join("opencode.db");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("failed to open sqlite db");
+        conn.execute_batch(
+            "
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                time_updated INTEGER
+            );
+            INSERT INTO session (id, time_updated) VALUES
+                ('legacy-1', 1000),
+                ('legacy-2', 3000);
+            ",
+        )
+        .expect("failed to seed session table");
+
+        let detected = detect_opencode_session_id_from_state(&clone_dir)
+            .expect("opencode fallback detection should not fail");
+        assert_eq!(detected, Some("legacy-2".to_string()));
+
+        let _ = fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn test_detect_agent_session_id_opencode_uses_state_db() {
+        let clone_dir = make_temp_dir("opencode-agent-detect");
+        let db_dir = clone_dir.join(".local_share_opencode");
+        fs::create_dir_all(&db_dir).expect("failed to create opencode state dir");
+        let db_path = db_dir.join("opencode.db");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("failed to open sqlite db");
+        conn.execute_batch(
+            "
+            CREATE TABLE session_v2 (
+                id TEXT PRIMARY KEY,
+                time_updated INTEGER
+            );
+            INSERT INTO session_v2 (id, time_updated) VALUES ('s1', 100), ('s2', 200);
+            ",
+        )
+        .expect("failed to seed session_v2");
+
+        let detected = detect_agent_session_id_from_state("opencode", &clone_dir)
+            .expect("opencode session id detection should not fail");
+        assert_eq!(detected, Some("s2".to_string()));
+
+        let _ = fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn test_detect_agent_session_id_opencode_open_code_alias() {
+        let clone_dir = make_temp_dir("opencode-alias-detect");
+        let db_dir = clone_dir.join(".local_share_opencode");
+        fs::create_dir_all(&db_dir).expect("failed to create opencode state dir");
+        let db_path = db_dir.join("opencode.db");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("failed to open sqlite db");
+        conn.execute_batch(
+            "
+            CREATE TABLE session_v2 (
+                id TEXT PRIMARY KEY,
+                time_updated INTEGER
+            );
+            INSERT INTO session_v2 (id, time_updated) VALUES ('alias-1', 100);
+            ",
+        )
+        .expect("failed to seed session_v2");
+
+        let detected = detect_agent_session_id_from_state("open-code", &clone_dir)
+            .expect("open-code alias detection should not fail");
+        assert_eq!(detected, Some("alias-1".to_string()));
+
+        let _ = fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn test_detect_codex_session_id_from_state() {
+        let tmp = tempfile::tempdir().expect("failed to create temp dir");
+        let sessions_dir = tmp.path().join(".codex/sessions/2026/11/09");
+        fs::create_dir_all(&sessions_dir).expect("failed to create codex sessions dir");
+
+        let session_file = sessions_dir
+            .join("rollout-2026-11-09T00-00-00-11111111-2222-3333-4444-555555555555.jsonl");
+        fs::write(
+            &session_file,
+            r#"{"timestamp":"2026-11-09T00:00:00Z","type":"session_meta","payload":{"session_id":"11111111-2222-3333-4444-555555555555","id":"11111111-2222-3333-4444-555555555555","worktree":"/home/developer"}}
+{"timestamp":"2026-11-09T00:00:01Z","type":"turn_start","payload":{}}"#,
+        )
+        .expect("failed to write codex session file");
+
+        let detected = detect_codex_session_id_from_state(tmp.path())
+            .expect("codex session id detection should not fail");
+        assert_eq!(
+            detected,
+            Some("11111111-2222-3333-4444-555555555555".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_codex_session_id_no_sessions_returns_none() {
+        let tmp = tempfile::tempdir().expect("failed to create temp dir");
+        let detected = detect_codex_session_id_from_state(tmp.path())
+            .expect("missing codex sessions dir should not fail");
+        assert_eq!(detected, None);
+    }
+
+    #[test]
+    fn test_detect_opencode_session_id_schema_error_fails() {
+        let clone_dir = make_temp_dir("opencode-bad-schema");
+        let db_dir = clone_dir.join(".local_share_opencode");
+        fs::create_dir_all(&db_dir).expect("failed to create opencode state dir");
+        let db_path = db_dir.join("opencode.db");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("failed to open sqlite db");
+        conn.execute_batch(
+            "CREATE TABLE not_sessions (id TEXT PRIMARY KEY, time_updated INTEGER);",
+        )
+        .expect("failed to create incompatible schema");
+
+        let detected = detect_opencode_session_id_from_state(&clone_dir);
+        assert!(detected.is_err(), "schema mismatch must fail");
+
         let _ = fs::remove_dir_all(&clone_dir);
     }
 

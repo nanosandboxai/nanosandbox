@@ -88,7 +88,7 @@ pub struct SandboxConfig {
     /// Unique name for the sandbox
     pub name: String,
 
-    /// OCI image reference (e.g., "ghcr.io/nanosandboxai/agents-registry/claude:latest")
+    /// OCI image reference (e.g., "ghcr.io/nanosandboxai/nanosandbox/claude:latest")
     pub image: String,
 
     /// CPU cores to allocate
@@ -115,7 +115,7 @@ pub struct SandboxConfig {
     #[serde(default = "default_workdir")]
     pub workdir: String,
 
-    /// Timeout in seconds
+    /// Timeout in seconds; `0` means "no timeout" (unlimited).
     #[serde(default = "default_timeout")]
     pub timeout_secs: u32,
 
@@ -184,6 +184,11 @@ pub struct SandboxConfig {
     /// Guest disk I/O limit in bytes/sec (0 = unlimited). Opt-in.
     #[serde(default)]
     pub io_bps: u64,
+
+    /// Per-sandbox disk cap in MB (0 = unlimited). The supervisor stops the
+    /// sandbox when its state dir + rootfs bundle exceed this.
+    #[serde(default)]
+    pub disk_quota_mb: u64,
 
     /// Give each boot a copy-on-write clone of the rootfs so guest writes never
     /// dirty the pristine template (default false = the template is the boot root).
@@ -267,11 +272,12 @@ fn default_memory() -> u32 {
 }
 
 fn default_workdir() -> String {
-    "/workspace".to_string()
+    "/home/developer".to_string()
 }
 
+/// Default sandbox timeout in seconds. `0` means "no timeout" (unlimited).
 fn default_timeout() -> u32 {
-    300
+    0
 }
 
 impl Default for SandboxConfig {
@@ -299,6 +305,7 @@ impl Default for SandboxConfig {
             max_inodes: 0,
             max_pids: 0,
             io_bps: 0,
+            disk_quota_mb: 0,
             fresh_rootfs: false,
             console: None,
             extra_mounts: Vec::new(),
@@ -447,6 +454,18 @@ impl SandboxConfigBuilder {
         self
     }
 
+    /// Set the per-sandbox disk cap in MB (0 = unlimited).
+    pub fn disk_quota_mb(mut self, disk_quota_mb: u64) -> Self {
+        self.config.disk_quota_mb = disk_quota_mb;
+        self
+    }
+
+    /// Set the guest process cap (0 = default 512).
+    pub fn max_pids(mut self, max_pids: u32) -> Self {
+        self.config.max_pids = max_pids;
+        self
+    }
+
     /// Set whether agent commands run as root in guest.
     pub fn run_as_root(mut self, run_as_root: bool) -> Self {
         self.config.run_as_root = run_as_root;
@@ -482,7 +501,7 @@ impl SandboxConfigBuilder {
         self.config.project = Some(ProjectConfig {
             path: path.into(),
             branch: branch.map(String::from),
-            mount_point: "/workspace".to_string(),
+            mount_point: default_project_mount_point(),
             auto_sync: false,
         });
         self
@@ -493,7 +512,7 @@ impl SandboxConfigBuilder {
         self.config.project = Some(ProjectConfig {
             path: path.into(),
             branch: Some(branch.to_string()),
-            mount_point: "/workspace".to_string(),
+            mount_point: default_project_mount_point(),
             auto_sync: false,
         });
         self
@@ -933,7 +952,7 @@ pub struct ProjectConfig {
     pub path: PathBuf,
     /// Optional branch name (auto-generated if None).
     pub branch: Option<String>,
-    /// Mount point inside the VM (default: /workspace).
+    /// Mount point inside the VM (default: the guest user's home).
     #[serde(default = "default_project_mount_point")]
     pub mount_point: String,
     /// Whether auto-sync is enabled. When false, clones are created without source branches.
@@ -942,7 +961,7 @@ pub struct ProjectConfig {
 }
 
 fn default_project_mount_point() -> String {
-    "/workspace".to_string()
+    "/home/developer".to_string()
 }
 
 #[cfg(test)]
@@ -961,7 +980,16 @@ mod tests {
         let proj = config.project.unwrap();
         assert_eq!(proj.path, std::path::PathBuf::from("/tmp/myproject"));
         assert!(proj.branch.is_none());
-        assert_eq!(proj.mount_point, "/workspace");
+        assert_eq!(proj.mount_point, "/home/developer");
+    }
+
+    #[test]
+    fn default_timeout_is_unlimited() {
+        assert_eq!(
+            SandboxConfig::default().timeout_secs,
+            0,
+            "the default sandbox timeout must be unlimited (0)"
+        );
     }
 
     #[test]
@@ -1229,10 +1257,12 @@ mod tests {
 }
 
 /// Default OCI registry for agent images.
-pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/agents-registry";
+pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/nanosandbox";
 
 /// Known code-agent image names hosted in the agents registry.
-const AGENT_IMAGES: &[&str] = &["base", "claude", "codex", "cursor", "goose", "legacy"];
+const AGENT_IMAGES: &[&str] = &[
+    "base", "claude", "codex", "cursor", "goose", "opencode", "aider", "gemini", "crush", "legacy",
+];
 
 /// Normalize an image reference: known agent names get the agents-registry
 /// prefix, other bare names get `docker.io/library/`, fully-qualified refs are

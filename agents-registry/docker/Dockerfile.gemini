@@ -1,0 +1,13 @@
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="Gemini CLI agent for nanosandbox sandboxes"
+
+# Pinned via agents-registry/docker/package.json (Dependabot-managed).
+ARG GEMINI_VERSION=0.67.0
+
+# Pure install: Gemini CLI via npm + sanity check.
+RUN npm install -g "@google/gemini-cli@${GEMINI_VERSION}" \
+    && npm cache clean --force
+
+RUN gemini --version && echo "Gemini: OK"

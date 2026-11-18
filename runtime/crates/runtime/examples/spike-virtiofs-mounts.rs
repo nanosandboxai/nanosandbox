@@ -28,7 +28,9 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("internal-boot-vm") {
         handle_boot_vm_subprocess();
     }
-    tokio::runtime::Runtime::new().unwrap().block_on(async_main());
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async_main());
 }
 
 async fn async_main() {
@@ -46,12 +48,18 @@ async fn async_main() {
     println!("Image: {}", image);
     println!("");
 
-    let workspace_dir = std::env::temp_dir().join(format!("nanosb-spike-workspace-{}", std::process::id()));
-    let config_dir = std::env::temp_dir().join(format!("nanosb-spike-config-{}", std::process::id()));
+    let workspace_dir =
+        std::env::temp_dir().join(format!("nanosb-spike-workspace-{}", std::process::id()));
+    let config_dir =
+        std::env::temp_dir().join(format!("nanosb-spike-config-{}", std::process::id()));
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::create_dir_all(&config_dir).unwrap();
 
-    std::fs::write(workspace_dir.join("hello.txt"), "Hello from host workspace!").unwrap();
+    std::fs::write(
+        workspace_dir.join("hello.txt"),
+        "Hello from host workspace!",
+    )
+    .unwrap();
     std::fs::write(config_dir.join("config.yaml"), "key: value\n").unwrap();
 
     println!("Host workspace dir: {}", workspace_dir.display());
@@ -82,12 +90,7 @@ async fn async_main() {
             "/mnt/workspace",
             false,
         )
-        .extra_mount(
-            "config",
-            config_dir.to_string_lossy(),
-            "/mnt/config",
-            true,
-        )
+        .extra_mount("config", config_dir.to_string_lossy(), "/mnt/config", true)
         .timeout_secs(120)
         .build();
 
@@ -100,7 +103,10 @@ async fn async_main() {
     let start = Instant::now();
     let mut sandbox = match Sandbox::create(config).await {
         Ok(s) => s,
-        Err(e) => { eprintln!("[{:.1}s] Failed: {}", start.elapsed().as_secs_f64(), e); return; }
+        Err(e) => {
+            eprintln!("[{:.1}s] Failed: {}", start.elapsed().as_secs_f64(), e);
+            return;
+        }
     };
     println!("[{:.1}s] Sandbox created", start.elapsed().as_secs_f64());
 
@@ -111,13 +117,20 @@ async fn async_main() {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => print!("{}", String::from_utf8_lossy(&buf[..n])),
-                Err(e) => { eprintln!("[read err] {}", e); break; }
+                Err(e) => {
+                    eprintln!("[read err] {}", e);
+                    break;
+                }
             }
         }
     });
 
     if let Err(e) = sandbox.start().await {
-        eprintln!("[{:.1}s] Start failed: {}", start.elapsed().as_secs_f64(), e);
+        eprintln!(
+            "[{:.1}s] Start failed: {}",
+            start.elapsed().as_secs_f64(),
+            e
+        );
         let _ = sandbox.stop().await;
         let _ = sandbox.destroy().await;
         return;
@@ -129,9 +142,16 @@ async fn async_main() {
     let guest_file = workspace_dir.join("guest.txt");
     if guest_file.exists() {
         let content = std::fs::read_to_string(&guest_file).unwrap();
-        println!("[{:.1}s] Guest wrote to workspace: {:?}", start.elapsed().as_secs_f64(), content.trim());
+        println!(
+            "[{:.1}s] Guest wrote to workspace: {:?}",
+            start.elapsed().as_secs_f64(),
+            content.trim()
+        );
     } else {
-        println!("[{:.1}s] Guest file not found (init patches may not be applied)", start.elapsed().as_secs_f64());
+        println!(
+            "[{:.1}s] Guest file not found (init patches may not be applied)",
+            start.elapsed().as_secs_f64()
+        );
     }
 
     println!("[{:.1}s] Stopping VM...", start.elapsed().as_secs_f64());

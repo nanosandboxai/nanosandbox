@@ -353,7 +353,11 @@ fn drive_step(
         "fs_mkdir" => {
             let path = expect["path"].as_str().unwrap();
             let recursive = expect["recursive"].as_bool().unwrap_or(false);
-            ack(state, || sb.unwrap().fs_mkdir(path, recursive), "mkdir_acked")?;
+            ack(
+                state,
+                || sb.unwrap().fs_mkdir(path, recursive),
+                "mkdir_acked",
+            )?;
         }
         "fs_remove" => {
             let path = expect["path"].as_str().unwrap();
@@ -410,7 +414,8 @@ fn drive_step(
             };
             let mut conn = Connection::dial(server_path).map_err(|e| e.to_string())?;
             if follow {
-                conn.call_stream(&Request::Logs(spec)).map_err(|e| e.to_string())?;
+                conn.call_stream(&Request::Logs(spec))
+                    .map_err(|e| e.to_string())?;
                 let mut lines = Vec::new();
                 loop {
                     match conn.next_response().map_err(|e| e.to_string())? {
@@ -546,7 +551,9 @@ fn check_eq<T: PartialEq + std::fmt::Debug>(
     if expected == actual {
         Ok(())
     } else {
-        Err(format!("assert {key}: expected {expected:?}, got {actual:?}"))
+        Err(format!(
+            "assert {key}: expected {expected:?}, got {actual:?}"
+        ))
     }
 }
 
@@ -653,15 +660,24 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
     }
 
     if let Some(expected) = a.get("get_name").and_then(Value::as_str) {
-        let info = state.get_info.as_ref().ok_or("assert get_name: no get result")?;
+        let info = state
+            .get_info
+            .as_ref()
+            .ok_or("assert get_name: no get result")?;
         check_eq("get_name", expected, info.name.as_str())?;
     }
     if let Some(expected) = a.get("get_state").and_then(Value::as_str) {
-        let info = state.get_info.as_ref().ok_or("assert get_state: no get result")?;
+        let info = state
+            .get_info
+            .as_ref()
+            .ok_or("assert get_state: no get result")?;
         check_eq("get_state", expected, state_str(&info.state))?;
     }
     if let Some(expected) = a.get("get_image").and_then(Value::as_str) {
-        let info = state.get_info.as_ref().ok_or("assert get_image: no get result")?;
+        let info = state
+            .get_info
+            .as_ref()
+            .ok_or("assert get_image: no get result")?;
         check_eq("get_image", expected, info.image.as_str())?;
     }
     if let Some(expected) = a.get("list_names").and_then(Value::as_array) {
@@ -695,11 +711,16 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
         }
     }
     if let Some(expected) = a.get("stat_is_dir").and_then(Value::as_bool) {
-        let stat = state.fs_stat.as_ref().ok_or("assert stat_is_dir: no fs_stat result")?;
+        let stat = state
+            .fs_stat
+            .as_ref()
+            .ok_or("assert stat_is_dir: no fs_stat result")?;
         check_eq("stat_is_dir", expected, stat.is_dir)?;
     }
     if let Some(expected) = a.get("exists").and_then(Value::as_bool) {
-        let actual = state.fs_exists.ok_or("assert exists: no fs_exists result")?;
+        let actual = state
+            .fs_exists
+            .ok_or("assert exists: no fs_exists result")?;
         check_eq("exists", expected, actual)?;
     }
     if let Some(expected) = a.get("read_bytes_base64").and_then(Value::as_str) {
@@ -739,7 +760,9 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
         for n in needles {
             let n = n.as_str().unwrap();
             if !lines.iter().any(|l| l.data.contains(n)) {
-                return Err(format!("assert resume_lines_contain: {n:?} not in resume lines"));
+                return Err(format!(
+                    "assert resume_lines_contain: {n:?} not in resume lines"
+                ));
             }
         }
     }
@@ -747,12 +770,16 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
         for n in needles {
             let n = n.as_str().unwrap();
             if !state.follow_logs_lines.iter().any(|l| l.data.contains(n)) {
-                return Err(format!("assert follow_lines_contain: {n:?} not in follow lines"));
+                return Err(format!(
+                    "assert follow_lines_contain: {n:?} not in follow lines"
+                ));
             }
         }
     }
     if let Some(expected) = a.get("next_cursor").and_then(Value::as_u64) {
-        let actual = state.next_cursor.ok_or("assert next_cursor: no logs result")?;
+        let actual = state
+            .next_cursor
+            .ok_or("assert next_cursor: no logs result")?;
         check_eq("next_cursor", expected, actual)?;
     }
     if let Some(expected) = a.get("all_source").and_then(Value::as_str) {
@@ -770,7 +797,10 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
         }
     }
     if let Some(expected) = a.get("cpu_percent").and_then(Value::as_f64) {
-        let m = state.metrics.as_ref().ok_or("assert cpu_percent: no metrics result")?;
+        let m = state
+            .metrics
+            .as_ref()
+            .ok_or("assert cpu_percent: no metrics result")?;
         if (m.cpu_percent - expected).abs() > 1e-9 {
             return Err(format!(
                 "assert cpu_percent: expected {expected}, got {}",
@@ -786,7 +816,10 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
         check_eq("memory_used_bytes", expected, m.memory_used_bytes)?;
     }
     if let Some(fields) = a.get("has_fields").and_then(Value::as_array) {
-        state.metrics.as_ref().ok_or("assert has_fields: no metrics result")?;
+        state
+            .metrics
+            .as_ref()
+            .ok_or("assert has_fields: no metrics result")?;
         for f in fields {
             let f = f.as_str().unwrap();
             let present = matches!(
@@ -806,7 +839,11 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
         }
     }
     if let Some(expected) = a.get("stream_samples").and_then(Value::as_u64) {
-        check_eq("stream_samples", expected as usize, state.metrics_samples.len())?;
+        check_eq(
+            "stream_samples",
+            expected as usize,
+            state.metrics_samples.len(),
+        )?;
     }
     if let Some(expected) = a.get("first_cpu_percent").and_then(Value::as_f64) {
         let first = state
@@ -921,7 +958,9 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
             .first()
             .ok_or("assert error_message_contains: no error message")?;
         if !msg.contains(expected) {
-            return Err(format!("assert error_message_contains: {expected:?} not in {msg:?}"));
+            return Err(format!(
+                "assert error_message_contains: {expected:?} not in {msg:?}"
+            ));
         }
     }
     if a.get("expects_timeout").and_then(Value::as_bool) == Some(true) {
@@ -943,7 +982,9 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
             .ok_or("assert expects_unsupported: missing unsupported_verb")?;
         let cap = required_capability(verb).ok_or("assert expects_unsupported: unknown verb")?;
         if state.caps.contains(&cap) {
-            return Err(format!("assert expects_unsupported: {verb} capability was advertised"));
+            return Err(format!(
+                "assert expects_unsupported: {verb} capability was advertised"
+            ));
         }
         if state.errors.first().map(|c| c.as_str()) != Some("unsupported") {
             return Err("assert expects_unsupported: no unsupported error recorded".into());
@@ -973,12 +1014,10 @@ fn spawn_harness(scenario_file: &Path) -> Result<(Child, PathBuf), String> {
         let n = reader.read_line(&mut line).unwrap_or(0);
         let _ = tx.send((n, line));
     });
-    let (n, line) = rx
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(|_| {
-            let _ = child.kill();
-            "harness did not print READY within 10s".to_string()
-        })?;
+    let (n, line) = rx.recv_timeout(Duration::from_secs(10)).map_err(|_| {
+        let _ = child.kill();
+        "harness did not print READY within 10s".to_string()
+    })?;
     if n == 0 {
         let mut stderr = String::new();
         if let Some(mut e) = child.stderr.take() {
@@ -1040,7 +1079,9 @@ fn drive_scenario(
                 .expect
                 .as_ref()
                 .ok_or_else(|| format!("step {i} has no expect"))?;
-            let ty = expect["type"].as_str().ok_or_else(|| format!("step {i} has no type"))?;
+            let ty = expect["type"]
+                .as_str()
+                .ok_or_else(|| format!("step {i} has no type"))?;
             if ty == "fs_write_stream" {
                 // The streamed write consumes the following `fs_data` steps.
                 let name = expect["name"].as_str().unwrap();

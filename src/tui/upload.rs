@@ -1,8 +1,8 @@
 //! File and image upload to sandbox VMs.
 //!
 //! Writes uploads host-side into the panel's virtiofs workspace mount, which
-//! the guest sees at `/workspace`. Also handles clipboard image reading and
-//! pasted file path detection.
+//! the guest sees at the guest home (`/home/developer`). Also handles clipboard
+//! image reading and pasted file path detection.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ use super::event::AppEvent;
 const MAX_UPLOAD_SIZE: u64 = 100 * 1024 * 1024;
 
 /// Remote directory inside the VM where uploads are placed.
-pub const UPLOAD_DIR: &str = "/workspace/.uploads";
+pub const UPLOAD_DIR: &str = "/home/developer/.uploads";
 
 /// Encode raw RGBA pixel data to a PNG byte buffer.
 pub fn encode_rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
@@ -100,12 +100,12 @@ fn resolve_within_root(root: &Path, path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Map a guest upload path (`/workspace/...`) onto the host mount root.
+/// Map a guest upload path (`/home/developer/...`) onto the host mount root.
 ///
-/// Returns `None` if the path does not start with `/workspace` or if the
+/// Returns `None` if the path does not start with the guest home or if the
 /// resolved host path escapes the mount root.
 pub fn host_upload_path(mount_root: &Path, remote_path: &str) -> Option<PathBuf> {
-    let rel = remote_path.strip_prefix("/workspace")?;
+    let rel = remote_path.strip_prefix("/home/developer")?;
     let rel = rel.trim_start_matches('/');
     resolve_within_root(mount_root, Path::new(rel))
 }
@@ -171,11 +171,19 @@ pub fn exec_upload(sock: &Path, remote_path: &str, data: &[u8]) -> Result<u64, S
         .unwrap_or(UPLOAD_DIR);
     let script = format!("mkdir -p '{dir}' && base64 -d > '{remote_path}'");
     let mut handle = client
-        .start("sh", &["-c", &script], runtime::exec::ExecOptions::default())
+        .start(
+            "sh",
+            &["-c", &script],
+            runtime::exec::ExecOptions::default(),
+        )
         .map_err(|e| format!("exec start: {e}"))?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(data);
-    handle.write_stdin(&b64).map_err(|e| format!("exec stdin: {e}"))?;
-    handle.close_stdin().map_err(|e| format!("exec close stdin: {e}"))?;
+    handle
+        .write_stdin(&b64)
+        .map_err(|e| format!("exec stdin: {e}"))?;
+    handle
+        .close_stdin()
+        .map_err(|e| format!("exec close stdin: {e}"))?;
     loop {
         match handle
             .next_event(None)
@@ -198,12 +206,12 @@ pub fn exec_upload(sock: &Path, remote_path: &str, data: &[u8]) -> Result<u64, S
 /// Spawn an async upload task for a host file.
 ///
 /// Checks file size BEFORE reading, rejects symlink sources, and ensures the
-/// destination path stays within `/workspace/.uploads/<basename>`.
+/// destination path stays within `/home/developer/.uploads/<basename>`.
 pub fn spawn_file_upload(
     mount_root: Option<PathBuf>,
     host_path: PathBuf,
     exec_sock: Option<PathBuf>,
-    panel_idx: usize,
+    panel_id: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
@@ -215,7 +223,7 @@ pub fn spawn_file_upload(
 
         let Some(mount_root) = mount_root else {
             let _ = tx.send(AppEvent::UploadFailed {
-                panel_idx,
+                panel_id,
                 error: "No project mount for this panel; uploads require a mounted workspace."
                     .to_string(),
             });
@@ -228,7 +236,7 @@ pub fn spawn_file_upload(
             Ok(meta) => {
                 if meta.file_type().is_symlink() {
                     let _ = tx.send(AppEvent::UploadFailed {
-                        panel_idx,
+                        panel_id,
                         error: format!("Symlink not allowed: {}", host_path.display()),
                     });
                     return;
@@ -236,7 +244,7 @@ pub fn spawn_file_upload(
             }
             Err(e) => {
                 let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
+                    panel_id,
                     error: format!("Stat {}: {}", host_path.display(), e),
                 });
                 return;
@@ -248,7 +256,7 @@ pub fn spawn_file_upload(
             Ok(meta) => {
                 if meta.len() > MAX_UPLOAD_SIZE {
                     let _ = tx.send(AppEvent::UploadFailed {
-                        panel_idx,
+                        panel_id,
                         error: format!(
                             "File too large: {} ({} MB, max {} MB)",
                             filename,
@@ -261,7 +269,7 @@ pub fn spawn_file_upload(
             }
             Err(e) => {
                 let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
+                    panel_id,
                     error: format!("Stat {}: {}", host_path.display(), e),
                 });
                 return;
@@ -272,7 +280,7 @@ pub fn spawn_file_upload(
             Ok(d) => d,
             Err(e) => {
                 let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
+                    panel_id,
                     error: format!("Read {}: {}", host_path.display(), e),
                 });
                 return;
@@ -280,7 +288,7 @@ pub fn spawn_file_upload(
         };
 
         let _ = tx.send(AppEvent::UploadStarted {
-            panel_idx,
+            panel_id,
             filename: filename.clone(),
         });
 
@@ -293,17 +301,14 @@ pub fn spawn_file_upload(
         match size {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
-                    panel_idx,
+                    panel_id,
                     filename,
                     remote_path,
                     size,
                 });
             }
             Err(e) => {
-                let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
-                    error: e,
-                });
+                let _ = tx.send(AppEvent::UploadFailed { panel_id, error: e });
             }
         }
     });
@@ -332,7 +337,7 @@ pub fn spawn_bytes_upload(
     data: Vec<u8>,
     filename: String,
     exec_sock: Option<PathBuf>,
-    panel_idx: usize,
+    panel_id: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
@@ -340,7 +345,7 @@ pub fn spawn_bytes_upload(
 
         let Some(mount_root) = mount_root else {
             let _ = tx.send(AppEvent::UploadFailed {
-                panel_idx,
+                panel_id,
                 error: "No project mount for this panel; uploads require a mounted workspace."
                     .to_string(),
             });
@@ -349,7 +354,7 @@ pub fn spawn_bytes_upload(
 
         if data.len() as u64 > MAX_UPLOAD_SIZE {
             let _ = tx.send(AppEvent::UploadFailed {
-                panel_idx,
+                panel_id,
                 error: format!(
                     "Data too large: {} ({} MB, max {} MB)",
                     filename,
@@ -361,7 +366,7 @@ pub fn spawn_bytes_upload(
         }
 
         let _ = tx.send(AppEvent::UploadStarted {
-            panel_idx,
+            panel_id,
             filename: filename.clone(),
         });
 
@@ -372,17 +377,14 @@ pub fn spawn_bytes_upload(
         match size {
             Ok(size) => {
                 let _ = tx.send(AppEvent::UploadComplete {
-                    panel_idx,
+                    panel_id,
                     filename,
                     remote_path,
                     size,
                 });
             }
             Err(e) => {
-                let _ = tx.send(AppEvent::UploadFailed {
-                    panel_idx,
-                    error: e,
-                });
+                let _ = tx.send(AppEvent::UploadFailed { panel_id, error: e });
             }
         }
     });
@@ -499,7 +501,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = resolve_within_root(dir.path(), Path::new("nonexistent/file.txt"));
         assert!(result.is_some());
-        assert!(result.unwrap().starts_with(dir.path().canonicalize().unwrap()));
+        assert!(result
+            .unwrap()
+            .starts_with(dir.path().canonicalize().unwrap()));
     }
 
     // --- host_upload_path ---
@@ -511,7 +515,7 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         let file_path = sub.join("foo.txt");
         std::fs::write(&file_path, b"data").unwrap();
-        let result = host_upload_path(dir.path(), "/workspace/sub/foo.txt");
+        let result = host_upload_path(dir.path(), "/home/developer/sub/foo.txt");
         assert!(result.is_some());
         assert_eq!(result.unwrap(), file_path.canonicalize().unwrap());
     }
@@ -519,7 +523,7 @@ mod tests {
     #[test]
     fn test_host_upload_path_traversal_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let result = host_upload_path(dir.path(), "/workspace/../../etc/passwd");
+        let result = host_upload_path(dir.path(), "/home/developer/../../etc/passwd");
         assert!(
             result.is_none(),
             "traversal via .. in remote path must be rejected"
@@ -530,8 +534,8 @@ mod tests {
     fn test_host_upload_path_non_workspace_prefix() {
         let dir = tempfile::tempdir().unwrap();
         assert!(host_upload_path(dir.path(), "/tmp/foo").is_none());
-        // /workspace alone maps to the mount root itself (valid).
-        assert!(host_upload_path(dir.path(), "/workspace").is_some());
+        // The guest home alone maps to the mount root itself (valid).
+        assert!(host_upload_path(dir.path(), "/home/developer").is_some());
     }
 
     // --- spawn_file_upload (async, integration-style) ---
@@ -646,16 +650,17 @@ mod tests {
             let _req = read_frame(&mut stream).expect("request frame");
             let mut b64 = String::new();
             loop {
-                let Some(frame) = read_frame(&mut stream) else { break };
+                let Some(frame) = read_frame(&mut stream) else {
+                    break;
+                };
                 let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
                 match v.get("type").and_then(|t| t.as_str()) {
-                    Some("stdin") => {
-                        b64.push_str(v.get("data").and_then(|d| d.as_str()).unwrap())
-                    }
+                    Some("stdin") => b64.push_str(v.get("data").and_then(|d| d.as_str()).unwrap()),
                     Some("stdin_close") => {
                         use base64::Engine;
-                        let data =
-                            base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
+                        let data = base64::engine::general_purpose::STANDARD
+                            .decode(&b64)
+                            .unwrap();
                         std::fs::write(&out_c, &data).unwrap();
                         write_frame(&mut stream, br#"{"type":"exit","code":0}"#);
                         break;

@@ -32,6 +32,13 @@ pub enum SandboxState {
     Error,
 }
 
+impl SandboxState {
+    /// Whether the sandbox is live (`Starting`/`Running`), i.e. not terminal.
+    pub fn is_active(self) -> bool {
+        matches!(self, SandboxState::Starting | SandboxState::Running)
+    }
+}
+
 /// Supervisor state persisted to `state.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupervisorState {
@@ -64,6 +71,9 @@ pub enum ControlRequest {
     LogsFollow { tail: Option<usize> },
     #[serde(rename_all = "snake_case")]
     Ping {},
+    /// Forward a guest port to the same host port via gvproxy (loopback).
+    #[serde(rename_all = "snake_case")]
+    ExposePort { port: u16 },
 }
 
 /// Response from the supervisor to a client.
@@ -102,4 +112,19 @@ pub enum AttachInput {
     Input { data: String },
     #[serde(rename_all = "snake_case")]
     Resize { cols: u16, rows: u16 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_request_expose_port_round_trips() {
+        let req = ControlRequest::ExposePort { port: 1455 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"expose_port""#));
+        assert!(json.contains(r#""port":1455"#));
+        let back: ControlRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ControlRequest::ExposePort { port: 1455 }));
+    }
 }

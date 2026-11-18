@@ -19,7 +19,7 @@ cfg="$TEST_TMPDIR/minimal.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   my-sandbox:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 output=$($NANOSB --config "$cfg" ps 2>&1)
 rc=$?
@@ -28,7 +28,7 @@ rc=$?
 # ═══════════════════════════════════════════════════════════════════
 # 2. Bare image name auto-resolution
 #    (Docs: configuration.md — "bare names auto-resolve to
-#     ghcr.io/nanosandboxai/agents-registry/<name>:latest")
+#     ghcr.io/nanosandboxai/nanosandbox/<name>:latest")
 # ═══════════════════════════════════════════════════════════════════
 
 begin_test "Bare image name in config is accepted (auto-resolution)"
@@ -57,7 +57,7 @@ defaults:
 
 sandboxes:
   my-sandbox:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 output=$($NANOSB --config "$cfg" ps 2>&1)
 rc=$?
@@ -76,7 +76,7 @@ defaults:
 
 sandboxes:
   fast:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
     cpus: 4
     memory: 8192
     timeout: 1200
@@ -94,7 +94,7 @@ cfg="$TEST_TMPDIR/env_static.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   my-sandbox:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
     env:
       MY_KEY: my_value
       ANOTHER: something
@@ -113,7 +113,7 @@ cfg="$TEST_TMPDIR/env_interp.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   my-sandbox:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
     env:
       HOME_DIR: ${HOME}
 YAML
@@ -130,11 +130,11 @@ cfg="$TEST_TMPDIR/multi.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   sandbox-a:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
   sandbox-b:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
   sandbox-c:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 output=$($NANOSB --config "$cfg" ps 2>&1)
 rc=$?
@@ -160,7 +160,7 @@ cfg="$TEST_TMPDIR/mcp_basic.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   my-sandbox:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
     mcp:
       my-server:
         command: echo
@@ -180,7 +180,7 @@ cfg="$TEST_TMPDIR/mcp_full.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   my-sandbox:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
     mcp:
       active-server:
         command: echo
@@ -214,9 +214,9 @@ defaults:
 
 sandboxes:
   sb1:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
   sb2:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 output=$($NANOSB --config "$cfg" ps 2>&1)
 rc=$?
@@ -232,7 +232,7 @@ cfg="$TEST_TMPDIR/mcp_envvar.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   my-sandbox:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
     mcp:
       my-server:
         command: echo
@@ -255,12 +255,12 @@ c2="$TEST_TMPDIR/merge2.yml"
 cat > "$c1" <<'YAML'
 sandboxes:
   from-first:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 cat > "$c2" <<'YAML'
 sandboxes:
   from-second:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 output=$($NANOSB --config "$c1" --config "$c2" ps 2>&1)
 rc=$?
@@ -277,7 +277,7 @@ mkdir -p "$dir"
 cat > "$dir/sandbox.yml" <<'YAML'
 sandboxes:
   auto:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 # Run from that directory so it auto-detects
 output=$(cd "$dir" && $NANOSB ps 2>&1)

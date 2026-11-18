@@ -82,7 +82,7 @@ buffer. Concrete cases:
 - one panel loading (spinner + `loading_message`)
 - one panel error (`loading_error` shown)
 - one panel terminal mode with sample `TerminalData`
-- multi-panel grid (2–4 panels) layout regions
+- multi-panel tab strip (one tab per agent, single active panel) layout regions
 - MCP sidebar open; sandbox sidebar open
 - focused vs unfocused panel border
 - help overlay contents
@@ -157,8 +157,8 @@ Run with `NANOSB_BINARY_PATH` + `--ignored`, like `next_mode_test`.
 
 - AC1 Every `/help` entry maps to a working command (test asserts parity).
 - AC2 No deprecated stubs remain (grep-clean).
-- AC3 Frame tests cover: welcome, 1 panel (loading/error/terminal), multi-panel,
-  sidebars, focus, help overlay.
+- AC3 Frame tests cover: welcome, 1 panel (loading/error/terminal), multi-panel
+  tabs, sidebars, focus, help overlay.
 - AC4 Handler tests cover add/close/open/focus/kill/env/theme/zoom/reconnect.
 - AC5 Event-loop tests drive 100 synthetic events + render, no TTY.
 - AC6 Scripted VM test: add → attach → reconnect → kill, all asserted.

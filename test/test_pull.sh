@@ -11,7 +11,7 @@ source "$(dirname "$0")/lib.sh"
 
 print_suite_header "Pull Command"
 
-FULL_IMAGE="ghcr.io/nanosandboxai/agents-registry/claude:latest"
+FULL_IMAGE="ghcr.io/nanosandboxai/nanosandbox/claude:latest"
 
 # ═══════════════════════════════════════════════════════════════════
 # 1. Argument validation
@@ -66,7 +66,7 @@ fi
 
 for agent in claude goose codex cursor; do
   begin_test "nanosb pull accepts full reference for agent '$agent'"
-  full_ref="ghcr.io/nanosandboxai/agents-registry/${agent}:latest"
+  full_ref="ghcr.io/nanosandboxai/nanosandbox/${agent}:latest"
   output=$($NANOSB pull "$full_ref" 2>&1) && rc=0 || rc=$?
   if [[ $rc -eq 0 ]]; then
     pass_test

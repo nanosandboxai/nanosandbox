@@ -75,13 +75,9 @@ test-verbose:
 # Setup Targets
 # =============================================================================
 
-# Install runtime dependencies (platform-specific)
+# Install runtime dependencies (libkrunfw + gvproxy; platform auto-detected)
 install-runtime:
-ifeq ($(shell uname),Darwin)
-	./scripts/install/macos.sh
-else
-	./scripts/install/linux.sh
-endif
+	../install-deps/install.sh
 
 # Check prerequisites for E2E tests
 check-prereqs:
@@ -149,9 +145,9 @@ registry-down:
 # Build and push base image to local registry
 # --load ensures buildx loads the image into the local daemon so push works
 agents-build-base:
-	docker build --load -f $(AGENTS_DIR)/docker/Dockerfile.base -t $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) $(AGENTS_DIR)
-	docker push $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG)
-	@echo "Base image pushed to $(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG)"
+	docker build --load -f $(AGENTS_DIR)/docker/Dockerfile.base -t $(REGISTRY_HOST)/nanosandboxai/nanosandbox/base:$(BASE_IMAGE_TAG) $(AGENTS_DIR)
+	docker push $(REGISTRY_HOST)/nanosandboxai/nanosandbox/base:$(BASE_IMAGE_TAG)
+	@echo "Base image pushed to $(REGISTRY_HOST)/nanosandboxai/nanosandbox/base:$(BASE_IMAGE_TAG)"
 
 # Build and push a single agent (usage: make agents-build-one AGENT=claude)
 agents-build-one:
@@ -159,19 +155,19 @@ ifndef AGENT
 	$(error AGENT is required. Usage: make agents-build-one AGENT=claude)
 endif
 	docker build --load -f $(AGENTS_DIR)/docker/Dockerfile.$(AGENT) \
-		--build-arg BASE_IMAGE=$(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) \
-		-t $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG) $(AGENTS_DIR)
-	docker push $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG)
-	@echo "$(AGENT) image pushed to $(REGISTRY_HOST)/agents-registry/$(AGENT):$(BASE_IMAGE_TAG)"
+		--build-arg BASE_IMAGE=$(REGISTRY_HOST)/nanosandboxai/nanosandbox/base:$(BASE_IMAGE_TAG) \
+		-t $(REGISTRY_HOST)/nanosandboxai/nanosandbox/$(AGENT):$(BASE_IMAGE_TAG) $(AGENTS_DIR)
+	docker push $(REGISTRY_HOST)/nanosandboxai/nanosandbox/$(AGENT):$(BASE_IMAGE_TAG)
+	@echo "$(AGENT) image pushed to $(REGISTRY_HOST)/nanosandboxai/nanosandbox/$(AGENT):$(BASE_IMAGE_TAG)"
 
 # Build and push all agent images (builds base first)
 agents-build: agents-build-base
 	@for agent in $(AGENTS); do \
 		echo "Building $$agent..."; \
 		docker build --load -f $(AGENTS_DIR)/docker/Dockerfile.$$agent \
-			--build-arg BASE_IMAGE=$(REGISTRY_HOST)/agents-registry/base:$(BASE_IMAGE_TAG) \
-			-t $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) $(AGENTS_DIR) \
-		&& docker push $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) \
+			--build-arg BASE_IMAGE=$(REGISTRY_HOST)/nanosandboxai/nanosandbox/base:$(BASE_IMAGE_TAG) \
+			-t $(REGISTRY_HOST)/nanosandboxai/nanosandbox/$$agent:$(BASE_IMAGE_TAG) $(AGENTS_DIR) \
+		&& docker push $(REGISTRY_HOST)/nanosandboxai/nanosandbox/$$agent:$(BASE_IMAGE_TAG) \
 		|| exit 1; \
 	done
 	@echo "All agent images built and pushed"
@@ -180,7 +176,7 @@ agents-build: agents-build-base
 agents-test:
 	@for agent in $(AGENTS); do \
 		echo "Testing $$agent..."; \
-		docker run --rm $(REGISTRY_HOST)/agents-registry/$$agent:$(BASE_IMAGE_TAG) $$agent --version \
+		docker run --rm $(REGISTRY_HOST)/nanosandboxai/nanosandbox/$$agent:$(BASE_IMAGE_TAG) $$agent --version \
 		&& echo "  $$agent: OK" \
 		|| echo "  $$agent: FAILED"; \
 	done

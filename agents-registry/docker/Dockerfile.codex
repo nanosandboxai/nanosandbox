@@ -1,8 +1,9 @@
-ARG BASE_IMAGE=agents-registry/base:latest
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
 FROM ${BASE_IMAGE}
 
 # Pinned so CLI flags and the login flow stay stable across rebuilds.
-ARG CODEX_VERSION=0.160.0
+# Pinned via agents-registry/docker/package.json (Dependabot-managed).
+ARG CODEX_VERSION=0.166.0
 
 LABEL org.opencontainers.image.description="Codex agent for nanosandbox sandboxes"
 
@@ -38,6 +39,3 @@ RUN CODEX_JS="/usr/local/lib/node_modules/@openai/codex/bin/codex.js" \
     && chmod +x /usr/local/bin/codex
 
 RUN codex --version && echo "Codex: OK"
-RUN rm -rf /workspace/*
-
-CMD ["codex"]

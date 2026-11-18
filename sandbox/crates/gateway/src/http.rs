@@ -13,7 +13,9 @@ const CONNECT_TIMEOUT_MS: u64 = 500;
 
 /// Connect to addr with a timeout, avoiding the OS-default ~21s TCP timeout.
 fn connect_with_timeout(addr: &str) -> Result<std::net::TcpStream, String> {
-    let sock_addr: SocketAddr = addr.parse().map_err(|e| format!("invalid address '{}': {}", addr, e))?;
+    let sock_addr: SocketAddr = addr
+        .parse()
+        .map_err(|e| format!("invalid address '{}': {}", addr, e))?;
     std::net::TcpStream::connect_timeout(&sock_addr, Duration::from_millis(CONNECT_TIMEOUT_MS))
         .map_err(|e| e.to_string())
 }
@@ -118,7 +120,11 @@ where
                 Err(_) => break,
             }
         }
-        return Err(format!("HTTP error: {} body: {}", status_trimmed, body.trim()));
+        return Err(format!(
+            "HTTP error: {} body: {}",
+            status_trimmed,
+            body.trim()
+        ));
     }
 
     loop {
@@ -141,7 +147,10 @@ where
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => {
-                debug!("[http_post_sse] EOF after {} events, exit_code={}", event_count, exit_code);
+                debug!(
+                    "[http_post_sse] EOF after {} events, exit_code={}",
+                    event_count, exit_code
+                );
                 break;
             }
             Ok(_) => {
@@ -165,8 +174,12 @@ where
                                 }
                             }
                             Some("exit") => {
-                                exit_code = event.get("code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                                info!("[http_post_sse] Exit event: code={} after {} events", exit_code, event_count);
+                                exit_code =
+                                    event.get("code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                info!(
+                                    "[http_post_sse] Exit event: code={} after {} events",
+                                    exit_code, event_count
+                                );
                                 break;
                             }
                             Some("error") => {
@@ -182,7 +195,10 @@ where
                             }
                         }
                     } else {
-                        warn!("[http_post_sse] Failed to parse JSON: {}", &data[..data.len().min(100)]);
+                        warn!(
+                            "[http_post_sse] Failed to parse JSON: {}",
+                            &data[..data.len().min(100)]
+                        );
                     }
                 }
             }
@@ -193,7 +209,10 @@ where
         }
     }
 
-    debug!("[http_post_sse] Done: exit_code={}, events={}", exit_code, event_count);
+    debug!(
+        "[http_post_sse] Done: exit_code={}, events={}",
+        exit_code, event_count
+    );
     Ok(exit_code)
 }
 
@@ -221,7 +240,10 @@ fn read_http_response_generic<S: IoRead>(stream: S) -> Result<(u16, String), Str
         if line.trim().is_empty() {
             break;
         }
-        if let Some(val) = line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")) {
+        if let Some(val) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("content-length:"))
+        {
             content_length = val.trim().parse().ok();
         }
     }
@@ -238,5 +260,3 @@ fn read_http_response_generic<S: IoRead>(stream: S) -> Result<(u16, String), Str
 
     Ok((status_code, body))
 }
-
-

@@ -5,7 +5,7 @@ is the canonical, backend-neutral spec. Its canonical names are the public API
 contract and are **kept as-is**; the nanosb runtime uses a different vocabulary.
 This document is the authoritative bridge between the two, sourced from the
 naming map in the cloud design doc
-[`docs/design/sandbox-resource.md` §4](../../../cloud/docs/design/sandbox-resource.md).
+[`docs/design/sandbox-resource.md` §4](https://github.com/nanosandboxai/cloud/blob/main/docs/design/sandbox-resource.md).
 
 The runtime side is the protocol `SandboxSpec` (see
 [`sandbox-spec.md`](sandbox-spec.md) for the full field inventory).
@@ -76,7 +76,7 @@ resource and are set by the node image / runtime config, not the tenant:
 ## Source of truth
 
 The naming map above is the runtime-side projection of the cloud design doc
-[`docs/design/sandbox-resource.md` §4](../../../cloud/docs/design/sandbox-resource.md)
+[`docs/design/sandbox-resource.md` §4](https://github.com/nanosandboxai/cloud/blob/main/docs/design/sandbox-resource.md)
 and §8 (nanosb projection). If the cloud schema changes, update that doc first,
 then reconcile this table and the field inventory in
 [`sandbox-spec.md`](sandbox-spec.md).

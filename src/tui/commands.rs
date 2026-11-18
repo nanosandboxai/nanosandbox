@@ -31,11 +31,11 @@ pub enum Command {
         branch: Option<String>,
         /// Optional sandbox name.
         name: Option<String>,
-        /// Run in headless/autonomous mode.
+        /// Run in headless/autonomous mode (via --headless).
         auto_mode: bool,
-        /// Run the agent interactively on a TTY console.
+        /// Run the agent interactively on a TTY console (default).
         interactive: bool,
-        /// Task prompt for headless mode (required with --auto-mode).
+        /// Task prompt for headless mode (required with --headless).
         prompt: Option<String>,
         /// Optional model identifier (e.g., "claude-sonnet-4-5-20250929").
         model: Option<String>,
@@ -45,6 +45,10 @@ pub enum Command {
         env_file: Option<String>,
         /// Run agent commands as root inside the sandbox VM.
         run_as_root: bool,
+        /// Optional sandbox lifetime in seconds (overrides the 300s default).
+        timeout: Option<u64>,
+        /// Optional permission level: "default" | "accept-edits" | "allow-all".
+        permissions: Option<String>,
     },
     /// Switch focus to a specific panel index.
     Focus {
@@ -169,7 +173,9 @@ pub enum ParseResult {
 }
 
 /// Supported agent names for `/add`.
-const SUPPORTED_AGENTS: &[&str] = &["claude", "goose", "codex", "cursor"];
+const SUPPORTED_AGENTS: &[&str] = &[
+    "claude", "goose", "codex", "cursor", "opencode", "aider", "gemini", "crush",
+];
 
 /// A single line of `/help` output: a command pattern and its description.
 ///
@@ -189,12 +195,12 @@ pub struct CommandHelpEntry {
 /// registry introspection, git, and finally session control.
 pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
     CommandHelpEntry {
-        pattern: "/add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
-        description: "Add a new agent panel",
+        pattern: "/add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--timeout <secs>] [--permissions <level>] [--env-file <path>] [--use-env <KEY>]...",
+        description: "Add a new agent panel (interactive by default; --headless runs headless)",
     },
     CommandHelpEntry {
         pattern: "/sandboxes",
-        description: "Toggle sandbox sidebar",
+        description: "Toggle sandbox sidebar (alias: /sb)",
     },
     CommandHelpEntry {
         pattern: "/focus <n>",
@@ -357,21 +363,59 @@ pub fn format_help() -> String {
 }
 
 const ALL_COMMANDS: &[&str] = &[
-    "/quit", "/q", "/destroy", "/help", "/clearhistory", "/close", "/copy",
-    "/add", "/focus", "/kill", "/reconnect", "/env",
-    "/zoom", "/branches",
-    "/gitsync", "/gitsync on", "/gitsync off", "/gitsync now",
+    "/quit",
+    "/q",
+    "/destroy",
+    "/help",
+    "/clearhistory",
+    "/close",
+    "/copy",
+    "/add",
+    "/focus",
+    "/kill",
+    "/reconnect",
+    "/env",
+    "/zoom",
+    "/branches",
+    "/gitsync",
+    "/gitsync on",
+    "/gitsync off",
+    "/gitsync now",
     "/open",
     "/sandboxes",
-    "/theme", "/theme nanosandbox", "/theme nanosandbox-light",
-    "/theme dracula", "/theme catppuccin", "/theme tokyo-night", "/theme nord",
-    "/mcp", "/mcp list",
-    "/skills", "/skills list", "/skills show",
-    "/agent list", "/agent show",
-    "/projects", "/projects forget",
-    "/diff", "/diff --stat", "/status", "/sync", "/sync --dry-run", "/discard",
-    "/mounts", "/exec", "/logs", "/stop", "/disk", "/gc", "/gc --dry-run",
-    "/apply", "/apply --force", "/project",
+    "/sb",
+    "/theme",
+    "/theme nanosandbox",
+    "/theme nanosandbox-light",
+    "/theme dracula",
+    "/theme catppuccin",
+    "/theme tokyo-night",
+    "/theme nord",
+    "/mcp",
+    "/mcp list",
+    "/skills",
+    "/skills list",
+    "/skills show",
+    "/agent list",
+    "/agent show",
+    "/projects",
+    "/projects forget",
+    "/diff",
+    "/diff --stat",
+    "/status",
+    "/sync",
+    "/sync --dry-run",
+    "/discard",
+    "/mounts",
+    "/exec",
+    "/logs",
+    "/stop",
+    "/disk",
+    "/gc",
+    "/gc --dry-run",
+    "/apply",
+    "/apply --force",
+    "/project",
 ];
 
 /// Parse a line of input into a Command, or None if it's a regular message.
@@ -412,7 +456,7 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/mcp" => parse_mcp(&parts),
         "/env" => parse_env(&parts),
         "/kill" => parse_kill(&parts),
-        "/sandboxes" => ParseResult::Ok(Command::Sandboxes),
+        "/sandboxes" | "/sb" => ParseResult::Ok(Command::Sandboxes),
         "/reconnect" => ParseResult::Ok(Command::Reconnect),
         "/copy" => ParseResult::Ok(Command::Copy),
         "/zoom" => ParseResult::Ok(Command::Zoom),
@@ -459,14 +503,16 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         Some(a) => *a,
         None => {
             return ParseResult::Err(format!(
-                "Usage: /add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...\n\
+                "Usage: /add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--timeout <secs>] [--permissions <level>] [--env-file <path>] [--use-env <KEY>]...\n\
                  Supported agents: {}\n\
-                 Example: /add claude\n\
+                 Interactive (default): /add claude\n\
                  With tag: /add claude --tag rc11\n\
                  With model: /add claude --model claude-sonnet-4-5-20250929\n\
-                 Headless: /add claude --auto-mode -p \"list files\"\n\
+                 Headless: /add claude --headless -p \"list files\"\n\
+                 With timeout: /add claude --timeout 1800\n\
                  With env file: /add claude --env-file .env.local\n\
-                 With runtime env: /add claude --use-env OPENAI_API_KEY",
+                 With runtime env: /add claude --use-env OPENAI_API_KEY\n\
+                 Permissions: /add claude --permissions allow-all",
                 SUPPORTED_AGENTS.join(", "),
             ));
         }
@@ -478,133 +524,193 @@ fn parse_add(parts: &[&str]) -> ParseResult {
     let mut branch = None;
     let mut name = None;
     let mut auto_mode = false;
-    let mut interactive = false;
+    let mut interactive = true;
     let mut prompt = None;
     let mut model = None;
     let mut use_env: Vec<String> = Vec::new();
     let mut env_file = None;
     let mut run_as_root = false;
+    let mut timeout = None;
+    let mut permissions = None;
     let mut i = 2;
 
     while i < parts.len() {
         match parts[i] {
-            "--image" => {
-                match parts.get(i + 1) {
-                    Some(v) => { image = Some(v.to_string()); i += 2; }
-                    None => return ParseResult::Err(
-                        "Usage: /add <agent> --image <image>\n\
-                         Example: /add myagent --image ghcr.io/org/agent:latest".to_string(),
-                    ),
+            "--image" => match parts.get(i + 1) {
+                Some(v) => {
+                    image = Some(v.to_string());
+                    i += 2;
                 }
-            }
-            "--project" => {
-                match parts.get(i + 1) {
-                    Some(v) => {
-                        let raw = std::path::Path::new(v);
-                        let resolved = if raw.is_absolute() {
-                            raw.to_path_buf()
-                        } else {
-                            std::env::current_dir()
-                                .unwrap_or_default()
-                                .join(raw)
-                        };
-                        if !resolved.exists() {
-                            return ParseResult::Err(format!(
-                                "Project path does not exist: {}\n\
+                None => {
+                    return ParseResult::Err(
+                        "Usage: /add <agent> --image <image>\n\
+                         Example: /add myagent --image ghcr.io/org/agent:latest"
+                            .to_string(),
+                    )
+                }
+            },
+            "--project" => match parts.get(i + 1) {
+                Some(v) => {
+                    let raw = std::path::Path::new(v);
+                    let resolved = if raw.is_absolute() {
+                        raw.to_path_buf()
+                    } else {
+                        std::env::current_dir().unwrap_or_default().join(raw)
+                    };
+                    if !resolved.exists() {
+                        return ParseResult::Err(format!(
+                            "Project path does not exist: {}\n\
                                  Usage: /add <agent> --project <path>",
-                                resolved.display(),
-                            ));
-                        }
-                        if !resolved.is_dir() {
-                            return ParseResult::Err(format!(
-                                "Project path is not a directory: {}\n\
+                            resolved.display(),
+                        ));
+                    }
+                    if !resolved.is_dir() {
+                        return ParseResult::Err(format!(
+                            "Project path is not a directory: {}\n\
                                  Usage: /add <agent> --project <path>",
-                                resolved.display(),
-                            ));
-                        }
-                        project = Some(resolved.to_string_lossy().to_string());
+                            resolved.display(),
+                        ));
+                    }
+                    project = Some(resolved.to_string_lossy().to_string());
+                    i += 2;
+                }
+                None => {
+                    return ParseResult::Err(
+                        "--project requires a path\n\
+                         Usage: /add <agent> --project <path>"
+                            .to_string(),
+                    )
+                }
+            },
+            "--branch" => match parts.get(i + 1) {
+                Some(v) => {
+                    branch = Some(v.to_string());
+                    i += 2;
+                }
+                None => {
+                    return ParseResult::Err(
+                        "--branch requires a name\n\
+                         Usage: /add <agent> --branch <name>"
+                            .to_string(),
+                    )
+                }
+            },
+            "--name" => match parts.get(i + 1) {
+                Some(v) => {
+                    name = Some(v.to_string());
+                    i += 2;
+                }
+                None => {
+                    return ParseResult::Err(
+                        "--name requires a value\n\
+                         Usage: /add <agent> --name <name>"
+                            .to_string(),
+                    )
+                }
+            },
+            "--timeout" => match parts.get(i + 1) {
+                Some(v) => match v.parse::<u64>() {
+                    Ok(t) => {
+                        timeout = Some(t);
                         i += 2;
                     }
-                    None => return ParseResult::Err(
-                        "--project requires a path\n\
-                         Usage: /add <agent> --project <path>".to_string(),
-                    ),
+                    Err(_) => {
+                        return ParseResult::Err(format!(
+                            "--timeout requires a number of seconds\n\
+                             Usage: /add <agent> --timeout <seconds>\n\
+                             Got: {}",
+                            v
+                        ))
+                    }
+                },
+                None => {
+                    return ParseResult::Err(
+                        "--timeout requires a value\n\
+                         Usage: /add <agent> --timeout <seconds>"
+                            .to_string(),
+                    )
                 }
-            }
-            "--branch" => {
-                match parts.get(i + 1) {
-                    Some(v) => { branch = Some(v.to_string()); i += 2; }
-                    None => return ParseResult::Err(
-                        "--branch requires a name\n\
-                         Usage: /add <agent> --branch <name>".to_string(),
-                    ),
+            },
+            "--permissions" => match parts.get(i + 1) {
+                Some(v) => match v.parse::<sandbox::Permissions>() {
+                    Ok(_) => {
+                        permissions = Some(v.to_string());
+                        i += 2;
+                    }
+                    Err(_) => {
+                        return ParseResult::Err(
+                            "--permissions requires one of: default, accept-edits, allow-all\n\
+                             Usage: /add <agent> --permissions <level>"
+                                .to_string(),
+                        )
+                    }
+                },
+                None => {
+                    return ParseResult::Err(
+                        "--permissions requires a value\n\
+                         Usage: /add <agent> --permissions <level>"
+                            .to_string(),
+                    )
                 }
-            }
-            "--name" => {
-                match parts.get(i + 1) {
-                    Some(v) => { name = Some(v.to_string()); i += 2; }
-                    None => return ParseResult::Err(
-                        "--name requires a value\n\
-                         Usage: /add <agent> --name <name>".to_string(),
-                    ),
+            },
+            "--tag" => match parts.get(i + 1) {
+                Some(v) => {
+                    tag = Some(v.to_string());
+                    i += 2;
                 }
-            }
-            "--tag" => {
-                match parts.get(i + 1) {
-                    Some(v) => { tag = Some(v.to_string()); i += 2; }
-                    None => return ParseResult::Err(
+                None => {
+                    return ParseResult::Err(
                         "--tag requires a value\n\
                          Usage: /add <agent> --tag <version>\n\
-                         Example: /add claude --tag rc11".to_string(),
-                    ),
+                         Example: /add claude --tag rc11"
+                            .to_string(),
+                    )
                 }
-            }
-            "--model" => {
-                match parts.get(i + 1) {
-                    Some(v) => { model = Some(v.to_string()); i += 2; }
-                    None => return ParseResult::Err(
+            },
+            "--model" => match parts.get(i + 1) {
+                Some(v) => {
+                    model = Some(v.to_string());
+                    i += 2;
+                }
+                None => {
+                    return ParseResult::Err(
                         "--model requires a value\n\
                          Usage: /add <agent> --model <model-name>\n\
-                         Example: /add claude --model claude-sonnet-4-5-20250929".to_string(),
-                    ),
+                         Example: /add claude --model claude-sonnet-4-5-20250929"
+                            .to_string(),
+                    )
                 }
-            }
-            "--use-env" => {
-                match parts.get(i + 1) {
-                    Some(v) => {
-                        use_env.push(v.to_string());
-                        i += 2;
-                    }
-                    None => {
-                        return ParseResult::Err(
-                            "--use-env requires a key name\n\
+            },
+            "--use-env" => match parts.get(i + 1) {
+                Some(v) => {
+                    use_env.push(v.to_string());
+                    i += 2;
+                }
+                None => {
+                    return ParseResult::Err(
+                        "--use-env requires a key name\n\
                              Usage: /add <agent> --use-env <KEY>"
-                                .to_string(),
-                        )
-                    }
+                            .to_string(),
+                    )
                 }
-            }
-            "--env-file" => {
-                match parts.get(i + 1) {
-                    Some(v) => {
-                        env_file = Some(v.to_string());
-                        i += 2;
-                    }
-                    None => {
-                        return ParseResult::Err(
-                            "--env-file requires a path\n\
+            },
+            "--env-file" => match parts.get(i + 1) {
+                Some(v) => {
+                    env_file = Some(v.to_string());
+                    i += 2;
+                }
+                None => {
+                    return ParseResult::Err(
+                        "--env-file requires a path\n\
                              Usage: /add <agent> --env-file <path>"
-                                .to_string(),
-                        )
-                    }
+                            .to_string(),
+                    )
                 }
-            }
-            "--auto-mode" => {
+            },
+            "--headless" | "--auto-mode" => {
+                // --auto-mode is a backwards-compatible alias of --headless.
                 auto_mode = true;
-                i += 1;
-            }
-            "--interactive" => {
-                interactive = true;
+                interactive = false;
                 i += 1;
             }
             "--run-as-root" => {
@@ -617,7 +723,8 @@ fn parse_add(parts: &[&str]) -> ParseResult {
                 if remaining.is_empty() {
                     return ParseResult::Err(
                         "--prompt requires a value\n\
-                         Usage: /add <agent> --auto-mode -p your task here".to_string(),
+                         Usage: /add <agent> --headless -p your task here"
+                            .to_string(),
                     );
                 }
                 let joined = remaining.join(" ");
@@ -630,26 +737,19 @@ fn parse_add(parts: &[&str]) -> ParseResult {
             other => {
                 return ParseResult::Err(format!(
                     "Unknown option: {}\n\
-                     Usage: /add <agent> [--tag <version>] [--model <model>] [--interactive] [--auto-mode -p <prompt>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]...",
+                     Usage: /add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <image>] [--project <path>] [--branch <name>] [--name <name>] [--timeout <secs>] [--permissions <level>] [--env-file <path>] [--use-env <KEY>]...",
                     other,
                 ));
             }
         }
     }
 
-    // Validate: prompt is required when auto-mode is enabled.
+    // Validate: prompt is required when headless auto-mode is enabled.
     if auto_mode && prompt.is_none() {
         return ParseResult::Err(
-            "--prompt is required with --auto-mode\n\
-             Usage: /add <agent> --auto-mode -p \"your task\"".to_string(),
-        );
-    }
-
-    // Validate: interactive and auto-mode are mutually exclusive.
-    if interactive && auto_mode {
-        return ParseResult::Err(
-            "--interactive and --auto-mode are mutually exclusive\n\
-             Interactive runs the agent TUI; auto-mode is headless.".to_string(),
+            "--prompt is required with --headless\n\
+             Usage: /add <agent> --headless -p \"your task\""
+                .to_string(),
         );
     }
 
@@ -678,6 +778,8 @@ fn parse_add(parts: &[&str]) -> ParseResult {
         use_env,
         env_file,
         run_as_root,
+        timeout,
+        permissions,
     })
 }
 
@@ -744,7 +846,9 @@ fn parse_env(parts: &[&str]) -> ParseResult {
 
 fn parse_kill(parts: &[&str]) -> ParseResult {
     match parts.get(1) {
-        Some(n) => ParseResult::Ok(Command::Kill { panel: Some(n.to_string()) }),
+        Some(n) => ParseResult::Ok(Command::Kill {
+            panel: Some(n.to_string()),
+        }),
         None => ParseResult::Ok(Command::Kill { panel: None }),
     }
 }
@@ -806,7 +910,7 @@ fn parse_diff(parts: &[&str]) -> ParseResult {
 fn parse_exec(parts: &[&str]) -> ParseResult {
     if parts.len() < 2 {
         return ParseResult::Err(
-            "Usage: /exec <command> [args...]\n             Example: /exec ls -la /workspace\n             Example: /exec git log --oneline -5"
+            "Usage: /exec <command> [args...]\n             Example: /exec ls -la /home/developer\n             Example: /exec git log --oneline -5"
                 .to_string(),
         );
     }
@@ -899,9 +1003,7 @@ fn parse_projects(parts: &[&str]) -> ParseResult {
         Some("forget") => {
             let path = parts.get(2).map(|s| s.to_string());
             match path {
-                Some(p) => ParseResult::Ok(Command::Projects {
-                    forget: Some(p),
-                }),
+                Some(p) => ParseResult::Ok(Command::Projects { forget: Some(p) }),
                 None => ParseResult::Err(
                     "Usage: /projects forget <path>\n\
                      Example: /projects forget /Users/me/my-project"
@@ -952,14 +1054,114 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: None,
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
+    }
+
+    #[test]
+    fn test_parse_add_permissions() {
+        assert_eq!(
+            parse_command_verbose("/add claude --permissions allow-all"),
+            ParseResult::Ok(Command::AddAgent {
+                agent: "claude".to_string(),
+                image: None,
+                tag: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: false,
+                interactive: true,
+                prompt: None,
+                model: None,
+                use_env: vec![],
+                env_file: None,
+                run_as_root: false,
+                timeout: None,
+                permissions: Some("allow-all".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_permissions_invalid_value() {
+        let result = parse_command_verbose("/add claude --permissions bananas");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("--permissions requires one of: default, accept-edits, allow-all"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_add_permissions_missing_value() {
+        let result = parse_command_verbose("/add claude --permissions");
+        match result {
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("--permissions requires a value"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_add_opencode() {
+        assert_eq!(
+            parse_command("/add opencode"),
+            Some(Command::AddAgent {
+                agent: "opencode".to_string(),
+                image: None,
+                tag: None,
+                project: None,
+                branch: None,
+                name: None,
+                auto_mode: false,
+                interactive: true,
+                prompt: None,
+                model: None,
+                use_env: vec![],
+                env_file: None,
+                run_as_root: false,
+                timeout: None,
+                permissions: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_add_aider_gemini_crush() {
+        for agent in ["aider", "gemini", "crush"] {
+            assert_eq!(
+                parse_command(&format!("/add {}", agent)),
+                Some(Command::AddAgent {
+                    agent: agent.to_string(),
+                    image: None,
+                    tag: None,
+                    project: None,
+                    branch: None,
+                    name: None,
+                    auto_mode: false,
+                    interactive: true,
+                    prompt: None,
+                    model: None,
+                    use_env: vec![],
+                    env_file: None,
+                    run_as_root: false,
+                    timeout: None,
+                    permissions: None,
+                }),
+                "`/add {}` should parse as a supported agent",
+                agent
+            );
+        }
     }
 
     #[test]
@@ -974,12 +1176,14 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: None,
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -996,12 +1200,14 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: None,
                 use_env: vec![],
                 env_file: None,
                 run_as_root: true,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1093,12 +1299,14 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: None,
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1151,6 +1359,11 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_sb_alias() {
+        assert_eq!(parse_command("/sb"), Some(Command::Sandboxes));
+    }
+
+    #[test]
     fn test_unknown_command() {
         let result = parse_command_verbose("/foobar");
         match result {
@@ -1198,7 +1411,9 @@ mod tests {
     fn test_parse_kill_with_number() {
         assert_eq!(
             parse_command_verbose("/kill 2"),
-            ParseResult::Ok(Command::Kill { panel: Some("2".to_string()) }),
+            ParseResult::Ok(Command::Kill {
+                panel: Some("2".to_string())
+            }),
         );
     }
 
@@ -1206,7 +1421,9 @@ mod tests {
     fn test_parse_kill_with_name() {
         assert_eq!(
             parse_command_verbose("/kill claude"),
-            ParseResult::Ok(Command::Kill { panel: Some("claude".to_string()) }),
+            ParseResult::Ok(Command::Kill {
+                panel: Some("claude".to_string())
+            }),
         );
     }
 
@@ -1234,12 +1451,14 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: None,
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1256,12 +1475,14 @@ mod tests {
                 branch: Some("feat/auth".to_string()),
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: None,
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1282,7 +1503,9 @@ mod tests {
     #[test]
     fn test_parse_add_project_missing_value() {
         let result = parse_command_verbose("/add claude --project");
-        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("--project requires a path")));
+        assert!(
+            matches!(result, ParseResult::Err(msg) if msg.contains("--project requires a path"))
+        );
     }
 
     #[test]
@@ -1303,6 +1526,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1326,6 +1551,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1353,12 +1580,14 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: None,
                 use_env: vec!["OPENAI_API_KEY".to_string(), "GITHUB_TOKEN".to_string()],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1366,7 +1595,9 @@ mod tests {
     #[test]
     fn test_parse_add_use_env_missing_value() {
         let result = parse_command_verbose("/add claude --use-env");
-        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("--use-env requires a key name")));
+        assert!(
+            matches!(result, ParseResult::Err(msg) if msg.contains("--use-env requires a key name"))
+        );
     }
 
     #[test]
@@ -1381,12 +1612,14 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: None,
                 use_env: vec![],
                 env_file: Some(".env.local".to_string()),
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1394,7 +1627,9 @@ mod tests {
     #[test]
     fn test_parse_add_env_file_missing_value() {
         let result = parse_command_verbose("/add claude --env-file");
-        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("--env-file requires a path")));
+        assert!(
+            matches!(result, ParseResult::Err(msg) if msg.contains("--env-file requires a path"))
+        );
     }
 
     #[test]
@@ -1415,6 +1650,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1428,7 +1665,10 @@ mod tests {
     fn test_parse_gitsync_status() {
         assert_eq!(
             parse_command("/gitsync"),
-            Some(Command::Sync { dry_run: false, action: None })
+            Some(Command::Sync {
+                dry_run: false,
+                action: None
+            })
         );
     }
 
@@ -1436,7 +1676,10 @@ mod tests {
     fn test_parse_gitsync_on() {
         assert_eq!(
             parse_command_verbose("/gitsync on"),
-            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("on".to_string()) })
+            ParseResult::Ok(Command::Sync {
+                dry_run: false,
+                action: Some("on".to_string())
+            })
         );
     }
 
@@ -1444,7 +1687,10 @@ mod tests {
     fn test_parse_gitsync_off() {
         assert_eq!(
             parse_command_verbose("/gitsync off"),
-            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("off".to_string()) })
+            ParseResult::Ok(Command::Sync {
+                dry_run: false,
+                action: Some("off".to_string())
+            })
         );
     }
 
@@ -1452,7 +1698,10 @@ mod tests {
     fn test_parse_gitsync_now() {
         assert_eq!(
             parse_command_verbose("/gitsync now"),
-            ParseResult::Ok(Command::Sync { dry_run: false, action: Some("now".to_string()) })
+            ParseResult::Ok(Command::Sync {
+                dry_run: false,
+                action: Some("now".to_string())
+            })
         );
     }
 
@@ -1466,7 +1715,10 @@ mod tests {
     fn test_parse_sync_alias() {
         assert_eq!(
             parse_command_verbose("/sync"),
-            ParseResult::Ok(Command::Sync { dry_run: false, action: None })
+            ParseResult::Ok(Command::Sync {
+                dry_run: false,
+                action: None
+            })
         );
     }
 
@@ -1474,7 +1726,10 @@ mod tests {
     fn test_parse_sync_dry_run() {
         assert_eq!(
             parse_command_verbose("/sync --dry-run"),
-            ParseResult::Ok(Command::Sync { dry_run: true, action: None })
+            ParseResult::Ok(Command::Sync {
+                dry_run: true,
+                action: None
+            })
         );
     }
 
@@ -1482,7 +1737,10 @@ mod tests {
     fn test_parse_sync_dry_run_with_action() {
         assert_eq!(
             parse_command_verbose("/sync --dry-run now"),
-            ParseResult::Ok(Command::Sync { dry_run: true, action: Some("now".to_string()) })
+            ParseResult::Ok(Command::Sync {
+                dry_run: true,
+                action: Some("now".to_string())
+            })
         );
     }
 
@@ -1490,7 +1748,10 @@ mod tests {
     fn test_parse_sync_dry_run_after_action() {
         assert_eq!(
             parse_command_verbose("/sync on --dry-run"),
-            ParseResult::Ok(Command::Sync { dry_run: true, action: Some("on".to_string()) })
+            ParseResult::Ok(Command::Sync {
+                dry_run: true,
+                action: Some("on".to_string())
+            })
         );
     }
 
@@ -1504,10 +1765,7 @@ mod tests {
 
     #[test]
     fn test_parse_diff() {
-        assert_eq!(
-            parse_command("/diff"),
-            Some(Command::Diff { stat: false })
-        );
+        assert_eq!(parse_command("/diff"), Some(Command::Diff { stat: false }));
     }
 
     #[test]
@@ -1569,16 +1827,22 @@ mod tests {
     fn test_parse_exec_single_arg() {
         assert_eq!(
             parse_command("/exec ls"),
-            Some(Command::Exec { args: vec!["ls".to_string()] })
+            Some(Command::Exec {
+                args: vec!["ls".to_string()]
+            })
         );
     }
 
     #[test]
     fn test_parse_exec_multiple_args() {
         assert_eq!(
-            parse_command("/exec ls -la /workspace"),
+            parse_command("/exec ls -la /home/developer"),
             Some(Command::Exec {
-                args: vec!["ls".to_string(), "-la".to_string(), "/workspace".to_string()]
+                args: vec![
+                    "ls".to_string(),
+                    "-la".to_string(),
+                    "/home/developer".to_string()
+                ]
             })
         );
     }
@@ -1593,10 +1857,7 @@ mod tests {
 
     #[test]
     fn test_parse_logs_no_count() {
-        assert_eq!(
-            parse_command("/logs"),
-            Some(Command::Logs { count: None })
-        );
+        assert_eq!(parse_command("/logs"), Some(Command::Logs { count: None }));
     }
 
     #[test]
@@ -1617,17 +1878,16 @@ mod tests {
 
     #[test]
     fn test_parse_stop_no_target() {
-        assert_eq!(
-            parse_command("/stop"),
-            Some(Command::Stop { target: None })
-        );
+        assert_eq!(parse_command("/stop"), Some(Command::Stop { target: None }));
     }
 
     #[test]
     fn test_parse_stop_with_number() {
         assert_eq!(
             parse_command("/stop 2"),
-            Some(Command::Stop { target: Some("2".to_string()) })
+            Some(Command::Stop {
+                target: Some("2".to_string())
+            })
         );
     }
 
@@ -1635,7 +1895,9 @@ mod tests {
     fn test_parse_stop_with_name() {
         assert_eq!(
             parse_command("/stop claude"),
-            Some(Command::Stop { target: Some("claude".to_string()) })
+            Some(Command::Stop {
+                target: Some("claude".to_string())
+            })
         );
     }
     #[test]
@@ -1647,7 +1909,9 @@ mod tests {
     fn test_parse_open_with_name() {
         assert_eq!(
             parse_command("/open claude"),
-            Some(Command::Open { target: Some("claude".to_string()) })
+            Some(Command::Open {
+                target: Some("claude".to_string())
+            })
         );
     }
 
@@ -1669,7 +1933,9 @@ mod tests {
     fn test_parse_close_with_name() {
         assert_eq!(
             parse_command("/close claude"),
-            Some(Command::Close { target: Some("claude".to_string()) }),
+            Some(Command::Close {
+                target: Some("claude".to_string())
+            }),
         );
     }
 
@@ -1701,7 +1967,9 @@ mod tests {
     fn test_parse_skills_show() {
         assert_eq!(
             parse_command("/skills show git-workflow"),
-            Some(Command::SkillsShow { name: "git-workflow".to_string() })
+            Some(Command::SkillsShow {
+                name: "git-workflow".to_string()
+            })
         );
     }
 
@@ -1755,7 +2023,9 @@ mod tests {
     fn test_parse_agent_info() {
         assert_eq!(
             parse_command("/agent show rust-developer"),
-            Some(Command::AgentInfo { name: "rust-developer".to_string() })
+            Some(Command::AgentInfo {
+                name: "rust-developer".to_string()
+            })
         );
     }
 
@@ -1801,12 +2071,14 @@ mod tests {
                 branch: None,
                 name: None,
                 auto_mode: false,
-                interactive: false,
+                interactive: true,
                 prompt: None,
                 model: Some("claude-sonnet-4-5-20250929".to_string()),
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1825,7 +2097,9 @@ mod tests {
     #[test]
     fn test_parse_add_with_model_and_auto_mode() {
         assert_eq!(
-            parse_command_verbose("/add claude --model claude-opus-4-20250514 --auto-mode -p do stuff"),
+            parse_command_verbose(
+                "/add claude --model claude-opus-4-20250514 --auto-mode -p do stuff"
+            ),
             ParseResult::Ok(Command::AddAgent {
                 agent: "claude".to_string(),
                 image: None,
@@ -1840,6 +2114,8 @@ mod tests {
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
@@ -1851,7 +2127,10 @@ mod tests {
 
     #[test]
     fn test_parse_apply() {
-        assert_eq!(parse_command("/apply"), Some(Command::Apply { force: false }));
+        assert_eq!(
+            parse_command("/apply"),
+            Some(Command::Apply { force: false })
+        );
         assert_eq!(
             parse_command("/apply --force"),
             Some(Command::Apply { force: true })
@@ -1860,10 +2139,15 @@ mod tests {
 
     #[test]
     fn test_parse_project() {
-        assert_eq!(parse_command("/project"), Some(Command::Project { target: None }));
+        assert_eq!(
+            parse_command("/project"),
+            Some(Command::Project { target: None })
+        );
         assert_eq!(
             parse_command("/project 2"),
-            Some(Command::Project { target: Some("2".to_string()) })
+            Some(Command::Project {
+                target: Some("2".to_string())
+            })
         );
     }
 
@@ -1874,9 +2158,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_add_interactive() {
+    fn test_parse_add_headless() {
         assert_eq!(
-            parse_command_verbose("/add claude --interactive"),
+            parse_command_verbose("/add claude --headless -p \"list files\""),
             ParseResult::Ok(Command::AddAgent {
                 agent: "claude".to_string(),
                 image: None,
@@ -1884,32 +2168,129 @@ mod tests {
                 project: None,
                 branch: None,
                 name: None,
-                auto_mode: false,
-                interactive: true,
-                prompt: None,
+                auto_mode: true,
+                interactive: false,
+                prompt: Some("list files".to_string()),
                 model: None,
                 use_env: vec![],
                 env_file: None,
                 run_as_root: false,
+                timeout: None,
+                permissions: None,
             })
         );
     }
 
     #[test]
-    fn test_parse_add_defaults_interactive_false() {
+    fn test_parse_add_defaults_interactive_true() {
         let parsed = parse_command_verbose("/add claude");
         assert!(matches!(
             parsed,
-            ParseResult::Ok(Command::AddAgent { interactive: false, .. })
+            ParseResult::Ok(Command::AddAgent {
+                interactive: true,
+                auto_mode: false,
+                ..
+            })
         ));
     }
 
     #[test]
-    fn test_parse_add_interactive_and_auto_mode_rejected() {
-        let result = parse_command_verbose("/add claude --interactive --auto-mode -p hi");
+    fn test_parse_add_auto_mode_alias_matches_headless() {
+        // --auto-mode is a backwards-compatible alias of --headless: it must
+        // yield the exact same parsed command (auto_mode on, interactive off).
+        let via_auto_mode = parse_command_verbose("/add claude --auto-mode -p hi");
+        let via_headless = parse_command_verbose("/add claude --headless -p hi");
+        assert!(matches!(via_auto_mode, ParseResult::Ok(_)));
+        assert_eq!(via_auto_mode, via_headless);
+    }
+
+    #[test]
+    fn test_parse_add_headless_without_prompt_fails() {
+        let result = parse_command_verbose("/add claude --headless");
         match result {
-            ParseResult::Err(msg) => assert!(msg.contains("mutually exclusive")),
+            ParseResult::Err(msg) => {
+                assert!(msg.contains("--prompt is required"));
+                assert!(msg.contains("--headless"));
+            }
             other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_add_interactive_flag_removed() {
+        let result = parse_command_verbose("/add claude --interactive");
+        match result {
+            ParseResult::Err(msg) => assert!(msg.contains("Unknown option")),
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    // ===== Table-driven /add coverage over ALL supported agents =====
+
+    fn expected_add_agent(
+        agent: &str,
+        auto_mode: bool,
+        interactive: bool,
+        prompt: Option<&str>,
+    ) -> Command {
+        Command::AddAgent {
+            agent: agent.to_string(),
+            image: None,
+            tag: None,
+            project: None,
+            branch: None,
+            name: None,
+            auto_mode,
+            interactive,
+            prompt: prompt.map(String::from),
+            model: None,
+            use_env: vec![],
+            env_file: None,
+            run_as_root: false,
+            timeout: None,
+            permissions: None,
+        }
+    }
+
+    #[test]
+    fn test_parse_add_all_agents_interactive_by_default() {
+        for agent in SUPPORTED_AGENTS {
+            assert_eq!(
+                parse_command(&format!("/add {}", agent)),
+                Some(expected_add_agent(agent, false, true, None)),
+                "`/add {}` should parse as interactive by default",
+                agent,
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_add_all_agents_headless() {
+        for agent in SUPPORTED_AGENTS {
+            assert_eq!(
+                parse_command_verbose(&format!("/add {} --headless -p \"list files\"", agent)),
+                ParseResult::Ok(expected_add_agent(agent, true, false, Some("list files"))),
+                "`/add {} --headless -p \"list files\"` should parse as headless",
+                agent,
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_add_auto_mode_alias_matches_headless_all_agents() {
+        for agent in SUPPORTED_AGENTS {
+            let via_auto_mode = parse_command_verbose(&format!("/add {} --auto-mode -p x", agent));
+            let via_headless = parse_command_verbose(&format!("/add {} --headless -p x", agent));
+            assert!(
+                matches!(via_auto_mode, ParseResult::Ok(_)),
+                "`/add {} --auto-mode -p x` should parse as Ok",
+                agent,
+            );
+            assert_eq!(
+                via_auto_mode, via_headless,
+                "`--auto-mode` must parse identically to `--headless` for {}",
+                agent,
+            );
         }
     }
 
@@ -2048,7 +2429,9 @@ mod tests {
     #[test]
     fn test_parse_projects_unknown_subcommand() {
         let result = parse_command_verbose("/projects foo");
-        assert!(matches!(result, ParseResult::Err(msg) if msg.contains("Unknown projects subcommand")));
+        assert!(
+            matches!(result, ParseResult::Err(msg) if msg.contains("Unknown projects subcommand"))
+        );
     }
 
     #[test]

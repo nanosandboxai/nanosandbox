@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use runtime::ImageManager;
 use crate::config::AgentSandboxConfig;
 use crate::error::{Error, Result};
 use crate::sandbox::Sandbox as SandboxInner;
+use runtime::ImageManager;
 
 /// Agent-aware sandbox wrapper.
 ///
@@ -42,13 +42,19 @@ impl std::ops::DerefMut for AgentSandbox {
 impl AgentSandbox {
     /// Wrap an existing intermediate sandbox with agent capabilities.
     pub fn new(sandbox: SandboxInner) -> Self {
-        Self { sandbox, agent_config: AgentSandboxConfig::default() }
+        Self {
+            sandbox,
+            agent_config: AgentSandboxConfig::default(),
+        }
     }
 
     /// Create a new sandbox from an `AgentSandboxConfig`.
     pub async fn create(config: AgentSandboxConfig) -> runtime::Result<Self> {
         let sandbox = SandboxInner::create(config.sandbox.clone()).await?;
-        Ok(Self { sandbox, agent_config: config })
+        Ok(Self {
+            sandbox,
+            agent_config: config,
+        })
     }
 
     /// Create a new sandbox using an existing `ImageManager`.
@@ -57,7 +63,10 @@ impl AgentSandbox {
         im: Arc<ImageManager>,
     ) -> runtime::Result<Self> {
         let sandbox = SandboxInner::create_with_manager(config.sandbox.clone(), im).await?;
-        Ok(Self { sandbox, agent_config: config })
+        Ok(Self {
+            sandbox,
+            agent_config: config,
+        })
     }
 
     /// Return the agent-level config for this sandbox.
@@ -75,11 +84,7 @@ impl AgentSandbox {
     }
 
     /// Run a command in the sandbox, returning buffered output.
-    pub fn exec(
-        &self,
-        command: &str,
-        args: &[&str],
-    ) -> Result<runtime::exec::ExecResult> {
+    pub fn exec(&self, command: &str, args: &[&str]) -> Result<runtime::exec::ExecResult> {
         self.exec_client()
             .exec(command, args)
             .map_err(|e| Error::Runtime(runtime::Error::ExecFailed(e.to_string())))

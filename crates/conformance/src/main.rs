@@ -39,7 +39,9 @@ fn serve(args: &[String]) -> ExitCode {
             }
             "--capabilities" => {
                 i += 1;
-                caps = args.get(i).map(|s| s.split(',').map(str::to_string).collect());
+                caps = args
+                    .get(i)
+                    .map(|s| s.split(',').map(str::to_string).collect());
             }
             "--help" | "-h" => {
                 print_usage();

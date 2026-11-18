@@ -126,7 +126,9 @@ pub fn has_real_git_dir(dir: &Path) -> bool {
 
         let resolved = dir.join(target);
         return match resolved.canonicalize() {
-            Ok(canon) => canon.starts_with(dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())),
+            Ok(canon) => {
+                canon.starts_with(dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()))
+            }
             Err(_) => false,
         };
     }
@@ -159,7 +161,10 @@ mod tests {
         let cmd = host_git();
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
         let idx = args.iter().position(|a| *a == "core.fsmonitor=false");
-        assert!(idx.is_some(), "expected core.fsmonitor=false in args: {args:?}");
+        assert!(
+            idx.is_some(),
+            "expected core.fsmonitor=false in args: {args:?}"
+        );
     }
 
     #[test]
@@ -205,7 +210,8 @@ mod tests {
             .map(|(k, v)| {
                 (
                     k.to_string_lossy().to_string(),
-                    v.map(|v| v.to_string_lossy().to_string()).unwrap_or_default(),
+                    v.map(|v| v.to_string_lossy().to_string())
+                        .unwrap_or_default(),
                 )
             })
             .collect();
@@ -327,7 +333,9 @@ mod tests {
         // The flags handle_diff uses must prevent execution.
         let out = run(&["diff", "--no-ext-diff", "--no-textconv", "f.bin"]);
         assert!(out.status.success());
-        assert!(!marker.exists(), "textconv driver executed despite --no-textconv");
+        assert!(
+            !marker.exists(),
+            "textconv driver executed despite --no-textconv"
+        );
     }
-
 }

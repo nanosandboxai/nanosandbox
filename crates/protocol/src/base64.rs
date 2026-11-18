@@ -4,8 +4,7 @@
 //! Kept in the protocol crate so every helper and SDK agrees byte-for-byte on
 //! the encoding. Only the standard alphabet with `=` padding is supported.
 
-const ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Encode `data` as standard base64.
 pub fn encode(data: &[u8]) -> String {
@@ -33,10 +32,7 @@ pub fn encode(data: &[u8]) -> String {
 
 /// Decode standard base64. Returns `None` on invalid input.
 pub fn decode(s: &str) -> Option<Vec<u8>> {
-    let bytes: Vec<u8> = s
-        .bytes()
-        .filter(|b| !b.is_ascii_whitespace())
-        .collect();
+    let bytes: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     if !bytes.len().is_multiple_of(4) {
         return None;
     }

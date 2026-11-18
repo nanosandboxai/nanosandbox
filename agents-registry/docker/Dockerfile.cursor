@@ -1,11 +1,11 @@
-ARG BASE_IMAGE=agents-registry/base:latest
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.description="Cursor agent for nanosandbox sandboxes"
 
 # Install cursor CLI agent via official installer.
 # The installer puts files under /root/.local/share/cursor-agent/. We move
-# it to /opt so the non-root 'developer' user can access it.
+# it to /opt so it lives outside the home directory.
 #
 # Why a wrapper script instead of a symlink: the cursor-agent wrapper uses
 # `realpath "$0"` to locate its own node binary and index.js. A symlink at
@@ -26,6 +26,3 @@ RUN curl -fsSL https://cursor.com/install | bash \
 RUN test -x /usr/local/bin/cursor-agent \
     && cursor-agent --help > /dev/null 2>&1 \
     && echo "Cursor CLI: OK"
-RUN rm -rf /workspace/*
-
-CMD ["cursor-agent"]

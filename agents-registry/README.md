@@ -35,7 +35,7 @@ Reference a registry agent in your `sandbox.yml`:
 
 ```yaml
 defaults:
-  image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+  image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 
 sandboxes:
   my-env:
@@ -47,7 +47,7 @@ Or compose your own agent using registry skills:
 ```yaml
 sandboxes:
   custom-env:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
     agent:
       skills: [git-workflow, tdd]
       mcps:
@@ -97,29 +97,37 @@ This repo also contains Docker images for running agents inside nanosandbox VMs.
 ### Image Architecture
 
 ```
-Dockerfile.base (node:22-slim + MCP packages + agent tooling)
+Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
     |
-    ├── Dockerfile.claude  → ghcr.io/nanosandboxai/agents-registry/claude
-    ├── Dockerfile.codex   → ghcr.io/nanosandboxai/agents-registry/codex
-    ├── Dockerfile.goose   → ghcr.io/nanosandboxai/agents-registry/goose
-    └── Dockerfile.cursor  → ghcr.io/nanosandboxai/agents-registry/cursor
+    ├── Dockerfile.claude   → ghcr.io/nanosandboxai/nanosandbox/claude
+    ├── Dockerfile.codex    → ghcr.io/nanosandboxai/nanosandbox/codex
+    ├── Dockerfile.goose    → ghcr.io/nanosandboxai/nanosandbox/goose
+    ├── Dockerfile.cursor   → ghcr.io/nanosandboxai/nanosandbox/cursor
+    ├── Dockerfile.opencode → ghcr.io/nanosandboxai/nanosandbox/opencode
+    ├── Dockerfile.aider    → ghcr.io/nanosandboxai/nanosandbox/aider
+    ├── Dockerfile.gemini   → ghcr.io/nanosandboxai/nanosandbox/gemini
+    └── Dockerfile.crush    → ghcr.io/nanosandboxai/nanosandbox/crush
 ```
 
 ### Base Image Contents
 
-- node:22-slim with system deps (git, SSH, curl)
-- Pre-installed MCP server npm packages (github, filesystem, memory, brave-search, context7)
-- Non-root `developer` user (UID 1000)
+- `node:22-slim` with minimal system deps (curl, ca-certificates, git, bash)
+- Python 3 + uv/uvx (runtime for Python-based MCP servers like mcp-server-fetch)
+- Pure installation: no user/group, no `/workspace`, no `CMD`/`ENTRYPOINT`
 - No nanosb runtime code: sandbox setup happens at the microVM layer
 
 ### Available Images
 
 | Image | Agent | Registry |
 |-------|-------|----------|
-| claude | Claude Code | `ghcr.io/nanosandboxai/agents-registry/claude:latest` |
-| codex | OpenAI Codex | `ghcr.io/nanosandboxai/agents-registry/codex:latest` |
-| goose | Goose | `ghcr.io/nanosandboxai/agents-registry/goose:latest` |
-| cursor | Cursor Agent | `ghcr.io/nanosandboxai/agents-registry/cursor:latest` |
+| claude | Claude Code | `ghcr.io/nanosandboxai/nanosandbox/claude:latest` |
+| codex | OpenAI Codex | `ghcr.io/nanosandboxai/nanosandbox/codex:latest` |
+| goose | Goose | `ghcr.io/nanosandboxai/nanosandbox/goose:latest` |
+| cursor | Cursor Agent | `ghcr.io/nanosandboxai/nanosandbox/cursor:latest` |
+| opencode | OpenCode | `ghcr.io/nanosandboxai/nanosandbox/opencode:latest` |
+| aider | Aider | `ghcr.io/nanosandboxai/nanosandbox/aider:latest` |
+| gemini | Gemini CLI | `ghcr.io/nanosandboxai/nanosandbox/gemini:latest` |
+| crush | Crush | `ghcr.io/nanosandboxai/nanosandbox/crush:latest` |
 
 ### Building Locally
 

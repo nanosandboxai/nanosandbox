@@ -19,8 +19,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build (e.g. v0.3.0). Publishing only happens for tag pushes.'
-        required: true
+        description: 'Version to build (defaults to the pushed tag)'
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -124,7 +125,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Install build dependencies
         run: bash runtime/scripts/ci/install-deps-apt.sh
@@ -163,6 +164,9 @@ jobs:
       - name: Build runtime (zigbuild)
         run: cargo zigbuild --release -p runtime --target ${{ matrix.rust_target }}
 
+      - name: Build nanosb-runtime (zigbuild)
+        run: cargo zigbuild --release -p nanosb-cli --bin nanosb-runtime --target ${{ matrix.rust_target }}
+
       - name: Download exec-agent artifact
         uses: actions/download-artifact@v4
         with:
@@ -172,15 +176,11 @@ jobs:
       - name: Resolve version
         id: version
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           else
             echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Build SDK runtime helper (nanosb-runtime, Linux x86_64)
-        if: matrix.arch == 'amd64'
-        run: cargo zigbuild --release -p nanosb-cli --bin nanosb-runtime --no-default-features --features runtime-host --target x86_64-unknown-linux-gnu.2.28
 
       - name: Assemble + build SDK runtime bundle (Linux x86_64)
         if: matrix.arch == 'amd64'
@@ -193,21 +193,23 @@ jobs:
           cp artifacts/exec-agent/exec-agent-x86_64 "$H/guest-bin/exec-agent"
           chmod +x "$H/bin/gvproxy" "$H/guest-bin/exec-agent"
           NANOSB_SRC_HOME="$H" \
-          NANOSB_RUNTIME_BIN="target/x86_64-unknown-linux-gnu.2.28/release/nanosb-runtime" \
+          NANOSB_RUNTIME_BIN="target/${{ matrix.rust_target }}/release/nanosb-runtime" \
             scripts/sdk/build-runtime-bundle.sh "${{ steps.version.outputs.version }}" --out dist
 
       - name: Package artifacts
         run: |
           mkdir -p dist
 
-          # nanosandbox binary — zigbuild outputs to target/{triple}/release/
-          NANOSB="target/${{ matrix.rust_target }}/release/nanosandbox"
-          if [ -f "$NANOSB" ]; then
+          # nanosb-runtime binary — zigbuild outputs to target/{triple}/release/
+          NANOSB_RUNTIME="target/${{ matrix.rust_target }}/release/nanosb-runtime"
+          if [ -f "$NANOSB_RUNTIME" ]; then
             tar czf "dist/nanosandbox-linux-${{ matrix.arch }}.tar.gz" \
-              -C "target/${{ matrix.rust_target }}/release" nanosandbox
+              -C "target/${{ matrix.rust_target }}/release" nanosb-runtime
+            tar tzf "dist/nanosandbox-linux-${{ matrix.arch }}.tar.gz" | grep -q nanosb-runtime
           else
-            echo "WARNING: nanosandbox binary not found at $NANOSB"
-            find target -name nanosandbox -not -path "*/deps/*" | head -5
+            echo "ERROR: nanosb-runtime binary not found at $NANOSB_RUNTIME"
+            find target -name nanosb-runtime -not -path "*/deps/*" | head -5
+            exit 1
           fi
 
           # gvproxy binary (standalone)
@@ -247,7 +249,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -285,6 +287,9 @@ jobs:
       - name: Build runtime
         run: cargo build --release -p runtime
 
+      - name: Build nanosb-runtime
+        run: cargo build --release -p nanosb-cli --bin nanosb-runtime
+
       - name: Build gvproxy
         run: |
           cd runtime/deps/gvproxy
@@ -299,8 +304,8 @@ jobs:
       - name: Resolve version
         id: version
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           else
             echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           fi
@@ -341,9 +346,13 @@ jobs:
         run: |
           mkdir -p dist
 
-          if [ -f "target/release/nanosandbox" ]; then
+          if [ -f "target/release/nanosb-runtime" ]; then
             tar czf dist/nanosandbox-darwin-arm64.tar.gz \
-              -C target/release nanosandbox
+              -C target/release nanosb-runtime
+            tar tzf dist/nanosandbox-darwin-arm64.tar.gz | grep -q nanosb-runtime
+          else
+            echo "ERROR: nanosb-runtime binary not found at target/release/nanosb-runtime"
+            exit 1
           fi
 
           tar czf dist/gvproxy-darwin-arm64.tar.gz \
@@ -375,7 +384,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -401,7 +410,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          sed -i "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+          bash scripts/set-version.sh "${TAG_VERSION}"
           grep '^version' Cargo.toml | head -1
 
       - name: Build release binary (glibc floor 2.28)
@@ -424,12 +433,10 @@ jobs:
           path: nanosb-linux-amd64
           retention-days: 7
 
-  # ─── Job 6: CLI — macOS arm64 ───
-  build-cli-macos:
-    name: Build CLI (macOS arm64)
-    runs-on: macos-latest
-    env:
-      HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+  # ─── Job 5c: CLI — Linux arm64 (glibc floor 2.28) ───
+  build-cli-linux-arm64:
+    name: Build CLI (Linux arm64)
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -437,7 +444,67 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cli-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cli-cargo-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libclang-dev \
+            python3 python3-pyelftools bc flex bison libelf-dev cpio libssl-dev
+
+      - name: Install cargo-zigbuild
+        run: pip3 install ziglang && cargo install cargo-zigbuild
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          bash scripts/set-version.sh "${TAG_VERSION}"
+          grep '^version' Cargo.toml | head -1
+
+      - name: Build release binary (glibc floor 2.28)
+        run: cargo zigbuild --release -p nanosb-cli --target aarch64-unknown-linux-gnu.2.28
+
+      - name: Verify binary
+        run: |
+          ls -la target/aarch64-unknown-linux-gnu/release/nanosb
+          file target/aarch64-unknown-linux-gnu/release/nanosb
+          objdump -T target/aarch64-unknown-linux-gnu/release/nanosb | \
+            grep GLIBC | grep -oP 'GLIBC_[0-9.]+' | sort -V | uniq | tail -3
+
+      - name: Stage binary as nanosb-linux-arm64
+        run: cp target/aarch64-unknown-linux-gnu/release/nanosb nanosb-linux-arm64
+
+      - name: Upload Linux arm64 binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanosb-linux-arm64
+          path: nanosb-linux-arm64
+          retention-days: 7
+
+  # ─── Job 6: CLI — macOS arm64 ───
+  build-cli-macos:
+    name: Build CLI (macOS arm64)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           targets: aarch64-apple-darwin
 
@@ -455,14 +522,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          sed -i '' "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+          bash scripts/set-version.sh "${TAG_VERSION}"
           grep '^version' Cargo.toml | head -1
 
       - name: Build release binary
         run: cargo build --release -p nanosb-cli --target aarch64-apple-darwin
 
-      - name: Sign (Developer ID, gated)
-        if: env.HAS_SIGNING == 'true'
+      - name: Sign (Developer ID)
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -481,27 +547,17 @@ jobs:
             target/aarch64-apple-darwin/release/nanosb
           codesign --verify --verbose=2 target/aarch64-apple-darwin/release/nanosb
 
-      - name: Sign (ad-hoc fallback)
-        if: env.HAS_SIGNING != 'true'
-        run: |
-          codesign --sign - \
-            --entitlements entitlements.plist \
-            --force \
-            target/aarch64-apple-darwin/release/nanosb
-
-      - name: Notarize and staple (gated)
-        if: env.HAS_SIGNING == 'true'
+      - name: Notarize and staple
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          if [ -z "$APPLE_ID" ]; then echo "notarization secrets absent; skipping"; exit 0; fi
           ditto -c -k --keepParent target/aarch64-apple-darwin/release/nanosb "$RUNNER_TEMP/nanosb.zip"
           xcrun notarytool submit "$RUNNER_TEMP/nanosb.zip" \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple target/aarch64-apple-darwin/release/nanosb
-          spctl -a -vv target/aarch64-apple-darwin/release/nanosb || true
+          spctl -a -vv target/aarch64-apple-darwin/release/nanosb
 
       - name: Verify binary
         run: |
@@ -530,7 +586,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           targets: aarch64-unknown-linux-musl,x86_64-unknown-linux-musl
 
@@ -575,7 +631,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Download runtime artifacts
         uses: actions/download-artifact@v4
@@ -625,6 +681,7 @@ jobs:
       - build-runtime-linux
       - build-runtime-macos
       - build-cli-linux
+      - build-cli-linux-arm64
       - build-cli-macos
       - build-exec-agent
       - build-sdk-bundles
@@ -648,6 +705,7 @@ jobs:
           # CLI binaries
           cp artifacts/nanosb-darwin-arm64/nanosb release/nanosb
           cp artifacts/nanosb-linux-amd64/nanosb-linux-amd64 release/nanosb-linux-amd64
+          cp artifacts/nanosb-linux-arm64/nanosb-linux-arm64 release/nanosb-linux-arm64
 
           # CLI install/uninstall scripts + default config
           cp scripts/install.sh release/install.sh

@@ -144,16 +144,13 @@ impl ProjectRegistry {
     /// Canonicalize a path, falling back to the absolute version if
     /// canonicalization fails (e.g. the path doesn't exist yet).
     fn canonicalize(path: &Path) -> PathBuf {
-        path.canonicalize()
-            .unwrap_or_else(|_| {
-                if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    std::env::current_dir()
-                        .unwrap_or_default()
-                        .join(path)
-                }
-            })
+        path.canonicalize().unwrap_or_else(|_| {
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(path)
+            }
+        })
     }
 }
 
@@ -167,10 +164,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file_path = tmp.path().join("projects.json");
         let entries = BTreeMap::new();
-        let reg = ProjectRegistry {
-            entries,
-            file_path,
-        };
+        let reg = ProjectRegistry { entries, file_path };
         (reg, tmp)
     }
 

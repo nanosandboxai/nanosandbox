@@ -29,6 +29,8 @@ pub struct SandboxDefaults {
     pub cpus: Option<u32>,
     pub memory: Option<u32>,
     pub timeout: Option<u32>,
+    pub disk: Option<u64>,
+    pub max_pids: Option<u32>,
     /// Run agent commands as root inside the guest VM.
     /// Accepts both snake_case (`run_as_root`) and camelCase (`runAsRoot`).
     #[serde(alias = "runAsRoot")]
@@ -59,7 +61,7 @@ pub struct SandboxDefaults {
     pub claude: Option<ClaudeSettingsDef>,
     /// Host project sharing mode (`isolated` default, `shared` legacy).
     pub workspace: Option<WorkspaceDef>,
-    /// Working directory for the guest command (default `/workspace`).
+    /// Working directory for the guest command (default: the guest home).
     pub workdir: Option<String>,
 }
 
@@ -72,6 +74,8 @@ pub struct SandboxDefinition {
     pub cpus: Option<u32>,
     pub memory: Option<u32>,
     pub timeout: Option<u32>,
+    pub disk: Option<u64>,
+    pub max_pids: Option<u32>,
     /// Run agent commands as root inside the guest VM.
     /// Accepts both snake_case (`run_as_root`) and camelCase (`runAsRoot`).
     #[serde(alias = "runAsRoot")]
@@ -105,7 +109,7 @@ pub struct SandboxDefinition {
     pub claude: Option<ClaudeSettingsDef>,
     /// Host project sharing mode (`isolated` default, `shared` legacy).
     pub workspace: Option<WorkspaceDef>,
-    /// Working directory for the guest command (default `/workspace`).
+    /// Working directory for the guest command (default: the guest home).
     pub workdir: Option<String>,
 }
 
@@ -267,7 +271,7 @@ pub fn resolve_sandbox_configs(
         let mut agent_config = AgentSandboxConfig::default();
 
         // Image (required after merge). Bare names like "claude" are normalized
-        // to the agents registry (ghcr.io/nanosandboxai/agents-registry/claude:latest).
+        // to the agents registry (ghcr.io/nanosandboxai/nanosandbox/claude:latest).
         config.image = def
             .image
             .clone()
@@ -289,6 +293,12 @@ pub fn resolve_sandbox_configs(
         }
         if let Some(timeout) = def.timeout.or(defaults.timeout) {
             config.timeout_secs = timeout;
+        }
+        if let Some(disk) = def.disk.or(defaults.disk) {
+            config.disk_quota_mb = disk;
+        }
+        if let Some(max_pids) = def.max_pids.or(defaults.max_pids) {
+            config.max_pids = max_pids;
         }
         if let Some(run_as_root) = def.run_as_root.or(defaults.run_as_root) {
             config.run_as_root = run_as_root;
@@ -463,7 +473,7 @@ pub fn resolve_sandbox_configs(
                 mount_point: proj
                     .mount_point
                     .clone()
-                    .unwrap_or_else(|| "/workspace".to_string()),
+                    .unwrap_or_else(|| "/home/developer".to_string()),
                 auto_sync: proj.auto_sync.unwrap_or(false),
             });
         }
@@ -673,6 +683,8 @@ pub fn apply_cli_overrides(
     cpus: Option<u32>,
     memory: Option<u32>,
     timeout: Option<u32>,
+    disk: Option<u64>,
+    max_pids: Option<u32>,
     permissions: Option<super::Permissions>,
     cli_env: &[(String, String)],
 ) {
@@ -685,6 +697,12 @@ pub fn apply_cli_overrides(
         }
         if let Some(timeout) = timeout {
             config.sandbox.timeout_secs = timeout;
+        }
+        if let Some(disk) = disk {
+            config.sandbox.disk_quota_mb = disk;
+        }
+        if let Some(max_pids) = max_pids {
+            config.sandbox.max_pids = max_pids;
         }
         if let Some(perm) = permissions {
             config.permissions = perm;
@@ -750,7 +768,7 @@ sandboxes:
     fn test_resolve_run_as_root_snake_and_camel() {
         let yaml = r#"
 defaults:
-  image: ghcr.io/nanosandboxai/agents-registry/claude:rc23
+  image: ghcr.io/nanosandboxai/nanosandbox/claude:rc23
   runAsRoot: true
 
 sandboxes:
@@ -1127,7 +1145,16 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let mut configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        apply_cli_overrides(&mut configs, Some(8), None, Some(1200), None, &[]);
+        apply_cli_overrides(
+            &mut configs,
+            Some(8),
+            None,
+            Some(1200),
+            None,
+            None,
+            None,
+            &[],
+        );
         assert_eq!(configs[0].1.sandbox.cpus, 8);
         assert_eq!(configs[0].1.sandbox.memory_mb, 4096);
         assert_eq!(configs[0].1.sandbox.timeout_secs, 1200);
@@ -1553,7 +1580,7 @@ sandboxes:
 "#;
         let file = parse_sandbox_file(yaml).unwrap();
         let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
-        assert_eq!(configs[0].1.sandbox.workdir, "/workspace");
+        assert_eq!(configs[0].1.sandbox.workdir, "/home/developer");
     }
 
     #[test]
@@ -1571,7 +1598,7 @@ sandboxes:
             ("NEW_KEY".to_string(), "new_value".to_string()),
             ("EXISTING".to_string(), "overridden".to_string()),
         ];
-        apply_cli_overrides(&mut configs, None, None, None, None, &cli_env);
+        apply_cli_overrides(&mut configs, None, None, None, None, None, None, &cli_env);
         assert_eq!(configs[0].1.sandbox.env["NEW_KEY"], "new_value");
         assert_eq!(configs[0].1.sandbox.env["EXISTING"], "overridden");
     }

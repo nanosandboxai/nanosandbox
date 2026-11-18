@@ -36,12 +36,11 @@ impl FakeHelper {
     pub fn with_version(version: &str) -> Self {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("nanosb-fake-{}-{}.sock", std::process::id(), n));
+        let path =
+            std::env::temp_dir().join(format!("nanosb-fake-{}-{}.sock", std::process::id(), n));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).expect("bind fake helper socket");
-        listener
-            .set_nonblocking(true)
-            .expect("set nonblocking");
+        listener.set_nonblocking(true).expect("set nonblocking");
 
         let queue: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let stop = Arc::new(Mutex::new(false));
@@ -158,9 +157,11 @@ fn handle_conn(
 
 fn send_next(queue: &Arc<Mutex<VecDeque<String>>>, writer: &mut UnixStream) -> bool {
     match queue.lock().unwrap().pop_front() {
-        Some(line) => writer.write_all(line.as_bytes()).is_ok()
-            && writer.write_all(b"\n").is_ok()
-            && writer.flush().is_ok(),
+        Some(line) => {
+            writer.write_all(line.as_bytes()).is_ok()
+                && writer.write_all(b"\n").is_ok()
+                && writer.flush().is_ok()
+        }
         None => {
             let err = Response::Error(nanosb_protocol::ProtocolError::internal(
                 "fake helper: no scripted response",

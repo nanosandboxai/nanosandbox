@@ -8,9 +8,7 @@
 use nanosb_client::{SandboxBuilder, SandboxClient};
 
 fn main() {
-    let socket = std::env::args()
-        .nth(1)
-        .expect("usage: smoke <helper.sock>");
+    let socket = std::env::args().nth(1).expect("usage: smoke <helper.sock>");
     let client = SandboxClient::connect(&socket).expect("connect to helper");
     println!("capabilities: {:?}", client.capabilities());
 
@@ -40,15 +38,24 @@ fn main() {
     println!("fs: /tmp entries={}", listing.len());
 
     let logs = sandbox.logs(Some(5)).expect("logs");
-    println!("logs: {} lines (last={:?})", logs.len(), logs.last().map(|l| l.data.clone()));
+    println!(
+        "logs: {} lines (last={:?})",
+        logs.len(),
+        logs.last().map(|l| l.data.clone())
+    );
 
     let metrics = sandbox.metrics().expect("metrics");
-    println!("metrics: cpu={} mem={} disk={}", metrics.cpu_percent, metrics.memory_used_bytes, metrics.disk_used_bytes);
+    println!(
+        "metrics: cpu={} mem={} disk={}",
+        metrics.cpu_percent, metrics.memory_used_bytes, metrics.disk_used_bytes
+    );
 
     let all = client.list(true).expect("list");
     println!(
         "list: {:?}",
-        all.iter().map(|s| (s.name.clone(), s.state)).collect::<Vec<_>>()
+        all.iter()
+            .map(|s| (s.name.clone(), s.state))
+            .collect::<Vec<_>>()
     );
 
     sandbox.stop(true).expect("stop");

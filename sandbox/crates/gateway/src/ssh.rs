@@ -20,13 +20,18 @@ pub fn generate_ssh_keys(sandbox_id: &str) -> Result<(PathBuf, String), String> 
 
     let mut cmd = std::process::Command::new("ssh-keygen");
     cmd.args([
-        "-t", "ed25519",
-        "-f", key_path.to_str().unwrap(),
-        "-N", "",
+        "-t",
+        "ed25519",
+        "-f",
+        key_path.to_str().unwrap(),
+        "-N",
+        "",
         "-q",
     ]);
 
-    let status = cmd.status().map_err(|e| format!("ssh-keygen spawn: {}", e))?;
+    let status = cmd
+        .status()
+        .map_err(|e| format!("ssh-keygen spawn: {}", e))?;
     if !status.success() {
         return Err(format!("ssh-keygen exited with {}", status));
     }
@@ -60,8 +65,7 @@ pub fn inject_pubkey_into_rootfs(
 
     // Developer user authorized_keys
     let dev_ssh_dir = rootfs_path.join("home/developer/.ssh");
-    std::fs::create_dir_all(&dev_ssh_dir)
-        .map_err(|e| format!("mkdir developer .ssh: {}", e))?;
+    std::fs::create_dir_all(&dev_ssh_dir).map_err(|e| format!("mkdir developer .ssh: {}", e))?;
     std::fs::write(dev_ssh_dir.join("authorized_keys"), pub_key)
         .map_err(|e| format!("write developer authorized_keys: {}", e))?;
 

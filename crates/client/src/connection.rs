@@ -26,9 +26,8 @@ pub struct Connection {
 impl Connection {
     /// Dial `path` and complete the `hello` handshake.
     pub fn dial(path: &Path) -> Result<Self> {
-        let stream = UnixStream::connect(path).map_err(|e| {
-            Error::connect(format!("{}: {e}", path.display()))
-        })?;
+        let stream = UnixStream::connect(path)
+            .map_err(|e| Error::connect(format!("{}: {e}", path.display())))?;
         stream.set_read_timeout(Some(DEFAULT_TIMEOUT)).ok();
         stream.set_write_timeout(Some(DEFAULT_TIMEOUT)).ok();
         let reader = BufReader::new(stream.try_clone()?);
@@ -103,7 +102,10 @@ impl Connection {
 
     /// Read the next response frame (`None` on clean EOF).
     pub fn next_response(&mut self) -> Result<Option<Response>> {
-        Ok(read_message::<_, Response>(&mut self.reader, &mut self.scratch)?)
+        Ok(read_message::<_, Response>(
+            &mut self.reader,
+            &mut self.scratch,
+        )?)
     }
 
     /// Send a request and read exactly one response; a `Response::Error` becomes

@@ -32,7 +32,7 @@ your current shell.
 
 ```bash
 # Install a specific version
-DEPS_VERSION=v0.2.0 curl -fsSL .../install-deps.sh | bash
+DEPS_VERSION=v0.3.0 curl -fsSL .../install-deps.sh | bash
 
 # Custom install prefix
 NANOSANDBOX_HOME=/opt/nanosandbox curl -fsSL .../install-deps.sh | bash

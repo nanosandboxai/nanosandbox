@@ -3,12 +3,15 @@
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Tabs, Wrap,
+};
 use ratatui::Frame;
 
-use super::app::{App, AgentPanel, InputFocus, MouseSelection, PanelMode, SidebarFilesTab};
+use super::app::{AgentPanel, App, InputFocus, MouseSelection, PanelMode, SidebarFilesTab};
 use super::commands::autocomplete;
-use super::grid::grid_dimensions;
+use super::host_capacity::format_bytes;
 use super::theme::{Theme, ThemeName};
 
 /// Maximum number of visual lines the input area can grow to.
@@ -25,8 +28,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Compute dynamic global input height.
     let global_content_width = (frame.area().width as usize).saturating_sub(3).max(1);
     let global_input_height = if app.input_focus == InputFocus::Global {
-        (app.global_input.visual_line_count(global_content_width) as u16)
-            .clamp(1, MAX_INPUT_HEIGHT)
+        (app.global_input.visual_line_count(global_content_width) as u16).clamp(1, MAX_INPUT_HEIGHT)
     } else {
         1
     };
@@ -38,7 +40,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     );
 
     let (body_area, global_input_area, status_area) = if show_header {
-        let header_height = if is_branded { 7 } else { 4 };
+        let header_height = if is_branded { 7 } else { 5 };
         let [header_area, body_area, global_input_area, status_area] = Layout::vertical([
             Constraint::Length(header_height),
             Constraint::Fill(1),
@@ -71,26 +73,50 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         } else {
             render_welcome(frame, body_area, app);
         }
-    } else if app.show_mcp_sidebar || app.show_sandbox_sidebar {
-        let [panels_area, sidebar_area] = Layout::horizontal([
-            Constraint::Percentage(70),
-            Constraint::Percentage(30),
-        ])
-        .areas(body_area);
-
-        render_panel_grid(frame, panels_area, app);
-        if app.show_sandbox_sidebar {
-            render_sandbox_sidebar(frame, sidebar_area, app);
-        } else {
-            render_mcp_sidebar(frame, sidebar_area, theme);
-        }
     } else {
-        render_panel_grid(frame, body_area, app);
+        let has_sidebar = app.show_mcp_sidebar || app.show_sandbox_sidebar;
+        let render_sidebar = |frame: &mut Frame, area: Rect, app: &mut App| {
+            if app.show_sandbox_sidebar {
+                render_sandbox_sidebar(frame, area, app);
+            } else {
+                render_mcp_sidebar(frame, area, app.theme);
+            }
+        };
+
+        // Always reserve a blank top-padding row and the tab-strip row, so the
+        // agent tabs stay visible and switchable even in zoom mode (a newly
+        // added agent must still appear as a tab).
+        let [pad_area, after_pad] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body_area);
+        let _ = pad_area; // intentionally blank top padding
+        let [tabs_area, content_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(after_pad);
+
+        if has_sidebar {
+            // Tabs span only the left 70%; the right 30% stays blank.
+            let [tabs_left, _tabs_right] =
+                Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
+                    .areas(tabs_area);
+            let [panels_area, sidebar_area] =
+                Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
+                    .areas(content_area);
+            render_tabs_and_panel(frame, tabs_left, panels_area, app);
+            render_sidebar(frame, sidebar_area, app);
+        } else {
+            render_tabs_and_panel(frame, tabs_area, content_area, app);
+        }
     }
 
     // Render autocomplete popup for the global input bar (overlays on top of body).
     if app.input_focus == InputFocus::Global && app.global_input.text().starts_with('/') {
-        render_autocomplete(frame, body_area, global_input_area, app.global_input.text(), app.autocomplete_index, theme);
+        render_autocomplete(
+            frame,
+            body_area,
+            global_input_area,
+            app.global_input.text(),
+            app.autocomplete_index,
+            theme,
+        );
     }
 
     // Render system message popup overlay when panels are open.
@@ -240,19 +266,13 @@ fn render_branded_welcome(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("\u{250c}\u{2500} ", a),
             Span::styled("Getting Started", ab),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{2502}  ", a),
             Span::styled("Spawn a sandbox with an AI agent:", m),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{2502}    ", a),
@@ -268,20 +288,14 @@ fn render_branded_welcome(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("\u{2502}    ", a),
             Span::styled("/add goose", s),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         // ├─ Quick Commands ───────
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{251c}\u{2500} ", a),
             Span::styled("Quick Commands", ab),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{2502}    ", a),
@@ -300,10 +314,7 @@ fn render_branded_welcome(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("/quit", w),
             Span::styled("          exit nanosandbox", m),
         ]),
-        Line::from(vec![
-            Span::raw(pad),
-            Span::styled("\u{2502}", a),
-        ]),
+        Line::from(vec![Span::raw(pad), Span::styled("\u{2502}", a)]),
         Line::from(vec![
             Span::raw(pad),
             Span::styled("\u{2514}\u{2500}\u{2500}\u{2500}", a),
@@ -352,14 +363,22 @@ fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, vl) in visual_lines.iter().enumerate().skip(scroll_offset).take(viewport_height) {
+    for (i, vl) in visual_lines
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(viewport_height)
+    {
         let text_slice = &app.global_input.text()[vl.byte_start..vl.byte_end];
         let prefix = if i == 0 {
             Span::styled(prompt, prompt_style)
         } else {
             Span::styled("  ", prompt_style)
         };
-        lines.push(Line::from(vec![prefix, Span::styled(text_slice, text_style)]));
+        lines.push(Line::from(vec![
+            prefix,
+            Span::styled(text_slice, text_style),
+        ]));
     }
 
     // Handle empty input.
@@ -381,7 +400,9 @@ fn render_global_input(frame: &mut Frame, area: Rect, app: &mut App) {
     if is_focused {
         let (cursor_row, cursor_col) = app.global_input.cursor_visual_position(content_width);
         let visual_row = cursor_row.saturating_sub(scroll_offset);
-        let x = area.x + prompt_len + (cursor_col as u16).min(area.width.saturating_sub(prompt_len + 1));
+        let x = area.x
+            + prompt_len
+            + (cursor_col as u16).min(area.width.saturating_sub(prompt_len + 1));
         let y = area.y + visual_row as u16;
         if y < area.y + area.height && x < area.x + area.width {
             let buf = frame.buffer_mut();
@@ -406,7 +427,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     } else if app.input_focus == InputFocus::Global {
         let mut spans = vec![
             Span::styled(" Tab", Style::new().fg(theme.accent)),
-            Span::raw(" panel focus  "),
+            Span::raw(" switch tab  "),
             Span::styled("/kill", Style::new().fg(theme.accent)),
             Span::raw(" destroy  "),
             Span::styled("/sb", Style::new().fg(theme.accent)),
@@ -437,7 +458,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(" ^G", Style::new().fg(theme.accent)),
                 Span::raw(" global bar  "),
                 Span::styled("Tab", Style::new().fg(theme.accent)),
-                Span::raw(" next panel  "),
+                Span::raw(" next tab  "),
                 Span::styled("SSH Terminal", Style::new().fg(theme.success)),
                 Span::raw("  "),
                 Span::styled("^F", Style::new().fg(theme.accent)),
@@ -456,7 +477,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(" Esc", Style::new().fg(theme.accent)),
                 Span::raw(" global bar  "),
                 Span::styled("Tab", Style::new().fg(theme.accent)),
-                Span::raw(" next panel  "),
+                Span::raw(" next tab  "),
                 Span::styled("Loading...", Style::new().fg(theme.warning)),
                 Span::raw("  "),
                 Span::styled("^F", Style::new().fg(theme.accent)),
@@ -544,9 +565,7 @@ fn render_mcp_sidebar(frame: &mut Frame, area: Rect, theme: &Theme) {
     let lines = vec![
         Line::from(Span::styled(
             "MCP Servers",
-            Style::new()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
@@ -590,20 +609,13 @@ fn render_mcp_sidebar(frame: &mut Frame, area: Rect, theme: &Theme) {
 /// Render the sandbox sidebar with a sandboxes list and files section.
 fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     // Split sidebar into two sections: sandboxes (top) and files (bottom).
-    let has_files = !app.sidebar_modified_files.is_empty() || !app.sidebar_committed_files.is_empty();
+    let has_files =
+        !app.sidebar_modified_files.is_empty() || !app.sidebar_committed_files.is_empty();
     let chunks = if has_files {
-        Layout::vertical([
-            Constraint::Percentage(40),
-            Constraint::Percentage(60),
-        ])
-        .split(area)
+        Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area)
     } else {
         // No files: give all space to sandboxes
-        Layout::vertical([
-            Constraint::Percentage(100),
-            Constraint::Min(0),
-        ])
-        .split(area)
+        Layout::vertical([Constraint::Percentage(100), Constraint::Min(0)]).split(area)
     };
 
     // ── Top section: Sandbox list ──
@@ -619,7 +631,52 @@ fn render_sandbox_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme;
     let inner_height = area.height.saturating_sub(2) as usize; // border top + bottom
+    let inner_width = area.width.saturating_sub(2) as usize;
     let mut lines = Vec::new();
+
+    if let Some(host) = app.host_capacity {
+        let mut parts: Vec<String> = Vec::new();
+        if host.cpu_count > 0 {
+            parts.push(format!("{}cpu", host.cpu_count));
+        }
+        if let Some(total) = host.memory_total_bytes {
+            parts.push(format!("{} ram", format_bytes(total)));
+        }
+        if let Some(free) = host.disk_free_bytes {
+            parts.push(format!("{} free", format_bytes(free)));
+        }
+        if !parts.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!(" host {}", parts.join(" · ")),
+                Style::new().fg(theme.text_muted),
+            )));
+        }
+        let requested: u64 = app.panels.iter().map(|p| p.configured_memory_bytes()).sum();
+        if requested > 0 {
+            let over = host
+                .memory_total_bytes
+                .map(|t| requested > t)
+                .unwrap_or(false);
+            let tight = host
+                .memory_available_bytes
+                .map(|a| requested > a)
+                .unwrap_or(false);
+            let (label, color) = if over {
+                (" OVER RAM", theme.error)
+            } else if tight {
+                (" tight", theme.warning)
+            } else {
+                ("", theme.text_muted)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" req {}", format_bytes(requested)),
+                    Style::new().fg(theme.text_muted),
+                ),
+                Span::styled(label, Style::new().fg(color)),
+            ]));
+        }
+    }
 
     if app.panels.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -657,7 +714,8 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
             let focus_marker = if is_focused { " *" } else { "" };
 
             let sync_label = if panel.project_mount.is_some() {
-                let is_syncing = panel.sync_override
+                let is_syncing = panel
+                    .sync_override
                     .unwrap_or(app.settings.gitsync.auto_sync);
                 if is_syncing {
                     Span::styled(" [sync]", Style::new().fg(theme.success))
@@ -677,18 +735,52 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(vec![
                 Span::raw(format!(" [{}] ", i)),
                 status,
-                Span::styled(panel.display_name.as_deref().unwrap_or(&panel.agent_name), name_style),
+                Span::styled(
+                    panel.display_name.as_deref().unwrap_or(&panel.agent_name),
+                    name_style,
+                ),
                 Span::styled(sid, Style::new().fg(theme.text_muted)),
                 sync_label,
                 hidden_label,
                 Span::styled(focus_marker, Style::new().fg(theme.accent)),
             ]));
+
+            if let Some(m) = panel.metrics {
+                let mem = if m.memory_limit_bytes == 0 {
+                    format_bytes(m.memory_used_bytes)
+                } else {
+                    format!(
+                        "{}/{}",
+                        format_bytes(m.memory_used_bytes),
+                        format_bytes(m.memory_limit_bytes)
+                    )
+                };
+                let detail = format!(
+                    "  cpu {:.0}% mem {} disk {}",
+                    m.cpu_percent,
+                    mem,
+                    format_bytes(m.disk_used_bytes)
+                );
+                lines.push(Line::from(Span::styled(
+                    truncate_to_width(&detail, inner_width),
+                    Style::new().fg(theme.text_muted),
+                )));
+            } else if panel.configured_memory_bytes() > 0 {
+                let detail = format!(
+                    "  cpu {} mem -/{} disk -",
+                    panel.configured_cpus(),
+                    format_bytes(panel.configured_memory_bytes())
+                );
+                lines.push(Line::from(Span::styled(
+                    truncate_to_width(&detail, inner_width),
+                    Style::new().fg(theme.text_muted),
+                )));
+            }
         }
     }
 
     // Add help hint if there's space
-    let total_lines = lines.len();
-    if total_lines + 2 <= inner_height {
+    if lines.len() + 2 <= inner_height {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "/sb to toggle",
@@ -696,9 +788,10 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
         )));
     }
 
-    let scroll = app.sidebar_sandbox_scroll.min(
-        total_lines.saturating_sub(inner_height),
-    ) as u16;
+    let total_lines = lines.len();
+    let scroll = app
+        .sidebar_sandbox_scroll
+        .min(total_lines.saturating_sub(inner_height)) as u16;
 
     let border_style = if !app.sidebar_files_focused {
         Style::new().fg(theme.accent)
@@ -715,6 +808,25 @@ fn render_sandbox_list(frame: &mut Frame, area: Rect, app: &App) {
         )
         .scroll((scroll, 0));
     frame.render_widget(sidebar, area);
+}
+
+/// Truncate `s` to `width` display columns (Unicode-width aware).
+fn truncate_to_width(s: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in s.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out
 }
 
 /// Render the files section of the sidebar with Modified/Committed tabs.
@@ -773,35 +885,31 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
                 };
 
                 Line::from(vec![
-                    Span::styled(
-                        format!(" {} ", status_str),
-                        Style::new().fg(status_color),
-                    ),
+                    Span::styled(format!(" {} ", status_str), Style::new().fg(status_color)),
                     Span::styled(filename, Style::new().fg(theme.text)),
                 ])
             }
-            SidebarFilesTab::Committed => {
-                Line::from(Span::styled(
-                    format!("  {}", entry),
-                    Style::new().fg(theme.success),
-                ))
-            }
+            SidebarFilesTab::Committed => Line::from(Span::styled(
+                format!("  {}", entry),
+                Style::new().fg(theme.success),
+            )),
         };
         lines.push(line);
     }
 
     // Total lines includes tab header.
     let total_content = files.len() + 1; // +1 for tab header
-    let scroll = scroll_offset.min(
-        total_content.saturating_sub(inner_height),
-    ) as u16;
+    let scroll = scroll_offset.min(total_content.saturating_sub(inner_height)) as u16;
 
     // Show scroll indicator if content overflows.
     if total_content > inner_height {
         let remaining = total_content.saturating_sub(inner_height + scroll_offset);
         if remaining > 0 {
             let hint = format!("  \u{2193} {} more", remaining);
-            lines.push(Line::from(Span::styled(hint, Style::new().fg(theme.text_muted))));
+            lines.push(Line::from(Span::styled(
+                hint,
+                Style::new().fg(theme.text_muted),
+            )));
         }
     }
 
@@ -827,16 +935,18 @@ fn render_files_section(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(widget, area);
 }
 
-/// Render the panel grid based on the number of visible panels.
-fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
+/// Render the agent tab strip and the single active agent panel.
+fn render_tabs_and_panel(frame: &mut Frame, tabs_area: Rect, panel_area: Rect, app: &mut App) {
     // Collect visible panel indices.
-    let visible_indices: Vec<usize> = app.panels.iter().enumerate()
+    let visible_indices: Vec<usize> = app
+        .panels
+        .iter()
+        .enumerate()
         .filter(|(_, p)| p.visible)
         .map(|(i, _)| i)
         .collect();
 
-    let visible_count = visible_indices.len();
-    if visible_count == 0 {
+    if visible_indices.is_empty() {
         return;
     }
 
@@ -851,92 +961,103 @@ fn render_panel_grid(frame: &mut Frame, area: Rect, app: &mut App) {
     let show_index = {
         let mut seen = std::collections::HashSet::new();
         visible_indices.iter().any(|&i| {
-            let name = app.panels[i].display_name.as_deref().unwrap_or(&app.panels[i].agent_name);
+            let name = app.panels[i]
+                .display_name
+                .as_deref()
+                .unwrap_or(&app.panels[i].agent_name);
             !seen.insert(name)
         })
     };
 
-    // Zoomed mode: render only the focused panel at full width.
-    if app.zoomed {
-        let idx = app.focused_panel;
-        if idx < app.panels.len() && app.panels[idx].visible {
-            let is_focused = true;
-            let is_input_focused = app.input_focus == InputFocus::Panel;
-            let ac_idx = if is_input_focused {
-                app.autocomplete_index
+    // The active panel is the focused panel when visible, else the first visible.
+    let active_idx = if visible_indices.contains(&app.focused_panel) {
+        app.focused_panel
+    } else {
+        visible_indices[0]
+    };
+
+    render_agent_tabs(
+        frame,
+        tabs_area,
+        app,
+        &visible_indices,
+        active_idx,
+        show_index,
+    );
+
+    let is_input_focused = app.input_focus == InputFocus::Panel;
+    let ac_idx = if is_input_focused {
+        app.autocomplete_index
+    } else {
+        None
+    };
+    render_panel(
+        frame,
+        panel_area,
+        &mut app.panels[active_idx],
+        active_idx,
+        true,
+        is_input_focused,
+        ac_idx,
+        theme,
+        &mut app.panel_areas,
+        sel_ref,
+        show_index,
+    );
+}
+
+/// Render the horizontal tab strip, one tab per visible agent panel.
+///
+/// The active tab is highlighted with the theme accent + bold; inactive tabs
+/// use the muted text style. Truncates gracefully on narrow widths.
+fn render_agent_tabs(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    visible_indices: &[usize],
+    active_idx: usize,
+    show_index: bool,
+) {
+    let theme = app.theme;
+
+    let titles: Vec<Line> = visible_indices
+        .iter()
+        .map(|&i| {
+            let panel = &app.panels[i];
+            // Same status indicator the panel title uses (includes trailing space).
+            let status_indicator = if panel.mode == PanelMode::Headless {
+                Span::styled("\u{25b6} ", Style::new().fg(theme.accent))
+            } else if panel.mode == PanelMode::Loading {
+                Span::styled("\u{25cc} ", Style::new().fg(theme.warning))
+            } else if panel.sandbox().is_some() {
+                Span::styled("\u{25cf} ", Style::new().fg(theme.success))
             } else {
-                None
+                Span::styled("\u{25cb} ", Style::new().fg(theme.text_muted))
             };
-            render_panel(
-                frame,
-                area,
-                &mut app.panels[idx],
-                idx,
-                is_focused,
-                is_input_focused,
-                ac_idx,
-                theme,
-                &mut app.panel_areas,
-                sel_ref,
-                show_index,
-            );
-        }
-        return;
-    }
+            let display = panel.display_name.as_deref().unwrap_or(&panel.agent_name);
 
-    let (rows, cols) = grid_dimensions(visible_count);
-    if rows == 0 || cols == 0 {
-        return;
-    }
-
-    // Split vertically into rows.
-    let row_constraints: Vec<Constraint> = (0..rows)
-        .map(|_| Constraint::Ratio(1, rows as u32))
-        .collect();
-    let row_areas = Layout::vertical(row_constraints).split(area);
-
-    let mut vi = 0; // index into visible_indices
-
-    for row in 0..rows {
-        if vi >= visible_count {
-            break;
-        }
-
-        // Determine how many columns this row actually has.
-        let cols_in_row = cols.min(visible_count - vi);
-
-        let col_constraints: Vec<Constraint> = (0..cols_in_row)
-            .map(|_| Constraint::Ratio(1, cols_in_row as u32))
-            .collect();
-        let col_areas = Layout::horizontal(col_constraints).split(row_areas[row]);
-
-        for col in 0..cols_in_row {
-            if vi < visible_count {
-                let panel_idx = visible_indices[vi];
-                let is_focused = panel_idx == app.focused_panel;
-                let is_input_focused = is_focused && app.input_focus == InputFocus::Panel;
-                let ac_idx = if is_input_focused {
-                    app.autocomplete_index
-                } else {
-                    None
-                };
-                render_panel(
-                    frame,
-                    col_areas[col],
-                    &mut app.panels[panel_idx],
-                    panel_idx,
-                    is_focused,
-                    is_input_focused,
-                    ac_idx,
-                    theme,
-                    &mut app.panel_areas,
-                    sel_ref,
-                    show_index,
-                );
-                vi += 1;
+            let mut spans = vec![Span::raw(" "), status_indicator, Span::raw(display)];
+            if show_index {
+                spans.push(Span::styled(
+                    format!(" [{}]", i),
+                    Style::new().fg(theme.text_muted),
+                ));
             }
-        }
-    }
+            Line::from(spans)
+        })
+        .collect();
+
+    let active_pos = visible_indices
+        .iter()
+        .position(|&i| i == active_idx)
+        .unwrap_or(0);
+
+    let tabs = Tabs::new(titles)
+        .select(active_pos)
+        .highlight_style(Style::new().fg(theme.accent).add_modifier(Modifier::BOLD))
+        .style(Style::new().fg(theme.text_muted))
+        .divider("|");
+    frame.render_widget(tabs, area);
 }
 
 /// Render a single agent panel.
@@ -951,40 +1072,13 @@ fn render_panel(
     theme: &Theme,
     panel_areas: &mut Vec<(usize, Rect)>,
     selection: Option<&MouseSelection>,
-    show_index: bool,
+    _show_index: bool,
 ) {
-    // Status indicator.
-    let status_indicator = if panel.mode == PanelMode::Headless {
-        Span::styled("\u{25b6} ", Style::new().fg(theme.accent))
-    } else if panel.mode == PanelMode::Loading {
-        Span::styled("\u{25cc} ", Style::new().fg(theme.warning))
-    } else if panel.sandbox().is_some() {
-        Span::styled("\u{25cf} ", Style::new().fg(theme.success))
-    } else {
-        Span::styled("\u{25cb} ", Style::new().fg(theme.text_muted))
-    };
-
-    // Build title line: status dot + display name + optional index.
-    let display = panel.display_name.as_deref().unwrap_or(&panel.agent_name);
-
-    let mut title_spans = vec![
-        Span::raw(" "),
-        status_indicator,
-        Span::styled(display, Style::new().add_modifier(Modifier::BOLD)),
-    ];
-
-    if show_index {
-        title_spans.push(Span::styled(
-            format!(" [{}]", index),
-            Style::new().fg(theme.text_muted),
-        ));
-    }
-
-    title_spans.push(Span::raw(" "));
-
-    let title = Line::from(title_spans);
-
-    let border_color = if is_focused {
+    // The active agent's identity is shown in the tab strip above, so the
+    // panel/card border carries no title of its own (avoids a duplicate name).
+    let border_color = if panel.exited.is_some() {
+        theme.error
+    } else if is_focused {
         theme.accent
     } else {
         theme.text_muted
@@ -993,8 +1087,7 @@ fn render_panel(
     let block = Block::default()
         .borders(Borders::ALL)
         .style(Style::new().bg(theme.background))
-        .border_style(Style::new().fg(border_color).bg(theme.background))
-        .title(title);
+        .border_style(Style::new().fg(border_color).bg(theme.background));
 
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
@@ -1065,8 +1158,11 @@ fn render_panel(
                 }
             }
 
-            // Render overlay notification banner (upload success/failure).
-            if let Some((ref msg, is_error, _)) = panel.notification {
+            // When the agent has exited, show a persistent reason banner (the
+            // frozen screen above it holds the agent's real error output).
+            if let Some(ref reason) = panel.exited {
+                render_panel_notification(frame, inner_area, reason, true, theme);
+            } else if let Some((ref msg, is_error, _)) = panel.notification {
                 render_panel_notification(frame, inner_area, msg, is_error, theme);
             }
 
@@ -1094,12 +1190,7 @@ fn render_panel(
 ///   1. Header — task description + status + elapsed time
 ///   2. Tools  — scrollable list of tool call log entries
 ///   3. Output — scrollable agent text output
-fn render_headless_panel(
-    frame: &mut Frame,
-    area: Rect,
-    panel: &AgentPanel,
-    theme: &Theme,
-) {
+fn render_headless_panel(frame: &mut Frame, area: Rect, panel: &AgentPanel, theme: &Theme) {
     let state = match &panel.headless_state {
         Some(s) => s,
         None => {
@@ -1164,12 +1255,14 @@ fn render_headless_panel(
         Line::from(vec![
             Span::styled("Status: ", Style::new().fg(theme.text_muted)),
             Span::styled(&state.status, Style::new().fg(status_color)),
-            Span::styled(format!("  [{elapsed_str}]"), Style::new().fg(theme.text_muted)),
+            Span::styled(
+                format!("  [{elapsed_str}]"),
+                Style::new().fg(theme.text_muted),
+            ),
         ]),
     ];
 
-    let header = Paragraph::new(header_lines)
-        .style(Style::new().bg(theme.background));
+    let header = Paragraph::new(header_lines).style(Style::new().bg(theme.background));
     frame.render_widget(header, sections[0]);
 
     // --- Section 2: Tool calls ---
@@ -1203,10 +1296,7 @@ fn render_headless_panel(
         let tools_block = Block::default()
             .borders(Borders::TOP)
             .border_style(Style::new().fg(theme.text_muted))
-            .title(Span::styled(
-                " Tools ",
-                Style::new().fg(theme.text_muted),
-            ));
+            .title(Span::styled(" Tools ", Style::new().fg(theme.text_muted)));
 
         let tools_list = List::new(items)
             .block(tools_block)
@@ -1218,10 +1308,7 @@ fn render_headless_panel(
     let output_block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::new().fg(theme.text_muted))
-        .title(Span::styled(
-            " Output ",
-            Style::new().fg(theme.text_muted),
-        ));
+        .title(Span::styled(" Output ", Style::new().fg(theme.text_muted)));
 
     let text = if !state.agent_text.is_empty() {
         state.agent_text.clone()
@@ -1233,10 +1320,14 @@ fn render_headless_panel(
     // The output block has a top border (1 line), so visible height is height - 1.
     let visible_height = sections[2].height.saturating_sub(1) as usize;
     let output_width = sections[2].width.saturating_sub(2).max(1) as usize;
-    let total_lines: usize = text.lines().map(|l| {
-        let len = l.len().max(1); // empty lines count as 1
-        (len + output_width - 1) / output_width
-    }).sum::<usize>().max(1);
+    let total_lines: usize = text
+        .lines()
+        .map(|l| {
+            let len = l.len().max(1); // empty lines count as 1
+            (len + output_width - 1) / output_width
+        })
+        .sum::<usize>()
+        .max(1);
 
     let scroll = if state.auto_scroll && total_lines > visible_height {
         (total_lines - visible_height) as u16
@@ -1316,11 +1407,7 @@ fn render_panel_notification(
     } else {
         theme.text
     };
-    let bg = if is_error {
-        theme.error
-    } else {
-        theme.accent
-    };
+    let bg = if is_error { theme.error } else { theme.accent };
 
     // Truncate message to fit and pad to fill the full width.
     let max_len = banner_area.width as usize;
@@ -1380,21 +1467,14 @@ fn render_scrollbar(
 /// The logo box is 11 chars wide and 5 chars tall (using rounded Unicode corners).
 /// A 4-cell accent segment sweeps clockwise around the 28-position perimeter,
 /// advancing one step per tick (250ms) for a 7-second revolution.
-fn render_loading_animation(
-    frame: &mut Frame,
-    area: Rect,
-    panel: &AgentPanel,
-    theme: &Theme,
-) {
+fn render_loading_animation(frame: &mut Frame, area: Rect, panel: &AgentPanel, theme: &Theme) {
     let box_width: u16 = 11;
     let box_height: u16 = 5;
 
     // Account for progress/error messages below logo.
     let has_message = panel.loading_message.is_some();
     let has_error = panel.loading_error.is_some();
-    let total_height = box_height
-        + if has_message { 2 } else { 0 }
-        + if has_error { 2 } else { 0 };
+    let total_height = box_height + if has_message { 2 } else { 0 } + if has_error { 2 } else { 0 };
 
     // Center the block in the area.
     if area.width < box_width || area.height < total_height {
@@ -1603,7 +1683,10 @@ fn render_autocomplete(
         .map(|(i, s)| {
             let is_selected = selected == Some(i);
             let style = if is_selected {
-                Style::new().fg(theme.selection_fg).bg(theme.selection_bg).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(theme.selection_fg)
+                    .bg(theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(theme.accent)
             };

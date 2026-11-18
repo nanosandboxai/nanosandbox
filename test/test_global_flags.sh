@@ -81,7 +81,7 @@ cfg="$TEST_TMPDIR/cfg.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   test-sb:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 output=$($NANOSB --config "$cfg" ps 2>&1)
 rc=$?
@@ -97,12 +97,12 @@ cfg2="$TEST_TMPDIR/c2.yml"
 cat > "$cfg1" <<'YAML'
 sandboxes:
   sb1:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 cat > "$cfg2" <<'YAML'
 sandboxes:
   sb2:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 output=$($NANOSB --config "$cfg1" --config "$cfg2" ps 2>&1)
 rc=$?
@@ -122,9 +122,9 @@ cfg="$TEST_TMPDIR/multi.yml"
 cat > "$cfg" <<'YAML'
 sandboxes:
   alpha:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
   beta:
-    image: ghcr.io/nanosandboxai/agents-registry/claude:latest
+    image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
 YAML
 output=$($NANOSB --config "$cfg" --sandbox alpha ps 2>&1)
 rc=$?

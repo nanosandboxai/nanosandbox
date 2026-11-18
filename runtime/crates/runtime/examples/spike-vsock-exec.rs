@@ -27,7 +27,9 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("internal-boot-vm") {
         handle_boot_vm_subprocess();
     }
-    tokio::runtime::Runtime::new().unwrap().block_on(async_main());
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async_main());
 }
 
 async fn async_main() {
@@ -86,15 +88,18 @@ async fn async_main() {
     config.command = Some("/bin/sh".to_string());
     config.command_args = vec![
         "-c".to_string(),
-        "echo PROBE_START; /agent/exec-agent 1024; echo AGENT_EXIT=$?"
-            .to_string(),
+        "echo PROBE_START; /agent/exec-agent 1024; echo AGENT_EXIT=$?".to_string(),
     ];
 
     let start = Instant::now();
     let mut sandbox = match Sandbox::create(config).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[{:.1}s] create failed: {}", start.elapsed().as_secs_f64(), e);
+            eprintln!(
+                "[{:.1}s] create failed: {}",
+                start.elapsed().as_secs_f64(),
+                e
+            );
             return;
         }
     };
@@ -111,7 +116,11 @@ async fn async_main() {
     });
 
     if let Err(e) = sandbox.start().await {
-        eprintln!("[{:.1}s] start failed: {}", start.elapsed().as_secs_f64(), e);
+        eprintln!(
+            "[{:.1}s] start failed: {}",
+            start.elapsed().as_secs_f64(),
+            e
+        );
         let _ = sandbox.stop().await;
         let _ = sandbox.destroy().await;
         return;
@@ -133,10 +142,7 @@ async fn async_main() {
     let _ = sandbox.stop().await;
     let _ = sandbox.destroy().await;
     println!("[{:.1}s] Done", start.elapsed().as_secs_f64());
-    println!(
-        "=== Spike {} ===",
-        if ok { "PASSED" } else { "FAILED" }
-    );
+    println!("=== Spike {} ===", if ok { "PASSED" } else { "FAILED" });
     let _ = std::fs::remove_file(&vsock_sock);
 }
 
