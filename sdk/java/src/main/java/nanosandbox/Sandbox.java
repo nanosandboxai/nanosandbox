@@ -1,6 +1,7 @@
 package nanosandbox;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -37,6 +38,9 @@ public final class Sandbox {
         return name;
     }
 
+    /** The terminal result of a {@link #wait(Duration)} call. */
+    public record WaitResult(int exitCode, long exitedAtMs, String state) {}
+
     // ---- lifecycle -------------------------------------------------------
 
     /** Returns the sandbox lifecycle state. */
@@ -71,6 +75,47 @@ public final class Sandbox {
         req.set("type", Json.ofString("kill"));
         req.set("name", Json.ofString(name));
         client.call(req);
+    }
+
+    /** Kills the sandbox with a signal selector (SIGTERM=15, SIGKILL=9). */
+    public void killWith(int signal) throws IOException, NanosbError {
+        Json req = Json.object();
+        req.set("type", Json.ofString("kill"));
+        req.set("name", Json.ofString(name));
+        req.set("signal", Json.ofNumber(signal));
+        client.call(req);
+    }
+
+    /** Re-boots the sandbox in place. */
+    public void restart() throws IOException, NanosbError {
+        Json req = Json.object();
+        req.set("type", Json.ofString("restart"));
+        req.set("name", Json.ofString(name));
+        client.call(req);
+    }
+
+    /**
+     * Blocks until the sandbox reaches a terminal state, returning the exit
+     * code, exit timestamp, and state. {@code timeout} bounds the wait; a null
+     * value waits indefinitely.
+     */
+    public WaitResult wait(Duration timeout) throws IOException, NanosbError {
+        Json req = Json.object();
+        req.set("type", Json.ofString("wait"));
+        req.set("name", Json.ofString(name));
+        if (timeout != null) {
+            req.set("timeout_secs", Json.ofNumber(Math.max(1, timeout.toSeconds())));
+        }
+        Json resp = client.call(req);
+        return new WaitResult(
+                (int) resp.getInt("exit_code"),
+                resp.getInt("exited_at_ms"),
+                resp.getStr("state") == null ? "" : resp.getStr("state"));
+    }
+
+    /** Blocks until the sandbox stops, returning the terminal state. */
+    public String waitUntilStopped(Duration timeout) throws IOException, NanosbError {
+        return wait(timeout).state();
     }
 
     /** Removes the sandbox. */

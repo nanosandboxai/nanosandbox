@@ -34,6 +34,7 @@ type FakeHelper struct {
 	Path     string
 	Listener net.Listener
 	Queue    []string
+	Requests []string
 	Mu       sync.Mutex
 }
 
@@ -88,6 +89,9 @@ func (h *FakeHelper) handle(conn net.Conn) {
 		if perr != nil {
 			break
 		}
+		h.Mu.Lock()
+		h.Requests = append(h.Requests, line)
+		h.Mu.Unlock()
 		rtype, _ := req.Str("type")
 		if rtype == "hello" {
 			resp := nanosandbox.JsonObjectValue()
@@ -405,10 +409,99 @@ func TestModify(t *testing.T) {
 	})
 }
 
+func TestWait(t *testing.T) {
+	withHelper(t, func(h *FakeHelper) {
+		h.Push(nanosandbox.JsonParseOr(`{"type":"wait","exit_code":137,"exited_at_ms":1234,"state":"stopped"}`))
+		client, err := nanosandbox.Connect(h.Path)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		secs := 30.0
+		res, werr := client.Sandbox("a").Wait(&secs)
+		if werr != nil {
+			t.Fatalf("wait: %v", werr)
+		}
+		if res.ExitCode != 137 {
+			t.Fatalf("exit_code: %d", res.ExitCode)
+		}
+		if res.ExitedAtMs != 1234 {
+			t.Fatalf("exited_at_ms: %d", res.ExitedAtMs)
+		}
+		if res.State != "stopped" {
+			t.Fatalf("state: %q", res.State)
+		}
+	})
+}
+
+func TestWaitNilTimeoutOmitsTimeoutSecs(t *testing.T) {
+	withHelper(t, func(h *FakeHelper) {
+		h.Push(nanosandbox.JsonParseOr(`{"type":"wait","exit_code":0,"exited_at_ms":1,"state":"stopped"}`))
+		client, err := nanosandbox.Connect(h.Path)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		_, werr := client.Sandbox("a").Wait(nil)
+		if werr != nil {
+			t.Fatalf("wait: %v", werr)
+		}
+	})
+}
+
+func TestWaitErrorResponse(t *testing.T) {
+	withHelper(t, func(h *FakeHelper) {
+		h.Push(nanosandbox.JsonParseOr(`{"type":"error","code":"timeout","message":"timed out"}`))
+		client, err := nanosandbox.Connect(h.Path)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		_, werr := client.Sandbox("a").Wait(nil)
+		if werr == nil {
+			t.Fatalf("expected error, got nil")
+		}
+		ne, ok := errorsAsNanosb(werr)
+		if !ok || ne.Code != "timeout" {
+			t.Fatalf("expected timeout error, got %v", werr)
+		}
+	})
+}
+
+func TestKillWithSendsSignal(t *testing.T) {
+	withHelper(t, func(h *FakeHelper) {
+		h.Push(nanosandbox.JsonParseOr(`{"type":"ok","version":"1"}`))
+		client, err := nanosandbox.Connect(h.Path)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		kerr := client.Sandbox("a").KillWith(15)
+		if kerr != nil {
+			t.Fatalf("kill_with: %v", kerr)
+		}
+		if !strings.Contains(strings.Join(h.Requests, "\n"), `"signal":15`) {
+			t.Fatalf("kill frame missing signal: %v", h.Requests)
+		}
+	})
+}
+
+func TestRestartSendsRestart(t *testing.T) {
+	withHelper(t, func(h *FakeHelper) {
+		h.Push(nanosandbox.JsonParseOr(`{"type":"ok","version":"1"}`))
+		client, err := nanosandbox.Connect(h.Path)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		rerr := client.Sandbox("a").Restart()
+		if rerr != nil {
+			t.Fatalf("restart: %v", rerr)
+		}
+		if !strings.Contains(strings.Join(h.Requests, "\n"), `"type":"restart"`) {
+			t.Fatalf("restart frame missing type: %v", h.Requests)
+		}
+	})
+}
+
 func TestWaitUntilStopped(t *testing.T) {
 	withHelper(t, func(h *FakeHelper) {
-		h.Push(nanosandbox.JsonParseOr(`{"type":"status","state":"running"}`))
-		h.Push(nanosandbox.JsonParseOr(`{"type":"status","state":"stopped"}`))
+		h.Push(nanosandbox.JsonParseOr(`{"type":"wait","exit_code":0,"exited_at_ms":1,"state":"stopped"}`))
 		client, err := nanosandbox.Connect(h.Path)
 		if err != nil {
 			t.Fatalf("connect: %v", err)

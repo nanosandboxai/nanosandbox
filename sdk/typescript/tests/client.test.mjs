@@ -27,6 +27,7 @@ class FakeHelper {
     _tmpDirs.push(this._dir);
     this.path = join(this._dir, "helper.sock");
     this._queue = [];
+    this._requests = [];
     this._server = createServer({ type: "unix", path: this.path }, (conn) => this._handle(conn));
     this._ready = new Promise((resolve, reject) => {
       this._server.once("listening", resolve);
@@ -45,6 +46,10 @@ class FakeHelper {
 
   _pop() {
     return this._queue.length ? this._queue.shift() : null;
+  }
+
+  requests() {
+    return this._requests;
   }
 
   static _isStreaming(req) {
@@ -73,6 +78,7 @@ class FakeHelper {
         const line = await readLine();
         if (line === null) break;
         const req = JSON.parse(line);
+        this._requests.push(req);
         if (req.type === "hello") {
           conn.write(
             JSON.stringify({
@@ -249,11 +255,65 @@ test("modify", async () => {
 
 test("wait until stopped", async () => {
   await withHelper(async (helper) => {
-    helper.push({ type: "status", state: "running" });
-    helper.push({ type: "status", state: "stopped" });
+    helper.push({ type: "wait", exit_code: 0, exited_at_ms: 1234, state: "stopped" });
     const client = await SandboxClient.connect(helper.path);
     const state = await client.sandbox("a").waitUntilStopped(5);
     assert.equal(state, "stopped");
+  });
+});
+
+test("wait returns exit triple", async () => {
+  await withHelper(async (helper) => {
+    helper.push({ type: "wait", exit_code: 137, exited_at_ms: 1234, state: "stopped" });
+    const client = await SandboxClient.connect(helper.path);
+    const res = await client.sandbox("a").wait(30);
+    assert.equal(res.exitCode, 137);
+    assert.equal(res.exitedAtMs, 1234);
+    assert.equal(res.state, "stopped");
+  });
+});
+
+test("wait omits timeout_secs when null", async () => {
+  await withHelper(async (helper) => {
+    helper.push({ type: "wait", exit_code: 0, exited_at_ms: 0, state: "stopped" });
+    const client = await SandboxClient.connect(helper.path);
+    await client.sandbox("a").wait();
+    const req = helper.requests().find((r) => r.type === "wait");
+    assert.equal(req.name, "a");
+    assert.equal(req.timeout_secs, undefined);
+  });
+});
+
+test("killWith sends signal 15", async () => {
+  await withHelper(async (helper) => {
+    helper.push({ type: "ok", version: "1" });
+    const client = await SandboxClient.connect(helper.path);
+    await client.sandbox("a").killWith(15);
+    const req = helper.requests().find((r) => r.type === "kill");
+    assert.equal(req.signal, 15);
+  });
+});
+
+test("restart sends restart frame", async () => {
+  await withHelper(async (helper) => {
+    helper.push({ type: "ok", version: "1" });
+    const client = await SandboxClient.connect(helper.path);
+    await client.sandbox("a").restart();
+    assert.ok(helper.requests().some((r) => r.type === "restart"));
+  });
+});
+
+test("wait error frame rejects", async () => {
+  await withHelper(async (helper) => {
+    helper.push({ type: "error", code: "internal", message: "boom" });
+    const client = await SandboxClient.connect(helper.path);
+    try {
+      await client.sandbox("a").wait(5);
+      assert.fail("expected NanosbError");
+    } catch (e) {
+      assert.ok(e instanceof NanosbError);
+      assert.equal(e.message, "boom");
+    }
   });
 });
 

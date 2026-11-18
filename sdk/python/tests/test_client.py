@@ -27,6 +27,7 @@ class FakeHelper:
         self._listener.listen(16)
         self._queue = []
         self._lock = threading.Lock()
+        self._last = None
         self._stop = False
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
@@ -38,6 +39,10 @@ class FakeHelper:
     def _pop(self):
         with self._lock:
             return self._queue.pop(0) if self._queue else None
+
+    def last_request(self):
+        with self._lock:
+            return self._last
 
     def _serve(self) -> None:
         self._listener.settimeout(0.2)
@@ -78,6 +83,9 @@ class FakeHelper:
             if not line:
                 break
             req = json.loads(line.decode())
+            if req.get("type") != "hello":
+                with self._lock:
+                    self._last = req
             if req.get("type") == "hello":
                 resp = {
                     "type": "hello_ok",
@@ -217,11 +225,43 @@ class ClientTest(unittest.TestCase):
         client.sandbox("a").modify({"idle_timeout_secs": 300, "labels": {"team": "sdk"}})
 
     def test_wait_until_stopped(self) -> None:
-        self.helper.push({"type": "status", "state": "running"})
-        self.helper.push({"type": "status", "state": "stopped"})
+        self.helper.push({"type": "wait", "exit_code": 0, "exited_at_ms": 1000, "state": "stopped"})
         client = SandboxClient.connect(self.helper.path)
         state = client.sandbox("a").wait_until_stopped(5)
         self.assertEqual(state, "stopped")
+
+    def test_wait_returns_triple(self) -> None:
+        self.helper.push({"type": "wait", "exit_code": 7, "exited_at_ms": 1234, "state": "stopped"})
+        client = SandboxClient.connect(self.helper.path)
+        result = client.sandbox("a").wait()
+        self.assertEqual(result, (7, 1234, "stopped"))
+
+    def test_wait_sends_timeout_secs(self) -> None:
+        self.helper.push({"type": "wait", "exit_code": 0, "exited_at_ms": 1, "state": "stopped"})
+        client = SandboxClient.connect(self.helper.path)
+        client.sandbox("a").wait(5)
+        self.assertEqual(self.helper.last_request()["timeout_secs"], 5)
+
+    def test_kill_with_sends_signal(self) -> None:
+        self.helper.push({"type": "ok", "version": "1"})
+        client = SandboxClient.connect(self.helper.path)
+        client.sandbox("a").kill_with(15)
+        self.assertEqual(self.helper.last_request()["signal"], 15)
+
+    def test_restart_sends_type_and_name(self) -> None:
+        self.helper.push({"type": "ok", "version": "1"})
+        client = SandboxClient.connect(self.helper.path)
+        client.sandbox("a").restart()
+        req = self.helper.last_request()
+        self.assertEqual(req["type"], "restart")
+        self.assertEqual(req["name"], "a")
+
+    def test_wait_error_raises(self) -> None:
+        self.helper.push({"type": "error", "code": "not_found", "message": "nope"})
+        client = SandboxClient.connect(self.helper.path)
+        with self.assertRaises(NanosbError) as ctx:
+            client.sandbox("a").wait()
+        self.assertTrue(ctx.exception.is_not_found())
 
     def test_shell_stream(self) -> None:
         self.helper.push({"type": "ok", "version": "1"})

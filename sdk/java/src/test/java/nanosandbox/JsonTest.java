@@ -102,6 +102,43 @@ class JsonTest {
         }
     }
 
+    @Test
+    void waitKillWithAndRestartFrames() throws Exception {
+        Path sock = Files.createTempFile("nanosb-java-lifecycle", ".sock");
+        Files.delete(sock);
+
+        ExecutorService server = Executors.newSingleThreadExecutor();
+        try {
+            server.submit(() -> serveLifecycleHelper(sock));
+            Thread.sleep(200);
+
+            SandboxClient client = SandboxClient.connect(sock.toString());
+            Sandbox box = client.sandbox("box");
+
+            // wait frame shape + WaitResult decoding
+            Sandbox.WaitResult wr = box.wait(java.time.Duration.ofSeconds(30));
+            assertEquals(137, wr.exitCode());
+            assertEquals(1234L, wr.exitedAtMs());
+            assertEquals("stopped", wr.state());
+
+            // waitUntilStopped delegates to wait
+            assertEquals("stopped", box.waitUntilStopped(java.time.Duration.ofSeconds(30)));
+
+            // killWith(15) frame contains "signal":15
+            box.killWith(15);
+
+            // restart frame contains "type":"restart"
+            box.restart();
+
+            // an error response throws
+            NanosbError err = assertThrows(NanosbError.class, () -> box.wait(java.time.Duration.ofSeconds(1)));
+            assertEquals("not_found", err.code());
+        } finally {
+            server.shutdownNow();
+            Files.deleteIfExists(sock);
+        }
+    }
+
     /** A tiny scripted NDJSON helper: hello, exec, get-missing. */
     private static void serveFakeHelper(Path sock) {
         try (ServerSocketChannel listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
@@ -129,6 +166,56 @@ class JsonTest {
                             assertEquals("echo", req.getStr("command"));
                             writeLine(ch, "{\"type\":\"exec_result\",\"exit_code\":0,"
                                     + "\"stdout\":\"hi\\n\",\"stderr\":\"\",\"duration_ms\":1}");
+                        } else if ("get".equals(type)) {
+                            writeLine(ch, "{\"type\":\"error\",\"code\":\"not_found\","
+                                    + "\"message\":\"sandbox `missing` does not exist\"}");
+                        } else {
+                            throw new IOException("unexpected request type " + type);
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            // the test closes the listener by shutting down the executor
+        }
+    }
+
+    /** A scripted NDJSON helper for wait/killWith/restart frames. */
+    private static void serveLifecycleHelper(Path sock) {
+        try (ServerSocketChannel listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+            listener.bind(UnixDomainSocketAddress.of(sock));
+            while (true) {
+                try (SocketChannel ch = listener.accept()) {
+                    String hello = readLine(ch);
+                    assertEquals("hello", Json.parse(hello).getStr("type"));
+                    writeLine(ch, "{\"type\":\"hello_ok\",\"protocol\":\"1.0.0\","
+                            + "\"helper_version\":\"test\",\"capabilities\":[\"lifecycle\",\"wait\"]}");
+
+                    while (true) {
+                        String reqLine;
+                        try {
+                            reqLine = readLine(ch);
+                        } catch (IOException eof) {
+                            break;
+                        }
+                        Json req = Json.parse(reqLine);
+                        String type = req.getStr("type");
+                        if ("wait".equals(type)) {
+                            assertEquals("box", req.getStr("name"));
+                            if (req.getInt("timeout_secs") == 30) {
+                                writeLine(ch, "{\"type\":\"wait\",\"exit_code\":137,"
+                                        + "\"exited_at_ms\":1234,\"state\":\"stopped\"}");
+                            } else {
+                                writeLine(ch, "{\"type\":\"error\",\"code\":\"not_found\","
+                                        + "\"message\":\"sandbox `box` does not exist\"}");
+                            }
+                        } else if ("kill".equals(type)) {
+                            assertEquals("box", req.getStr("name"));
+                            assertEquals(15, req.getInt("signal"));
+                            writeLine(ch, "{\"type\":\"ok\",\"version\":\"1\"}");
+                        } else if ("restart".equals(type)) {
+                            assertEquals("box", req.getStr("name"));
+                            writeLine(ch, "{\"type\":\"ok\",\"version\":\"1\"}");
                         } else if ("get".equals(type)) {
                             writeLine(ch, "{\"type\":\"error\",\"code\":\"not_found\","
                                     + "\"message\":\"sandbox `missing` does not exist\"}");

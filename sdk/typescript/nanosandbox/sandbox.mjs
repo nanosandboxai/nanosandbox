@@ -36,6 +36,25 @@ export class Sandbox {
     await this._client._call({ type: "kill", name: this._name });
   }
 
+  async killWith(signal) {
+    await this._client._call({ type: "kill", name: this._name, signal });
+  }
+
+  async restart() {
+    await this._client._call({ type: "restart", name: this._name });
+  }
+
+  async wait(timeoutSecs = null) {
+    const req = { type: "wait", name: this._name };
+    if (timeoutSecs !== null && timeoutSecs !== undefined) req.timeout_secs = timeoutSecs;
+    const resp = await this._client._call(req);
+    return {
+      exitCode: resp.exit_code,
+      exitedAtMs: resp.exited_at_ms,
+      state: resp.state,
+    };
+  }
+
   async remove(force = false) {
     await this._client._call({ type: "remove", name: this._name, force });
   }
@@ -61,21 +80,8 @@ export class Sandbox {
   }
 
   async waitUntilStopped(timeoutSecs = 30) {
-    const deadline = Date.now() + timeoutSecs * 1000;
-    while (true) {
-      const st = await this.state();
-      if (st === "stopped") return st;
-      if (st === "error") {
-        throw new NanosbError("internal", "sandbox entered error state while waiting");
-      }
-      if (Date.now() >= deadline) {
-        throw new NanosbError(
-          "timeout",
-          `sandbox '${this._name}' did not stop within ${timeoutSecs}s`,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    const { state } = await this.wait(timeoutSecs);
+    return state;
   }
 
   // ── execution ────────────────────────────────────────────────────────

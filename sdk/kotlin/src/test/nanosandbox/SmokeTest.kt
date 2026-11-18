@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Executors
+import kotlin.time.Duration.Companion.seconds
 
 private var failures = 0
 
@@ -78,6 +79,11 @@ private fun serveFakeHelper(sock: Path) {
                         if (type == "exec") {
                             writeLine(ch, "{\"type\":\"exec_result\",\"exit_code\":0,"
                                     + "\"stdout\":\"hi\\n\",\"stderr\":\"\",\"duration_ms\":1}")
+                        } else if (type == "wait") {
+                            writeLine(ch, "{\"type\":\"wait_result\",\"exit_code\":0,"
+                                    + "\"exited_at_ms\":123,\"state\":\"stopped\"}")
+                        } else if (type == "kill" || type == "restart") {
+                            writeLine(ch, "{\"type\":\"ok\"}")
                         } else if (type == "get") {
                             writeLine(ch, "{\"type\":\"error\",\"code\":\"not_found\","
                                     + "\"message\":\"sandbox `missing` does not exist\"}")
@@ -129,6 +135,15 @@ fun main(args: Array<String>) {
         val result = client.sandbox("box").exec("echo", arrayOf("hi"))
         check(result.getInt("exit_code") == 0L, "exec exit code")
         check(result.getStr("stdout") == "hi\n", "exec stdout")
+
+        val box = client.sandbox("box")
+        box.killWith(9)
+        box.restart()
+        val wr = box.wait(5.seconds)
+        check(wr.exitCode == 0, "wait exit code")
+        check(wr.exitedAtMs == 123L, "wait exitedAtMs")
+        check(wr.state == "stopped", "wait state")
+        check(box.waitUntilStopped(5.seconds) == "stopped", "waitUntilStopped state")
 
         var errCode = ""
         try {

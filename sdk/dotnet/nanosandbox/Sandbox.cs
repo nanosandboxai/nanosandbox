@@ -69,6 +69,37 @@ public class Sandbox {
         return client.call(verb("status"));
     }
 
+    public void killWith(int signal) {
+        JsonValue req = verb("kill");
+        req.put("signal", JsonValue.of((long) signal));
+        client.call(req);
+    }
+
+    public void restart() {
+        client.call(verb("restart"));
+    }
+
+    /// Block until the sandbox reaches a terminal state, returning the exit
+    /// code, exit timestamp (ms) and state. `timeout` bounds the wait; null
+    /// waits indefinitely. An `error` response throws `NanosbError`.
+    public WaitResult wait(TimeSpan? timeout) {
+        JsonValue req = verb("wait");
+        if (timeout != null) {
+            req.put("timeout_secs", JsonValue.of((long) timeout.Value.TotalSeconds));
+        }
+        JsonValue resp = client.call(req);
+        return new WaitResult(
+            (int) resp.intVal("exit_code"),
+            (ulong) resp.intVal("exited_at_ms"),
+            resp.str("state")
+        );
+    }
+
+    /// Block until the sandbox stops, bounded by `timeout`. Delegates to `wait`.
+    public void waitUntilStopped(TimeSpan timeout) {
+        wait(timeout);
+    }
+
     // Execution ---------------------------------------------------------
 
     public JsonValue exec(String command, List<String> args) {
@@ -500,6 +531,9 @@ public class Sandbox {
         return Base64Codec.decode(text);
     }
 }
+
+/// The terminal result of a `wait`: exit code, exit timestamp (ms) and state.
+public sealed record WaitResult(int ExitCode, ulong ExitedAtMs, String State);
 
 /// A live attach session: drive console input/resize and read guest events on
 /// the same connection. `readEvents` returns null once the stream ends.

@@ -17,13 +17,14 @@ require "nanosandbox"
 include Nanosandbox
 
 class FakeHelper
-  attr_reader :path
+  attr_reader :path, :requests
 
   def initialize
     @dir = Dir.mktmpdir("nanosb-rb-")
     @path = File.join(@dir, "helper.sock")
     @server = UNIXServer.new(@path)
     @queue = []
+    @requests = []
     @lock = Mutex.new
     @stop = false
     @thread = Thread.new { serve }
@@ -79,6 +80,7 @@ class FakeHelper
   def handle(conn)
     while (line = conn.gets)
       req = JSON.parse(line)
+      @lock.synchronize { @requests << req }
       if req["type"] == "hello"
         conn.write(JSON.generate(
                      "type" => "hello_ok", "protocol" => PROTOCOL_VERSION,
@@ -158,6 +160,38 @@ class ClientTest < Minitest::Test
     code = client.sandbox("a").exec_stream({ "command" => "x" }) { |ev| events << ev }
     assert_equal 0, code
     assert_equal "a", events.first["data"]
+  end
+
+  def test_wait_returns_hash
+    @helper.push("type" => "wait", "exit_code" => 137, "exited_at_ms" => 1234, "state" => "stopped")
+    client = SandboxClient.connect(@helper.path)
+    result = client.sandbox("a").wait(30)
+    assert_equal 137, result[:exit_code]
+    assert_equal 1234, result[:exited_at_ms]
+    assert_equal "stopped", result[:state]
+  end
+
+  def test_kill_with_sends_signal
+    @helper.push("type" => "ok", "version" => "1")
+    client = SandboxClient.connect(@helper.path)
+    client.sandbox("a").kill_with(15)
+    req = @helper.requests.find { |r| r["type"] == "kill" }
+    assert_equal 15, req["signal"]
+  end
+
+  def test_restart_sends_restart
+    @helper.push("type" => "ok", "version" => "1")
+    client = SandboxClient.connect(@helper.path)
+    client.sandbox("a").restart
+    req = @helper.requests.find { |r| r["type"] == "restart" }
+    assert_equal "a", req["name"]
+  end
+
+  def test_wait_error_raises
+    @helper.push("type" => "error", "code" => "not_found", "message" => "nope")
+    client = SandboxClient.connect(@helper.path)
+    err = assert_raises(NanosbError) { client.sandbox("a").wait }
+    assert err.is_not_found?
   end
 
   def test_builder
