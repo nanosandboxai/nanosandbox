@@ -21,6 +21,7 @@ use nanosb_protocol::{
 pub struct FakeHelper {
     path: PathBuf,
     queue: Arc<Mutex<VecDeque<String>>>,
+    requests: Arc<Mutex<Vec<String>>>,
     helper_version: String,
     handle: Option<JoinHandle<()>>,
     stop: Arc<Mutex<bool>>,
@@ -43,18 +44,21 @@ impl FakeHelper {
         listener.set_nonblocking(true).expect("set nonblocking");
 
         let queue: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(Mutex::new(false));
         let version = version.to_string();
         let q = Arc::clone(&queue);
+        let r = Arc::clone(&requests);
         let s = Arc::clone(&stop);
         let v = version.clone();
         let handle = std::thread::spawn(move || {
-            serve(listener, q, v, s);
+            serve(listener, q, r, v, s);
         });
 
         Self {
             path,
             queue,
+            requests,
             helper_version: version,
             handle: Some(handle),
             stop,
@@ -81,6 +85,11 @@ impl FakeHelper {
     pub fn helper_version(&self) -> &str {
         &self.helper_version
     }
+
+    /// Requests received so far, as JSON frames (excluding `hello`).
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
 }
 
 impl Drop for FakeHelper {
@@ -104,12 +113,13 @@ fn hello_response(version: &str) -> Response {
 fn serve(
     listener: UnixListener,
     queue: Arc<Mutex<VecDeque<String>>>,
+    requests: Arc<Mutex<Vec<String>>>,
     version: String,
     stop: Arc<Mutex<bool>>,
 ) {
     while !*stop.lock().unwrap() {
         match listener.accept() {
-            Ok((stream, _)) => handle_conn(stream, &queue, &version, &stop),
+            Ok((stream, _)) => handle_conn(stream, &queue, &requests, &version, &stop),
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
@@ -121,6 +131,7 @@ fn serve(
 fn handle_conn(
     stream: UnixStream,
     queue: &Arc<Mutex<VecDeque<String>>>,
+    requests: &Arc<Mutex<Vec<String>>>,
     version: &str,
     stop: &Arc<Mutex<bool>>,
 ) {
@@ -142,6 +153,10 @@ fn handle_conn(
                 }
             }
             Ok(Some(req)) => {
+                requests
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::to_string(&req).unwrap_or_default());
                 if !send_next(queue, &mut writer) {
                     return;
                 }

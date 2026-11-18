@@ -571,7 +571,20 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
 
     // Cleanup
     running.store(false, Ordering::SeqCst);
-    let _ = rt.block_on(sandbox.lock().unwrap().as_mut().unwrap().stop());
+    let force = force_stop.load(Ordering::SeqCst);
+    {
+        let mut guard = sandbox.lock().unwrap();
+        if let Some(sb) = guard.as_mut() {
+            if force {
+                if let Some(runtime) = sb.runtime_ref() {
+                    if let Err(e) = runtime.signal(sb.id(), libc::SIGKILL) {
+                        tracing::warn!("force kill failed for '{}': {e}", args.sandbox_name);
+                    }
+                }
+            }
+            let _ = rt.block_on(sb.stop());
+        }
+    }
     for t in vm_threads {
         let _ = t.join();
     }

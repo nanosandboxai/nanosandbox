@@ -989,18 +989,17 @@ pub async fn handle_event(
                 if !alive {
                     // Keep the panel (and its frozen output) so the failure is
                     // visible; still stop the dead supervisor / destroy the sandbox.
-                    let (name, supervisor_name, sandbox_arc) =
-                        match app.panels.get_mut(panel_idx) {
-                            Some(panel) => {
-                                if let Some(mut pm) = panel.project_mount.take() {
-                                    let _ = pm.teardown();
-                                }
-                                let sname = panel.supervisor_name().map(str::to_string);
-                                let arc = panel.take_sandbox();
-                                (panel.agent_name.clone(), sname, arc)
+                    let (name, supervisor_name, sandbox_arc) = match app.panels.get_mut(panel_idx) {
+                        Some(panel) => {
+                            if let Some(mut pm) = panel.project_mount.take() {
+                                let _ = pm.teardown();
                             }
-                            None => (String::new(), None, None),
-                        };
+                            let sname = panel.supervisor_name().map(str::to_string);
+                            let arc = panel.take_sandbox();
+                            (panel.agent_name.clone(), sname, arc)
+                        }
+                        None => (String::new(), None, None),
+                    };
                     if let Some(sb) = sandbox_arc {
                         spawn_sandbox_destroy(sb);
                     }
@@ -1021,8 +1020,7 @@ pub async fn handle_event(
                     app.set_status_message(format!("'{}' sandbox ended; see panel output.", name));
                 } else if let Some(panel) = app.panels.get_mut(panel_idx) {
                     let name = panel.agent_name.clone();
-                    let reason =
-                        error.unwrap_or_else(|| "agent exited (no exit code)".to_string());
+                    let reason = error.unwrap_or_else(|| "agent exited (no exit code)".to_string());
                     panel.terminal_handle = None;
                     panel.reconnecting = false;
                     panel.exited = Some(reason.clone());

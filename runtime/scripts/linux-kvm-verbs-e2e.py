@@ -8,7 +8,8 @@ supervisor and asserts:
   C3: blocking `wait` returns the workload's real exit code once terminal;
   C4: `kill` with an unsupported signal returns a typed `unsupported`; SIGTERM
       is accepted;
-plus that the hello handshake advertises signal/wait/exec_pty capabilities.
+plus that the hello handshake advertises wait/exec_pty capabilities and no longer
+advertises the reserved `signal` capability.
 """
 import json
 import os
@@ -99,8 +100,8 @@ try:
     c = Conn(path)
     h = hello(c)
     caps = set(h.get("capabilities", []))
-    check("signal" in caps and "wait" in caps and "exec_pty" in caps,
-          f"hello advertises signal/wait/exec_pty (got {sorted(caps)})")
+    check("signal" not in caps and "wait" in caps and "exec_pty" in caps,
+          f"hello advertises wait/exec_pty and not signal (got {sorted(caps)})")
 
     # C2: tty exec_stream with live stdin + resize
     c.send({"type": "exec_stream", "command": "sh", "args": ["-c", "read x; echo got:$x"],

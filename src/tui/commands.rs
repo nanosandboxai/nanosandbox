@@ -1095,7 +1095,9 @@ mod tests {
         let result = parse_command_verbose("/add claude --permissions bananas");
         match result {
             ParseResult::Err(msg) => {
-                assert!(msg.contains("--permissions requires one of: default, accept-edits, allow-all"));
+                assert!(
+                    msg.contains("--permissions requires one of: default, accept-edits, allow-all")
+                );
             }
             other => panic!("expected Err, got {:?}", other),
         }

@@ -677,7 +677,8 @@ mod tests {
         let env =
             AgentCommandBuilder::build_env(&AgentType::Cursor, false, Permissions::Default, &base);
         assert_eq!(
-            env.get("CURSOR_AGENT_DISABLE_DEBUG_LOG").map(String::as_str),
+            env.get("CURSOR_AGENT_DISABLE_DEBUG_LOG")
+                .map(String::as_str),
             Some("1")
         );
     }
@@ -1077,7 +1078,12 @@ mod tests {
                 &[],
                 &["--message", "do it", "--yes", "--no-auto-commits"],
             ),
-            (AgentType::Gemini, "gemini", &["--skip-trust"], &["-p", "do it"]),
+            (
+                AgentType::Gemini,
+                "gemini",
+                &["--skip-trust"],
+                &["-p", "do it"],
+            ),
             (AgentType::Crush, "crush", &[], &["run", "do it"]),
         ];
 

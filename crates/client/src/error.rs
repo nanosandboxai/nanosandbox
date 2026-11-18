@@ -42,6 +42,13 @@ impl Error {
     pub fn is_not_found(&self) -> bool {
         self.code() == Some(ErrorCode::NotFound)
     }
+
+    /// True when the per-sandbox endpoint is gone (a stopped sandbox has no
+    /// supervisor socket), so the caller should retry through the helper.
+    pub fn is_missing_endpoint(&self) -> bool {
+        matches!(self, Error::Connect(_) | Error::Io(_))
+            || self.code() == Some(ErrorCode::InvalidState)
+    }
 }
 
 impl fmt::Display for Error {

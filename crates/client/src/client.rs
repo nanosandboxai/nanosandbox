@@ -288,10 +288,66 @@ impl Sandbox {
         self.client.get(&self.name)
     }
 
+    /// Start the sandbox. A running sandbox acks immediately; a stopped sandbox
+    /// has no supervisor, so the request falls back to the helper, which starts
+    /// it from its persisted spec.
     pub fn start(&self) -> Result<()> {
-        self.ack(Start {
+        if self.is_helper_bound() {
+            return self.ack(Start {
+                name: self.name_arg()?,
+            });
+        }
+        let req = Start {
             name: self.name_arg()?,
-        })
+        };
+        match self.ack(req) {
+            Err(e) if e.is_missing_endpoint() => {
+                self.on_helper()?.sandbox(self.name.clone()).ack(Start {
+                    name: Some(self.name.clone()),
+                })
+            }
+            other => other,
+        }
+    }
+
+    /// Re-boot the sandbox. A running sandbox restarts in place (same supervisor
+    /// and socket); a stopped sandbox is started by the helper from its spec.
+    pub fn restart(&self) -> Result<()> {
+        if self.is_helper_bound() {
+            self.client.require(Capability::Restart)?;
+            return self.ack(Restart {
+                name: self.name_arg()?,
+            });
+        }
+        let req = Restart {
+            name: self.name_arg()?,
+        };
+        match self.ack(req) {
+            Err(e) if e.is_missing_endpoint() => {
+                let helper = self.on_helper()?;
+                helper.require(Capability::Restart)?;
+                helper.sandbox(self.name.clone()).ack(Restart {
+                    name: Some(self.name.clone()),
+                })
+            }
+            other => other,
+        }
+    }
+
+    fn is_helper_bound(&self) -> bool {
+        matches!(&self.client.backend, Backend::Local { sandbox: None, .. })
+    }
+
+    fn on_helper(&self) -> Result<SandboxClient> {
+        match SandboxClient::local() {
+            Ok(client) => Ok(client),
+            Err(e) => Err(Error::Protocol(
+                nanosb_protocol::ProtocolError::invalid_state(format!(
+                    "helper is not running; cannot start stopped sandbox '{}': {e}",
+                    self.name
+                )),
+            )),
+        }
     }
 
     pub fn stop(&self, force: bool) -> Result<()> {
@@ -308,10 +364,19 @@ impl Sandbox {
         })
     }
 
-    /// Kill the sandbox with an explicit POSIX signal. `SIGTERM` requests a
-    /// graceful stop; `SIGKILL` force-stops. Requires the `signal` capability.
+    /// Kill the sandbox with a signal selector: `SIGTERM` requests a graceful
+    /// stop, `SIGKILL` force-stops immediately. Any other signal is rejected
+    /// locally; the wire surface does not deliver arbitrary signals.
     pub fn kill_with(&self, signal: i32) -> Result<()> {
-        self.client.require(Capability::Signal)?;
+        const SIGKILL: i32 = 9;
+        const SIGTERM: i32 = 15;
+        if signal != SIGTERM && signal != SIGKILL {
+            return Err(Error::Protocol(nanosb_protocol::ProtocolError::new(
+                nanosb_protocol::ErrorCode::Unsupported,
+                format!("kill signal {signal} is not supported; use SIGTERM (15) or SIGKILL (9)"),
+            )));
+        }
+        self.client.require(Capability::Lifecycle)?;
         self.ack(Kill {
             name: self.name_arg()?,
             signal: Some(signal),
@@ -359,12 +424,14 @@ impl Sandbox {
     }
 
     pub fn pause(&self) -> Result<()> {
+        self.client.require(Capability::Pause)?;
         self.ack(Pause {
             name: self.name_arg()?,
         })
     }
 
     pub fn resume(&self) -> Result<()> {
+        self.client.require(Capability::Pause)?;
         self.ack(Resume {
             name: self.name_arg()?,
         })
@@ -1184,6 +1251,40 @@ mod tests {
         let c = SandboxClient::connect(h.path()).unwrap();
         assert!(c.supports(Capability::Lifecycle));
         assert_eq!(c.ping().unwrap(), "0.3.0-test");
+    }
+
+    #[test]
+    fn restart_on_a_running_sandbox_sends_restart() {
+        let h = FakeHelper::start();
+        h.push_script(r#"{"type":"ok","version":"1"}"#);
+        let c = SandboxClient::connect(h.path()).unwrap();
+        c.sandbox("box").restart().unwrap();
+        let reqs = h.requests();
+        assert!(
+            reqs.iter().any(|r| r.contains(r#""type":"restart""#)),
+            "{reqs:?}"
+        );
+    }
+
+    #[test]
+    fn kill_with_rejects_an_unsupported_signal_without_a_connection() {
+        let c = SandboxClient::cloud("unused");
+        let err = c.sandbox("box").kill_with(10).unwrap_err();
+        assert!(matches!(err, Error::Protocol(_)), "{err:?}");
+        assert!(err.to_string().contains("SIGTERM"));
+    }
+
+    #[test]
+    fn pause_and_resume_require_the_pause_capability() {
+        let c = SandboxClient::cloud("unused");
+        assert!(matches!(
+            c.sandbox("box").pause().unwrap_err(),
+            Error::Unsupported(_)
+        ));
+        assert!(matches!(
+            c.sandbox("box").resume().unwrap_err(),
+            Error::Unsupported(_)
+        ));
     }
 
     #[test]

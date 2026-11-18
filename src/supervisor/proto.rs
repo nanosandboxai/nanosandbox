@@ -82,7 +82,7 @@ fn capabilities(ctx: &Ctx) -> Vec<Capability> {
         Capability::Ephemeral,
         Capability::Secrets,
         Capability::Volumes,
-        Capability::Signal,
+        Capability::Pause,
         Capability::Wait,
     ];
     if exec_configured(ctx) {
@@ -241,6 +241,10 @@ fn handle(
             &Response::Ok {
                 version: HELPER_VERSION.to_string(),
             },
+        ),
+        Request::Restart { .. } => unsupported(
+            stream,
+            "restart is not implemented by this supervisor build",
         ),
         Request::Pause { .. } => signal_vm(stream, ctx, libc::SIGSTOP),
         Request::Resume { .. } => signal_vm(stream, ctx, libc::SIGCONT),

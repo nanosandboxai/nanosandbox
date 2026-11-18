@@ -38,6 +38,12 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// Re-boot the sandbox: a running sandbox is stopped and re-started in
+    /// place; a stopped sandbox with a persisted spec is started by the helper.
+    Restart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     Stop {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
@@ -47,8 +53,9 @@ pub enum Request {
     Kill {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        /// POSIX signal to deliver. `None` (or `SIGKILL`) force-stops; `SIGTERM`
-        /// requests a graceful stop. Any other signal is `unsupported`.
+        /// Signal selector, not an arbitrary delivery path. `None` (or `SIGKILL`)
+        /// force-stops immediately; `SIGTERM` requests a graceful stop. Any other
+        /// signal is rejected with `unsupported`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signal: Option<i32>,
     },
@@ -570,6 +577,40 @@ mod tests {
     fn roundtrip_resp(resp: &Response) -> Response {
         let s = serde_json::to_string(resp).unwrap();
         serde_json::from_str(&s).unwrap()
+    }
+
+    #[test]
+    fn restart_round_trips_with_and_without_name() {
+        assert_eq!(
+            serde_json::to_string(&Request::Restart {
+                name: Some("box".into())
+            })
+            .unwrap(),
+            r#"{"type":"restart","name":"box"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Request::Restart { name: None }).unwrap(),
+            r#"{"type":"restart"}"#
+        );
+        assert_eq!(
+            roundtrip(&Request::Restart {
+                name: Some("box".into())
+            }),
+            Request::Restart {
+                name: Some("box".into())
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_lifecycle_frames_still_parse() {
+        for (frame, want) in [
+            (r#"{"type":"start"}"#, Request::Start { name: None }),
+            (r#"{"type":"pause"}"#, Request::Pause { name: None }),
+            (r#"{"type":"resume"}"#, Request::Resume { name: None }),
+        ] {
+            assert_eq!(serde_json::from_str::<Request>(frame).unwrap(), want);
+        }
     }
 
     #[test]
