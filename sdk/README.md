@@ -48,6 +48,7 @@ Or let the SDK **start the helper for you** via `ManagedRuntime` (locates/spawns
 
 | SDK | Launch |
 |---|---|
+| Rust | `let rt = ManagedRuntime::start()?; SandboxClient::connect(rt.socket())?` |
 | Python | `with ManagedRuntime() as rt: SandboxClient.connect(str(rt.socket))` |
 | TypeScript | `const rt = await ManagedRuntime.start(); SandboxClient.connect(rt.socket)` |
 | Go | `rt, _ := nanosandbox.StartRuntime(15*time.Second)` |
@@ -58,6 +59,11 @@ Or let the SDK **start the helper for you** via `ManagedRuntime` (locates/spawns
 
 Every `ManagedRuntime` resolves the helper via `NANOSB_RUNTIME_BIN` →
 `$NANOSB_HOME/bin/nanosb-runtime` → `PATH` → the repo `target/debug/nanosb-runtime`.
+When the helper is missing, it **auto-provisions** via the shared
+`scripts/sdk/ensure-runtime.sh` provisioner (located via `NANOSB_PROVISIONER`,
+the package/repo, or an embedded copy shipped with the SDK), downloading and
+verifying the per-platform runtime bundle under `$NANOSB_HOME` — so the
+package-manager install is the only step needed.
 
 ## Conformance suite
 
@@ -101,7 +107,7 @@ the Rust reference (`NANOSB_E2E=1`). See
 ```
 sdk/
 ├── conformance/     # harness contract (SPEC.md) + 35 shared scenarios
-├── rust/            # Rust client (re-exports nanosb-client)
+├── rust/            # Rust client (re-exports nanosb-client) + ManagedRuntime
 ├── python/          # Python client + ManagedRuntime
 ├── typescript/      # TypeScript/Node client + ManagedRuntime
 ├── go/              # Go client + ManagedRuntime
