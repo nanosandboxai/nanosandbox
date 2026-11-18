@@ -465,42 +465,48 @@ impl Sandbox {
         Ok(())
     }
 
-    /// Restart a stopped sandbox
-    pub async fn restart(&mut self) -> Result<()> {
-        if self.status == SandboxStatus::Running {
-            self.stop().await?;
-        }
+    /// Freeze the VM (SIGSTOP). `exec` and console I/O stall until [`resume`].
+    pub fn pause(&mut self) -> Result<()> {
+        self.signal(libc::SIGSTOP)
+    }
 
-        if self.status != SandboxStatus::Stopped {
-            error!(sandbox_id = %self.id, "Cannot restart sandbox in {:?} state", self.status);
-            return Err(Error::InvalidState(format!(
-                "Cannot restart sandbox in {:?} state",
-                self.status
-            )));
-        }
+    /// Thaw the VM (SIGCONT).
+    pub fn resume(&mut self) -> Result<()> {
+        self.signal(libc::SIGCONT)
+    }
 
-        let bundle_path = self.bundle.as_ref().map(|b| b.path.as_path());
-
-        info!("Restarting sandbox {}", self.id);
-
-        // Initialize runtime
-        let runtime = Runtime::new().await?;
-
-        // Delete old container state if exists
-        runtime.delete(&self.id).await?;
-
-        // Create and start the container again
-        debug!("Creating container via runtime");
-        runtime.create(&self.id, &self.config, bundle_path).await?;
-
-        debug!("Starting container via runtime");
-        runtime.start(&self.id).await?;
-
-        self.runtime = Some(runtime);
-        self.status = SandboxStatus::Running;
-
-        info!("Sandbox {} restarted successfully", self.id);
+    /// Force-stop the VM immediately (SIGKILL), without the graceful SIGTERM
+    /// prelude used by [`stop`].
+    pub fn kill(&mut self) -> Result<()> {
+        self.signal(libc::SIGKILL)?;
+        self.status = SandboxStatus::Stopped;
         Ok(())
+    }
+
+    /// Block until the sandbox reaches a terminal state, returning
+    /// `(exit_code, exited_at_ms, state)`.
+    pub fn wait(&self, timeout: Option<std::time::Duration>) -> Result<(i32, u64, SandboxStatus)> {
+        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+        loop {
+            if matches!(self.status, SandboxStatus::Stopped | SandboxStatus::Error) {
+                let code = self.vm_exit_code().unwrap_or(0);
+                return Ok((code, 0, self.status));
+            }
+            if let Some(d) = deadline {
+                if std::time::Instant::now() > d {
+                    return Err(Error::Timeout(0));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn signal(&self, sig: i32) -> Result<()> {
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| Error::InvalidState("no runtime".to_string()))?;
+        runtime.signal(&self.id, sig)
     }
 
     /// Destroy the sandbox and clean up all resources

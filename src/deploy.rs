@@ -461,3 +461,184 @@ mod tests {
         assert_ne!(rc.user.as_deref(), Some("developer"));
     }
 }
+
+/// Parse `KEY=VALUE` flags and `.env`-style files (later files override earlier).
+pub fn parse_env_vars(
+    env_args: &[String],
+    env_files: &[String],
+) -> anyhow::Result<Vec<(String, String)>> {
+    let mut vars = Vec::new();
+    for path in env_files {
+        const MAX_ENV_FILE: u64 = 1 << 20;
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_symlink() => {
+                anyhow::bail!("env file '{}' is a symlink; refusing", path)
+            }
+            Ok(m) if !m.is_file() => anyhow::bail!("env file '{}' is not a regular file", path),
+            Ok(m) if m.len() > MAX_ENV_FILE => {
+                anyhow::bail!("env file '{}' is too large ({} bytes)", path, m.len())
+            }
+            Ok(_) => {}
+            Err(e) => anyhow::bail!("failed to access env file '{}': {}", path, e),
+        }
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read env file '{}': {}", path, e))?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                vars.push((key.trim().to_string(), value.trim().to_string()));
+            }
+        }
+    }
+    for entry in env_args {
+        if let Some((key, value)) = entry.split_once('=') {
+            vars.push((key.to_string(), value.to_string()));
+        } else if let Ok(value) = std::env::var(entry) {
+            vars.push((entry.to_string(), value));
+        } else {
+            anyhow::bail!(
+                "Environment variable '{}' not found. Use KEY=VALUE format.",
+                entry
+            );
+        }
+    }
+    Ok(vars)
+}
+
+/// Re-resolve a sandbox's boot env from its recorded origin.
+pub fn resolve_boot_env(origin: &Origin) -> anyhow::Result<Option<String>> {
+    if origin.source.is_empty() {
+        return Ok(None);
+    }
+    let mut env: Vec<(String, String)> = Vec::new();
+    if origin.source == "cli" {
+        for path in &origin.env_files {
+            env.extend(parse_env_vars(&[], &[path.clone()])?);
+        }
+        let mut missing: Vec<String> = Vec::new();
+        for key in &origin.env_keys {
+            match std::env::var(key) {
+                Ok(val) => {
+                    if !env.iter().any(|(k, _)| k == key) {
+                        env.push((key.clone(), val));
+                    }
+                }
+                Err(_) => {
+                    if !env.iter().any(|(k, _)| k == key) {
+                        missing.push(key.clone());
+                    }
+                }
+            }
+        }
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "cannot re-resolve env for restart; not set on host: {}",
+                missing.join(", ")
+            );
+        }
+    }
+    let map: std::collections::HashMap<String, String> = env.into_iter().collect();
+    Ok(Some(
+        serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string()),
+    ))
+}
+
+/// Start (or restart) a stopped sandbox from its persisted `deploy.json`.
+///
+/// The supervisor is one-shot: once a sandbox stops, its supervisor has exited
+/// and removed the control socket. This spawns a fresh supervisor from the
+/// persisted spec and waits until it is running.
+pub fn restart_sandbox(
+    sandbox_id: &str,
+    allow_no_env: bool,
+    timeout_secs: u64,
+) -> anyhow::Result<()> {
+    let client = SupervisorClient::new(sandbox_id);
+    let dir = client.sandbox_dir().to_path_buf();
+    if !dir.exists() {
+        anyhow::bail!("sandbox not found: {}", sandbox_id);
+    }
+    let deploy_raw = std::fs::read_to_string(dir.join("deploy.json")).map_err(|_| {
+        anyhow::anyhow!(
+            "sandbox '{}' has no persisted spec (deploy.json); cannot start",
+            sandbox_id
+        )
+    })?;
+    let deploy: serde_json::Value = serde_json::from_str(&deploy_raw)?;
+    let config_json = deploy["config_json"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let extra_mounts_json = deploy["extra_mounts_json"]
+        .as_str()
+        .unwrap_or("[]")
+        .to_string();
+    let boot_timeout = serde_json::from_str::<runtime::config::SandboxConfig>(&config_json)
+        .map(|c| c.timeout_secs)
+        .unwrap_or(600);
+    let origin = std::fs::read_to_string(dir.join("origin.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Origin>(&raw).ok())
+        .unwrap_or_default();
+
+    let boot_env_json = if allow_no_env {
+        resolve_boot_env(&origin)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "{}".into())
+    } else {
+        match resolve_boot_env(&origin)? {
+            Some(env) => env,
+            None => anyhow::bail!(
+                "cannot start '{}': its env/secrets cannot be re-resolved (source: {}). \
+                 Restart it with the CLI and --allow-no-env to boot without them.",
+                sandbox_id,
+                if origin.source.is_empty() {
+                    "unknown (pre-dates origin tracking)"
+                } else {
+                    origin.source.as_str()
+                }
+            ),
+        }
+    };
+
+    if client.is_running() {
+        let _ = client.stop(true);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while client.is_running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+    let _ = std::fs::remove_file(dir.join("state.json"));
+    let _ = std::fs::remove_file(dir.join("config.json"));
+    let _ = std::fs::remove_dir_all(dir.join("logs"));
+
+    spawn_supervisor(
+        sandbox_id,
+        &config_json,
+        &extra_mounts_json,
+        &boot_env_json,
+        &origin.to_json(),
+        boot_timeout,
+    )?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        if let Some(state) = client.read_state() {
+            match state.state {
+                crate::supervisor::SandboxState::Running => return Ok(()),
+                crate::supervisor::SandboxState::Error => {
+                    anyhow::bail!("sandbox failed to start (see supervisor.log)")
+                }
+                _ => {}
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("timed out waiting for sandbox to start");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}

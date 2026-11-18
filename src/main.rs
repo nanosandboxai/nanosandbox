@@ -1307,126 +1307,12 @@ mod cli {
         allow_no_env: bool,
         verbose: bool,
     ) -> anyhow::Result<()> {
-        use crate::supervisor::client::SupervisorClient;
-        use nanosb_cli::deploy::Origin;
-
-        let client = SupervisorClient::new(sandbox_id);
-        let dir = client.sandbox_dir().to_path_buf();
-        if !dir.exists() {
-            anyhow::bail!("sandbox not found: {}", sandbox_id);
-        }
-        let deploy_raw = std::fs::read_to_string(dir.join("deploy.json")).map_err(|_| {
-            anyhow::anyhow!(
-                "sandbox '{}' has no deploy.json (not supervisor-managed)",
-                sandbox_id
-            )
-        })?;
-        let deploy: serde_json::Value = serde_json::from_str(&deploy_raw)?;
-        let config_json = deploy["config_json"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let extra_mounts_json = deploy["extra_mounts_json"]
-            .as_str()
-            .unwrap_or("[]")
-            .to_string();
-        let timeout_secs = serde_json::from_str::<runtime::config::SandboxConfig>(&config_json)
-            .map(|c| c.timeout_secs)
-            .unwrap_or(600);
-
-        let origin = std::fs::read_to_string(dir.join("origin.json"))
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Origin>(&raw).ok())
-            .unwrap_or_default();
-
-        let boot_env_json = if allow_no_env {
-            match resolve_boot_env(&origin) {
-                Ok(Some(env)) => env,
-                _ => "{}".to_string(),
-            }
-        } else {
-            match resolve_boot_env(&origin)? {
-                Some(env) => env,
-                None => anyhow::bail!(
-                    "cannot restart '{}': its env/secrets cannot be re-resolved \
-                     (source: {}). Pass --allow-no-env to boot without them.",
-                    sandbox_id,
-                    if origin.source.is_empty() {
-                        "unknown (pre-dates origin tracking)"
-                    } else {
-                        origin.source.as_str()
-                    }
-                ),
-            }
-        };
-
         if verbose {
             eprintln!("Restarting sandbox '{}'", sandbox_id);
         }
-        if client.is_running() {
-            let _ = client.stop(true);
-            wait_supervisor_stopped(&client, 20).await;
-        }
-        let _ = std::fs::remove_file(dir.join("state.json"));
-        let _ = std::fs::remove_file(dir.join("config.json"));
-        let _ = std::fs::remove_dir_all(dir.join("logs"));
-
-        spawn_supervisor(
-            sandbox_id,
-            &config_json,
-            &extra_mounts_json,
-            &boot_env_json,
-            &origin.to_json(),
-            timeout_secs,
-        )?;
-        wait_supervisor_running(&client, 60).await?;
+        nanosb_cli::deploy::restart_sandbox(sandbox_id, allow_no_env, 60)?;
         println!("{} Restarted {}", "✓".green(), sandbox_id.bold());
         Ok(())
-    }
-
-    /// Re-resolve a sandbox's boot env from its recorded origin.
-    ///
-    /// Returns `None` when the origin is unknown/pre-dates tracking. Returns an
-    /// error when a key the sandbox needs is no longer available on the host.
-    fn resolve_boot_env(origin: &nanosb_cli::deploy::Origin) -> anyhow::Result<Option<String>> {
-        if origin.source.is_empty() {
-            return Ok(None);
-        }
-
-        let mut env: Vec<(String, String)> = Vec::new();
-
-        if origin.source == "cli" {
-            for path in &origin.env_files {
-                let files = vec![path.clone()];
-                env.extend(parse_env_vars(&[], &files)?);
-            }
-            let mut missing: Vec<String> = Vec::new();
-            for key in &origin.env_keys {
-                match std::env::var(key) {
-                    Ok(val) => {
-                        if !env.iter().any(|(k, _)| k == key) {
-                            env.push((key.clone(), val));
-                        }
-                    }
-                    Err(_) => {
-                        if !env.iter().any(|(k, _)| k == key) {
-                            missing.push(key.clone());
-                        }
-                    }
-                }
-            }
-            if !missing.is_empty() {
-                anyhow::bail!(
-                    "cannot re-resolve env for restart; not set on host: {}",
-                    missing.join(", ")
-                );
-            }
-        }
-
-        let map: std::collections::HashMap<String, String> = env.into_iter().collect();
-        Ok(Some(
-            serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string()),
-        ))
     }
 
     async fn cmd_describe(sandbox_id: &str) -> anyhow::Result<()> {
