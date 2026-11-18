@@ -38,6 +38,14 @@
         "short": null
       },
       {
+        "long": "disk",
+        "short": null
+      },
+      {
+        "long": "max_pids",
+        "short": null
+      },
+      {
         "long": "permissions",
         "short": null
       },
@@ -171,6 +179,13 @@
         "aliases": [],
         "flags": [],
         "hidden": false,
+        "name": "capacity",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
         "name": "cleanup",
         "subcommands": []
       },
@@ -250,6 +265,7 @@
       "/quit",
       "/reconnect",
       "/sandboxes",
+      "/sb",
       "/sk",
       "/skills",
       "/status",
@@ -262,10 +278,10 @@
     "help_entries": [
       {
         "description": "Add a new agent panel (interactive by default; --headless runs headless)",
-        "pattern": "/add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]..."
+        "pattern": "/add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--timeout <secs>] [--permissions <level>] [--env-file <path>] [--use-env <KEY>]..."
       },
       {
-        "description": "Toggle sandbox sidebar",
+        "description": "Toggle sandbox sidebar (alias: /sb)",
         "pattern": "/sandboxes"
       },
       {

@@ -118,11 +118,29 @@ if [ -z "${LIBCLANG_PATH:-}" ]; then
     if [ "$(uname)" = "Darwin" ]; then
         export LIBCLANG_PATH="$(brew --prefix llvm 2>/dev/null)/lib"
     else
-        libclang=$(find /usr/lib /usr/local/lib -name 'libclang*.so*' -print -quit 2>/dev/null || true)
-        if [ -n "$libclang" ]; then
-            export LIBCLANG_PATH="$(dirname "$libclang")"
+        # Prefer the LLVM the toolchain actually reports: runner images often
+        # leave stale `/usr/lib/llvm-<old>/lib` directories behind, and picking
+        # one of those makes clang-sys fail with "couldn't find any valid
+        # shared libraries matching libclang.so".
+        llvm_prefix="$(llvm-config --prefix 2>/dev/null || true)"
+        if [ -n "$llvm_prefix" ] && [ -f "$llvm_prefix/lib/libclang.so" ]; then
+            export LIBCLANG_PATH="$llvm_prefix/lib"
+        else
+            # Fall back to the newest llvm dir that actually ships libclang.so.
+            libclang=$(find /usr/lib/llvm-*/lib /usr/lib /usr/local/lib \
+                -name 'libclang.so' -print 2>/dev/null | sort -V | tail -1 || true)
+            if [ -n "$libclang" ]; then
+                export LIBCLANG_PATH="$(dirname "$libclang")"
+            fi
         fi
     fi
+fi
+if [ -z "${LIBCLANG_PATH:-}" ] || [ ! -e "${LIBCLANG_PATH}/libclang.so" ]; then
+    err "libclang not found (LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>}).
+  The libkrun build needs libclang for bindgen. Install it and set LIBCLANG_PATH:
+    Ubuntu/Debian: sudo apt-get install -y libclang-dev && export LIBCLANG_PATH=\$(llvm-config --prefix)/lib
+    macOS:         brew install llvm && export LIBCLANG_PATH=\$(brew --prefix llvm)/lib"
+    exit 1
 fi
 echo "==> LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>}"
 export NET=1

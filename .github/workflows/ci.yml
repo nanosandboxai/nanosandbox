@@ -14,6 +14,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  workspace-check:
+    name: Workspace check (no libkrun build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-mono-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-mono-cargo-
+
+      # runtime/crates/libkrun-sys/build.rs tolerates a missing libkrun.a, so a
+      # plain `cargo check` needs neither libkrun nor libclang. Building libkrun
+      # (and the tests that link it) is the `rust` job's responsibility.
+      - name: Check full workspace
+        run: cargo check --workspace
+
   rust:
     name: Rust workspace checks
     runs-on: ubuntu-latest
@@ -39,11 +65,21 @@ jobs:
           key: ${{ runner.os }}-mono-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-mono-cargo-
 
+      - name: Resolve libclang for the libkrun build
+        run: |
+          set -euo pipefail
+          prefix="$(llvm-config --prefix)"
+          if [ ! -e "$prefix/lib/libclang.so" ]; then
+            echo "::error::libclang not found under $prefix/lib; the libkrun build needs libclang-dev"
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$prefix/lib" >> "$GITHUB_ENV"
+
       - name: Build upstream libkrun
         run: bash runtime/scripts/build-libkrun.sh
 
-      - name: Check CLI + sandbox SDK + runtime
-        run: cargo check -p nanosb-cli -p sandbox -p gateway -p runtime
+      - name: Check full workspace
+        run: cargo check --workspace
 
       - name: Unit tests (CLI/TUI)
         run: cargo test -p nanosb-cli

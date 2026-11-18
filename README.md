@@ -47,6 +47,13 @@ cargo build --release -p nanosb-cli
 
 The binary will be at `target/release/nanosb`.
 
+`cargo check`/`cargo test` for the workspace need **no libclang and no prebuilt
+libkrun**: `runtime/crates/libkrun-sys/build.rs` links the static library only when
+it exists. Building libkrun itself (`runtime/scripts/build-libkrun.sh`, which the CI
+`rust` job and local VM runs need) does require libclang — `libclang-dev` on Linux
+with `LIBCLANG_PATH="$(llvm-config --prefix)/lib"`, or `brew install llvm` with
+`LIBCLANG_PATH="$(brew --prefix llvm)/lib"` on macOS.
+
 ## Quick Start
 
 ```bash
