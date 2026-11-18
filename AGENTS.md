@@ -114,6 +114,12 @@ additive only.
 - **Atomic commits.** One logical change per commit, with a conventional-commit
   subject (`feat:`, `fix:`, `chore:`, `docs:`, `ci:`) matching existing history.
 - Never commit unless the user asked for it.
+- **Resolve every merge conflict (MANDATORY).** All conflicts in a PR or branch
+  MUST be resolved before merge — never merge with conflict markers, and never
+  resolve by dropping a side. Resolve by combining both sides so **no new or
+  existing feature is broken**; after resolving, re-run the affected builds,
+  tests, and linters (and regenerate generated files such as `Cargo.lock`) to
+  prove nothing regressed.
 
 ## Versioning and releases (MANDATORY)
 
@@ -302,9 +308,99 @@ Before finishing any runtime change, exercise it through the **local CLI**
 | Runtime `SandboxConfig` defaults | `runtime/crates/runtime/src/config/mod.rs` |
 | Wire protocol | `docs/protocol/protocol.md` + `crates/protocol` |
 | Environment variables | `src/deploy.rs`, `src/supervisor/mod.rs`, `src/tui/run.rs`, `sandbox/crates/sandbox/src/agents_registry.rs`, `scripts/install.sh` |
-| Install paths / bundles | `scripts/install.sh`, `install-deps/install.sh`, `scripts/package-sdk.sh` |
+| Install paths / bundles | `scripts/install.sh`, `install-deps/install.sh`, `scripts/package-sdk.sh`, `scripts/sdk/build-runtime-bundle.sh` |
 | Host/shim supervisor entrypoint (`nanosb supervise`) | `src/main.rs` (`cmd_supervise`), `crates/host/src/deploy.rs`, `docs/runtime-capability-contract.md` |
 | libkrun fork (pin, commits, init-hook env) | `runtime/scripts/build-libkrun.sh` (`LIBKRUN_SHA`), `runtime/scripts/patches/README.md`, `nanosandboxai/libkrun`@`nanosandbox` |
+| SDK version (single source of truth) | `VERSION` + `scripts/set-sdk-version.sh` (`--check` = drift gate) |
+| SDK publish pipeline | `.github/workflows/sdk-{ci,release,smoke}.yml` + `scripts/sdk/{check-published,publish,install-smoke}.sh` |
+| SDK runtime provisioner | `scripts/sdk/ensure-runtime.sh` (embedded in each SDK) |
+| Per-platform runtime bundle | `nanosandbox-runtime-<os>-<arch>.tar.gz` under the `v<VERSION>` release (layout below) |
+
+## SDK runtime provisioning (MANDATORY)
+
+The nanosandbox runtime is **auto-provisioned by each SDK** — installing the SDK
+is the only step a user needs. `ManagedRuntime` resolves the `nanosb-runtime`
+helper (`NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtime` → `PATH` → the
+repo `target/debug/nanosb-runtime`) and, if it is absent, runs the shared
+provisioner to download, verify, and install it. Rules:
+
+1. **No separate runtime install step.** Each SDK's `ManagedRuntime` provisions
+   the runtime itself on first use. The package-manager install of the SDK is the
+   only step.
+2. **The provisioner is a single source of truth, embedded in every SDK.**
+   [`scripts/sdk/ensure-runtime.sh`](scripts/sdk/ensure-runtime.sh) is the
+   canonical provisioner. Its content is **embedded byte-identical** in every
+   SDK so auto-provisioning works from an installed package with no repo present.
+   Any change to it MUST be re-synced into every embed (see "7 embed locations"
+   below).
+3. **Version is pinned to the SDK release.** The runtime version is the SDK's
+   release version (root [`VERSION`](VERSION)); the provisioner downloads
+   `v${NANOSB_VERSION}/nanosandbox-runtime-<os>-<arch>.tar.gz` and verifies it
+   with `NANOSB_RUNTIME_SHA256`.
+4. **The release MUST publish per-platform runtime bundles.** Every release must
+   attach `nanosandbox-runtime-<os>-<arch>.tar.gz` for each supported platform.
+   Bundle layout: `bin/nanosb-runtime`, `bin/gvproxy`, `libs/libkrunfw*.dylib`,
+   `guest-bin/exec-agent`, and `entitlements.plist`.
+5. **macOS: re-sign with the hypervisor entitlement.** After unpacking, the
+   provisioner ad-hoc re-signs `nanosb-runtime` with the
+   `com.apple.security.hypervisor` entitlement (from `entitlements.plist`) so
+   Hypervisor.framework works.
+
+Config comes from the environment: `NANOSB_HOME` (install root), `NANOSB_VERSION`
+(version to download), `NANOSB_RUNTIME_URL` (release base URL), `NANOSB_OFFLINE=1`
+(never download), `NANOSB_RUNTIME_SHA256` (expected sha256), `NANOSB_PROVISIONER`
+(explicit provisioner path).
+
+### The 7 embed locations
+
+The provisioner is embedded in these files, one per SDK. Keep them in sync with
+`scripts/sdk/ensure-runtime.sh`:
+
+| SDK | Embed location |
+|-----|----------------|
+| Rust | `sdk/rust/src/ensure_runtime.sh` (included by `sdk/rust/src/managed_runtime.rs`) |
+| Python | `sdk/python/nanosandbox/runtime.py` |
+| TypeScript/Node | `sdk/typescript/nanosandbox/runtime.mjs` |
+| Go | `sdk/go/nanosandbox/runtime.go` |
+| Ruby | `sdk/ruby/lib/nanosandbox/runtime.rb` |
+| Java | `sdk/java/src/main/java/nanosandbox/ManagedRuntime.java` |
+| C#/.NET | `sdk/dotnet/nanosandbox/ManagedRuntime.cs` |
+
+(Kotlin reuses the Java SDK's `ManagedRuntime`, so it has no separate embed.)
+
+## SDK versioning & publishing
+
+The eight language SDKs share one version, held in the root [`VERSION`](VERSION)
+file. `scripts/set-sdk-version.sh <semver>` propagates it to every manifest
+(root `Cargo.toml`, `Cargo.lock` workspace members, Python, TypeScript, Java,
+Ruby gemspec, .NET csproj, Kotlin Gradle); `--check` fails on drift and runs as
+the `version-drift` gate in CI. Never hand-edit a single manifest.
+
+Publishing is tag-driven and independent of the product `v*` release:
+
+- `.github/workflows/sdk-ci.yml` — PR gate: the conformance harness artifact,
+  one job per language (unit + conformance + dry-run package), and `version-drift`.
+- `.github/workflows/sdk-release.yml` — `sdk-v*` tag (or `workflow_dispatch`
+  with `dry_run`) publishes every SDK behind the `sdk-release` environment using
+  registry token secrets: `CARGO_REGISTRY_TOKEN` (crates.io), `PYPI_API_TOKEN`
+  (PyPI), `NPM_TOKEN` (npm), `RUBYGEMS_API_KEY` (RubyGems), `NUGET_API_KEY`
+  (NuGet), Go via a `sdk/go/v*` tag, and Java + Kotlin to Maven Central
+  (`MAVEN_TOKEN` plus a mandatory GPG key via `MAVEN_GPG_PRIVATE_KEY` /
+  `MAVEN_GPG_PASSPHRASE`).
+  `scripts/sdk/publish.sh` skips already-published versions (idempotent).
+- `.github/workflows/sdk-smoke.yml` — installs each published SDK from its real
+  package manager in a scratch environment (`scripts/sdk/install-smoke.sh`).
+
+Each SDK **auto-provisions the runtime** on first use (see "SDK runtime
+provisioning" above), so publishing an SDK is the only delivery step — no
+separate runtime install is shipped or expected. The runtime version is pinned
+to the SDK release version (`VERSION`); the release pipeline must therefore also
+publish the per-platform `nanosandbox-runtime-<os>-<arch>.tar.gz` bundle at
+`v${NANOSB_VERSION}` for that version to be resolvable.
+
+Registry targets: Rust/Python/npm/Ruby as `nanosandbox-sdk`; .NET as
+`Nanosandbox.Sdk`; Go module path unchanged; Java
+`ai.nanosandbox:nanosandbox-sdk`, Kotlin `ai.nanosandbox:nanosandbox-sdk-kotlin`.
 | Current version + release policy | `VERSION`, `scripts/set-version.sh`, this file ("Versioning and releases") |
 
 ## License

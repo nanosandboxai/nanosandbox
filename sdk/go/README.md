@@ -144,6 +144,15 @@ out, _ := box.Exec("echo", []string{"hello from a microVM"})
 The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtime`
 → `PATH` → the repo `target/debug/nanosb-runtime`.
 
+If the helper is **not** found, `StartRuntime` auto-provisions it: it runs the
+shared `ensure-runtime.sh` provisioner (located via `NANOSB_PROVISIONER` → the
+repo `scripts/sdk/ensure-runtime.sh`, or an embedded copy shipped with the SDK),
+which downloads, verifies, and installs the per-platform runtime bundle under
+`$NANOSB_HOME`, pinned to the SDK's release version. Config comes from the
+environment: `NANOSB_HOME`, `NANOSB_VERSION` (required to download),
+`NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`, `NANOSB_OFFLINE=1` to never
+download, and `NANOSB_PROVISIONER`.
+
 ## Testing
 
 Unit tests exercise the client against an in-process fake NDJSON helper on a

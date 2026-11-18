@@ -15,6 +15,18 @@ contract in `sdk/conformance/SPEC.md`.
   single-file source launcher).
 - Maven 3.9+ for the test suite.
 
+## Install
+
+`ai.nanosandbox:nanosandbox-sdk` from Maven Central:
+
+```xml
+<dependency>
+  <groupId>ai.nanosandbox</groupId>
+  <artifactId>nanosandbox-sdk</artifactId>
+  <version>0.2.0</version>
+</dependency>
+```
+
 ## Layout
 
 ```
@@ -127,6 +139,14 @@ try (ManagedRuntime rt = ManagedRuntime.start()) {
 
 The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtime`
 → `PATH` → the repo `target/debug/nanosb-runtime`.
+
+If the helper is missing, `start()` auto-provisions it by running the
+`ensure-runtime.sh` provisioner (resolved from `NANOSB_PROVISIONER`, then the
+repo's `scripts/sdk/ensure-runtime.sh`, then an embedded copy shipped with the
+SDK), which downloads + verifies + installs the runtime under `$NANOSB_HOME`,
+pinned to the SDK's release version. Config env: `NANOSB_HOME`, `NANOSB_VERSION`
+(required to download), `NANOSB_RUNTIME_URL`, `NANOSB_OFFLINE`,
+`NANOSB_RUNTIME_SHA256`, and `NANOSB_PROVISIONER`.
 
 ## Testing
 

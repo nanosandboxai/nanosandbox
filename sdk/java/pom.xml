@@ -5,12 +5,35 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>ai.nanosandbox</groupId>
-  <artifactId>nanosandbox-java</artifactId>
+  <artifactId>nanosandbox-sdk</artifactId>
   <version>0.3.0</version>
   <packaging>jar</packaging>
 
-  <name>nanosandbox-java</name>
+  <name>nanosandbox-sdk</name>
   <description>JDK-only Java 21 protocol client for the nanosandbox helper (nanosb-protocol v1.0.0)</description>
+  <url>https://github.com/nanosandboxai/nanosandbox</url>
+
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <name>DevDone Labs</name>
+      <organization>nanosandboxai</organization>
+      <organizationUrl>https://github.com/nanosandboxai</organizationUrl>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:https://github.com/nanosandboxai/nanosandbox.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/nanosandboxai/nanosandbox.git</developerConnection>
+    <url>https://github.com/nanosandboxai/nanosandbox</url>
+  </scm>
 
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
@@ -33,6 +56,32 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <version>3.3.1</version>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals>
+              <goal>jar-no-fork</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>3.6.3</version>
+        <executions>
+          <execution>
+            <id>attach-javadocs</id>
+            <goals>
+              <goal>jar</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

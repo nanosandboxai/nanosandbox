@@ -15,16 +15,14 @@ and the driver contract in `sdk/conformance/SPEC.md`.
 
 ## Install
 
-The SDK is a plain directory — copy it or add it to your project:
+```bash
+npm install nanosandbox-sdk
+```
+
+or vendor the sources directly:
 
 ```bash
 cp -r sdk/typescript/nanosandbox ./vendor/nanosandbox
-```
-
-or import it directly from the repo:
-
-```js
-import { SandboxClient } from "./sdk/typescript/nanosandbox/index.mjs";
 ```
 
 ## Usage
@@ -124,6 +122,16 @@ try {
 
 The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtime`
 → `PATH` → the repo `target/debug/nanosb-runtime`.
+
+If the helper is **not** installed, `ManagedRuntime.start()` auto-provisions it:
+it runs the shared `ensure-runtime.sh` provisioner (found via `NANOSB_PROVISIONER`
+→ `scripts/sdk/ensure-runtime.sh` → an embedded copy), which downloads and
+verifies the per-platform runtime bundle into `$NANOSB_HOME`, pinned to the SDK's
+release version. Config comes from the environment: `NANOSB_HOME`,
+`NANOSB_VERSION` (required to download), `NANOSB_RUNTIME_URL`,
+`NANOSB_RUNTIME_SHA256`, `NANOSB_OFFLINE=1` to never download, and
+`NANOSB_PROVISIONER`. So `npm install nanosandbox-sdk` is the only setup step
+needed.
 
 ## Testing
 

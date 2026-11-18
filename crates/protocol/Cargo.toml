@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Versioned NDJSON control protocol shared by the nanosandbox helper and every SDK"
+keywords = ["sandbox", "microvm", "protocol", "ndjson"]
+categories = ["development-tools"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

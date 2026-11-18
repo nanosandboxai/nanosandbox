@@ -14,6 +14,12 @@ conformance suite (35/35).
 
 - .NET SDK 8.0+ (targets `net8.0`).
 
+## Install
+
+```bash
+dotnet add package Nanosandbox.Sdk
+```
+
 ## Layout
 
 ```
@@ -102,8 +108,13 @@ opening `ok` ack, then frames until the terminal frame (`guest exit/error` or
 
 ## Managing a real sandbox (`ManagedRuntime`)
 
-`ManagedRuntime` locates and starts the real `nanosb-runtime` helper so you can
-boot and manage microVMs without launching it yourself:
+`ManagedRuntime.start()` locates and starts the real `nanosb-runtime` helper so
+you can boot and manage microVMs without launching it yourself. If the helper is
+not installed, `start()` **auto-provisions** it: it runs the shared
+`ensure-runtime.sh` provisioner, which downloads the per-platform runtime bundle
+(nanosb-runtime + libkrunfw + gvproxy + exec-agent) from the release, verifies
+it, and installs it under `$NANOSB_HOME`, pinned to the SDK's release version.
+This makes `dotnet add package Nanosandbox.Sdk` the only step needed.
 
 ```csharp
 using (var rt = ManagedRuntime.start()) {
@@ -114,7 +125,14 @@ using (var rt = ManagedRuntime.start()) {
 ```
 
 The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtime`
-→ `PATH` → the repo `target/debug/nanosb-runtime`.
+→ `PATH` → the repo `target/debug/nanosb-runtime`. When none exists, the
+provisioner is resolved from `NANOSB_PROVISIONER`, then
+`scripts/sdk/ensure-runtime.sh` relative to the package/repo, then an embedded
+copy shipped with the SDK. Provisioning config is read from the environment:
+`NANOSB_HOME` (install root), `NANOSB_VERSION` (version to download; defaults to
+the SDK's own version, e.g. `0.2.0`), `NANOSB_RUNTIME_URL` (release base URL),
+`NANOSB_RUNTIME_SHA256` (optional bundle checksum), and `NANOSB_OFFLINE=1`
+(never download).
 
 ## Testing
 

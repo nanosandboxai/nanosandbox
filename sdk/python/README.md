@@ -15,16 +15,14 @@ conformance suite (35/35).
 
 ## Install
 
-The package is a plain directory (no build step needed for local use):
+```bash
+pip install nanosandbox-sdk
+```
+
+For local development, install from the repo:
 
 ```bash
 pip install ./sdk/python          # or: pip install -e ./sdk/python
-```
-
-or put it on `sys.path`:
-
-```python
-import sys; sys.path.insert(0, "sdk/python")
 ```
 
 ## Usage
@@ -107,6 +105,15 @@ with ManagedRuntime() as rt:
 
 The helper is found via `NANOSB_RUNTIME_BIN` → `$NANOSB_HOME/bin/nanosb-runtime`
 → `PATH` → the repo `target/debug/nanosb-runtime`.
+
+If the helper is missing, `ManagedRuntime` auto-provisions it: it runs the shared
+`ensure-runtime.sh` provisioner (located via `NANOSB_PROVISIONER` → the repo
+`scripts/sdk/ensure-runtime.sh`, or an embedded copy shipped with the package),
+which downloads, verifies, and installs the runtime into `$NANOSB_HOME`, pinned
+to the SDK's release version. So `pip install nanosandbox-sdk` is the only step
+needed. Config comes from the environment: `NANOSB_HOME`, `NANOSB_VERSION`
+(required to download), `NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`,
+`NANOSB_OFFLINE=1` to never download, and `NANOSB_PROVISIONER`.
 
 ## Testing
 

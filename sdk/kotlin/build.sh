@@ -28,8 +28,8 @@ mkdir -p classes
   conformance/Run.kt \
   e2e/E2E.kt \
   src/test/nanosandbox/SmokeTest.kt \
-  -include-runtime -d nanosandbox-kotlin.jar
+  -include-runtime -d nanosandbox-sdk-kotlin.jar
 
-"$JAR" uf nanosandbox-kotlin.jar -C classes .
+"$JAR" uf nanosandbox-sdk-kotlin.jar -C classes .
 
-echo "built nanosandbox-kotlin.jar"
+echo "built nanosandbox-sdk-kotlin.jar"

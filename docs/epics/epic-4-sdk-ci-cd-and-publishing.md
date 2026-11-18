@@ -1,7 +1,17 @@
 # Epic 4 — SDK CI/CD, versioning & public package publishing
 
-Status: proposed (2026-10-11)
+Status: in-progress (2026-11-06)
 Date: 2026-10-11
+Note (2026-11-16): publishing is implemented with registry **token secrets**, not
+OIDC Trusted Publishing as §4.4 / AC5 / AC8 describe; JVM SDKs publish to **Maven
+Central** (Sonatype Central Portal, GPG-signed) and are not mirrored to GitHub
+Pages. See `docs/plans/2026-11-06-sdk-publishing-ga.md` for the operational runbook.
+Note (2026-11-18): the SDKs now **auto-provision the runtime** — each SDK's
+`ManagedRuntime` downloads, verifies, and installs the runtime on first use
+(pinned to the SDK release version), so publishing the SDK is the only delivery
+step. This adds a new capability (WS9 auto-provisioning) and a new release
+requirement: the release MUST also publish per-platform runtime bundles
+`nanosandbox-runtime-<os>-<arch>.tar.gz` under `v<VERSION>`.
 Related: `docs/epics/epic-1-multi-language-sdk.md` (the SDKs), `docs/conformance-report.md`, `docs/runtime-setup.md`, `.github/workflows/{ci,release}.yml`
 
 ## 1. Context
@@ -53,8 +63,8 @@ the contract identical to local runs.
 
 ### 4.2 Version: single source of truth
 
-Introduce `VERSION` at the repo root (e.g. `1.0.0`). A sync script
-`scripts/set-sdk-version.sh <version>` rewrites every manifest:
+`VERSION` now exists at the repo root (`0.2.0`, added 2026-11-06). A sync script
+`scripts/set-sdk-version.sh <version>` rewrites every manifest (not yet written):
 
 | Ecosystem | File(s) | Field |
 |---|---|---|
@@ -62,8 +72,8 @@ Introduce `VERSION` at the repo root (e.g. `1.0.0`). A sync script
 | Python | `sdk/python/pyproject.toml` | `[project].version` |
 | TypeScript | `sdk/typescript/package.json` | `version` |
 | Java | `sdk/java/pom.xml` | `<version>` |
-| Kotlin | `sdk/kotlin/pom.xml` (new) | `<version>` |
-| C# | `sdk/dotnet/dotnet.csproj` | `<Version>` |
+| Kotlin | `sdk/kotlin/build.gradle.kts` (new) | `version` |
+| C# | `sdk/dotnet/nanosandbox/Nanosandbox.csproj` (new) | `<Version>` |
 | Ruby | `sdk/ruby/nanosandbox.gemspec` (new) | `spec.version` |
 | Go | git tag `sdk/go/vX.Y.Z` | (VCS) |
 
@@ -104,11 +114,10 @@ SDK publishing jobs to `release.yml`). Steps:
      (**trusted publishing / OIDC**, no token).
    - **TypeScript** → npm: `npm publish --provenance --access public`
      (**OIDC provenance**; remove `"private": true`).
-   - **Java** → Maven Central: `mvn deploy` with
-     `central-publishing-maven-plugin`, GPG-signed (secrets:
-     `MAVEN_GPG_PRIVATE_KEY`, `SONATYPE_USERNAME`/`_PASSWORD` or Central Portal
-     token); publish `sources` + `javadoc` jars.
-   - **Kotlin** → Maven Central (same groupId, artifact `nanosandbox-kotlin`).
+   - **Java** → Maven Central (`ai.nanosandbox:nanosandbox-sdk`): build the
+     Maven layout, GPG-sign it, and upload the bundle to the Sonatype Central
+     Portal (secret `MAVEN_TOKEN` + a GPG key).
+   - **Kotlin** → Maven Central (`ai.nanosandbox:nanosandbox-sdk-kotlin`).
    - **C#/.NET** → NuGet: `dotnet pack -c Release` + `dotnet nuget push`
      (`NUGET_API_KEY`; optional `dotnet nuget sign`).
    - **Ruby** → RubyGems: `gem build sdk/ruby/nanosandbox.gemspec` +
@@ -130,8 +139,8 @@ SDK publishing jobs to `release.yml`). Steps:
 - **Python**: `readme`, `license`, `authors`, `[project.urls]`, `classifiers`.
 - **TypeScript**: drop `private`, add `repository`, `files`, `license`,
   `publishConfig.access=public`.
-- **Java/Kotlin**: `licenses`, `developers`, `scm`, `distributionManagement`
-  (or Central Portal), `maven-source-plugin`, `maven-javadoc-plugin`.
+- **Java/Kotlin**: `licenses`, `developers`, `scm`; sources + javadoc jars;
+  GPG-signed for Maven Central.
 - **.NET**: `PackageId`, `Version`, `Authors`, `Description`, `PackageLicenseExpression`,
   `RepositoryUrl`, `PackageReadmeFile`, `IncludeSymbols`.
 - **Ruby**: new `nanosandbox.gemspec` (`name`, `version`, `summary`,
@@ -158,7 +167,7 @@ the existing `registry-*.yml` flows.
   the environment that holds it; least privilege; no secret in logs.
 - **WS7 — Docs**: per-ecosystem install snippets (`pip install nanosandbox`,
   `npm i nanosandbox`, `cargo add nanosandbox`, `go get …/sdk/go`,
-  `gem install nanosandbox`, `dotnet add package Nanosandbox`, Maven/Kotlin
+  `gem install nanosandbox-sdk`, `dotnet add package nanosandbox-sdk`, Maven/Kotlin
   coordinates), checked into each SDK README + `docs/install/`.
 
 ## 6. Acceptance criteria
@@ -194,10 +203,11 @@ the existing `registry-*.yml` flows.
 
 ## 8. Risks
 
-- **R1 Registry namespace** — the package names (`nanosandbox`, `Nanosandbox`,
-  `nanosandbox-java`, …) may be taken; verify + reserve before M2.
-- **R2 Maven Central groupId** — requires a verified `io.github.nanosandboxai`
-  namespace and a GPG key; provisioning is lead time.
+- **R1 Registry namespace (RESOLVED)** — `nanosandbox` is taken on npm, PyPI and
+  crates.io by an unrelated project, so the SDKs publish as `nanosandbox-sdk`
+  (Rust/Python/npm); Ruby keeps `nanosandbox`, .NET keeps `Nanosandbox`.
+- **R2 Maven Central groupId** — requires a verified `ai.nanosandbox` namespace
+  on the Central Portal and a GPG key.
 - **R3 Toolchain availability in CI** — Kotlin needs `kotlinc` (no official
   GitHub action); use a Gradle wrapper or `sdkman`. Go submodule tagging is easy
   to get wrong.
@@ -207,10 +217,17 @@ the existing `registry-*.yml` flows.
 - **R6 Idempotency** — some registries reject re-publishing a version; the
   pipeline must detect "already published" and skip, not fail the whole release.
 
-## 9. Decisions to lock
+## 9. Decisions (locked 2026-11-06)
 
-- **Q1** Tag namespace: reuse product `v*` tags, or a separate `sdk-v*`?
-- **Q2** Kotlin publication: Maven Central (own artifact) or JitPack off the Java
-  artifact?
-- **Q3** Go: module-proxy-only (tags) or also a wrapper published elsewhere?
-- **Q4** One unified release (CLI + runtime + SDKs) or independent SDK releases?
+- **D1 Tag namespace:** `sdk-v*` (does not match the product `v*` triggers).
+- **D2 Names:** Rust/Python/npm/Ruby/.NET → `nanosandbox-sdk`; Go module path
+  unchanged; Java → `ai.nanosandbox:nanosandbox-sdk`, Kotlin →
+  `ai.nanosandbox:nanosandbox-sdk-kotlin`.
+- **D3 JVM target:** Maven Central via the Sonatype Central Portal (token +
+  GPG).
+- **D4 Kotlin build:** introduce a Gradle `maven-publish` build in `sdk/kotlin`.
+- **D5 Mirroring:** none in v1 (the registry / GitHub Pages repo is the
+  distribution).
+- **Version:** `0.2.0` (current workspace version); Go is tagged only.
+- **Q3 (Go):** module-proxy-only (git tags).
+- **Q4 (release shape):** independent SDK releases via `sdk-v*` tags.

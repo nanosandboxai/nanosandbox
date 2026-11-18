@@ -1,0 +1,61 @@
+name: SDK install smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to install (e.g. 0.2.0)"
+        required: true
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: smoke ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [rust, python, typescript, go, ruby, java, kotlin, dotnet]
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#sdk-v}" >> "$GITHUB_OUTPUT"
+          fi
+      - if: contains(fromJSON('["java","kotlin"]'), matrix.sdk)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - if: matrix.sdk == 'kotlin'
+        uses: gradle/actions/setup-gradle@v4
+      - if: matrix.sdk == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: matrix.sdk == 'typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - if: matrix.sdk == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - if: matrix.sdk == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - if: matrix.sdk == 'dotnet'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - if: matrix.sdk == 'rust'
+        uses: dtolnay/rust-toolchain@1.94.0
+      - run: scripts/sdk/install-smoke.sh ${{ matrix.sdk }} ${{ steps.v.outputs.version }}

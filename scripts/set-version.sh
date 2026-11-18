@@ -75,7 +75,7 @@ rewrite "$REPO_ROOT/Cargo.toml" '[workspace.package]' '
 # --- 3. Cargo.lock workspace-member entries ---------------------------------
 # Every workspace member that carries the workspace version must move together,
 # otherwise the lockfile is stale (the exact bug this tooling fixes).
-export LOCK_MEMBERS='nanosb-cli nanosandbox nanosb-protocol nanosb-client nanosb-host nanosb-conformance sandbox gateway runtime runtime-config libkrun-sys'
+export LOCK_MEMBERS='nanosb-cli nanosandbox-sdk nanosb-protocol nanosb-client nanosb-host nanosb-conformance sandbox gateway runtime runtime-config libkrun-sys'
 rewrite "$REPO_ROOT/Cargo.lock" 'name = "nanosb-cli"' '
   BEGIN { n=split(ENVIRON["LOCK_MEMBERS"], a, " "); for (i=1;i<=n;i++) members[a[i]]=1 }
   /^name = "/ {
@@ -118,12 +118,12 @@ rewrite "$REPO_ROOT/sdk/typescript/package.json" '"version":' '
 '
 
 # --- 6. sdk/java/pom.xml ----------------------------------------------------
-rewrite "$REPO_ROOT/sdk/java/pom.xml" '<artifactId>nanosandbox-java</artifactId>' '
-  /<artifactId>nanosandbox-java<\/artifactId>/ { found=1; print; next }
+rewrite "$REPO_ROOT/sdk/java/pom.xml" '<artifactId>nanosandbox-sdk</artifactId>' '
+  /<artifactId>nanosandbox-sdk<\/artifactId>/ { found=1; print; next }
   found && /<version>/ { sub(/<version>.*<\/version>/, "<version>" new "</version>"); found=0 }
   { print }
 ' '
-  /<artifactId>nanosandbox-java<\/artifactId>/ { found=1 }
+  /<artifactId>nanosandbox-sdk<\/artifactId>/ { found=1 }
   found && /<version>/ { seen=1; if ($0 !~ new) bad=1; found=0 }
   END { exit (bad || !seen) }
 '

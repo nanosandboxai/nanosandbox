@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <PackageId>Nanosandbox.Sdk</PackageId>
+    <Version>0.3.0</Version>
+    <Authors>DevDone Labs</Authors>
+    <Description>BCL-only .NET protocol client for the nanosandbox helper (nanosb-protocol v1.0.0).</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/nanosandboxai/nanosandbox</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/nanosandboxai/nanosandbox</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>sandbox;microvm;isolation;sdk</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+</Project>

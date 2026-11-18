@@ -1,0 +1,174 @@
+name: SDK Release
+
+on:
+  push:
+    tags: ["sdk-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (must equal VERSION)"
+        required: true
+      dry_run:
+        description: "Package only; publish nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      dry: ${{ steps.v.outputs.dry }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "dry=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#sdk-v}" >> "$GITHUB_OUTPUT"
+            echo "dry=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: verify VERSION matches the target version
+        run: test "$(cat VERSION)" = "${{ steps.v.outputs.version }}"
+
+  publish:
+    name: publish ${{ matrix.sdk }}
+    needs: [plan]
+    runs-on: ubuntu-latest
+    environment: sdk-release
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [rust, python, typescript, ruby, dotnet, go]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - if: matrix.sdk == 'rust'
+        uses: dtolnay/rust-toolchain@1.94.0
+      - if: matrix.sdk == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: matrix.sdk == 'python'
+        run: python -m pip install --upgrade build twine
+      - if: matrix.sdk == 'typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - if: matrix.sdk == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - if: matrix.sdk == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - if: matrix.sdk == 'dotnet'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: publish
+        run: scripts/sdk/publish.sh ${{ matrix.sdk }} ${{ needs.plan.outputs.version }} ${{ needs.plan.outputs.dry == 'true' && '--dry-run' || '' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+
+  publish-jvm:
+    name: publish java + kotlin
+    needs: [plan]
+    runs-on: ubuntu-latest
+    environment: sdk-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: build Maven repository layout (java + kotlin)
+        # --dry-run only bypasses the already-published short-circuit here; the
+        # layout must always be staged for the Portal upload step below.
+        run: |
+          scripts/sdk/publish.sh java ${{ needs.plan.outputs.version }} --dry-run
+          scripts/sdk/publish.sh kotlin ${{ needs.plan.outputs.version }} --dry-run
+      - name: publish to Maven Central
+        env:
+          MAVEN_TOKEN: ${{ secrets.MAVEN_TOKEN }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: bash scripts/sdk/publish-maven-central.sh ${{ needs.plan.outputs.version }} ${{ needs.plan.outputs.dry == 'true' && '--dry-run' || '' }}
+
+  smoke:
+    name: smoke ${{ matrix.sdk }}
+    needs: [plan, publish, publish-jvm]
+    if: needs.plan.outputs.dry == 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [rust, python, typescript, go, ruby, java, kotlin, dotnet]
+    steps:
+      - uses: actions/checkout@v4
+      - if: contains(fromJSON('["java","kotlin"]'), matrix.sdk)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - if: matrix.sdk == 'kotlin'
+        uses: gradle/actions/setup-gradle@v4
+      - if: matrix.sdk == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: matrix.sdk == 'typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - if: matrix.sdk == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - if: matrix.sdk == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - if: matrix.sdk == 'dotnet'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - if: matrix.sdk == 'rust'
+        uses: dtolnay/rust-toolchain@1.94.0
+      - run: scripts/sdk/install-smoke.sh ${{ matrix.sdk }} ${{ needs.plan.outputs.version }}
+
+  release:
+    name: github release
+    needs: [plan, smoke]
+    if: needs.plan.outputs.dry == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "sdk-v${{ needs.plan.outputs.version }}" \
+            --title "SDK v${{ needs.plan.outputs.version }}" \
+            --notes "SDK release v${{ needs.plan.outputs.version }} (Rust, Python, TypeScript, Go, Ruby, Java, .NET, Kotlin)."
