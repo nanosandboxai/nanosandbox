@@ -114,6 +114,35 @@ impl AgentSandbox {
     }
 
     /// Destroy the sandbox, consuming it.
+    /// Freeze the underlying microVM (SIGSTOP).
+    pub fn pause(&mut self) -> runtime::Result<()> {
+        self.sandbox.pause()
+    }
+
+    /// Thaw the underlying microVM (SIGCONT).
+    pub fn resume(&mut self) -> runtime::Result<()> {
+        self.sandbox.resume()
+    }
+
+    /// Force-stop the underlying microVM immediately.
+    pub fn kill(&mut self) -> runtime::Result<()> {
+        self.sandbox.kill()
+    }
+
+    /// Re-boot the underlying microVM. The agent process is restarted by a
+    /// redeploy; this does not resume an agent conversation.
+    pub async fn restart(&mut self) -> runtime::Result<()> {
+        self.sandbox.restart().await
+    }
+
+    /// Block until the underlying microVM reaches a terminal state.
+    pub fn wait(
+        &self,
+        timeout: Option<std::time::Duration>,
+    ) -> runtime::Result<(i32, u64, runtime::SandboxStatus)> {
+        self.sandbox.wait(timeout)
+    }
+
     pub async fn destroy(self) -> runtime::Result<()> {
         self.sandbox.destroy().await
     }
