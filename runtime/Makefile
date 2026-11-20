@@ -127,7 +127,7 @@ ci-fast: lint test
 REGISTRY_HOST ?= localhost:5050
 BASE_IMAGE_TAG ?= latest
 AGENTS := claude goose codex cursor
-AGENTS_DIR := ../agents-registry
+AGENTS_DIR := ../registries
 COMPOSE_FILE := $(AGENTS_DIR)/docker/docker-compose.yml
 
 # Start local Docker registry

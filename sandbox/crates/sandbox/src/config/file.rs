@@ -13,6 +13,7 @@ use super::{AgentSandboxConfig, ClaudeSettings, McpServerConfig};
 
 /// Represents a parsed `sandbox.yml` file.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxFile {
     /// Default configuration inherited by all sandboxes.
     #[serde(default)]
@@ -24,6 +25,7 @@ pub struct SandboxFile {
 
 /// Defaults block — all fields optional to allow partial override.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxDefaults {
     pub image: Option<String>,
     pub cpus: Option<u32>,
@@ -67,6 +69,7 @@ pub struct SandboxDefaults {
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxDefinition {
     /// Display name override (defaults to the map key).
     pub name: Option<String>,
@@ -115,6 +118,7 @@ pub struct SandboxDefinition {
 
 /// Host project sharing mode in YAML.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceDef {
     pub mode: Option<WorkspaceMode>,
     /// Give each boot a CoW clone of the rootfs (default false).
@@ -123,6 +127,7 @@ pub struct WorkspaceDef {
 
 /// Network configuration in YAML.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkDef {
     pub enabled: Option<bool>,
     pub mode: Option<NetworkMode>,
@@ -133,6 +138,7 @@ pub struct NetworkDef {
 
 /// Mount definition in YAML.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MountDef {
     pub host: String,
     pub container: String,
@@ -144,6 +150,7 @@ pub struct MountDef {
 
 /// Claude-specific settings in YAML.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaudeSettingsDef {
     /// UI theme: "dark", "light", "dark-ansi", "light-ansi",
     /// "dark-colorblind", or "light-colorblind".
@@ -152,6 +159,7 @@ pub struct ClaudeSettingsDef {
 
 /// Project mount definition in YAML.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectDef {
     pub path: Option<String>,
     pub branch: Option<String>,
@@ -1601,5 +1609,148 @@ sandboxes:
         apply_cli_overrides(&mut configs, None, None, None, None, None, None, &cli_env);
         assert_eq!(configs[0].1.sandbox.env["NEW_KEY"], "new_value");
         assert_eq!(configs[0].1.sandbox.env["EXISTING"], "overridden");
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_sandbox_field() {
+        let yaml = r#"
+sandboxes:
+  s:
+    image: alpine
+    interactivee: true
+"#;
+        let err = parse_sandbox_file(yaml).unwrap_err();
+        assert!(err.contains("interactivee"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_top_level_key() {
+        let yaml = r#"
+frobnicate: 1
+sandboxes:
+  s:
+    image: alpine
+"#;
+        assert!(parse_sandbox_file(yaml).is_err());
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_defaults_field() {
+        let yaml = r#"
+defaults:
+  cpus: 2
+  memroy: 512
+sandboxes:
+  s:
+    image: alpine
+"#;
+        let err = parse_sandbox_file(yaml).unwrap_err();
+        assert!(err.contains("memroy"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_mcp_field() {
+        let yaml = r#"
+sandboxes:
+  s:
+    image: alpine
+    mcp:
+      github:
+        command: npx
+        args: []
+        commmand: npx
+"#;
+        assert!(parse_sandbox_file(yaml).is_err());
+    }
+
+    #[test]
+    fn test_parse_accepts_known_fields_and_aliases() {
+        let yaml = r#"
+defaults:
+  image: alpine
+  cpus: 2
+  memory: 512
+  timeout: 60
+  disk: 1024
+  max_pids: 128
+  runAsRoot: true
+  env:
+    FOO: bar
+  env_file: .env
+  network:
+    enabled: true
+    mode: tsi
+    scope: public
+    ports: ["8080:80"]
+    dns: ["8.8.8.8"]
+  mounts:
+    - host: /tmp
+      container: /mnt
+      readonly: true
+      type: bind
+  mcp:
+    github:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-github"]
+      env:
+        TOKEN: abc
+      enabled: true
+  project:
+    path: ~/repos/frontend
+    branch: main
+    mount_point: /home/developer
+    auto_sync: true
+  agent: python-developer
+  skills: [tdd]
+  auto_mode: false
+  interactive: false
+  permissions: default
+  prompt: hi
+  model: claude-sonnet-4-5-20250929
+  claude:
+    theme: dark
+  workspace:
+    mode: isolated
+    fresh_rootfs: true
+  workdir: /home/developer
+
+sandboxes:
+  s:
+    name: my-sandbox
+    image: alpine
+    type: claude
+    run_as_root: false
+    interactive: true
+    model: claude-opus-4-20250514
+    skills: [git-workflow]
+    env:
+      BAR: baz
+    mcp:
+      filesystem:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem"]
+    workspace:
+      mode: shared
+      fresh_rootfs: false
+    network:
+      enabled: false
+      mode: bridge
+      scope: any
+      ports: ["3000:3000/udp"]
+      dns: ["1.1.1.1"]
+    mounts:
+      - host: /data
+        container: /data
+        readonly: false
+        type: bind
+    claude:
+      theme: light
+    project:
+      path: ~/repos/backend
+      branch: dev
+      mount_point: /home/developer
+      auto_sync: false
+"#;
+        assert!(parse_sandbox_file(yaml).is_ok());
     }
 }

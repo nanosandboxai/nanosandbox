@@ -67,7 +67,7 @@ hasnt "runtime README: no 'in development'" "in development" runtime/README.md
 hasnt "runtime README: no 'separate repo'"  "separate repo" runtime/README.md
 hasnt "runtime README: no start_next"       "start_next" runtime/README.md
 has   "sandbox README: mentions Kotlin"     "Kotlin" sandbox/README.md
-hasnt "agents-registry README: no devdone-labs" "devdone-labs" agents-registry/README.md
+hasnt "registries README: no devdone-labs" "devdone-labs" registries/README.md
 
 if [ "$fail" -ne 0 ]; then
   echo "docs check FAILED"

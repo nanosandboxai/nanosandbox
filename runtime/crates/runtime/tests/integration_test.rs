@@ -1144,8 +1144,8 @@ fn test_sandbox_config_project_integration() {
 /// Test that the sandbox-testing/sandbox.yml config parses and the agents registry
 /// resolves the referenced agent definitions, skills, and MCPs.
 ///
-/// Requires: NANOSB_REGISTRY_PATH env var pointing to the agents-registry directory,
-/// OR the sibling directory ../agents-registry/ to exist.
+/// Requires: NANOSB_REGISTRY_PATH env var pointing to the registries directory,
+/// OR the sibling directory ../registries/ to exist.
 #[test]
 fn test_sandbox_testing_config_with_registry() {
     use runtime::agents_registry::AgentsRegistryClient;
@@ -1209,7 +1209,7 @@ sandboxes:
         .map(std::path::PathBuf::from)
         .ok()
         .or_else(|| {
-            let p = std::path::PathBuf::from("../agents-registry");
+            let p = std::path::PathBuf::from("../registries");
             if p.join("index.json").exists() {
                 Some(p)
             } else {
@@ -1266,7 +1266,7 @@ sandboxes:
             "missing security-best-practices in python agent"
         );
     } else {
-        eprintln!("Skipping registry resolution: no agents-registry found");
+        eprintln!("Skipping registry resolution: no registries found");
     }
 }
 
@@ -1283,7 +1283,7 @@ sandboxes:
 /// 4. Tests Agent: bootstrap → list → get
 /// 5. Destroys the sandbox
 ///
-/// Requires: `localhost:5050/agents-registry/claude:latest` pushed to local registry.
+/// Requires: `localhost:5050/registries/claude:latest` pushed to local registry.
 #[tokio::test]
 async fn test_mcp_skills_agent_e2e() {
     use runtime::{McpServerConfig, Sandbox, SkillDef};
@@ -1291,7 +1291,7 @@ async fn test_mcp_skills_agent_e2e() {
 
     let config = SandboxConfig::builder()
         .name("e2e-gateway-test")
-        .image("localhost:5050/agents-registry/claude:latest")
+        .image("localhost:5050/registries/claude:latest")
         .cpus(2)
         .memory_mb(1024)
         .build();

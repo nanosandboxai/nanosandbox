@@ -19,6 +19,7 @@ pub mod deploy;
 pub mod error;
 pub mod project;
 pub mod projects;
+pub mod providers;
 pub mod sandbox;
 pub mod secrets;
 pub mod session;

@@ -25,7 +25,7 @@ You are running inside an isolated nanosandbox VM (Debian Linux). You have:
 - When a task requires a runtime or tool that is missing, install it yourself
   using `sudo apt-get update && sudo apt-get install -y <package>` before proceeding.
   Do NOT ask the user to install software — you have full permissions to do it.
-- The working directory is /home/developer (project files are mounted here).
+- Project files are mounted into the working directory.
 - Network access is available for downloading packages and dependencies.
 
 "#;
@@ -263,7 +263,7 @@ impl SkillsGenerator {
 
     // ── Crush Format ────────────────────────────────────────────────
     // Skills: ~/.config/crush/skills/<name>/SKILL.md
-    // Prompt: ~/.config/crush/AGENTS.md
+    // Prompt: ~/.config/crush/CRUSH.md (crush global-context default)
 
     fn generate_crush(skills: &[SkillDef], _agent_name: &str, prompt: &str) -> Vec<ConfigFile> {
         let mut files = Vec::new();
@@ -278,7 +278,7 @@ impl SkillsGenerator {
 
         let prompt_content = format!("{}{}\n", SANDBOX_PREAMBLE, prompt);
         files.push(ConfigFile {
-            relative_path: "crush/AGENTS.md".to_string(),
+            relative_path: "crush/CRUSH.md".to_string(),
             content: prompt_content.into_bytes(),
         });
 
@@ -528,16 +528,42 @@ mod tests {
             "You are a Python dev.",
         );
 
-        // 2 skill files + 1 AGENTS.md
+        // 2 skill files + 1 CRUSH.md
         assert_eq!(files.len(), 3);
 
-        let agents_md = files.iter().find(|f| f.relative_path == "crush/AGENTS.md");
-        assert!(agents_md.is_some());
+        let crush_md = files.iter().find(|f| f.relative_path == "crush/CRUSH.md");
+        assert!(crush_md.is_some());
+
+        // No file may use the old (wrong) crush prompt path.
+        assert!(
+            files.iter().all(|f| f.relative_path != "crush/AGENTS.md"),
+            "crush prompt must not be written to crush/AGENTS.md"
+        );
 
         let tdd_skill = files
             .iter()
             .find(|f| f.relative_path == "crush/skills/tdd/SKILL.md");
         assert!(tdd_skill.is_some());
+    }
+
+    #[test]
+    fn test_generate_crush_prompt_uses_crush_md() {
+        let skills = sample_skills();
+        let files = SkillsGenerator::generate_all(
+            &skills,
+            &AgentType::Crush,
+            "python-dev",
+            "You are a Python dev.",
+        );
+
+        let crush_md = files.iter().find(|f| f.relative_path == "crush/CRUSH.md");
+        assert!(
+            crush_md.is_some(),
+            "crush prompt file must be crush/CRUSH.md"
+        );
+        let content = String::from_utf8(crush_md.unwrap().content.clone()).unwrap();
+        assert!(content.contains("Sandbox Environment"));
+        assert!(content.contains("Python dev"));
     }
 
     #[test]

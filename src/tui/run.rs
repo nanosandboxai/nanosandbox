@@ -307,36 +307,9 @@ pub async fn run_tui(
     spawn_terminal_event_reader(tx.clone());
 
     // Resolve agent definitions + skills from registry before launching.
-    let mut resolved_configs: Vec<(String, AgentSandboxConfig)> = Vec::new();
-    for (key, mut config) in sandbox_configs {
-        match (&app.registry, config.agent.as_ref()) {
-            (Some(registry), Some(agent_name)) => {
-                match registry.resolve_full(agent_name, &config.skills) {
-                    Ok(resolved) => merge_resolved_agent_into_config(&mut config, resolved),
-                    Err(e) => {
-                        eprintln!("Warning: failed to resolve agent '{}': {}", agent_name, e);
-                    }
-                }
-            }
-            (Some(registry), None) if !config.skills.is_empty() => {
-                match registry.resolve_skills_only(&config.skills) {
-                    Ok(resolved) => merge_resolved_agent_into_config(&mut config, resolved),
-                    Err(e) => {
-                        eprintln!("Warning: failed to resolve sandbox skills: {}", e);
-                    }
-                }
-            }
-            (None, None) if !config.skills.is_empty() => {
-                eprintln!(
-                    "Warning: sandbox lists skills but no agents registry was found. \
-Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/agents-registry/ \
-(sibling ../agents-registry is also checked from the current directory)."
-                );
-            }
-            _ => {}
-        }
-        resolved_configs.push((key, config));
-    }
+    // An unknown skill is fatal: it would otherwise surface later as a
+    // microVM timeout, so fail before any microVM is created.
+    let resolved_configs = resolve_agent_configs(app.registry.as_ref(), sandbox_configs)?;
 
     // Either resume a previous session or start fresh sandboxes.
     if let Some(ref session) = resume_session_data {
@@ -5008,9 +4981,14 @@ fn detect_agent_type_from_image(image: &str) -> Option<String> {
 
 /// API key environment variables to auto-detect from the host for each agent.
 ///
-/// Mirrors [`super::validation::agent_requirements`] so a key the validator
-/// accepts is also one the TUI knows to copy out of the host environment.
-fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
+/// This is intentionally a SHORT list: it drives only host auto-detection for
+/// the env panel. The validator's accepted set
+/// ([`super::validation::agent_requirements`]) is a SUPERSET of this list
+/// (accepted ⊇ auto-detect), because a sandbox.yml / configurator may emit any
+/// accepted provider key while the panel only offers these common ones.
+// Visibility: pub(crate) so the #[cfg(test)] validation module can assert the
+// superset invariant (accepted ⊇ auto-detect).
+pub(crate) fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
     match agent {
         "claude" => vec![
             ("ANTHROPIC_API_KEY", true),
@@ -5091,6 +5069,61 @@ fn parse_runtime_env_file(path: &str) -> std::result::Result<Vec<(String, String
 }
 
 /// Add a new agent panel, creating and starting a sandbox in the background.
+/// Map a model id's `provider/model` prefix to a Goose provider name.
+///
+/// Known first-party prefixes map to their Goose provider; any other prefix
+/// (e.g. `aihubmix/…`, `zai/…`) is an OpenRouter-hosted sub-provider, which
+/// Goose reaches through its `openrouter` provider.
+fn goose_provider_for_model(model: &str) -> Option<&'static str> {
+    sandbox::providers::goose_provider(model)
+}
+
+/// Goose requires BOTH `GOOSE_PROVIDER` and `GOOSE_MODEL`: a provider alone
+/// exits 1 with "No model configured", and neither exits 1 with "No provider
+/// configured". Resolve them from (in order) the sandbox's requested model id,
+/// then an available provider API key. No-op when the user already set
+/// `GOOSE_PROVIDER`.
+pub fn resolve_goose_env(env: &mut HashMap<String, String>, model: Option<&str>) {
+    if env.contains_key("GOOSE_PROVIDER") {
+        return;
+    }
+
+    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        let provider = goose_provider_for_model(model).or_else(|| {
+            env.contains_key("OPENROUTER_API_KEY")
+                .then_some("openrouter")
+        });
+        if let Some(provider) = provider {
+            let goose_model = if provider == "openrouter" {
+                model.to_string()
+            } else {
+                model
+                    .split_once('/')
+                    .map(|(_, rest)| rest.to_string())
+                    .unwrap_or_else(|| model.to_string())
+            };
+            env.insert("GOOSE_PROVIDER".to_string(), provider.to_string());
+            env.entry("GOOSE_MODEL".to_string()).or_insert(goose_model);
+            return;
+        }
+    }
+
+    let fallback = if env.contains_key("ANTHROPIC_API_KEY") {
+        ("anthropic", "claude-sonnet-4-5-20250929")
+    } else if env.contains_key("OPENAI_API_KEY") {
+        ("openai", "gpt-4o")
+    } else if env.contains_key("OPENROUTER_API_KEY") {
+        ("openrouter", "anthropic/claude-sonnet-4.5")
+    } else if env.contains_key("GOOGLE_API_KEY") {
+        ("google", "gemini-2.5-pro")
+    } else {
+        return;
+    };
+    env.insert("GOOSE_PROVIDER".to_string(), fallback.0.to_string());
+    env.entry("GOOSE_MODEL".to_string())
+        .or_insert_with(|| fallback.1.to_string());
+}
+
 fn add_agent(
     app: &mut App,
     agent: &str,
@@ -5172,27 +5205,8 @@ fn add_agent(
         }
     }
 
-    // Goose needs both GOOSE_PROVIDER *and* GOOSE_MODEL — a provider alone is
-    // not enough (Goose exits 1 with "No model configured" otherwise). Infer
-    // both from an available provider key unless the user set them explicitly.
-    if agent == "goose" && !panel.env.contains_key("GOOSE_PROVIDER") {
-        if panel.env.contains_key("ANTHROPIC_API_KEY") {
-            panel
-                .env
-                .insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
-            panel
-                .env
-                .entry("GOOSE_MODEL".to_string())
-                .or_insert_with(|| "claude-sonnet-4-5-20250929".to_string());
-        } else if panel.env.contains_key("OPENAI_API_KEY") {
-            panel
-                .env
-                .insert("GOOSE_PROVIDER".to_string(), "openai".to_string());
-            panel
-                .env
-                .entry("GOOSE_MODEL".to_string())
-                .or_insert_with(|| "gpt-4o".to_string());
-        }
+    if agent == "goose" {
+        resolve_goose_env(&mut panel.env, model);
     }
 
     // Explicit runtime key picks override all inferred/default values.
@@ -5373,25 +5387,12 @@ pub(crate) fn add_agent_from_config(
         }
     }
 
-    // Goose needs both provider and model; infer them from an available key
-    // unless the sandbox.yml env already set them.
-    if agent_type == "goose" && !panel.env.contains_key("GOOSE_PROVIDER") {
-        if panel.env.contains_key("ANTHROPIC_API_KEY") {
-            panel
-                .env
-                .insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
-            panel
-                .env
-                .entry("GOOSE_MODEL".to_string())
-                .or_insert_with(|| "claude-sonnet-4-5-20250929".to_string());
-        } else if panel.env.contains_key("OPENAI_API_KEY") {
-            panel
-                .env
-                .insert("GOOSE_PROVIDER".to_string(), "openai".to_string());
-            panel
-                .env
-                .entry("GOOSE_MODEL".to_string())
-                .or_insert_with(|| "gpt-4o".to_string());
+    if agent_type == "goose" {
+        resolve_goose_env(&mut panel.env, config.model.as_deref());
+        for key in ["GOOSE_PROVIDER", "GOOSE_MODEL"] {
+            if let Some(val) = panel.env.get(key) {
+                config.sandbox.env.insert(key.to_string(), val.clone());
+            }
         }
     }
 
@@ -6018,8 +6019,8 @@ async fn handle_mcp_list(app: &mut App) {
 ///
 /// Search order:
 /// 1. `NANOSB_REGISTRY_PATH` environment variable
-/// 2. `~/.nanosandbox/agents-registry/`
-/// 3. `../agents-registry/` (sibling directory — dev setup)
+/// 2. `~/.nanosandbox/registries/`
+/// 3. `../registries/` (sibling directory — dev setup)
 /// Build a session snapshot from the current TUI application state.
 ///
 /// This replaces `Session::from_app()` which lived in the runtime crate and
@@ -6120,7 +6121,52 @@ fn merge_resolved_agent_into_config(
     config.resolved_agent = Some(resolved);
 }
 
-fn load_agents_registry() -> Option<sandbox::AgentsRegistryClient> {
+/// Resolve agent definitions + skills from the registry for every sandbox
+/// config. An unknown skill is fatal: it would otherwise surface later as a
+/// microVM timeout, so bail before any microVM is created. The `(None, None)`
+/// no-registry hint stays non-fatal.
+pub fn resolve_agent_configs(
+    registry: Option<&sandbox::AgentsRegistryClient>,
+    sandbox_configs: Vec<(String, sandbox::AgentSandboxConfig)>,
+) -> anyhow::Result<Vec<(String, sandbox::AgentSandboxConfig)>> {
+    let mut resolved_configs: Vec<(String, sandbox::AgentSandboxConfig)> = Vec::new();
+    for (key, mut config) in sandbox_configs {
+        match (registry, config.agent.as_ref()) {
+            (Some(registry), Some(agent_name)) => {
+                match registry.resolve_full(agent_name, &config.skills) {
+                    Ok(resolved) => merge_resolved_agent_into_config(&mut config, resolved),
+                    Err(e) => {
+                        return Err(anyhow::anyhow!(
+                            "failed to resolve agent '{}': {}",
+                            agent_name,
+                            e
+                        ));
+                    }
+                }
+            }
+            (Some(registry), None) if !config.skills.is_empty() => {
+                match registry.resolve_skills_only(&config.skills) {
+                    Ok(resolved) => merge_resolved_agent_into_config(&mut config, resolved),
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("failed to resolve sandbox skills: {}", e));
+                    }
+                }
+            }
+            (None, None) if !config.skills.is_empty() => {
+                eprintln!(
+                    "Warning: sandbox lists skills but no agents registry was found. \
+Set NANOSB_REGISTRY_PATH or install the registry at ~/.nanosandbox/registries/ \
+(sibling ../registries is also checked from the current directory)."
+                );
+            }
+            _ => {}
+        }
+        resolved_configs.push((key, config));
+    }
+    Ok(resolved_configs)
+}
+
+pub fn load_agents_registry() -> Option<sandbox::AgentsRegistryClient> {
     use sandbox::AgentsRegistryClient;
 
     // 1. Env var override
@@ -6134,9 +6180,9 @@ fn load_agents_registry() -> Option<sandbox::AgentsRegistryClient> {
         }
     }
 
-    // 2. ~/.nanosandbox/agents-registry/
+    // 2. ~/.nanosandbox/registries/
     if let Some(home) = dirs::home_dir() {
-        let p = home.join(".nanosandbox").join("agents-registry");
+        let p = home.join(".nanosandbox").join("registries");
         if p.join("index.json").exists() {
             if let Ok(client) = AgentsRegistryClient::from_path(&p) {
                 return Some(client);
@@ -6146,7 +6192,7 @@ fn load_agents_registry() -> Option<sandbox::AgentsRegistryClient> {
 
     // 3. Sibling directory (development layout)
     if let Ok(cwd) = std::env::current_dir() {
-        let p = cwd.join("../agents-registry");
+        let p = cwd.join("../registries");
         if p.join("index.json").exists() {
             if let Ok(client) = AgentsRegistryClient::from_path(&p) {
                 return Some(client);
@@ -6231,7 +6277,7 @@ fn handle_skills_show(app: &mut App, name: &str) {
             }
             Err(e) => format!("Skill '{}' not found: {}", name, e),
         },
-        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
+        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/registries/.".to_string(),
     };
 
     app.set_system_message_persistent(ChatMessage {
@@ -6311,7 +6357,7 @@ fn handle_agent_list(app: &mut App) {
                 lines.join("\n")
             }
         }
-        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
+        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/registries/.".to_string(),
     };
 
     app.set_system_message(ChatMessage {
@@ -6352,7 +6398,7 @@ fn handle_agent_info(app: &mut App, name: &str) {
             }
             Err(e) => format!("Agent '{}' not found: {}", name, e),
         },
-        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/agents-registry/.".to_string(),
+        None => "No agents registry loaded. Set NANOSB_REGISTRY_PATH or place registry at ~/.nanosandbox/registries/.".to_string(),
     };
 
     app.set_system_message(ChatMessage {
@@ -6731,5 +6777,68 @@ mod tests {
         assert!(detected.is_err(), "schema mismatch must fail");
 
         let _ = fs::remove_dir_all(&clone_dir);
+    }
+
+    #[test]
+    fn goose_env_uses_requested_openrouter_model() {
+        let mut env = HashMap::new();
+        env.insert("OPENROUTER_API_KEY".to_string(), "k".to_string());
+        resolve_goose_env(&mut env, Some("aihubmix/deepseek-v4-pro"));
+        assert_eq!(
+            env.get("GOOSE_PROVIDER").map(String::as_str),
+            Some("openrouter")
+        );
+        assert_eq!(
+            env.get("GOOSE_MODEL").map(String::as_str),
+            Some("aihubmix/deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn goose_env_strips_prefix_for_first_party_providers() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_API_KEY".to_string(), "k".to_string());
+        resolve_goose_env(&mut env, Some("anthropic/claude-sonnet-4-5-20250929"));
+        assert_eq!(
+            env.get("GOOSE_PROVIDER").map(String::as_str),
+            Some("anthropic")
+        );
+        assert_eq!(
+            env.get("GOOSE_MODEL").map(String::as_str),
+            Some("claude-sonnet-4-5-20250929")
+        );
+    }
+
+    #[test]
+    fn goose_env_infers_provider_from_available_key() {
+        let mut env = HashMap::new();
+        env.insert("OPENROUTER_API_KEY".to_string(), "k".to_string());
+        resolve_goose_env(&mut env, None);
+        assert_eq!(
+            env.get("GOOSE_PROVIDER").map(String::as_str),
+            Some("openrouter")
+        );
+        assert!(env.contains_key("GOOSE_MODEL"));
+    }
+
+    #[test]
+    fn goose_env_respects_explicit_provider() {
+        let mut env = HashMap::new();
+        env.insert("GOOSE_PROVIDER".to_string(), "openai".to_string());
+        env.insert("ANTHROPIC_API_KEY".to_string(), "k".to_string());
+        resolve_goose_env(&mut env, Some("anthropic/claude-sonnet-4-5-20250929"));
+        assert_eq!(
+            env.get("GOOSE_PROVIDER").map(String::as_str),
+            Some("openai")
+        );
+        assert!(!env.contains_key("GOOSE_MODEL"));
+    }
+
+    #[test]
+    fn goose_env_noop_without_matching_key() {
+        let mut env = HashMap::new();
+        resolve_goose_env(&mut env, Some("aihubmix/deepseek-v4-pro"));
+        assert!(!env.contains_key("GOOSE_PROVIDER"));
+        assert!(!env.contains_key("GOOSE_MODEL"));
     }
 }

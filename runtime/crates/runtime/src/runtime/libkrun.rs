@@ -127,6 +127,16 @@ pub struct BootVmRequest {
     pub rlimits: Vec<String>,
 }
 
+/// libkrun serializes the exec argv (and bootstrap env) into the kernel command
+/// line, which only accepts printable ASCII (`' '..='~'`). Replace any other
+/// character — e.g. a newline from a multi-line prompt — with a space so the VM
+/// can boot.
+fn printable_cmdline(s: &str) -> String {
+    s.chars()
+        .map(|c| if (' '..='~').contains(&c) { c } else { ' ' })
+        .collect()
+}
+
 fn default_runtime_mode() -> String {
     "legacy".to_string()
 }
@@ -413,7 +423,7 @@ fn resolve_guest_user(
         match entry {
             Some(l) => l.split(':').collect(),
             None => {
-                // User absent from the image — create it (non-root uid 1000).
+                // User absent from the image — create it with the invoking host uid/gid.
                 let (uid, gid, home) = create_guest_user(rootfs_path, user_part)?;
                 return Ok((uid, Some(gid), Some(home)));
             }
@@ -1039,10 +1049,13 @@ impl LibkrunRuntime {
         // the final execvp() call. Including exec_path as argv[0] would cause it
         // to appear as an extra argument (e.g., /bin/sh trying to read itself as
         // a script file).
-        let exec_argv: Vec<&str> = args.iter().copied().collect();
+        let exec_argv: Vec<String> = args.iter().map(|a| printable_cmdline(a)).collect();
+        let exec_argv_refs: Vec<&str> = exec_argv.iter().map(|s| s.as_str()).collect();
+        let command = printable_cmdline(command);
+        let env_vars: Vec<String> = env_vars.iter().map(|e| printable_cmdline(e)).collect();
 
         // Set exec with explicit environment (don't inherit host env)
-        ffi::set_exec(ctx, command, &exec_argv, Some(&env_vars))?;
+        ffi::set_exec(ctx, &command, &exec_argv_refs, Some(&env_vars))?;
 
         // Remove config.json to prevent libkrun from reading stale commands.
         {
@@ -1365,10 +1378,13 @@ impl LibkrunRuntime {
         }
 
         // Build exec argv (vanilla entrypoint — no wrapper)
-        let exec_argv: Vec<&str> = args.iter().copied().collect();
+        let exec_argv: Vec<String> = args.iter().map(|a| printable_cmdline(a)).collect();
+        let exec_argv_refs: Vec<&str> = exec_argv.iter().map(|s| s.as_str()).collect();
+        let command = printable_cmdline(command);
+        let env_vars: Vec<String> = env_vars.iter().map(|e| printable_cmdline(e)).collect();
 
         // Set exec with explicit environment
-        ffi::set_exec(ctx, command, &exec_argv, Some(&env_vars))?;
+        ffi::set_exec(ctx, &command, &exec_argv_refs, Some(&env_vars))?;
 
         // Remove config.json to prevent libkrun from reading stale commands
         {

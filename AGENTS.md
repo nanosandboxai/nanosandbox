@@ -5,7 +5,7 @@ Guidance for AI coding agents (and humans) working in the **Nanosandbox** monore
 Nanosandbox runs AI coding agents inside hardware-isolated microVM sandboxes
 (via [libkrun](https://github.com/containers/libkrun)). This monorepo contains
 the `nanosb` CLI + TUI, the microVM runtime, the agent-aware sandbox SDK, the
-protocol-first language SDKs, the agents registry, and the release/dependency
+protocol-first language SDKs, the registries, and the release/dependency
 tooling.
 
 ## Repository layout
@@ -20,7 +20,8 @@ tooling.
 | `runtime/` | MicroVM engine (libkrun FFI), OCI images; `runtime/crates/runtime-config` is the FFI-free config-types crate (re-exported as `runtime::config`) |
 | `sandbox/` | Agent-aware sandbox SDK + `deploy` module + `sandbox.yml` parsing |
 | `sdk/` | 8 language SDKs (Rust, Python, TypeScript/Node, Go, Ruby, Java, C#/.NET, Kotlin) + `conformance/` |
-| `agents-registry/` | Agent definitions, skills, MCP sources, model catalog, Docker images |
+| `registries/` | Open-source MCP registry sources, agent VM images |
+| `examples/` | Runnable sample sandboxes (`sandbox.yml`) across all agent types |
 | `install-deps/` | Runtime dependency (libkrunfw + gvproxy) installer |
 | `guest/crates/exec-agent` | In-guest exec agent (linux/aarch64, cross-compiled) |
 | `docs/` | Protocol spec, ADRs, epics/plans, live-verification reports |
@@ -181,7 +182,7 @@ first-party document:
    `sandbox.yml`, platform support.
 2. **Component READMEs** — [`runtime/README.md`](runtime/README.md),
    [`sandbox/README.md`](sandbox/README.md),
-   [`agents-registry/README.md`](agents-registry/README.md),
+   [`registries/README.md`](registries/README.md),
    [`install-deps/README.md`](install-deps/README.md).
 3. **SDK docs** — [`sdk/README.md`](sdk/README.md) and `sdk/<lang>/README.md`.
 4. **Docs** — everything under `docs/**/*.md` (protocol spec, ADRs,
@@ -310,6 +311,7 @@ Before finishing any runtime change, exercise it through the **local CLI**
 | Runtime `SandboxConfig` defaults | `runtime/crates/runtime/src/config/mod.rs` |
 | Wire protocol | `docs/protocol/protocol.md` + `crates/protocol` |
 | Environment variables | `src/deploy.rs`, `src/supervisor/mod.rs`, `src/tui/run.rs`, `sandbox/crates/sandbox/src/agents_registry.rs`, `scripts/install.sh` |
+| Agent model catalog + per-agent providers | `registries/models/models.json` (schema `models.schema.json`, provider map `providers.yaml`, sync `scripts/models/`, adapters `scripts/models/sources/`) |
 | Install paths / bundles | `scripts/install.sh`, `install-deps/install.sh`, `scripts/package-sdk.sh`, `scripts/sdk/build-runtime-bundle.sh` |
 | Host/shim supervisor entrypoint (`nanosb supervise`) | `src/main.rs` (`cmd_supervise`), `crates/host/src/deploy.rs`, `docs/runtime-capability-contract.md` |
 | libkrun fork (pin, commits, init-hook env) | `runtime/scripts/build-libkrun.sh` (`LIBKRUN_SHA`), `runtime/scripts/patches/README.md`, `nanosandboxai/libkrun`@`nanosandbox` |
@@ -404,6 +406,31 @@ Registry targets: Rust/Python/npm/Ruby as `nanosandbox-sdk`; .NET as
 `Nanosandbox.Sdk`; Go module path unchanged; Java
 `ai.nanosandbox:nanosandbox-sdk`, Kotlin `ai.nanosandbox:nanosandbox-sdk-kotlin`.
 | Current version + release policy | `VERSION`, `scripts/set-version.sh`, this file ("Versioning and releases") |
+
+## Models registry is CI-managed (MANDATORY)
+
+`registries/models/models.json` (schema **v2**) is the source of truth for the per-agent
+model lists and the **credential providers** each agent can be configured with. The
+per-agent resolution rules (mode single/collapse/derived, overrides, OAuth) live in
+`registries/models/providers.yaml` and are compiled by `scripts/models/sync.py` into
+`registries/models/provider-catalog.json`. Every consumer reads that artifact:
+
+- runtime — `sandbox/crates/sandbox/src/providers.rs` (embedded via `include_str!`)
+- configurator — `nanosandbox-ai/src/app/lib/agentKeys.ts` (reads the copied artifact)
+- validator — `scripts/models/validate.py` (collapse-aware)
+
+- **Never hand-edit any of these.** Regenerate with `python3 scripts/models/sync.py` (or
+  `scripts/models/update-models.py`): `--offline` derives from the committed snapshot,
+  `--check` verifies `models.json` + `provider-catalog.json` are in sync. Adapters live in
+  `scripts/models/sources/`; the schema is `registries/models/models.schema.json`.
+- **Never rewrite model strings.** A model's provider is derived from its `/`-prefix; the
+  rules normalize provider *keys* (e.g. `vertex` → `vertex_ai`; goose collapses every
+  non-first-party provider to `openrouter`) and never touch the model string.
+- **Keep it validated.** `python3 scripts/models/validate.py` must pass; the `models` job in
+  `.github/workflows/ci.yml` enforces it on every push and
+  `.github/workflows/update-models.yml` refreshes the catalog weekly via PR. Any change to an
+  agent's models/providers MUST keep the Rust `sandbox::providers` tests and the
+  `nanosandbox-ai` `verify-resolver` gate green.
 
 ## License
 

@@ -138,14 +138,14 @@ only for the no-command case. See
 | Console streaming / logs | CLI ([`../src`](../src), `nanosb`) |
 | MCP server management | [Sandbox SDK](../sandbox) |
 | Agent configuration / `sandbox.yml` parsing | [Sandbox SDK](../sandbox) |
-| Docker images for agents | [Agents Registry](../agents-registry) |
+| Docker images for agents | [Registries](../registries) |
 | Session management | [Sandbox SDK](../sandbox) |
 
 ## Related Components (monorepo)
 
 - [Sandbox SDK](../sandbox) — Agent-aware SDK and `sandbox.yml` parsing
 - [Language SDKs](../sdk) — Eight protocol clients + conformance harness
-- [Agents Registry](../agents-registry) — Agent definitions, skills, Docker images
+- [Registries](../registries) — Open-source MCP registry sources, agent VM images
 - [CLI](../src) — `nanosb` CLI + TUI
 
 ## Comparison with Alternatives

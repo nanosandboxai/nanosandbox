@@ -271,6 +271,7 @@ fn default_enabled() -> bool {
 
 /// MCP server definition for agent tooling inside the sandbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub command: String,
     pub args: Vec<String>,

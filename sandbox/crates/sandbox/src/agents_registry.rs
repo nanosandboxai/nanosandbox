@@ -1,7 +1,7 @@
 //! Agents Registry Client
 //!
 //! Resolves agent definitions, skills, and MCP references from a local
-//! agents-registry directory (cloned or shipped as a path).
+//! registries directory (cloned or shipped as a path).
 
 use crate::config::file::expand_env_vars;
 use crate::config::{AgentDefinition, AgentMcpRef, McpServerConfig, ResolvedAgentConfig, SkillDef};
@@ -11,12 +11,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{debug, warn};
 
-const DEFAULT_PUBLIC_SKILLS_CATALOG_URL: &str =
-    "https://raw.githubusercontent.com/nanosandboxai/nanosandbox.ai/main/src/data/skills-public.json";
+const DEFAULT_PUBLIC_SKILLS_CATALOG_URL: &str = "https://openskills.space/api/skills";
 const DEFAULT_REMOTE_LOCAL_SKILLS_CATALOG_URL: &str =
-    "https://raw.githubusercontent.com/nanosandboxai/nanosandbox.ai/main/src/data/skills-local.json";
+    "https://raw.githubusercontent.com/nanosandboxai/nanosandbox-ai/main/src/data/skills-local.json";
 const DEFAULT_LOCAL_SKILLS_RAW_BASE_URL: &str =
-    "https://raw.githubusercontent.com/nanosandboxai/agents-registry/main";
+    "https://raw.githubusercontent.com/nanosandboxai/nanosandbox/main/registries";
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 
 /// Registry index (parsed from index.json).
@@ -213,6 +212,12 @@ impl AgentsRegistryClient {
         self.index.skills.iter().collect()
     }
 
+    /// Whether this client was loaded from a local registry directory
+    /// (as opposed to the online-only fallback with an empty local index).
+    pub fn has_local_registry(&self) -> bool {
+        self.base_path.is_some()
+    }
+
     /// Resolve an agent definition by name.
     pub fn resolve_agent(&self, name: &str) -> Result<AgentDefinition, String> {
         let entry = self
@@ -302,7 +307,7 @@ impl AgentsRegistryClient {
         for name in &skill_names {
             match self.resolve_skill(name) {
                 Ok(skill) => skills.push(skill),
-                Err(e) => warn!("Failed to resolve skill '{}': {}", name, e),
+                Err(e) => return Err(e),
             }
         }
 
@@ -339,7 +344,7 @@ impl AgentsRegistryClient {
         for name in skills {
             match self.resolve_skill(name) {
                 Ok(skill) => resolved_skills.push(skill),
-                Err(e) => warn!("Failed to resolve skill '{}': {}", name, e),
+                Err(e) => return Err(e),
             }
         }
         Ok(ResolvedAgentConfig {
@@ -421,8 +426,8 @@ impl AgentsRegistryClient {
             }
         };
         if !public_raw.is_empty() {
-            match serde_json::from_str::<Vec<PublicSkillCatalogEntry>>(&public_raw) {
-                Ok(public_entries) => {
+            match parse_public_skill_catalog(&public_raw) {
+                Some(public_entries) => {
                     for skill in public_entries {
                         if skill.name.trim().is_empty() {
                             continue;
@@ -437,9 +442,9 @@ impl AgentsRegistryClient {
                         });
                     }
                 }
-                Err(e) => warn!(
-                    "Failed to parse public skills catalog {}: {}",
-                    self.public_skills_catalog_url, e
+                None => warn!(
+                    "Failed to parse public skills catalog {}",
+                    self.public_skills_catalog_url
                 ),
             }
         }
@@ -531,6 +536,23 @@ fn skill_source_rank(source: SkillSource) -> u8 {
     }
 }
 
+/// Parse a public skills catalog.
+///
+/// Accepts either a bare JSON array (`[{...}]`, the shape hosted on the docs
+/// site) or an object wrapping the array under `skills` (`{"skills": [{...}]}`,
+/// the shape served by `openskills.space/api/skills`).
+fn parse_public_skill_catalog(raw: &str) -> Option<Vec<PublicSkillCatalogEntry>> {
+    if let Ok(list) = serde_json::from_str::<Vec<PublicSkillCatalogEntry>>(raw) {
+        return Some(list);
+    }
+    #[derive(Deserialize)]
+    struct Wrapper {
+        #[serde(default)]
+        skills: Vec<PublicSkillCatalogEntry>,
+    }
+    serde_json::from_str::<Wrapper>(raw).ok().map(|w| w.skills)
+}
+
 fn fetch_text(url: &str, timeout_secs: u64) -> Result<String, String> {
     let timeout = Duration::from_secs(timeout_secs.max(1));
     let agent = ureq::Agent::config_builder()
@@ -577,7 +599,64 @@ fn fetch_public_skill_markdown(
         }
     }
 
+    // Fallback: the upstream repo may have relocated the skill (e.g. into a
+    // `plugins/<plugin>/skills/<name>/SKILL.md` layout), so the catalog's flat
+    // path 404s. Ask the GitHub tree API for any `.../<name>/SKILL.md` entry.
+    if let Some((owner, repo, branch, _path)) = parse_github_tree_url(source_url) {
+        if let Some(path) = github_find_skill_path(&owner, &repo, &branch, skill_name, timeout_secs)
+        {
+            let raw_url = format!(
+                "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                owner, repo, branch, path
+            );
+            if let Ok(content) = fetch_text(&raw_url, timeout_secs) {
+                return Ok(content);
+            }
+        }
+    }
+
     Err("No supported markdown entrypoint found for public skill source".to_string())
+}
+
+/// Parse `https://github.com/{owner}/{repo}/tree|blob/{branch}/{path}`.
+fn parse_github_tree_url(url: &str) -> Option<(String, String, String, String)> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let parts: Vec<&str> = trimmed.split('/').collect();
+    if parts.len() < 7 || parts[2] != "github.com" || (parts[5] != "tree" && parts[5] != "blob") {
+        return None;
+    }
+    Some((
+        parts[3].to_string(),
+        parts[4].to_string(),
+        parts[6].to_string(),
+        parts[7..].join("/"),
+    ))
+}
+
+/// Search a GitHub repo tree for a `.../<skill_name>/SKILL.md` entry and return
+/// its in-repo path. Lets skills survive upstream repo restructures.
+fn github_find_skill_path(
+    owner: &str,
+    repo: &str,
+    branch: &str,
+    skill_name: &str,
+    timeout_secs: u64,
+) -> Option<String> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+        owner, repo, branch
+    );
+    let raw = fetch_text(&url, timeout_secs).ok()?;
+    let tree: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let suffix = format!("/{}/SKILL.md", skill_name);
+    for entry in tree.get("tree")?.as_array()? {
+        if let Some(p) = entry.get("path").and_then(|v| v.as_str()) {
+            if p.ends_with(&suffix) {
+                return Some(p.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn github_tree_or_blob_to_raw_base(url: &str) -> Option<String> {
@@ -962,6 +1041,25 @@ Use conventional commits.
             .resolve_full("python-developer", &["tdd".to_string()])
             .unwrap();
         assert_eq!(resolved.skills.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_full_unknown_skill_is_err() {
+        let (_dir, base) = create_test_registry();
+        let client = AgentsRegistryClient::from_path(&base).unwrap();
+        let result =
+            client.resolve_full("python-developer", &["definitely-not-a-skill".to_string()]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("definitely-not-a-skill"));
+    }
+
+    #[test]
+    fn test_resolve_skills_only_unknown_skill_is_err() {
+        let (_dir, base) = create_test_registry();
+        let client = AgentsRegistryClient::from_path(&base).unwrap();
+        let result = client.resolve_skills_only(&["definitely-not-a-skill".to_string()]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("definitely-not-a-skill"));
     }
 
     #[test]

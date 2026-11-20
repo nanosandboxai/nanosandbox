@@ -149,3 +149,27 @@ jobs:
           name: cli-surface
           path: scripts/docs/cli-surface.json
 
+  models:
+    name: Models registry gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML + pytest
+        run: pip install pyyaml pytest
+
+      - name: Validate models registry (schema v2 + provider prefixes)
+        run: python3 scripts/models/validate.py
+
+      - name: Unit tests (models tooling)
+        run: python -m pytest scripts/models -q
+
+      - name: Assert registry is in sync with its sources
+        run: python3 scripts/models/sync.py --check --offline
+

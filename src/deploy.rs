@@ -224,23 +224,30 @@ pub fn deploy_plan_for(
     config: &sandbox::AgentSandboxConfig,
     sandbox_dir: &std::path::Path,
 ) -> (sandbox::deploy::DeployPlan, runtime::config::SandboxConfig) {
-    let resolved = config
-        .resolved_agent
-        .clone()
-        .unwrap_or_else(|| sandbox::ResolvedAgentConfig {
-            agent_name: config
-                .agent
-                .clone()
-                .unwrap_or_else(|| "default".to_string()),
-            prompt: config.prompt.clone().unwrap_or_default(),
-            skills: Vec::new(),
-            mcp_servers: config.mcp_servers.clone(),
-            auto_mode: config.auto_mode,
-            interactive: config.interactive,
-            permissions: config.permissions,
-            agent_type: config.agent_type,
-            claude_settings: config.claude_settings.clone(),
-        });
+    let mut resolved =
+        config
+            .resolved_agent
+            .clone()
+            .unwrap_or_else(|| sandbox::ResolvedAgentConfig {
+                agent_name: config
+                    .agent
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+                prompt: config.prompt.clone().unwrap_or_default(),
+                skills: Vec::new(),
+                mcp_servers: config.mcp_servers.clone(),
+                auto_mode: config.auto_mode,
+                interactive: config.interactive,
+                permissions: config.permissions,
+                agent_type: config.agent_type,
+                claude_settings: config.claude_settings.clone(),
+            });
+    // The sandbox.yml `prompt` is authoritative. Registry resolution (skills-only
+    // or an agent definition) can leave the resolved prompt empty, which would
+    // boot a headless agent with no task and no `--print` input.
+    if let Some(prompt) = config.prompt.as_ref().filter(|p| !p.is_empty()) {
+        resolved.prompt = prompt.clone();
+    }
     let plan = sandbox::deploy::DeployPlanner::plan(config, &resolved, sandbox_dir, None);
     let mut rc = config.sandbox.clone();
     rc.runtime_mode = runtime::config::RuntimeMode::Next;
@@ -264,6 +271,11 @@ pub fn deploy_plan_for(
             config.permissions,
             &plan.env,
         );
+        // Goose needs `GOOSE_PROVIDER`/`GOOSE_MODEL`; reuse the TUI resolver
+        // (no-op when `GOOSE_PROVIDER` is already set, so explicit env wins).
+        if agent_type == sandbox::AgentType::Goose {
+            crate::tui::run::resolve_goose_env(&mut rc.env, config.model.as_deref());
+        }
     }
     (plan, rc)
 }
@@ -410,7 +422,7 @@ mod tests {
 
         // Merged config lives in the sandbox state dir (mounted at ~/.claude), not the workspace.
         assert!(
-            sandbox_dir.join("state/.claude/settings.json").exists(),
+            sandbox_dir.join("state/.claude/.claude.json").exists(),
             "merged config must be written under the sandbox state dir"
         );
         assert!(
@@ -459,6 +471,33 @@ mod tests {
         let dir = std::env::temp_dir().join("nanosb-deploy-test-root");
         let (_plan, rc) = deploy_plan_for(&config, &dir);
         assert_ne!(rc.user.as_deref(), Some("developer"));
+    }
+
+    #[test]
+    fn deploy_plan_prefers_sandbox_prompt_over_empty_resolved() {
+        let mut config = sandbox::AgentSandboxConfig::default();
+        config.sandbox.name = "prompt-test".to_string();
+        config.sandbox.image = "claude".to_string();
+        config.agent_type = Some(sandbox::AgentType::Claude);
+        config.prompt = Some("do the thing".to_string());
+        config.resolved_agent = Some(sandbox::ResolvedAgentConfig {
+            agent_name: String::new(),
+            prompt: String::new(),
+            skills: Vec::new(),
+            mcp_servers: Default::default(),
+            auto_mode: false,
+            interactive: false,
+            permissions: sandbox::Permissions::Default,
+            agent_type: Some(sandbox::AgentType::Claude),
+            claude_settings: None,
+        });
+        let dir = std::env::temp_dir().join("nanosb-deploy-test-prompt");
+        let (plan, _rc) = deploy_plan_for(&config, &dir);
+        assert!(plan.agent_command.args.contains(&"--print".to_string()));
+        assert!(plan
+            .agent_command
+            .args
+            .contains(&"do the thing".to_string()));
     }
 }
 
