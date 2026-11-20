@@ -3103,3 +3103,24 @@ fn main() -> anyhow::Result<()> {
         .build()?
         .block_on(cli::run())
 }
+
+#[cfg(test)]
+mod cli_parse_tests {
+    use super::cli::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn lifecycle_commands_parse() {
+        let cli = Cli::try_parse_from(["nanosb", "pause", "box"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Pause { sandbox }) if sandbox == "box"));
+
+        let cli = Cli::try_parse_from(["nanosb", "resume", "box"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Resume { sandbox }) if sandbox == "box"));
+
+        let cli = Cli::try_parse_from(["nanosb", "restart", "box"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Restart { sandbox, .. }) if sandbox == "box"));
+
+        assert!(Cli::try_parse_from(["nanosb", "pause"]).is_err());
+        assert!(Cli::try_parse_from(["nanosb", "resume"]).is_err());
+    }
+}
