@@ -2,7 +2,7 @@ version: 2
 updates:
   # Pinned agent CLI versions (npm-installed agents: claude, codex, gemini, crush)
   - package-ecosystem: npm
-    directory: /agents-registry/docker
+    directory: /registries/docker
     schedule:
       interval: weekly
     commit-message:
@@ -10,7 +10,7 @@ updates:
 
   # Base image + Dockerfile base images (node:22-slim, etc.)
   - package-ecosystem: docker
-    directory: /agents-registry/docker
+    directory: /registries/docker
     schedule:
       interval: weekly
     commit-message:

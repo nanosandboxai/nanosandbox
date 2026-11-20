@@ -1,0 +1,183 @@
+# Nanosandbox sample sandboxes — a variety of agent types combined with different
+# skills, MCP servers, permissions, models and prompts.
+#
+# Validate (no VM booted):
+#   nanosb apply --dry-run
+# Create everything:
+#   nanosb apply
+# Launch the TUI from this directory (auto-detects ./sandbox.yml):
+#   nanosb
+# Or run a single sandbox directly:
+#   nanosb --sandbox claude-fullstack
+#
+# API keys / tokens come from ./sample.env (loaded via env_file). Edit it first.
+
+defaults:
+  image: claude
+  cpus: 2
+  memory: 4096
+  timeout: 900
+  workdir: /workspace
+  env_file: sample.env
+
+sandboxes:
+
+  # 1. Claude — full-stack persona, GitHub + memory MCPs, accept-edits.
+  #    Runs interactively: the TUI attaches Claude's own TUI over a PTY.
+  claude-fullstack:
+    type: claude
+    image: claude
+    cpus: 4
+    memory: 8192
+    permissions: accept_edits
+    model: claude-sonnet-4-5-20250929
+    interactive: true
+    skills:
+      - git-commit
+      - test-driven-development
+      - requesting-code-review
+    mcp:
+      github:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-github"]
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      memory:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-memory"]
+
+  # 2. Claude — interactive debugging session with a filesystem MCP.
+  claude-interactive:
+    type: claude
+    interactive: true
+    skills:
+      - systematic-debugging
+      - verification-before-completion
+    mcp:
+      filesystem:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+    claude:
+      theme: dark
+
+  # 3. Codex — autonomous refactor, allow-all, headless prompt.
+  codex-autorefactor:
+    type: codex
+    auto_mode: true
+    permissions: allow_all
+    skills:
+      - writing-plans
+      - executing-plans
+      - verification-before-completion
+    mcp:
+      memory:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-memory"]
+    prompt: "Refactor the largest module into smaller, tested functions."
+
+  # 4. Goose — research pass with web fetch + filesystem.
+  goose-research:
+    type: goose
+    interactive: true
+    skills:
+      - brainstorming
+      - writing-plans
+      - doc-coauthoring
+    mcp:
+      fetch:
+        command: uvx
+        args: [mcp-server-fetch]
+      filesystem:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+
+  # 5. Cursor — frontend work with a headless browser MCP.
+  cursor-frontend:
+    type: cursor
+    interactive: true
+    skills:
+      - frontend-design
+      - webapp-testing
+      - artifacts-builder
+    mcp:
+      puppeteer:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-puppeteer"]
+
+  # 6. OpenCode — multi-agent orchestration.
+  opencode-multiagent:
+    type: opencode
+    interactive: true
+    skills:
+      - subagent-driven-development
+      - dispatching-parallel-agents
+      - multi-agent-patterns
+    mcp:
+      memory:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-memory"]
+      sequential-thinking:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+
+  # 7. Aider — TDD loop with a git MCP.
+  aider-tdd:
+    type: aider
+    skills:
+      - test-driven-development
+      - git-commit
+      - verification-before-completion
+    mcp:
+      git:
+        command: uvx
+        args: [mcp-server-git, --repository, /workspace]
+    prompt: "Implement the feature described in TODO.md using strict TDD."
+
+  # 8. Gemini — documentation pass with a time MCP.
+  gemini-docs:
+    type: gemini
+    interactive: true
+    skills:
+      - writing-skills
+      - brainstorming
+      - doc-coauthoring
+    mcp:
+      time:
+        command: uvx
+        args: [mcp-server-time]
+
+  # 9. Crush — pull-request review with GitHub MCP.
+  crush-review:
+    type: crush
+    interactive: true
+    skills:
+      - github-pr-review
+      - requesting-code-review
+      - receiving-code-review
+    mcp:
+      github:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-github"]
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+
+  # 10. Claude — networking + a read-only host mount, plus a Postgres MCP.
+  claude-net-mounts:
+    type: claude
+    interactive: true
+    cpus: 2
+    memory: 4096
+    network:
+      enabled: true
+      ports: ["8080:8080"]
+    mounts:
+      - host: ./data
+        container: /workspace/data
+        readonly: true
+    skills:
+      - tool-design
+      - mcp-builder
+    mcp:
+      postgres:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-postgres", "postgresql://postgres:postgres@localhost:5432/postgres"]

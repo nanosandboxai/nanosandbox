@@ -3,12 +3,16 @@
 //! Generates per-agent MCP server configuration files that are mounted
 //! read-only into the guest VM. Each agent type uses a different config format:
 //!
-//! | Agent   | Format   | Path                          |
-//! |---------|----------|-------------------------------|
-//! | Claude  | JSON     | ~/.claude/settings.json       |
-//! | Codex   | TOML     | ~/.codex/mcp_servers.toml     |
-//! | Goose   | YAML     | ~/.config/goose/config.yaml   |
-//! | Cursor  | JSON     | ~/.cursor/mcp.json            |
+//! | Agent    | Format | Path                             |
+//! |----------|--------|----------------------------------|
+//! | Claude   | JSON   | ~/.claude/.claude.json           |
+//! | Codex    | TOML   | ~/.codex/config.toml             |
+//! | Goose    | YAML   | ~/.config/goose/config.yaml      |
+//! | Cursor   | JSON   | ~/.cursor/mcp.json               |
+//! | OpenCode | JSON   | ~/.config/opencode/opencode.json |
+//! | Gemini   | JSON   | ~/.gemini/settings.json          |
+//! | Crush    | JSON   | ~/.config/crush/crush.json       |
+//! | Aider    | —      | (no native MCP support)          |
 
 use crate::config::{AgentType, McpServerConfig};
 use std::collections::HashMap;
@@ -68,27 +72,15 @@ impl ConfigGenerator {
 
         match format {
             McpConfigFormat::Claude => {
-                if let Some(content) = Self::generate_claude(servers) {
-                    files.push(ConfigFile {
-                        relative_path: "claude/settings.json".to_string(),
-                        content,
-                    });
-                }
                 files.push(ConfigFile {
                     relative_path: "claude/.claude.json".to_string(),
-                    content: Self::claude_trust_json().into_bytes(),
+                    content: Self::claude_config_json(servers).into_bytes(),
                 });
             }
             McpConfigFormat::Codex => {
-                if let Some(content) = Self::generate_codex(servers) {
-                    files.push(ConfigFile {
-                        relative_path: "codex/mcp_servers.toml".to_string(),
-                        content,
-                    });
-                }
                 files.push(ConfigFile {
                     relative_path: "codex/config.toml".to_string(),
-                    content: Self::codex_trust_toml().into_bytes(),
+                    content: Self::codex_config_toml(servers).into_bytes(),
                 });
             }
             McpConfigFormat::Goose => {
@@ -116,12 +108,9 @@ impl ConfigGenerator {
                 }
             }
             McpConfigFormat::Aider => {
-                if let Some(content) = Self::generate_aider(servers) {
-                    files.push(ConfigFile {
-                        relative_path: "aider/.aider.conf.yml".to_string(),
-                        content,
-                    });
-                }
+                // Aider has no native MCP client support, so no MCP config file
+                // is written for it. It still receives skills via CONVENTIONS.md
+                // (see skills_gen), but mounting mcp_servers there would be ignored.
             }
             McpConfigFormat::Gemini => {
                 if let Some(content) = Self::generate_gemini(servers) {
@@ -144,105 +133,94 @@ impl ConfigGenerator {
         files
     }
 
-    /// Generate Claude Code MCP config (JSON, `mcpServers` key in settings.json).
+    /// Build the stdio entry for one MCP server.
     ///
-    /// Format:
-    /// ```json
-    /// {
-    ///   "mcpServers": {
-    ///     "github": {
-    ///       "command": "npx",
-    ///       "args": ["-y", "@modelcontextprotocol/server-github"],
-    ///       "env": { "GITHUB_TOKEN": "..." }
-    ///     }
-    ///   }
-    /// }
-    /// ```
-    fn generate_claude(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
-        if servers.is_empty() {
-            return None;
+    /// `with_type` adds `"type": "stdio"` — Cursor and Crush require it; Claude
+    /// and Gemini infer stdio and accept the entry without it.
+    fn stdio_entry(srv: &McpServerConfig, with_type: bool) -> serde_json::Value {
+        let mut entry = serde_json::Map::new();
+        if with_type {
+            entry.insert(
+                "type".to_string(),
+                serde_json::Value::String("stdio".to_string()),
+            );
         }
+        entry.insert(
+            "command".to_string(),
+            serde_json::Value::String(srv.command.clone()),
+        );
+        entry.insert(
+            "args".to_string(),
+            serde_json::Value::Array(
+                srv.args
+                    .iter()
+                    .map(|a| serde_json::Value::String(a.clone()))
+                    .collect(),
+            ),
+        );
+        let env_map: serde_json::Map<String, _> = srv
+            .env
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect();
+        if !env_map.is_empty() {
+            entry.insert("env".to_string(), serde_json::Value::Object(env_map));
+        }
+        serde_json::Value::Object(entry)
+    }
 
+    /// Build a sorted `mcpServers`/`mcp` object for a set of servers.
+    fn stdio_server_map(
+        servers: &HashMap<String, McpServerConfig>,
+        with_type: bool,
+    ) -> serde_json::Map<String, serde_json::Value> {
         let mut entries = serde_json::Map::new();
+        let mut names: Vec<&String> = servers.keys().collect();
+        names.sort();
+        for name in names {
+            let srv = &servers[name];
+            warn_inline_secrets(name, &srv.env);
+            entries.insert(name.clone(), Self::stdio_entry(srv, with_type));
+        }
+        entries
+    }
+
+    /// Claude Code user config written to `$CLAUDE_CONFIG_DIR/.claude.json`
+    /// (`~/.claude/.claude.json`). Claude reads user-scope MCP servers from the
+    /// top-level `mcpServers` key here — `mcpServers` inside `settings.json` is
+    /// silently ignored. Also carries the workspace-trust entry so the
+    /// "do you trust the files in this folder?" prompt is skipped.
+    fn claude_config_json(servers: &HashMap<String, McpServerConfig>) -> String {
+        let mut doc = serde_json::Map::new();
+        if !servers.is_empty() {
+            doc.insert(
+                "mcpServers".to_string(),
+                serde_json::Value::Object(Self::stdio_server_map(servers, false)),
+            );
+        }
+        doc.insert(
+            "projects".to_string(),
+            serde_json::json!({ "/home/developer": { "hasTrustDialogAccepted": true } }),
+        );
+        serde_json::to_string_pretty(&serde_json::Value::Object(doc))
+            .unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Codex `~/.codex/config.toml`. Codex reads `[mcp_servers.<name>]` from this
+    /// same file (there is no separate `mcp_servers.toml`), so the MCP sections
+    /// and the workspace-trust section are emitted together.
+    fn codex_config_toml(servers: &HashMap<String, McpServerConfig>) -> String {
+        let mut output =
+            String::from("[projects.\"/home/developer\"]\ntrust_level = \"trusted\"\n");
+
         let mut names: Vec<&String> = servers.keys().collect();
         names.sort();
 
         for name in names {
             let srv = &servers[name];
-            let mut entry = serde_json::Map::new();
-            entry.insert(
-                "command".to_string(),
-                serde_json::Value::String(srv.command.clone()),
-            );
-            entry.insert(
-                "args".to_string(),
-                serde_json::Value::Array(
-                    srv.args
-                        .iter()
-                        .map(|a| serde_json::Value::String(a.clone()))
-                        .collect(),
-                ),
-            );
-            if !srv.env.is_empty() {
-                warn_inline_secrets(name, &srv.env);
-                let env_map: serde_json::Map<String, _> = srv
-                    .env
-                    .iter()
-                    .filter(|(_, v)| !v.is_empty())
-                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                    .collect();
-                if !env_map.is_empty() {
-                    entry.insert("env".to_string(), serde_json::Value::Object(env_map));
-                }
-            }
-            entries.insert(name.clone(), serde_json::Value::Object(entry));
-        }
-
-        let wrapper = serde_json::json!({ "mcpServers": serde_json::Value::Object(entries) });
-        let content = serde_json::to_string_pretty(&wrapper).ok()?;
-        Some(content.into_bytes())
-    }
-
-    /// Codex `config.toml` body that marks the workspace trusted so the
-    /// interactive agent skips its "trust the contents of this directory?" prompt.
-    fn codex_trust_toml() -> String {
-        "[projects.\"/home/developer\"]\ntrust_level = \"trusted\"\n".to_string()
-    }
-
-    /// `~/.claude/.claude.json` body marking the workspace trusted, so the
-    /// interactive agent skips its "do you trust the files in this folder?"
-    /// prompt. Claude reads this from `$CLAUDE_CONFIG_DIR/.claude.json`; the
-    /// runtime sets `CLAUDE_CONFIG_DIR=~/.claude` (see `build_env`).
-    fn claude_trust_json() -> String {
-        let doc = serde_json::json!({
-            "projects": { "/home/developer": { "hasTrustDialogAccepted": true } }
-        });
-        serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string())
-    }
-
-    /// Generate Codex MCP config (TOML).
-    ///
-    /// Format:
-    /// ```toml
-    /// [mcp_servers.github]
-    /// command = "npx"
-    /// args = ["-y", "@modelcontextprotocol/server-github"]
-    /// env = { GITHUB_TOKEN = "..." }
-    /// ```
-    fn generate_codex(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
-        if servers.is_empty() {
-            return None;
-        }
-
-        let mut output = String::new();
-        let mut names: Vec<&String> = servers.keys().collect();
-        names.sort();
-
-        for (i, name) in names.iter().enumerate() {
-            let srv = &servers[*name];
-            if i > 0 {
-                output.push('\n');
-            }
+            warn_inline_secrets(name, &srv.env);
+            output.push('\n');
             output.push_str(&format!("[mcp_servers.{}]\n", name));
             output.push_str(&format!("command = {:?}\n", srv.command));
 
@@ -258,7 +236,6 @@ impl ConfigGenerator {
             let non_empty_env: HashMap<_, _> =
                 srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
             if !non_empty_env.is_empty() {
-                warn_inline_secrets(name, &srv.env);
                 output.push_str("env = { ");
                 let mut env_keys: Vec<&String> = non_empty_env.keys().copied().collect();
                 env_keys.sort();
@@ -272,7 +249,7 @@ impl ConfigGenerator {
             }
         }
 
-        Some(output.into_bytes())
+        output
     }
 
     /// Generate Goose MCP config (YAML-like key-value format).
@@ -345,9 +322,17 @@ impl ConfigGenerator {
         Some(output.into_bytes())
     }
 
-    /// Generate Cursor MCP config (same JSON format as Claude).
+    /// Cursor `~/.cursor/mcp.json` — `mcpServers` with explicit `type: stdio`.
     fn generate_cursor(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
-        Self::generate_claude(servers)
+        if servers.is_empty() {
+            return None;
+        }
+        let doc = serde_json::json!({
+            "mcpServers": serde_json::Value::Object(Self::stdio_server_map(servers, true))
+        });
+        serde_json::to_string_pretty(&doc)
+            .ok()
+            .map(String::into_bytes)
     }
 
     /// Generate OpenCode MCP config (JSON, `mcp` key in opencode.json).
@@ -390,7 +375,10 @@ impl ConfigGenerator {
                         .collect(),
                 ),
             );
-            entry.insert("enabled".to_string(), serde_json::Value::Bool(srv.enabled));
+            entry.insert(
+                "disabled".to_string(),
+                serde_json::Value::Bool(!srv.enabled),
+            );
             if !srv.env.is_empty() {
                 warn_inline_secrets(name, &srv.env);
                 let env_map: serde_json::Map<String, _> = srv
@@ -414,66 +402,31 @@ impl ConfigGenerator {
         Some(content.into_bytes())
     }
 
-    /// Generate Aider MCP config (YAML, `mcp_servers` key in .aider.conf.yml).
-    ///
-    /// Format:
-    /// ```yaml
-    /// mcp_servers:
-    ///   github:
-    ///     command: npx
-    ///     args: ["-y", "@modelcontextprotocol/server-github"]
-    ///     env:
-    ///       GITHUB_TOKEN: "..."
-    /// ```
-    fn generate_aider(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
+    /// Gemini CLI `~/.gemini/settings.json` — `mcpServers` (stdio inferred).
+    fn generate_gemini(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
         if servers.is_empty() {
             return None;
         }
-
-        let mut output = String::new();
-        output.push_str("mcp_servers:\n");
-
-        let mut names: Vec<&String> = servers.keys().collect();
-        names.sort();
-
-        for name in names {
-            let srv = &servers[name];
-            output.push_str(&format!("  {}:\n", name));
-            output.push_str(&format!("    command: {}\n", srv.command));
-            if !srv.args.is_empty() {
-                output.push_str("    args: [");
-                for (j, arg) in srv.args.iter().enumerate() {
-                    if j > 0 {
-                        output.push_str(", ");
-                    }
-                    output.push_str(&format!("{:?}", arg));
-                }
-                output.push_str("]\n");
-            }
-            let non_empty_env: HashMap<_, _> =
-                srv.env.iter().filter(|(_, v)| !v.is_empty()).collect();
-            if !non_empty_env.is_empty() {
-                warn_inline_secrets(name, &srv.env);
-                output.push_str("    env:\n");
-                let mut env_keys: Vec<&String> = non_empty_env.keys().copied().collect();
-                env_keys.sort();
-                for k in env_keys {
-                    output.push_str(&format!("      {}: {:?}\n", k, non_empty_env[k]));
-                }
-            }
-        }
-
-        Some(output.into_bytes())
+        let doc = serde_json::json!({
+            "mcpServers": serde_json::Value::Object(Self::stdio_server_map(servers, false))
+        });
+        serde_json::to_string_pretty(&doc)
+            .ok()
+            .map(String::into_bytes)
     }
 
-    /// Generate Gemini CLI MCP config (JSON, `mcpServers` key in settings.json).
-    fn generate_gemini(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
-        Self::generate_claude(servers)
-    }
-
-    /// Generate Crush MCP config (JSON, `mcpServers` key in crush.json).
+    /// Crush `~/.config/crush/crush.json` — top-level `mcp` key (not
+    /// `mcpServers`), each entry with explicit `type: stdio`.
     fn generate_crush(servers: &HashMap<String, McpServerConfig>) -> Option<Vec<u8>> {
-        Self::generate_claude(servers)
+        if servers.is_empty() {
+            return None;
+        }
+        let doc = serde_json::json!({
+            "mcp": serde_json::Value::Object(Self::stdio_server_map(servers, true))
+        });
+        serde_json::to_string_pretty(&doc)
+            .ok()
+            .map(String::into_bytes)
     }
 }
 
@@ -552,48 +505,40 @@ mod tests {
     fn test_generate_claude() {
         let servers = sample_servers();
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Claude);
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 1);
 
-        let settings = files
+        // MCP servers and workspace trust both live in ~/.claude/.claude.json;
+        // Claude silently ignores mcpServers placed in settings.json.
+        let cfg = files
             .iter()
-            .find(|f| f.relative_path == "claude/settings.json")
-            .expect("claude settings config");
-        let content = String::from_utf8(settings.content.clone()).unwrap();
+            .find(|f| f.relative_path == "claude/.claude.json")
+            .expect("claude config");
+        let content = String::from_utf8(cfg.content.clone()).unwrap();
         assert!(content.contains("mcpServers"));
         assert!(content.contains("github"));
         assert!(content.contains("npx"));
         assert!(content.contains("GITHUB_TOKEN"));
         assert!(content.contains("filesystem"));
-
-        let trust = files
-            .iter()
-            .find(|f| f.relative_path == "claude/.claude.json")
-            .expect("claude trust config");
-        let trust_content = String::from_utf8(trust.content.clone()).unwrap();
-        assert!(trust_content.contains("hasTrustDialogAccepted"));
-        assert!(trust_content.contains("/home/developer"));
+        assert!(content.contains("hasTrustDialogAccepted"));
+        assert!(content.contains("/home/developer"));
     }
 
     #[test]
     fn test_generate_codex() {
         let servers = sample_servers();
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Codex);
+        assert_eq!(files.len(), 1);
 
-        let mcp = files
-            .iter()
-            .find(|f| f.relative_path == "codex/mcp_servers.toml")
-            .expect("codex mcp config");
-        let content = String::from_utf8(mcp.content.clone()).unwrap();
-        assert!(content.contains("[mcp_servers.github]"));
-        assert!(content.contains("command = \"npx\""));
-
-        let trust = files
+        // Codex reads [mcp_servers.*] from config.toml, alongside the trust table.
+        let cfg = files
             .iter()
             .find(|f| f.relative_path == "codex/config.toml")
-            .expect("codex trust config");
-        let trust_content = String::from_utf8(trust.content.clone()).unwrap();
-        assert!(trust_content.contains("trust_level = \"trusted\""));
-        assert!(trust_content.contains("/home/developer"));
+            .expect("codex config");
+        let content = String::from_utf8(cfg.content.clone()).unwrap();
+        assert!(content.contains("[mcp_servers.github]"));
+        assert!(content.contains("command = \"npx\""));
+        assert!(content.contains("trust_level = \"trusted\""));
+        assert!(content.contains("/home/developer"));
     }
 
     #[test]
@@ -621,6 +566,7 @@ mod tests {
 
         let content = String::from_utf8(files[0].content.clone()).unwrap();
         assert!(content.contains("mcpServers"));
+        assert!(content.contains("\"type\": \"stdio\""));
     }
 
     #[test]
@@ -633,23 +579,18 @@ mod tests {
         let content = String::from_utf8(files[0].content.clone()).unwrap();
         assert!(content.contains("\"mcp\""));
         assert!(content.contains("\"type\": \"local\""));
+        assert!(content.contains("\"disabled\": false"));
         assert!(content.contains("github"));
         assert!(content.contains("npx"));
         assert!(content.contains("GITHUB_TOKEN"));
     }
 
     #[test]
-    fn test_generate_aider() {
+    fn test_generate_aider_has_no_mcp() {
+        // Aider has no native MCP client, so it must not get an MCP config file.
         let servers = sample_servers();
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Aider);
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].relative_path, "aider/.aider.conf.yml");
-
-        let content = String::from_utf8(files[0].content.clone()).unwrap();
-        assert!(content.contains("mcp_servers:"));
-        assert!(content.contains("github:"));
-        assert!(content.contains("command: npx"));
-        assert!(content.contains("GITHUB_TOKEN"));
+        assert!(files.is_empty(), "aider must not get an MCP config file");
     }
 
     #[test]
@@ -671,8 +612,11 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "crush/crush.json");
 
+        // Crush uses a top-level `mcp` key with explicit `type: stdio`.
         let content = String::from_utf8(files[0].content.clone()).unwrap();
-        assert!(content.contains("mcpServers"));
+        assert!(content.contains("\"mcp\""));
+        assert!(!content.contains("mcpServers"));
+        assert!(content.contains("\"type\": \"stdio\""));
         assert!(content.contains("github"));
     }
 

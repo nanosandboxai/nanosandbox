@@ -20,14 +20,14 @@ async fn test_parallel_sandbox_creation() {
     // Create two sandbox configs with different images
     let config1 = SandboxConfig::builder()
         .name("test-parallel-1")
-        .image("localhost:5050/agents-registry/claude:latest")
+        .image("localhost:5050/registries/claude:latest")
         .cpus(1)
         .memory_mb(512)
         .build();
 
     let config2 = SandboxConfig::builder()
         .name("test-parallel-2")
-        .image("localhost:5050/agents-registry/codex:latest")
+        .image("localhost:5050/registries/codex:latest")
         .cpus(1)
         .memory_mb(512)
         .build();
@@ -94,7 +94,7 @@ async fn test_rapid_sequential_sandbox_creation() {
     for i in 0..3 {
         let config = SandboxConfig::builder()
             .name(format!("test-sequential-{}", i))
-            .image("localhost:5050/agents-registry/claude:latest")
+            .image("localhost:5050/registries/claude:latest")
             .cpus(1)
             .memory_mb(512)
             .build();

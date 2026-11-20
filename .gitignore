@@ -53,3 +53,16 @@ sdk/kotlin/.kotlin/
 
 # packaging output
 dist/
+
+# Example sandbox runtime state (mounted agent HOME / caches — never commit)
+examples/sandboxes/.agents/
+examples/sandboxes/.aider/
+examples/sandboxes/.cache/
+examples/sandboxes/.claude/
+examples/sandboxes/.codex/
+examples/sandboxes/.config/
+examples/sandboxes/.crush/
+examples/sandboxes/.cursor/
+examples/sandboxes/.local/
+examples/sandboxes/.nanosandbox/
+examples/sandboxes/.npm/

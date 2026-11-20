@@ -1,0 +1,239 @@
+# Provider normalization map for the models registry (v2).
+#
+# `canonical`: variant prefix -> canonical provider id. The first `/`-segment of
+#   a prefixed model string is lowercased, stripped of any `:*` suffix, and
+#   looked up here. Identity entries (variant == canonical) are required for
+#   every prefix actually used in the catalog so validation accepts them.
+# `env`: canonical provider id -> env var key, list of env var keys, or `[]`
+#   sentinel for providers that authenticate via OAuth / no env var.
+#
+# Source of truth: this file. `scripts/models/providers.py` embeds the same
+#   maps as a fallback for environments without a working PyYAML and verifies
+#   they stay in sync (see test_providers.py).
+
+canonical:
+  # Fireworks
+  fireworks-ai: fireworks
+  fireworks_ai: fireworks
+  fireworks: fireworks
+  # Vertex AI
+  vertex_ai: vertex_ai
+  vertexai: vertex_ai
+  # OpenCode
+  opencode_go: opencode
+  opencode-go: opencode
+  opencode: opencode
+  opencode_zen: opencode
+  opencode-zen: opencode
+  bakeryhub: opencode
+  # Z.ai
+  zai: zai
+  zai-org: zai
+  zai_coding_plan: zai
+  # MiniMax
+  minimax-china: minimax
+  minimax: minimax
+  # Bedrock
+  bedrock-europe: bedrock
+  bedrock_converse: bedrock
+  bedrock: bedrock
+  # Zhipu
+  zhipu-coding: zhipu
+  zhipu: zhipu
+  # Hugging Face
+  hf: huggingface
+  # OpenRouter (routers / gateways)
+  eurouter: openrouter
+  vercel_ai_gateway: openrouter
+  routerplex: openrouter
+  aigateway: openrouter
+  aimlapi: openrouter
+  trustedrouter: openrouter
+  orcarouter: openrouter
+  pleumrouter: openrouter
+  routstr: openrouter
+  ovhcloud: openrouter
+  futurmix: openrouter
+  meta: openrouter
+  openrouter: openrouter
+  # Identity entries (variant == canonical) for prefixes used in the catalog
+  anthropic: anthropic
+  openai: openai
+  google: google
+  gemini: gemini
+  deepseek: deepseek
+  groq: groq
+  xai: xai
+  cerebras: cerebras
+  mistral: mistral
+  huggingface: huggingface
+  azure: azure
+  moonshot: moonshot
+  aihubmix: aihubmix
+  vercel: vercel
+  venice: venice
+  cortecs: cortecs
+  ionet: ionet
+  atlascloud: atlascloud
+  nebius: nebius
+  alibaba: alibaba
+  alibaba-us: alibaba_us
+  alibaba-singapore: alibaba_singapore
+  neuralwatt: neuralwatt
+  avian: avian
+  chutes: chutes
+  baseten: baseten
+  qiniucloud: qiniucloud
+  synthetic: synthetic
+  scaleway: scaleway
+  kimi-coding: kimi_coding
+  pioneer: pioneer
+  pareto: pareto
+  coralbricks: coralbricks
+  nvidia: nvidia
+  perplexity: perplexity
+  together: together
+  friendli: friendli
+  novita: novita
+  saladcloud: saladcloud
+  sakana: sakana
+  inception: inception
+  celeris: celeris
+  typesafe: typesafe
+  tanzu_ai: tanzu_ai
+  opper: opper
+  saygm: saygm
+  nearai: nearai
+  iflytek: iflytek
+  iflytek_astron: iflytek_astron
+  custom_deepseek: custom_deepseek
+  custom_tensorix: custom_tensorix
+  empiriolabs: empiriolabs
+  # Additional prefixes found in the current catalog (zero unmapped)
+  cohere_chat: cohere
+  copilot: copilot
+  # Strict provider sets for claude/codex adapters (documented provider surface)
+  foundry: foundry
+  mantle: mantle
+  custom: custom
+
+env:
+  anthropic: ANTHROPIC_API_KEY
+  openai: OPENAI_API_KEY
+  openrouter: OPENROUTER_API_KEY
+  google: GOOGLE_API_KEY
+  gemini: GEMINI_API_KEY
+  deepseek: DEEPSEEK_API_KEY
+  groq: GROQ_API_KEY
+  xai: XAI_API_KEY
+  cerebras: CEREBRAS_API_KEY
+  mistral: MISTRAL_API_KEY
+  huggingface: HF_TOKEN
+  fireworks: FIREWORKS_API_KEY
+  azure: AZURE_OPENAI_API_KEY
+  bedrock: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY]
+  vertex_ai: GOOGLE_APPLICATION_CREDENTIALS
+  opencode: OPENCODE_API_KEY
+  zai: ZAI_API_KEY
+  zhipu: ZHIPU_API_KEY
+  minimax: MINIMAX_API_KEY
+  moonshot: MOONSHOT_API_KEY
+  aihubmix: AIHUBMIX_API_KEY
+  venice: VENICE_API_KEY
+  vercel: VERCEL_API_KEY
+  cortecs: CORTECS_API_KEY
+  ionet: IONET_API_KEY
+  atlascloud: ATLASCLOUD_API_KEY
+  nebius: NEBIUS_API_KEY
+  scaleway: SCW_SECRET_KEY
+  baseten: BASETEN_API_KEY
+  chutes: CHUTES_API_KEY
+  avian: AVIAN_API_KEY
+  neuralwatt: NEURALWATT_API_KEY
+  qiniucloud: QINIUCLOUD_API_KEY
+  synthetic: SYNTHETIC_API_KEY
+  kimi_coding: KIMI_CODING_API_KEY
+  pioneer: PIONEER_API_KEY
+  pareto: PARETO_API_KEY
+  coralbricks: CORALBRICKS_API_KEY
+  nvidia: NVIDIA_API_KEY
+  perplexity: PERPLEXITY_API_KEY
+  together: TOGETHER_API_KEY
+  friendli: FRIENDLI_TOKEN
+  novita: NOVITA_API_KEY
+  saladcloud: SALAD_API_KEY
+  sakana: SAKANA_API_KEY
+  inception: INCEPTION_API_KEY
+  celeris: CELERIS_API_KEY
+  typesafe: TYPESAFE_API_KEY
+  tanzu_ai: TANZU_API_KEY
+  opper: OPPER_API_KEY
+  saygm: SAYGM_API_KEY
+  nearai: NEARAI_API_KEY
+  iflytek: IFLYTEK_API_KEY
+  iflytek_astron: IFLYTEK_ASTRON_API_KEY
+  custom_deepseek: CUSTOM_DEEPSEEK_API_KEY
+  custom_tensorix: CUSTOM_TENSORIX_API_KEY
+  empiriolabs: EMPIRIOLABS_API_KEY
+  alibaba: ALIBABA_API_KEY
+  alibaba_singapore: ALIBABA_SINGAPORE_API_KEY
+  alibaba_us: ALIBABA_US_API_KEY
+  cohere: COHERE_API_KEY
+  foundry: FOUNDRY_API_KEY
+  mantle: MANTLE_API_KEY
+  custom: CUSTOM_API_KEY
+  cursor: CURSOR_API_KEY
+  # OAuth-authenticated; no env var (sentinel empty list)
+  copilot: []
+
+# Per-agent provider resolution rules (compiled into provider-catalog.json).
+# `mode`:
+#   single   -> one credential regardless of the model (default + alt keys)
+#   collapse -> the first model segment maps to a credential provider
+#               (case-sensitive when case_sensitive: true); `collapse_default`
+#               catches every other segment
+#   derived  -> the credential provider is the model's canonical prefix
+# `overrides` are keyed by raw variant (or canonical id) and win over `env`.
+# `no_env` providers authenticate via OAuth/browser (no env var). `extra_keys`
+# are accepted-key floors preserved for backward compatibility.
+agents:
+  claude:
+    mode: single
+    default: anthropic
+    alt: [CLAUDE_CODE_OAUTH_TOKEN]
+    providers: [anthropic]
+  codex:
+    mode: single
+    default: openai
+    alt: [CODEX_API_KEY]
+    providers: [openai]
+  goose:
+    mode: collapse
+    case_sensitive: true
+    collapse: {anthropic: anthropic, openai: openai, google: google, gemini: google, openrouter: openrouter}
+    collapse_default: openrouter
+    providers: [anthropic, openai, google, openrouter]
+  cursor:
+    mode: single
+    default: cursor
+    providers: []
+  opencode:
+    mode: derived
+    overrides:
+      bakeryhub: {keys: [BAKERYHUB_API_KEY]}
+    extra_keys: [GOOGLE_API_KEY]
+  aider:
+    mode: derived
+    overrides:
+      azure: {keys: [AZURE_API_KEY]}
+  gemini:
+    mode: single
+    default: gemini
+    alt: [GOOGLE_API_KEY]
+    providers: [gemini]
+  crush:
+    mode: derived
+    overrides:
+      azure: {keys: [AZURE_OPENAI_API_KEY]}
+    no_env: [copilot]
+    extra_keys: [GOOGLE_API_KEY]

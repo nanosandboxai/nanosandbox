@@ -1,7 +1,10 @@
 //! Model validation against a models config file.
 //!
-//! The models registry is loaded at runtime from `~/.nanosandbox/models.json`
-//! (or `.yaml`). When the file is absent, model validation is silently skipped.
+//! The models registry is loaded at runtime from a precedence chain: a user
+//! override at `~/.nanosandbox/models.json` (or `.yaml`), then an installed or
+//! sibling catalog, and finally a built-in catalog compiled into the binary.
+//! The built-in fallback guarantees a registry is always available, so model
+//! validation always runs.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -21,9 +24,8 @@ struct AgentModels {
 
 /// Registry of known model identifiers per agent type.
 ///
-/// Loaded at runtime from a JSON or YAML config file. When the config file is
-/// missing, [`load`](Self::load) returns `None` and model validation is
-/// gracefully skipped.
+/// Loaded at runtime from a precedence chain ending in a built-in catalog
+/// compiled into the binary, so [`load`](Self::load) always returns a registry.
 pub struct ModelsRegistry {
     agents: HashMap<String, Vec<String>>,
 }
@@ -37,23 +39,53 @@ impl ModelsRegistry {
             .join("models.json")
     }
 
-    /// Load the models registry from the default path (`~/.nanosandbox/models.json`).
+    /// Load the models registry from a precedence chain:
     ///
-    /// Falls back to `~/.nanosandbox/models.yaml` if the JSON file is absent.
-    /// Returns `None` if neither file exists or cannot be parsed.
+    /// 1. User override: `~/.nanosandbox/models.json`, then `~/.nanosandbox/models.yaml`.
+    /// 2. Installed/sibling catalog: `~/.nanosandbox/registries/models/models.json`,
+    ///    then `<cwd>/../registries/models/models.json` (if present).
+    /// 3. Built-in catalog compiled into the binary (always available).
+    ///
+    /// Always returns `Some`.
     pub fn load() -> Option<Self> {
+        let mut candidates = Vec::new();
+
+        // 1. User override: JSON, then YAML in the same directory.
         let json_path = Self::default_path();
-        if json_path.exists() {
-            return Self::load_from(&json_path);
+        candidates.push(json_path.clone());
+        candidates.push(json_path.with_extension("yaml"));
+
+        // 2. Installed/sibling catalog.
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(
+                home.join(".nanosandbox")
+                    .join("registries")
+                    .join("models")
+                    .join("models.json"),
+            );
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            candidates.push(
+                cwd.join("..")
+                    .join("registries")
+                    .join("models")
+                    .join("models.json"),
+            );
         }
 
-        // Fallback: try YAML variant in the same directory.
-        let yaml_path = json_path.with_extension("yaml");
-        if yaml_path.exists() {
-            return Self::load_from(&yaml_path);
-        }
+        Self::load_with(&candidates)
+    }
 
-        None
+    /// Try each candidate path in order, falling back to the built-in catalog.
+    fn load_with(candidates: &[PathBuf]) -> Option<Self> {
+        for path in candidates {
+            if path.exists() {
+                if let Some(registry) = Self::load_from(path) {
+                    return Some(registry);
+                }
+            }
+        }
+        Self::from_json(include_str!("../../../../../registries/models/models.json"))
     }
 
     /// Load from a specific file path. Auto-detects JSON vs YAML by extension.
@@ -252,5 +284,52 @@ agents:
     #[test]
     fn test_from_invalid_yaml() {
         assert!(ModelsRegistry::from_yaml(":::invalid").is_none());
+    }
+
+    #[test]
+    fn test_load_always_returns_builtin() {
+        let registry = ModelsRegistry::load().expect("built-in catalog should always load");
+        assert!(registry.agents.contains_key("claude"));
+    }
+
+    #[test]
+    fn test_builtin_catalog_validates_known_model() {
+        let registry = ModelsRegistry::load().expect("built-in catalog should always load");
+        assert!(registry
+            .validate("claude", "claude-sonnet-4-5-20250929")
+            .is_ok());
+    }
+
+    #[test]
+    fn test_builtin_catalog_rejects_unknown_model() {
+        let registry = ModelsRegistry::load().expect("built-in catalog should always load");
+        assert!(registry.validate("claude", "gpt-nonexistent").is_err());
+    }
+
+    #[test]
+    fn test_unknown_agent_type_still_skips() {
+        let registry = ModelsRegistry::load().expect("built-in catalog should always load");
+        assert!(registry.validate("not-an-agent", "whatever").is_ok());
+    }
+
+    #[test]
+    fn test_load_with_prefers_first_existing_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.json");
+        let second = dir.path().join("second.json");
+        std::fs::write(
+            &first,
+            r#"{"version":1,"agents":{"claude":{"models":["first-model"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            r#"{"version":1,"agents":{"claude":{"models":["second-model"]}}}"#,
+        )
+        .unwrap();
+
+        let registry = ModelsRegistry::load_with(&[first, second]).unwrap();
+        assert!(registry.validate("claude", "first-model").is_ok());
+        assert!(registry.validate("claude", "second-model").is_err());
     }
 }

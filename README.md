@@ -15,10 +15,11 @@ sandboxes (via [libkrun](https://github.com/containers/libkrun)).
 | `runtime/` | MicroVM engine (libkrun FFI), OCI images; `runtime/crates/runtime-config` holds the FFI-free config types |
 | `sandbox/` | Agent-aware sandbox SDK + `deploy` module + `sandbox.yml` parsing |
 | `sdk/` | Eight language SDKs + conformance harness (see [`sdk/README.md`](sdk/README.md)) |
-| `agents-registry/` | Agent definitions, skills, MCP sources, model catalog, Docker images |
+| `registries/` | Open-source MCP registry sources, agent VM images |
 | `install-deps/` | Runtime dependency (libkrunfw + gvproxy) installer |
 | `guest/` | In-guest exec agent (linux/aarch64, cross-compiled) |
 | `docs/` | Protocol spec, ADRs, epics/plans, live-verification reports |
+| `examples/` | Runnable sample sandboxes (`sandbox.yml`) across all agent types |
 | `scripts/`, `test/` | Install/packaging scripts and shell-based CLI/config tests |
 
 ## Install
@@ -282,7 +283,7 @@ nanosb supervise [--foreground] --name <n> --spec <spec.json>  # Spawn a supervi
 | `NANOSB_EXEC_AGENT` | Path to a local `exec-agent` binary to install (skips download) |
 | `NANOSB_HOME` | Runtime state root (default: `~/.nanosandbox`) |
 | `NANOSB_LOG` | Log level for the file log |
-| `NANOSB_REGISTRY_PATH` | Path to the agents registry (default: `~/.nanosandbox/agents-registry`) |
+| `NANOSB_REGISTRY_PATH` | Path to the registries directory (default: `~/.nanosandbox/registries`) |
 | `NANOSB_GUEST_BIN_DIR` | Directory holding `exec-agent` (default: `$NANOSB_HOME/guest-bin`) |
 | `NANOSB_BINARY_PATH` | Path to the `nanosb` binary used to spawn the supervisor |
 | `NANOSB_MAX_VMS` | Admission budget: max concurrent sandboxes (default: `2 × CPU count`) |
@@ -409,6 +410,13 @@ The guest working directory and the project mount point default to the guest
 user's **home directory** (`/home/developer`). There is no mandatory
 `/workspace`: set `workdir` or `project.mount_point` explicitly when your agent
 should start in a different directory.
+
+`sandbox.yml` is validated strictly before any microVM is created. Unknown or
+misspelled fields are rejected at every level (`defaults`, each sandbox, `mcp`
+servers, `network`, `mounts`, `project`, `claude`, `workspace`), unknown
+`skills` are rejected when an agents registry is available, and an unknown or
+invalid `model` fails fast with a clear error. The model catalog is compiled
+into the binary and can be overridden at `~/.nanosandbox/models.json`.
 
 ### Interactive agent panels
 

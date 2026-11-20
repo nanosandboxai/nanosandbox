@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nanosandboxai.github.io/registries/models/models.schema.json",
+  "title": "Nanosandbox models registry (v2)",
+  "description": "Per-agent model catalog. Version 2 adds the required per-agent `providers` array: the credential providers the agent can be configured with. The per-agent resolution rules live in providers.yaml and compile to provider-catalog.json.",
+  "type": "object",
+  "required": ["version", "agents"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 2
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["models", "providers"],
+        "additionalProperties": false,
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "providers": {
+            "description": "Credential providers (canonical ids) the agent can be configured with.",
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

@@ -3,6 +3,7 @@
 //! Builds the CLI invocation (binary + args) for each agent type, and resolves
 //! the environment map passed to the VM boot.
 
+use super::GUEST_HOME;
 use crate::config::{AgentType, Permissions};
 use std::collections::HashMap;
 
@@ -113,6 +114,13 @@ impl AgentCommandBuilder {
         base_env: &HashMap<String, String>,
     ) -> HashMap<String, String> {
         let mut env = base_env.clone();
+        // The guest rootfs is read-only, so `/tmp` is not writable by the
+        // non-root agent user; tools that create temp files (e.g. goose's
+        // extension loader) fail with `Permission denied` on `/tmp/.tmpXXXX`.
+        // Point TMPDIR at the writable per-sandbox metadata dir; an explicit
+        // sandbox.yml TMPDIR wins.
+        env.entry("TMPDIR".to_string())
+            .or_insert_with(|| format!("{}/.nanosandbox", GUEST_HOME));
         let effective_permissions = permissions.effective(auto_mode);
 
         // Agent-specific env vars
@@ -161,12 +169,9 @@ impl AgentCommandBuilder {
     ) -> AgentCommand {
         let mut args = Vec::new();
 
-        if !interactive {
-            if !prompt.is_empty() {
-                args.push("--print".to_string());
-                args.push(prompt.to_string());
-            }
-
+        if !interactive && !prompt.is_empty() {
+            args.push("--print".to_string());
+            args.push(prompt.to_string());
             args.push("--verbose".to_string());
             args.push("--output-format".to_string());
             args.push("stream-json".to_string());
@@ -258,9 +263,26 @@ impl AgentCommandBuilder {
             }
         }
 
+        if interactive {
+            return AgentCommand {
+                binary: "codex".to_string(),
+                args,
+            };
+        }
+
+        // `codex exec` reads additional input from stdin; the runtime hands the
+        // agent a pipe, so without this it blocks. Redirect stdin to `/dev/null`
+        // via a shell wrapper; `"$@"` forwards the args verbatim.
+        let mut wrapped = vec![
+            "-c".to_string(),
+            "exec \"$@\" < /dev/null".to_string(),
+            "sh".to_string(),
+            "codex".to_string(),
+        ];
+        wrapped.extend(args);
         AgentCommand {
-            binary: "codex".to_string(),
-            args,
+            binary: "sh".to_string(),
+            args: wrapped,
         }
     }
 
@@ -301,7 +323,9 @@ impl AgentCommandBuilder {
         let mut args = Vec::new();
 
         if !interactive && !prompt.is_empty() {
-            args.push("--message".to_string());
+            // `-p`/`--print` is cursor-agent's non-interactive flag; the prompt
+            // is the positional argument (there is no `--message`/`--prompt`).
+            args.push("-p".to_string());
             args.push(prompt.to_string());
         }
 
@@ -368,9 +392,27 @@ impl AgentCommandBuilder {
             args.push(m.to_string());
         }
 
+        if interactive {
+            return AgentCommand {
+                binary: "opencode".to_string(),
+                args,
+            };
+        }
+
+        // Headless `opencode run` reads stdin when it is not a TTY, and the
+        // runtime hands the agent a pipe — Bun's positioned read on a pipe fails
+        // with `ESPIPE: invalid seek, pread`. Redirect the agent's stdin to
+        // `/dev/null` through a shell wrapper; `"$@"` forwards the args verbatim.
+        let mut wrapped = vec![
+            "-c".to_string(),
+            "exec \"$@\" < /dev/null".to_string(),
+            "sh".to_string(),
+            "opencode".to_string(),
+        ];
+        wrapped.extend(args);
         AgentCommand {
-            binary: "opencode".to_string(),
-            args,
+            binary: "sh".to_string(),
+            args: wrapped,
         }
     }
 
@@ -383,6 +425,12 @@ impl AgentCommandBuilder {
         model: Option<&str>,
     ) -> AgentCommand {
         let mut args = Vec::new();
+
+        // Aider only loads CONVENTIONS.md when explicitly passed via --read;
+        // it never auto-reads it. Load it unconditionally (interactive and
+        // headless) so the agent always receives the skills/conventions.
+        args.push("--read".to_string());
+        args.push(format!("{}/.aider/CONVENTIONS.md", GUEST_HOME));
 
         if !interactive {
             if !prompt.is_empty() {
@@ -423,11 +471,10 @@ impl AgentCommandBuilder {
             }
         }
 
-        if interactive {
-            // Skip Gemini's folder-trust prompt; the workspace is the sandbox's
-            // disposable clone, so there is nothing to confirm.
-            args.push("--skip-trust".to_string());
-        }
+        // Skip Gemini's folder-trust prompt; the workspace is the sandbox's
+        // disposable clone, so there is nothing to confirm. Required for headless
+        // (Gemini refuses to run in an untrusted dir), and harmless interactively.
+        args.push("--skip-trust".to_string());
 
         match permissions {
             Permissions::AllowAll => {
@@ -500,8 +547,11 @@ mod tests {
             None,
         );
         assert_eq!(cmd.binary, "claude");
-        assert!(cmd.args.contains(&"--verbose".to_string()));
-        assert!(cmd.args.contains(&"--output-format".to_string()));
+        // Print mode requires a prompt; without one claude runs bare (interactive),
+        // so the stream-json output flags must not be emitted.
+        assert!(!cmd.args.contains(&"--print".to_string()));
+        assert!(!cmd.args.contains(&"--verbose".to_string()));
+        assert!(!cmd.args.contains(&"--output-format".to_string()));
         assert!(!cmd
             .args
             .contains(&"--dangerously-skip-permissions".to_string()));
@@ -539,6 +589,20 @@ mod tests {
     }
 
     #[test]
+    fn test_claude_headless_without_prompt_omits_print_flags() {
+        let cmd = AgentCommandBuilder::build(
+            &AgentType::Claude,
+            "",
+            false,
+            false,
+            Permissions::Default,
+            None,
+        );
+        assert!(!cmd.args.contains(&"--print".to_string()));
+        assert!(!cmd.args.contains(&"--output-format".to_string()));
+    }
+
+    #[test]
     fn test_codex_command() {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Codex,
@@ -548,7 +612,8 @@ mod tests {
             Permissions::Default,
             None,
         );
-        assert_eq!(cmd.binary, "codex");
+        assert_eq!(cmd.binary, "sh");
+        assert_eq!(cmd.args[0], "-c");
         assert!(cmd.args.contains(&"exec".to_string()));
         assert!(cmd.args.contains(&"--skip-git-repo-check".to_string()));
         assert!(cmd.args.contains(&"write tests".to_string()));
@@ -614,7 +679,7 @@ mod tests {
             None,
         );
         assert_eq!(cmd.binary, "cursor-agent");
-        assert!(cmd.args.contains(&"--message".to_string()));
+        assert!(cmd.args.contains(&"-p".to_string()));
         assert!(cmd.args.contains(&"refactor this".to_string()));
     }
 
@@ -641,6 +706,30 @@ mod tests {
             AgentCommandBuilder::build_env(&AgentType::Goose, false, Permissions::AllowAll, &base);
         assert_eq!(env.get("GOOSE_MODE").unwrap(), "auto");
         assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "sk-...");
+    }
+
+    #[test]
+    fn test_build_env_sets_writable_tmpdir() {
+        // The guest rootfs is read-only, so TMPDIR must point at a writable dir.
+        let env = AgentCommandBuilder::build_env(
+            &AgentType::Goose,
+            false,
+            Permissions::Default,
+            &HashMap::new(),
+        );
+        assert_eq!(
+            env.get("TMPDIR").map(String::as_str),
+            Some("/home/developer/.nanosandbox")
+        );
+    }
+
+    #[test]
+    fn test_build_env_tmpdir_override_wins() {
+        let mut base = HashMap::new();
+        base.insert("TMPDIR".to_string(), "/custom/tmp".to_string());
+        let env =
+            AgentCommandBuilder::build_env(&AgentType::Claude, false, Permissions::Default, &base);
+        assert_eq!(env.get("TMPDIR").unwrap(), "/custom/tmp");
     }
 
     #[test]
@@ -789,7 +878,7 @@ mod tests {
             None,
             Some("sess-1"),
         );
-        assert_eq!(cmd.binary, "codex");
+        assert_eq!(cmd.binary, "sh");
         assert!(cmd.args.contains(&"exec".to_string()));
         assert!(cmd.args.contains(&"resume".to_string()));
         assert!(cmd.args.contains(&"sess-1".to_string()));
@@ -854,7 +943,7 @@ mod tests {
             Permissions::Default,
             None,
         );
-        assert!(!cmd.args.contains(&"--message".to_string()));
+        assert!(!cmd.args.contains(&"-p".to_string()));
         assert!(!cmd.args.contains(&"ignored".to_string()));
         assert!(
             cmd.args.contains(&"--trust".to_string()),
@@ -888,8 +977,18 @@ mod tests {
             Permissions::Default,
             None,
         );
-        assert_eq!(cmd.binary, "opencode");
-        assert_eq!(cmd.args, vec!["run".to_string(), "do it".to_string()]);
+        assert_eq!(cmd.binary, "sh");
+        assert_eq!(
+            cmd.args,
+            vec![
+                "-c".to_string(),
+                "exec \"$@\" < /dev/null".to_string(),
+                "sh".to_string(),
+                "opencode".to_string(),
+                "run".to_string(),
+                "do it".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -934,6 +1033,10 @@ mod tests {
             None,
         );
         assert_eq!(cmd.binary, "aider");
+        assert!(cmd.args.contains(&"--read".to_string()));
+        assert!(cmd
+            .args
+            .contains(&format!("{}/.aider/CONVENTIONS.md", GUEST_HOME)));
         assert!(cmd.args.contains(&"--message".to_string()));
         assert!(cmd.args.contains(&"do it".to_string()));
         assert!(cmd.args.contains(&"--yes".to_string()));
@@ -941,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aider_interactive_is_bare() {
+    fn test_aider_interactive_loads_conventions() {
         let cmd = AgentCommandBuilder::build(
             &AgentType::Aider,
             "ignored",
@@ -951,11 +1054,38 @@ mod tests {
             None,
         );
         assert_eq!(cmd.binary, "aider");
-        assert!(
-            cmd.args.is_empty(),
-            "interactive aider must be bare `aider`, got {:?}",
-            cmd.args
+        assert_eq!(
+            cmd.args,
+            vec![
+                "--read".to_string(),
+                format!("{}/.aider/CONVENTIONS.md", GUEST_HOME),
+            ],
+            "interactive aider must load CONVENTIONS.md via --read"
         );
+    }
+
+    #[test]
+    fn test_aider_loads_conventions_read_flag() {
+        for interactive in [true, false] {
+            let cmd = AgentCommandBuilder::build(
+                &AgentType::Aider,
+                "do it",
+                false,
+                interactive,
+                Permissions::Default,
+                None,
+            );
+            assert_eq!(cmd.binary, "aider");
+            assert!(
+                cmd.args.contains(&"--read".to_string()),
+                "aider (interactive={interactive}) must pass --read"
+            );
+            assert!(
+                cmd.args
+                    .contains(&format!("{}/.aider/CONVENTIONS.md", GUEST_HOME)),
+                "aider (interactive={interactive}) must pass the CONVENTIONS.md path"
+            );
+        }
     }
 
     #[test]
@@ -969,7 +1099,14 @@ mod tests {
             None,
         );
         assert_eq!(cmd.binary, "gemini");
-        assert_eq!(cmd.args, vec!["-p".to_string(), "do it".to_string()]);
+        assert_eq!(
+            cmd.args,
+            vec![
+                "-p".to_string(),
+                "do it".to_string(),
+                "--skip-trust".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -1051,40 +1188,71 @@ mod tests {
 
     #[test]
     fn test_all_agents_interactive_and_headless_argv() {
-        let cases: &[(AgentType, &str, &[&str], &[&str])] = &[
-            (AgentType::Claude, "claude", &[], &["--print", "do it"]),
+        let cases: &[(AgentType, &str, &[&str], &str, &[&str])] = &[
+            (
+                AgentType::Claude,
+                "claude",
+                &[],
+                "claude",
+                &["--print", "do it"],
+            ),
             (
                 AgentType::Codex,
                 "codex",
                 &[],
+                "sh",
                 &["exec", "--skip-git-repo-check", "do it"],
             ),
             (
                 AgentType::Goose,
                 "goose",
                 &["session"],
+                "goose",
                 &["run", "--text", "do it"],
             ),
             (
                 AgentType::Cursor,
                 "cursor-agent",
                 &["--trust"],
-                &["--message", "do it"],
+                "cursor-agent",
+                &["-p", "do it"],
             ),
-            (AgentType::Opencode, "opencode", &[], &["run", "do it"]),
+            (
+                AgentType::Opencode,
+                "opencode",
+                &[],
+                "sh",
+                &[
+                    "-c",
+                    "exec \"$@\" < /dev/null",
+                    "sh",
+                    "opencode",
+                    "run",
+                    "do it",
+                ],
+            ),
             (
                 AgentType::Aider,
                 "aider",
-                &[],
-                &["--message", "do it", "--yes", "--no-auto-commits"],
+                &["--read", "/home/developer/.aider/CONVENTIONS.md"],
+                "aider",
+                &[
+                    "--read",
+                    "/home/developer/.aider/CONVENTIONS.md",
+                    "--message",
+                    "do it",
+                    "--yes",
+                    "--no-auto-commits",
+                ],
             ),
             (
                 AgentType::Gemini,
                 "gemini",
                 &["--skip-trust"],
+                "gemini",
                 &["-p", "do it"],
             ),
-            (AgentType::Crush, "crush", &[], &["run", "do it"]),
+            (AgentType::Crush, "crush", &[], "crush", &["run", "do it"]),
         ];
 
         assert_eq!(
@@ -1093,7 +1261,9 @@ mod tests {
             "table must cover every agent in AgentType::ALL"
         );
 
-        for (agent_type, binary, interactive_args, headless_args) in cases.iter().copied() {
+        for (agent_type, interactive_binary, interactive_args, headless_binary, headless_args) in
+            cases.iter().copied()
+        {
             let interactive_cmd = AgentCommandBuilder::build(
                 &agent_type,
                 "ignored prompt",
@@ -1103,7 +1273,7 @@ mod tests {
                 None,
             );
             assert_eq!(
-                interactive_cmd.binary, binary,
+                interactive_cmd.binary, interactive_binary,
                 "interactive binary for {:?}",
                 agent_type
             );
@@ -1126,7 +1296,7 @@ mod tests {
                 None,
             );
             assert_eq!(
-                headless_cmd.binary, binary,
+                headless_cmd.binary, headless_binary,
                 "headless binary for {:?}",
                 agent_type
             );

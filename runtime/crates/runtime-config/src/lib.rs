@@ -1264,9 +1264,9 @@ const AGENT_IMAGES: &[&str] = &[
     "base", "claude", "codex", "cursor", "goose", "opencode", "aider", "gemini", "crush", "legacy",
 ];
 
-/// Normalize an image reference: known agent names get the agents-registry
-/// prefix, other bare names get `docker.io/library/`, fully-qualified refs are
-/// returned unchanged.
+/// Normalize an image reference: known agent names get the nanosandbox agent
+/// image registry prefix, other bare names get `docker.io/library/`,
+/// fully-qualified refs are returned unchanged.
 pub fn normalize_image(image: &str) -> String {
     if image.is_empty() {
         return image.to_string();

@@ -102,6 +102,79 @@ const PROVIDER_KEYS: &[&str] = &[
     "OPENROUTER_API_KEY",
 ];
 
+/// Accepted provider credential keys for OpenCode (mirrors the configurator's
+/// provider->env-key table; superset of `required_api_keys`).
+const ACCEPTED_OPENCODE: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GOOGLE_API_KEY",
+    "HF_TOKEN",
+    "OPENCODE_API_KEY",
+    "BAKERYHUB_API_KEY",
+];
+
+/// Accepted provider credential keys for Crush (mirrors the configurator).
+const ACCEPTED_CRUSH: &[&str] = &[
+    "AIHUBMIX_API_KEY",
+    "VERCEL_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GOOGLE_API_KEY",
+    "VENICE_API_KEY",
+    "CORTECS_API_KEY",
+    "OPENCODE_API_KEY",
+    "IONET_API_KEY",
+    "OPENAI_API_KEY",
+    "ATLASCLOUD_API_KEY",
+    "FIREWORKS_API_KEY",
+    "NEBIUS_API_KEY",
+    "ALIBABA_SINGAPORE_API_KEY",
+    "NEURALWATT_API_KEY",
+    "AVIAN_API_KEY",
+    "CHUTES_API_KEY",
+    "BASETEN_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "QINIUCLOUD_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "SYNTHETIC_API_KEY",
+    "ZAI_API_KEY",
+    "ZHIPU_API_KEY",
+    "GEMINI_API_KEY",
+    "SCW_SECRET_KEY",
+    "ALIBABA_US_API_KEY",
+    "MOONSHOT_API_KEY",
+    "MINIMAX_API_KEY",
+    "XAI_API_KEY",
+    "HF_TOKEN",
+    "KIMI_CODING_API_KEY",
+    "PIONEER_API_KEY",
+    "CEREBRAS_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "PARETO_API_KEY",
+    "CORALBRICKS_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+];
+
+/// Accepted provider credential keys for Aider (mirrors the configurator).
+const ACCEPTED_AIDER: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GROQ_API_KEY",
+    "FIREWORKS_API_KEY",
+    "AZURE_API_KEY",
+    "XAI_API_KEY",
+    "COHERE_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+];
+
 /// Returns the requirements for an agent.
 ///
 /// Agents not listed here (custom images, unknown names) have no mandatory
@@ -154,24 +227,19 @@ pub fn agent_requirements(agent: &str) -> &'static [AgentRequirement] {
         }],
         "opencode" => &[AgentRequirement {
             label: "Provider API key",
-            keys: PROVIDER_KEYS,
+            keys: ACCEPTED_OPENCODE,
             mandatory: true,
             hint: "export ANTHROPIC_API_KEY=... or OPENAI_API_KEY=... before launching the TUI, or sign in through the browser",
         }],
         "aider" => &[AgentRequirement {
             label: "Provider API key",
-            keys: &[
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "GEMINI_API_KEY",
-                "DEEPSEEK_API_KEY",
-            ],
+            keys: ACCEPTED_AIDER,
             mandatory: true,
             hint: "export ANTHROPIC_API_KEY=... or OPENAI_API_KEY=... before launching the TUI, or sign in through the browser",
         }],
         "crush" => &[AgentRequirement {
             label: "Provider API key",
-            keys: PROVIDER_KEYS,
+            keys: ACCEPTED_CRUSH,
             mandatory: true,
             hint: "export ANTHROPIC_API_KEY=... or OPENAI_API_KEY=... before launching the TUI, or sign in through the browser",
         }],
@@ -399,5 +467,148 @@ mod tests {
             ValidationResult::Advisory("warn".into()).message(),
             Some("warn")
         );
+    }
+
+    // Local copies of the configurator's provider->env-key tables. These are
+    // intentionally duplicated here (not referencing the production consts) so
+    // the tests fail before the accepted sets are widened and pass after.
+    const OPENCODE_KEYS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "HF_TOKEN",
+        "OPENCODE_API_KEY",
+        "BAKERYHUB_API_KEY",
+    ];
+    const CRUSH_KEYS: &[&str] = &[
+        "AIHUBMIX_API_KEY",
+        "VERCEL_API_KEY",
+        "OPENROUTER_API_KEY",
+        "VENICE_API_KEY",
+        "CORTECS_API_KEY",
+        "OPENCODE_API_KEY",
+        "IONET_API_KEY",
+        "OPENAI_API_KEY",
+        "ATLASCLOUD_API_KEY",
+        "FIREWORKS_API_KEY",
+        "NEBIUS_API_KEY",
+        "ALIBABA_SINGAPORE_API_KEY",
+        "NEURALWATT_API_KEY",
+        "AVIAN_API_KEY",
+        "CHUTES_API_KEY",
+        "BASETEN_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "QINIUCLOUD_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "SYNTHETIC_API_KEY",
+        "ZAI_API_KEY",
+        "ZHIPU_API_KEY",
+        "GEMINI_API_KEY",
+        "SCW_SECRET_KEY",
+        "ALIBABA_US_API_KEY",
+        "MOONSHOT_API_KEY",
+        "MINIMAX_API_KEY",
+        "XAI_API_KEY",
+        "HF_TOKEN",
+        "KIMI_CODING_API_KEY",
+        "PIONEER_API_KEY",
+        "CEREBRAS_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "PARETO_API_KEY",
+        "CORALBRICKS_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    ];
+    const AIDER_KEYS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "FIREWORKS_API_KEY",
+        "AZURE_API_KEY",
+        "XAI_API_KEY",
+        "COHERE_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    ];
+
+    #[test]
+    fn opencode_accepts_every_extended_key() {
+        for key in OPENCODE_KEYS {
+            assert_eq!(
+                validate_agent("opencode", &env(&[(key, "x")])),
+                ValidationResult::Ok,
+                "opencode should accept {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn crush_accepts_every_extended_key() {
+        for key in CRUSH_KEYS {
+            assert_eq!(
+                validate_agent("crush", &env(&[(key, "x")])),
+                ValidationResult::Ok,
+                "crush should accept {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn aider_accepts_every_extended_key() {
+        for key in AIDER_KEYS {
+            assert_eq!(
+                validate_agent("aider", &env(&[(key, "x")])),
+                ValidationResult::Ok,
+                "aider should accept {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_sets_are_supersets_of_autodetect() {
+        for agent in ["opencode", "crush", "aider", "goose"] {
+            let accepted: Vec<&str> = agent_requirements(agent)
+                .iter()
+                .flat_map(|r| r.keys.iter().copied())
+                .collect();
+            for (key, _is_required) in crate::tui::run::required_api_keys(agent) {
+                assert!(
+                    accepted.contains(&key),
+                    "{agent} auto-detects {key} but does not accept it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_providers_match_agent_requirements() {
+        for agent in [
+            "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
+        ] {
+            let accepted: std::collections::BTreeSet<String> =
+                sandbox::providers::accepted_keys(agent).into_iter().collect();
+            let required: std::collections::BTreeSet<String> = agent_requirements(agent)
+                .iter()
+                .flat_map(|r| r.keys.iter().map(|k| (*k).to_string()))
+                .collect();
+            let extra: Vec<&String> = required.difference(&accepted).collect();
+            assert!(
+                extra
+                    .iter()
+                    .all(|k| k.as_str() == "GOOSE_PROVIDER" || k.as_str() == "GOOSE_MODEL"),
+                "{agent}: requirement keys absent from the catalog: {extra:?}"
+            );
+            let missing: Vec<&String> = accepted.difference(&required).collect();
+            assert!(
+                missing.is_empty(),
+                "{agent}: catalog keys the TUI does not accept: {missing:?}"
+            );
+        }
     }
 }

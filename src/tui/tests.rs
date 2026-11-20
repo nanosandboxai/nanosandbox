@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use super::app::{AgentPanel, App, ChatMessage, MessageRole, PanelMode};
 use super::commands::{self, Command, ParseResult};
 use super::event::AppEvent;
-use super::run::{handle_command, handle_event};
+use super::run::{handle_command, handle_event, resolve_agent_configs};
 use super::terminal::SshTerminal;
 use super::theme::ThemeName;
 
@@ -1819,4 +1819,41 @@ fn frame_panel_card_has_no_title_duplicate() {
         1,
         "the agent name must appear once (in the tab strip), not on the panel card border, got: {text:?}"
     );
+}
+
+#[test]
+fn resolve_agent_configs_errors_on_unknown_skill_with_registry() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let base = dir.path();
+    std::fs::write(
+        base.join("index.json"),
+        r#"{
+            "version": "1.0",
+            "agents": [],
+            "skills": [
+                { "name": "tdd", "description": "TDD", "tags": [], "path": "skills/tdd.md" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(base.join("skills")).unwrap();
+    std::fs::write(
+        base.join("skills/tdd.md"),
+        "---\nname: tdd\ndescription: TDD\nversion: \"1.0\"\ntags: []\n---\n\n# TDD\n",
+    )
+    .unwrap();
+
+    let registry = sandbox::AgentsRegistryClient::from_path(base).unwrap();
+    let config = sandbox::AgentSandboxConfig {
+        agent: None,
+        skills: vec!["definitely-not-a-skill".to_string()],
+        ..Default::default()
+    };
+
+    let result = resolve_agent_configs(Some(&registry), vec![("s".to_string(), config)]);
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("definitely-not-a-skill"));
 }

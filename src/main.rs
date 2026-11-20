@@ -1175,6 +1175,12 @@ mod cli {
         let configs =
             sandbox::load_sandbox_files(&[path.clone()]).map_err(|e| anyhow::anyhow!("{}", e))?;
 
+        // Resolve agent definitions + skills from the registry so apply materializes
+        // skill files (the TUI does the same). Fatal on unknown skill when a registry
+        // is present; non-fatal when no registry is found.
+        let registry = nanosb_cli::tui::run::load_agents_registry();
+        let configs = nanosb_cli::tui::run::resolve_agent_configs(registry.as_ref(), configs)?;
+
         let mut results: Vec<(String, String, String)> = Vec::new();
         let mut any_error = false;
 

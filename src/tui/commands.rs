@@ -258,10 +258,6 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
         description: "List nanosb branches in project",
     },
     CommandHelpEntry {
-        pattern: "/sync [on|off|now]",
-        description: "Sync sandbox commits to refs/nanosb/<id>",
-    },
-    CommandHelpEntry {
         pattern: "/mcp",
         description: "Toggle MCP sidebar",
     },
@@ -276,6 +272,10 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
     CommandHelpEntry {
         pattern: "/skills show <name>",
         description: "Show skill details",
+    },
+    CommandHelpEntry {
+        pattern: "/agent",
+        description: "Show current agent definition",
     },
     CommandHelpEntry {
         pattern: "/agent list",

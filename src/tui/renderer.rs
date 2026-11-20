@@ -570,25 +570,13 @@ fn render_mcp_sidebar(frame: &mut Frame, area: Rect, theme: &Theme) {
         Line::from(""),
         Line::from(vec![
             Span::styled("/mcp list", Style::new().fg(theme.success)),
-            Span::raw("  list servers"),
-        ]),
-        Line::from(vec![
-            Span::styled("/mcp add", Style::new().fg(theme.success)),
-            Span::raw("   add server"),
-        ]),
-        Line::from(vec![
-            Span::styled("/mcp remove", Style::new().fg(theme.success)),
-            Span::raw(" remove server"),
-        ]),
-        Line::from(vec![
-            Span::styled("/mcp enable", Style::new().fg(theme.success)),
-            Span::raw(" enable server"),
-        ]),
-        Line::from(vec![
-            Span::styled("/mcp disable", Style::new().fg(theme.success)),
-            Span::raw(" disable"),
+            Span::raw("  list configured servers"),
         ]),
         Line::from(""),
+        Line::from(Span::styled(
+            "Declarative: edit sandbox.yml, then nanosb apply.",
+            Style::new().fg(theme.text_muted),
+        )),
         Line::from(Span::styled(
             "Press /mcp to toggle this sidebar.",
             Style::new().fg(theme.text_muted),

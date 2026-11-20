@@ -1,0 +1,192 @@
+# Registries
+
+Open-source registry sources and agent VM images for [nanosandbox](https://github.com/nanosandboxai/nanosandbox).
+
+## Overview
+
+This directory is the registry entry point for the nanosandbox runtime and TUI. It holds
+the open-source registries that agents, skills, and MCP servers are discovered from — it no
+longer carries any hand-maintained agent, skill, or MCP definitions.
+
+- **MCP registry sources** — the public, open-source MCP registries nanosandbox resolves
+  servers from (see [`mcps/sources.yaml`](mcps/sources.yaml)).
+- **Agent model catalog** — the curated per-agent model lists shown by the docs site's
+  agent configurator (see [`models/models.json`](models/models.json)).
+- **Agent VM images** — the Dockerfiles that build the per-agent microVM images
+  (see [`docker/`](docker)).
+
+Agent personas, skills, and MCP selections are configured per sandbox in `sandbox.yml`; the
+runtime resolves them through the open-source registries listed here (and, for skills, the
+public skills catalogs).
+
+## MCP Registry Sources
+
+[`mcps/sources.yaml`](mcps/sources.yaml) lists the open-source MCP registries nanosandbox can
+resolve servers from:
+
+| Registry | URL | Type |
+|----------|-----|------|
+| official | https://registry.modelcontextprotocol.io | Canonical MCP registry (Linux Foundation) |
+| smithery | https://smithery.ai | Registry + managed hosting |
+| glama | https://glama.ai/mcp/servers | MCP directory |
+| pulsemcp | https://www.pulsemcp.com/servers | Quality-controlled directory |
+| mcp-run | https://www.mcp.run | WebAssembly MCP hosting |
+| mcp-get | https://mcp-get.com | MCP package-manager CLI |
+| opentools | https://opentools.com/registry | Curated discovery |
+| github-mcp | https://github.com/mcp | GitHub's integrated MCP registry |
+
+See [`mcps/sources.yaml`](mcps/sources.yaml) for the full source metadata (API endpoints, auth).
+
+## Agent Model Catalog
+
+[`models/models.json`](models/models.json) is the **committed, CI-refreshed** catalog of the
+models each agent type accepts, plus the canonical **providers** each agent can be
+credentialed against. Each model list is taken from that agent's **own** source — its CLI
+catalog, model picker, or provider database — not a third-party aggregator. The docs site's
+agent configurator reads it to populate its model dropdown, and the runtime embeds it.
+
+Schema (v2):
+
+```json
+{
+  "version": 2,
+  "agents": {
+    "claude": {
+      "models": ["claude-opus-4-1-20250805", "..."],
+      "providers": ["anthropic", "bedrock", "foundry", "mantle", "vertex_ai"]
+    }
+  }
+}
+```
+
+- `models` — the model IDs the agent accepts. Model strings are **never rewritten**; the
+  provider of a model is derived from its `/`-prefix by the consumer.
+- `providers` — the **credential providers** the agent can actually be configured with (the
+  codomain of the per-agent resolution function). For agents whose models carry prefixes
+  (opencode, aider, crush) it is derived from the model list; for the rest it is declared
+  (claude → `anthropic`, codex → `openai`, gemini → `gemini`, goose → its four collapse
+  targets). Agents that use only their own key (cursor) have an empty list.
+
+Schema: [`models/models.schema.json`](models/models.schema.json).
+
+The per-agent resolution rules (single / collapse / derived, per-agent overrides, OAuth
+providers) live in [`models/providers.yaml`](models/providers.yaml) and are compiled into
+[`models/provider-catalog.json`](models/provider-catalog.json) — the artifact every consumer
+reads (Rust `sandbox::providers`, the docs-site configurator, the Python validator).
+
+| Agent | Models | Providers | Source of truth |
+|-------|-------:|----------:|-----------------|
+| claude | 44 | 1 | Claude Code `/model` (aliases + full IDs) |
+| codex | 8 | 1 | `codex debug models` catalog |
+| goose | 455 | 4 | Goose provider definitions + per-provider defaults |
+| cursor | 43 | 0 | Cursor docs model list (`cursor-agent --list-models` needs auth; snapshot) |
+| opencode | 662 | 5 | `opencode models` catalog (models.dev) |
+| aider | 379 | 12 | `aider/models.py` aliases + `model-settings.yml` |
+| gemini | 16 | 1 | Gemini CLI `models.ts` (aliases + IDs) |
+| crush | 1764 | 39 | Crush's Catwalk provider database |
+
+Four agents (cursor, goose, opencode, crush) expose their catalogs dynamically at runtime,
+so their lists here are point-in-time snapshots rather than fixed allow-lists.
+
+### Syncing the catalog
+
+The catalog is regenerated from per-agent source adapters under
+[`../scripts/models/sources/`](../scripts/models/sources) by
+[`../scripts/models/sync.py`](../scripts/models/sync.py):
+
+```bash
+python3 scripts/models/sync.py            # refresh from upstream (network)
+python3 scripts/models/sync.py --offline  # derive from the committed snapshot only
+python3 scripts/models/sync.py --check    # verify the committed file is in sync (CI)
+python3 scripts/models/update-models.py   # CI entrypoint (delegates to sync.py)
+python3 scripts/models/validate.py        # schema + provider-prefix validation
+```
+
+`sync.py` preserves model strings, computes each agent's credential `providers`, validates
+the result, writes `models.json` **and** `provider-catalog.json` only when they changed
+(`--check` covers both), and refreshes the counts table above; it is idempotent.
+[`.github/workflows/update-models.yml`](../.github/workflows/update-models.yml) runs it on a
+weekly schedule and opens a PR when the catalog changes, while the `models` job in
+[`ci.yml`](../.github/workflows/ci.yml) validates the committed catalog on every push.
+
+## Usage with nanosandbox
+
+Select an MCP server from an open-source registry in your `sandbox.yml`:
+
+```yaml
+defaults:
+  image: ghcr.io/nanosandboxai/nanosandbox/claude:latest
+
+sandboxes:
+  my-env:
+    type: claude
+    mcp:
+      github:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-github"]
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+```
+
+Skills are resolved from the public skills catalogs and applied per sandbox:
+
+```yaml
+sandboxes:
+  my-env:
+    type: claude
+    skills: [git-workflow, tdd]
+```
+
+## Docker Images
+
+This directory also contains the Docker images for running agents inside nanosandbox VMs.
+
+### Image Architecture
+
+```
+Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
+    |
+    ├── Dockerfile.claude   → ghcr.io/nanosandboxai/nanosandbox/claude
+    ├── Dockerfile.codex    → ghcr.io/nanosandboxai/nanosandbox/codex
+    ├── Dockerfile.goose    → ghcr.io/nanosandboxai/nanosandbox/goose
+    ├── Dockerfile.cursor   → ghcr.io/nanosandboxai/nanosandbox/cursor
+    ├── Dockerfile.opencode → ghcr.io/nanosandboxai/nanosandbox/opencode
+    ├── Dockerfile.aider    → ghcr.io/nanosandboxai/nanosandbox/aider
+    ├── Dockerfile.gemini   → ghcr.io/nanosandboxai/nanosandbox/gemini
+    └── Dockerfile.crush    → ghcr.io/nanosandboxai/nanosandbox/crush
+```
+
+### Base Image Contents
+
+- `node:22-slim` with minimal system deps (curl, ca-certificates, git, bash)
+- Python 3 + uv/uvx (runtime for Python-based MCP servers like mcp-server-fetch)
+- Pure installation: no user/group, no `/workspace`, no `CMD`/`ENTRYPOINT`
+- No nanosb runtime code: sandbox setup happens at the microVM layer
+
+### Available Images
+
+| Image | Agent | Image reference |
+|-------|-------|-----------------|
+| claude | Claude Code | `ghcr.io/nanosandboxai/nanosandbox/claude:latest` |
+| codex | OpenAI Codex | `ghcr.io/nanosandboxai/nanosandbox/codex:latest` |
+| goose | Goose | `ghcr.io/nanosandboxai/nanosandbox/goose:latest` |
+| cursor | Cursor Agent | `ghcr.io/nanosandboxai/nanosandbox/cursor:latest` |
+| opencode | OpenCode | `ghcr.io/nanosandboxai/nanosandbox/opencode:latest` |
+| aider | Aider | `ghcr.io/nanosandboxai/nanosandbox/aider:latest` |
+| gemini | Gemini CLI | `ghcr.io/nanosandboxai/nanosandbox/gemini:latest` |
+| crush | Crush | `ghcr.io/nanosandboxai/nanosandbox/crush:latest` |
+
+### Building Locally
+
+```bash
+cd docker
+docker build -f Dockerfile.base -t base:local .
+docker build -f Dockerfile.claude -t claude:local .
+```
+
+## Contributing
+
+1. Add or update open-source MCP registry entries in [`mcps/sources.yaml`](mcps/sources.yaml),
+   the agent model catalog in [`models/models.json`](models/models.json), or agent image
+   definitions under [`docker/`](docker).
+2. Submit a pull request.

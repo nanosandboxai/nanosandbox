@@ -1,6 +1,6 @@
-//! End-to-end tests for agents from agents-registry running in Nanosandbox
+//! End-to-end tests for agents from registries running in Nanosandbox
 //!
-//! These tests verify that all AI coding agents from the agents-registry
+//! These tests verify that all AI coding agents from the registries
 //! can be executed within sandboxes managed by Nanosandbox.
 //!
 //! Disabled in CI — enable with: cargo test --features integration-tests
@@ -51,7 +51,7 @@ struct AgentDef {
     version_args: &'static [&'static str],
 }
 
-/// All agents available in agents-registry
+/// All agents available in registries
 const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "Claude Code",
@@ -812,7 +812,7 @@ async fn test_workspace_writable() {
 // Image Pull Test
 // =============================================================================
 
-/// Test pulling an agent image from agents-registry
+/// Test pulling an agent image from registries
 #[tokio::test]
 async fn test_pull_agents_registry_image() {
     use runtime::image::ImageManager;

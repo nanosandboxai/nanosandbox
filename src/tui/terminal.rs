@@ -198,10 +198,21 @@ pub async fn connect_console(
 
     let client = SupervisorClient::new(&sandbox_name);
     if !client.is_running() {
-        return Err(format!(
-            "supervised sandbox '{}' is not running",
-            sandbox_name
-        ));
+        let last_output = std::fs::read_to_string(client.sandbox_dir().join("logs/console.log"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .map(|l| l.trim().to_string())
+            });
+        return Err(match last_output {
+            Some(out) => format!(
+                "supervised sandbox '{}' is not running (last output: {})",
+                sandbox_name, out
+            ),
+            None => format!("supervised sandbox '{}' is not running", sandbox_name),
+        });
     }
 
     let mut conn = AttachConnection::open(&client).map_err(|e| e.to_string())?;

@@ -343,10 +343,6 @@
         "pattern": "/branches"
       },
       {
-        "description": "Sync sandbox commits to refs/nanosb/<id>",
-        "pattern": "/sync [on|off|now]"
-      },
-      {
         "description": "Toggle MCP sidebar",
         "pattern": "/mcp"
       },
@@ -361,6 +357,10 @@
       {
         "description": "Show skill details",
         "pattern": "/skills show <name>"
+      },
+      {
+        "description": "Show current agent definition",
+        "pattern": "/agent"
       },
       {
         "description": "List available agents",

@@ -7,7 +7,7 @@ on:
     branches:
       - main
     paths:
-      - 'agents-registry/docker/**'
+      - 'registries/docker/**'
   workflow_dispatch:
     inputs:
       tag:
@@ -73,8 +73,8 @@ jobs:
       - name: Build and push base image
         uses: docker/build-push-action@v5
         with:
-          context: agents-registry
-          file: agents-registry/docker/Dockerfile.base
+          context: registries
+          file: registries/docker/Dockerfile.base
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -123,7 +123,7 @@ jobs:
       - name: Resolve pinned agent versions from package.json
         id: versions
         run: |
-          cd agents-registry/docker
+          cd registries/docker
           {
             echo "claude=$(node -p "require('./package.json').dependencies['@anthropic-ai/claude-code']")"
             echo "codex=$(node -p "require('./package.json').dependencies['@openai/codex']")"
@@ -153,8 +153,8 @@ jobs:
       - name: Build and push agent image
         uses: docker/build-push-action@v5
         with:
-          context: agents-registry
-          file: agents-registry/docker/Dockerfile.${{ matrix.agent }}
+          context: registries
+          file: registries/docker/Dockerfile.${{ matrix.agent }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

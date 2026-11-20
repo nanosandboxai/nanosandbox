@@ -1,0 +1,8 @@
+.nanosb/
+__pycache__/
+*.pyc
+
+# Locally generated registry index (not committed)
+/index.json
+
+**/testdata/**
