@@ -37,7 +37,7 @@ has   "README: Linux/KVM support documented"      "KVM" README.md
 has   "README: links Linux live verification"     "live-verification-linux" README.md
 hasnt "README: no stale 'Linux not supported'"    "Linux is not yet supported" README.md
 
-for c in apply restart describe logs attach sessions projects projects-forget gc; do
+for c in apply restart describe logs attach sessions projects projects-forget gc pause resume; do
   has "README: CLI lists '$c'" "nanosb $c" README.md
 done
 

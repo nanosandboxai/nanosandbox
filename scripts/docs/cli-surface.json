@@ -160,6 +160,20 @@
         "subcommands": []
       },
       {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "pause",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "resume",
+        "subcommands": []
+      },
+      {
         "aliases": [
           "delete"
         ],

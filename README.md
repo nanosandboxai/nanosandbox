@@ -233,7 +233,9 @@ nanosb ps [-a]                 # List sandboxes (running, or all with -a)
 nanosb logs <sandbox> [-f]     # Tail a sandbox console log
 nanosb attach <sandbox>        # Attach to a running sandbox
 nanosb stop <sandbox>          # Stop a running sandbox
-nanosb restart <sandbox>       # Restart a sandbox
+nanosb pause <sandbox>         # Pause a running sandbox (freeze the guest)
+nanosb resume <sandbox>        # Resume a paused sandbox
+nanosb restart <sandbox>       # Restart a sandbox (in place when running)
 nanosb rm [-f] <sandbox>       # Remove a sandbox
 nanosb describe <sandbox>      # Show a sandbox's resolved configuration
 nanosb apply [-f sandbox.yml]  # Apply sandbox.yml (redeploy); supports --dry-run/--prune

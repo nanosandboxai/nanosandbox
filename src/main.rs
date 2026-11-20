@@ -305,6 +305,18 @@ mod cli {
             sandbox: String,
         },
 
+        /// Pause a running sandbox (freeze the guest)
+        Pause {
+            /// Sandbox ID or name
+            sandbox: String,
+        },
+
+        /// Resume a paused sandbox
+        Resume {
+            /// Sandbox ID or name
+            sandbox: String,
+        },
+
         /// Remove a sandbox
         #[command(alias = "delete")]
         Rm {
@@ -769,6 +781,8 @@ mod cli {
             }) => cmd_exec(&sandbox, shell, tty, follow, &command).await,
             Some(Commands::Ps { all }) => cmd_ps(all, cli.format).await,
             Some(Commands::Stop { sandbox }) => cmd_stop(&sandbox, cli.verbose).await,
+            Some(Commands::Pause { sandbox }) => cmd_pause(&sandbox, cli.verbose).await,
+            Some(Commands::Resume { sandbox }) => cmd_resume(&sandbox, cli.verbose).await,
             Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
             Some(Commands::Doctor) => cmd_doctor(cli.format).await,
             Some(Commands::Capacity) => cmd_capacity(cli.format).await,
@@ -1310,7 +1324,15 @@ mod cli {
         if verbose {
             eprintln!("Restarting sandbox '{}'", sandbox_id);
         }
-        nanosb_cli::deploy::restart_sandbox(sandbox_id, allow_no_env, 60)?;
+        let via_engine = nanosb_client::SandboxClient::local()
+            .and_then(|client| client.sandbox(sandbox_id).restart());
+        if let Err(e) = via_engine {
+            eprintln!(
+                "note: restarting '{}' via supervisor respawn (state reset): {e}",
+                sandbox_id
+            );
+            nanosb_cli::deploy::restart_sandbox(sandbox_id, allow_no_env, 60)?;
+        }
         println!("{} Restarted {}", "✓".green(), sandbox_id.bold());
         Ok(())
     }
@@ -1881,6 +1903,36 @@ mod cli {
         Ok(())
     }
 
+    /// Pause a running sandbox.
+    async fn cmd_pause(sandbox_id: &str, verbose: bool) -> anyhow::Result<()> {
+        if verbose {
+            eprintln!("Pausing sandbox '{}'", sandbox_id);
+        }
+        let client = nanosb_client::SandboxClient::for_sandbox(sandbox_id)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        client
+            .sandbox(sandbox_id)
+            .pause()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("{} Paused {}", "✓".green(), sandbox_id.bold());
+        Ok(())
+    }
+
+    /// Resume a paused sandbox.
+    async fn cmd_resume(sandbox_id: &str, verbose: bool) -> anyhow::Result<()> {
+        if verbose {
+            eprintln!("Resuming sandbox '{}'", sandbox_id);
+        }
+        let client = nanosb_client::SandboxClient::for_sandbox(sandbox_id)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        client
+            .sandbox(sandbox_id)
+            .resume()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("{} Resumed {}", "✓".green(), sandbox_id.bold());
+        Ok(())
+    }
+
     /// Stop a running sandbox
     async fn cmd_stop(sandbox_id: &str, verbose: bool) -> anyhow::Result<()> {
         {
@@ -1892,6 +1944,7 @@ mod cli {
                 }
                 client.stop(false).map_err(|e| anyhow::anyhow!("{}", e))?;
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                let mut reached = false;
                 loop {
                     if let Some(state) = client.read_state() {
                         if matches!(
@@ -1899,6 +1952,7 @@ mod cli {
                             crate::supervisor::SandboxState::Stopped
                                 | crate::supervisor::SandboxState::Error
                         ) {
+                            reached = true;
                             break;
                         }
                     }
@@ -1906,6 +1960,12 @@ mod cli {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                if !reached {
+                    anyhow::bail!(
+                        "sandbox '{}' did not reach a terminal state within 20s; it may still be running",
+                        sandbox_id
+                    );
                 }
                 println!("{} Stopped {}", "✓".green(), sandbox_id.bold());
                 return Ok(());
@@ -1958,6 +2018,7 @@ mod cli {
                     }
                     let _ = client.stop(true);
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                    let mut reached = false;
                     loop {
                         if let Some(state) = client.read_state() {
                             if matches!(
@@ -1965,6 +2026,7 @@ mod cli {
                                 crate::supervisor::SandboxState::Stopped
                                     | crate::supervisor::SandboxState::Error
                             ) {
+                                reached = true;
                                 break;
                             }
                         }
@@ -1972,6 +2034,12 @@ mod cli {
                             break;
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                    if !reached {
+                        anyhow::bail!(
+                            "sandbox '{}' did not stop within 20s; leaving it on disk for `nanosb gc`",
+                            sandbox_id
+                        );
                     }
                 }
                 std::fs::remove_dir_all(client.sandbox_dir())?;
