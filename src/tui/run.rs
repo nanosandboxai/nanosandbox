@@ -1704,6 +1704,51 @@ fn spawn_sandbox_destroy(sandbox_arc: Arc<Mutex<Sandbox>>) {
     });
 }
 
+#[derive(Clone, Copy)]
+enum LifecycleOp {
+    Restart,
+    Pause,
+    Resume,
+}
+
+fn handle_lifecycle(app: &mut App, target: Option<&str>, op: LifecycleOp) {
+    let Some(idx) = app.resolve_panel_target(target) else {
+        app.set_status_message("No panel selected.");
+        return;
+    };
+    let display = app.panels[idx]
+        .display_name
+        .clone()
+        .unwrap_or_else(|| app.panels[idx].agent_name.clone());
+    let Some(sname) = app.panels[idx].supervisor_name().map(str::to_string) else {
+        app.set_status_message(format!("'{display}' has no supervised sandbox."));
+        return;
+    };
+    let result = nanosb_client::SandboxClient::for_sandbox(&sname).and_then(|client| {
+        let sandbox = client.sandbox(&sname);
+        match op {
+            LifecycleOp::Restart => sandbox.restart(),
+            LifecycleOp::Pause => sandbox.pause(),
+            LifecycleOp::Resume => sandbox.resume(),
+        }
+    });
+    let verb = match op {
+        LifecycleOp::Restart => "Restarted",
+        LifecycleOp::Pause => "Paused",
+        LifecycleOp::Resume => "Resumed",
+    };
+    match result {
+        Ok(()) => {
+            app.set_status_message(format!("{verb} '{display}'."));
+            if !matches!(op, LifecycleOp::Resume) {
+                app.panels[idx].mode = PanelMode::Loading;
+                app.panels[idx].loading_message = Some(format!("{verb}."));
+            }
+        }
+        Err(e) => app.set_status_message(format!("error: {e}")),
+    }
+}
+
 fn spawn_supervisor_stop(name: String) {
     tokio::task::spawn_blocking(move || {
         let client = crate::supervisor::client::SupervisorClient::new(&name);
@@ -3075,6 +3120,11 @@ pub(crate) async fn handle_command(
                 app.set_status_message(format!("'{}' has no supervised sandbox to stop.", name));
             }
         }
+        Command::Restart { target } => {
+            handle_lifecycle(app, target.as_deref(), LifecycleOp::Restart)
+        }
+        Command::Pause { target } => handle_lifecycle(app, target.as_deref(), LifecycleOp::Pause),
+        Command::Resume { target } => handle_lifecycle(app, target.as_deref(), LifecycleOp::Resume),
         Command::Disk => {
             handle_disk_usage(app);
         }

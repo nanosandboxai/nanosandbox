@@ -112,6 +112,21 @@ pub enum Command {
         /// Target: panel index or name, or None for focused panel.
         target: Option<String>,
     },
+    /// Restart a sandbox (in place when running).
+    Restart {
+        /// Target: panel index or name, or None for focused panel.
+        target: Option<String>,
+    },
+    /// Pause a running sandbox.
+    Pause {
+        /// Target: panel index or name, or None for focused panel.
+        target: Option<String>,
+    },
+    /// Resume a paused sandbox.
+    Resume {
+        /// Target: panel index or name, or None for focused panel.
+        target: Option<String>,
+    },
     /// Show disk usage of nanosb state (clones, sandboxes, sessions).
     Disk,
     /// Reclaim disk: dead supervisor dirs and unreferenced clones.
@@ -315,6 +330,18 @@ pub static HELP_ENTRIES: &[CommandHelpEntry] = &[
         description: "Stop a sandbox (keeps the panel)",
     },
     CommandHelpEntry {
+        pattern: "/restart [n|name]",
+        description: "Restart a sandbox (in place when running)",
+    },
+    CommandHelpEntry {
+        pattern: "/pause [n|name]",
+        description: "Pause a running sandbox",
+    },
+    CommandHelpEntry {
+        pattern: "/resume [n|name]",
+        description: "Resume a paused sandbox",
+    },
+    CommandHelpEntry {
         pattern: "/disk",
         description: "Show nanosb state disk usage",
     },
@@ -410,6 +437,9 @@ const ALL_COMMANDS: &[&str] = &[
     "/exec",
     "/logs",
     "/stop",
+    "/restart",
+    "/pause",
+    "/resume",
     "/disk",
     "/gc",
     "/gc --dry-run",
@@ -469,6 +499,9 @@ pub fn parse_command_verbose(input: &str) -> ParseResult {
         "/exec" => parse_exec(&parts),
         "/logs" => parse_logs(&parts),
         "/stop" => parse_stop(&parts),
+        "/restart" => parse_target_command(&parts, |target| Command::Restart { target }),
+        "/pause" => parse_target_command(&parts, |target| Command::Pause { target }),
+        "/resume" => parse_target_command(&parts, |target| Command::Resume { target }),
         "/open" => {
             let target = parts.get(1).map(|s| s.to_string());
             ParseResult::Ok(Command::Open { target })
@@ -936,6 +969,13 @@ fn parse_logs(parts: &[&str]) -> ParseResult {
 fn parse_stop(parts: &[&str]) -> ParseResult {
     let target = parts.get(1).map(|s| s.to_string());
     ParseResult::Ok(Command::Stop { target })
+}
+
+fn parse_target_command(
+    parts: &[&str],
+    build: impl FnOnce(Option<String>) -> Command,
+) -> ParseResult {
+    ParseResult::Ok(build(parts.get(1).map(|s| s.to_string())))
 }
 fn parse_theme(parts: &[&str]) -> ParseResult {
     match parts.get(1) {
@@ -1874,6 +1914,33 @@ mod tests {
     fn test_parse_logs_invalid_count() {
         let result = parse_command_verbose("/logs abc");
         assert!(matches!(result, ParseResult::Err(_)));
+    }
+
+    // ===== Restart / pause / resume =====
+
+    #[test]
+    fn parse_restart_pause_resume() {
+        assert_eq!(
+            parse_command("/restart"),
+            Some(Command::Restart { target: None })
+        );
+        assert_eq!(
+            parse_command("/restart web"),
+            Some(Command::Restart {
+                target: Some("web".into())
+            })
+        );
+        assert_eq!(
+            parse_command("/pause"),
+            Some(Command::Pause { target: None })
+        );
+        assert_eq!(
+            parse_command("/resume web"),
+            Some(Command::Resume {
+                target: Some("web".into())
+            })
+        );
+        assert_eq!(parse_command("/restartweb"), None);
     }
 
     // ===== Stop command tests =====
