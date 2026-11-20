@@ -30,16 +30,21 @@ must check that a capability is present before calling the verbs it gates
 | `metrics` | metrics / metrics_stream |
 | `volumes` | `volumes/*` verbs |
 | `secrets` | `secrets/*` verbs |
-| `snapshots` | `snapshot/*` + pause/resume |
+| `snapshots` | `snapshot/*` verbs |
+| `pause` | pause / resume |
+| `restart` | restart (in-process when running, helper-spawned when stopped) |
 | `networking` | publish TCP/UDP ports + policy passthrough |
 | `handles` | labels + handles |
 | `ephemeral` | ephemeral sandboxes |
-| `signal` | `kill` with an explicit signal (SIGTERM/SIGKILL) |
+| `signal` | reserved — never advertised. `kill` accepts only SIGTERM/SIGKILL |
 | `wait` | blocking `wait` verb (returns exit code) |
 | `exec_pty` | `exec_stream` with a PTY + live stdin/resize frames |
 
-`ExecPty`, `Signal`, and `Wait` are the shim-facing surface used by
-containerd/CRI integration on Linux/KVM.
+`ExecPty`, `Wait` and `Lifecycle`/`Pause`/`Restart` are the shim-facing surface
+used by containerd/CRI integration on Linux/KVM. `Signal` is deliberately not
+advertised: the shim's `kill` path uses SIGTERM then SIGKILL, both of which the
+supervisor honours. A consumer that gates on `Signal` must be updated to gate on
+`lifecycle` instead — recorded here as the compatibility note for that surface.
 
 `exec` and `exec_pty` are advertised **only when the exec channel is configured**
 (the resident agent is up); a consumer should treat their absence as "no exec
@@ -87,8 +92,11 @@ use this when the caller does not need to own the process.
 A `SandboxSpec.rootfs` of `{ "kind": "local_dir", "path": "<dir>" }` (or
 `"kind": "disk_image"` with `path`/`format`) boots **directly from that host path** — no
 OCI image pull and no OCI bundle. This is how a containerd snapshotter mount is
-handed to the VM. `start`, `start_next`, and `restart` all support it; an OCI
-rootfs still uses the bundle prepared by `create`.
+handed to the VM. `start` and `start_next` support it, and `restart` re-runs
+`start_next` on the same sandbox, so a non-OCI rootfs survives a restart; an OCI
+rootfs still uses the bundle prepared by `create`. The old
+`RuntimeSandbox::restart` helper was removed because it re-created through
+`create` and dropped the next-mode console and mounts.
 
 ### 3.3 Resident exec agent and workload stdin (Epic 178)
 

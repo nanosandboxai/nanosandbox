@@ -485,7 +485,9 @@ Housekeeping: `/disk` shows state usage, `/gc` reclaims dead supervisor dirs
 clones.
 
 Other TUI commands: `/logs [n]` (console tail), `/stop [n|name]` (stop a
-sandbox, keep the panel), `/exec <cmd>` (run in an exec-channel sandbox),
+sandbox, keep the panel), `/restart [n|name]` (re-boot it in place),
+`/pause` and `/resume` (freeze/thaw a running sandbox), `/exec <cmd>` (run in
+an exec-channel sandbox),
 `/mounts`, and `/apply` (fast-forward-merge `refs/nanosb/<id>` into your
 branch). Registered projects can be listed and switched with `/projects` and
 `/project <n|path>` — panels from different projects coexist in one TUI.

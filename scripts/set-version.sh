@@ -140,6 +140,24 @@ rewrite "$REPO_ROOT/guest/crates/exec-agent/Cargo.toml" '[package]' '
   END { exit (bad || !found) }
 '
 
+# --- 9. intra-workspace path-dependency pins --------------------------------
+# Member crates pin each other with `{ version = "X.Y.Z", path = ... }`; those
+# pins must move with the workspace version or cargo refuses to resolve.
+for f in "$REPO_ROOT/crates/client/Cargo.toml" "$REPO_ROOT/sdk/rust/Cargo.toml"; do
+  [ -f "$f" ] || { echo "error: $f not found" >&2; exit 1; }
+  grep -Eq 'version = "[0-9]+\.[0-9]+\.[0-9]+", path =' "$f" || {
+    echo "error: no path-dependency version pin found in $f" >&2
+    exit 1
+  }
+  sed -i.bak -E "s/version = \"[0-9]+\.[0-9]+\.[0-9]+\", path =/version = \"$NEW_VERSION\", path =/g" "$f"
+  rm -f "$f.bak"
+  grep -Fq "version = \"$NEW_VERSION\", path =" "$f" || {
+    echo "error: failed to pin $f to $NEW_VERSION" >&2
+    exit 1
+  }
+  echo "  updated $f"
+done
+
 # --- 8. sdk/rust — implicit via version.workspace = true --------------------
 RUST_SDK="$REPO_ROOT/sdk/rust/Cargo.toml"
 [ -f "$RUST_SDK" ] || { echo "error: $RUST_SDK not found" >&2; exit 1; }
