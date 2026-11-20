@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name          = "nanosandbox-sdk"
-  spec.version       = "0.3.0"
+  spec.version       = "0.4.0"
   spec.authors       = ["DevDone Labs"]
   spec.summary       = "Ruby SDK for the nanosandbox protocol helper"
   spec.description   = "Stdlib-only Ruby protocol client for the nanosandbox helper (nanosb-protocol v1.0.0)."

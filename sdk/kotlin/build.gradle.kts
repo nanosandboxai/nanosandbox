@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "ai.nanosandbox"
-version = "0.3.0"
+version = "0.4.0"
 
 repositories {
     mavenCentral()
@@ -55,7 +55,7 @@ tasks.register<JavaExec>("smokeTest") {
 
 tasks.register<JavaExec>("conformance") {
     group = "verification"
-    description = "Runs the 35 protocol conformance scenarios via the Kotlin driver."
+    description = "Runs the 40 protocol conformance scenarios via the Kotlin driver."
     mainClass.set("nanosandbox.kt.RunKt")
     classpath = sourceSets["tools"].runtimeClasspath
     workingDir = layout.projectDirectory.dir("../..").asFile
