@@ -149,7 +149,7 @@ Notes:
 
 Eight protocol clients — **Rust, Python, TypeScript/Node, Go, Ruby, Java, C#/.NET, Kotlin** —
 plus a language-agnostic conformance harness, all speaking protocol **v1.0.0**
-(35 conformance scenarios). See [`sdk/README.md`](sdk/README.md) and the per-language
+(40 conformance scenarios). See [`sdk/README.md`](sdk/README.md) and the per-language
 READMEs under `sdk/<lang>/`.
 
 ```bash

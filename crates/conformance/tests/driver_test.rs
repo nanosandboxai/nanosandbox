@@ -194,6 +194,7 @@ fn drive_step(
             }
         }
         "start" => ack(state, || sb.unwrap().start(), "start_acked")?,
+        "restart" => ack(state, || sb.unwrap().restart(), "restart_acked")?,
         "stop" => {
             let force = expect["force"].as_bool().unwrap_or(false);
             ack(state, || sb.unwrap().stop(force), "stop_acked")?;
@@ -637,6 +638,8 @@ fn evaluate_assert(assert: &Value, state: &DriverState) -> Result<(), String> {
         "touch_acked",
         "pause_acked",
         "resume_acked",
+        "restart_acked",
+        "wait_acked",
         "modify_acked",
         "write_acked",
         "mkdir_acked",

@@ -30,7 +30,8 @@ class DriverState
                 :fs_content, :chunks_acked, :first_logs, :resume_logs, :follow_lines,
                 :metrics, :metrics_samples, :volume_created, :volumes, :volume_get,
                 :secrets, :snapshot_created, :snapshots, :attach_events,
-                :attach_exit_code, :ping_ok, :timeout_code, :unsupported_observed
+                :attach_exit_code, :ping_ok, :wait_result, :timeout_code,
+                :unsupported_observed
 
   def initialize
     @acked = {}
@@ -60,6 +61,7 @@ class DriverState
     @attach_events = []
     @attach_exit_code = nil
     @ping_ok = false
+    @wait_result = nil
     @timeout_code = nil
     @unsupported_observed = false
   end
@@ -89,8 +91,18 @@ def drive_step(client, state, expect)
       box.stop(expect.fetch("force", false))
       state.acked["stop"] = true
     when "kill"
-      box.kill
+      if expect.key?("signal")
+        box.kill_with(expect["signal"])
+      else
+        box.kill
+      end
       state.acked["kill"] = true
+    when "wait"
+      state.wait_result = box.wait(expect["timeout_secs"])
+      state.acked["wait"] = true
+    when "restart"
+      box.restart
+      state.acked["restart"] = true
     when "remove"
       box.remove(expect.fetch("force", false))
       state.acked["remove"] = true
@@ -235,7 +247,8 @@ end
 
 ACK_KEYS = {
   "create_acked" => "create", "start_acked" => "start", "stop_acked" => "stop",
-  "kill_acked" => "kill", "remove_acked" => "remove", "drain_acked" => "drain",
+  "kill_acked" => "kill", "wait_acked" => "wait", "restart_acked" => "restart",
+  "remove_acked" => "remove", "drain_acked" => "drain",
   "touch_acked" => "touch", "pause_acked" => "pause", "resume_acked" => "resume",
   "modify_acked" => "modify", "write_acked" => "write", "mkdir_acked" => "mkdir",
   "remove_dir_acked" => "remove_dir", "copy_acked" => "copy", "rename_acked" => "rename",
@@ -259,6 +272,14 @@ def evaluate_assert(assert, state)
     assert[key].each { |n| check.call(hay.include?(n), "#{key}: #{n.inspect} not in #{hay.inspect}") }
   end
   ACK_KEYS.each { |key, nm| check.call(state.acked[nm], "#{key}: expected ack #{nm}") if assert.key?(key) }
+  if assert.key?("wait_exit_code")
+    got = state.wait_result && state.wait_result[:exit_code]
+    check.call(got == assert["wait_exit_code"], "wait_exit_code expected #{assert['wait_exit_code']} got #{got}")
+  end
+  if assert.key?("wait_state")
+    got = state.wait_result && state.wait_result[:state]
+    check.call(got == assert["wait_state"], "wait_state expected #{assert['wait_state']} got #{got}")
+  end
   if assert.key?("get_name")
     check.call(state.get_result && state.get_result["name"] == assert["get_name"], "get_name mismatch")
   end

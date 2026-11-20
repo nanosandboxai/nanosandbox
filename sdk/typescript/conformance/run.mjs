@@ -103,6 +103,7 @@ class DriverState {
     this.attachEvents = [];
     this.attachExitCode = null;
     this.pingOk = false;
+    this.waitResult = null;
     this.timeoutCode = null;
     this.unsupportedObserved = false;
   }
@@ -151,8 +152,17 @@ async function driveStep(client, state, expect) {
         state.acked.add("stop");
         break;
       case "kill":
-        await box.kill();
+        if (expect.signal !== undefined) await box.killWith(expect.signal);
+        else await box.kill();
         state.acked.add("kill");
+        break;
+      case "wait":
+        state.waitResult = await box.wait(expect.timeout_secs);
+        state.acked.add("wait");
+        break;
+      case "restart":
+        await box.restart();
+        state.acked.add("restart");
         break;
       case "remove":
         await box.remove(expect.force ?? false);
@@ -429,6 +439,8 @@ const ACK_KEYS = {
   start_acked: "start",
   stop_acked: "stop",
   kill_acked: "kill",
+  wait_acked: "wait",
+  restart_acked: "restart",
   remove_acked: "remove",
   drain_acked: "drain",
   touch_acked: "touch",
@@ -488,6 +500,20 @@ function evaluateAssert(assertBlock, state) {
     if (key in assertBlock) {
       check(state.acked.has(name), `${key}: expected ack for ${name}`);
     }
+  }
+  if ("wait_exit_code" in assertBlock) {
+    const got = state.waitResult ? state.waitResult.exitCode : null;
+    check(
+      got === assertBlock.wait_exit_code,
+      `wait_exit_code: expected ${assertBlock.wait_exit_code}, got ${got}`,
+    );
+  }
+  if ("wait_state" in assertBlock) {
+    const got = state.waitResult ? state.waitResult.state : null;
+    check(
+      got === assertBlock.wait_state,
+      `wait_state: expected ${assertBlock.wait_state}, got ${got}`,
+    );
   }
   if ("get_name" in assertBlock) {
     check(

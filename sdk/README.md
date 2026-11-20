@@ -75,7 +75,7 @@ download), and `NANOSB_PROVISIONER` (explicit provisioner path).
 ## Conformance suite
 
 All SDKs are validated by **one** corpus: [`conformance/`](conformance/README.md)
-holds the harness contract (`SPEC.md`) and **35 scenarios** (lifecycle, exec /
+holds the harness contract (`SPEC.md`) and **40 scenarios** (lifecycle, exec /
 exec_stream / shell / attach, fs incl. streamed write, logs, metrics, volumes,
 secrets, snapshots, errors, timeouts, capability gating).
 
@@ -91,7 +91,7 @@ dotnet  run --project sdk/dotnet/conformance
 java    -cp sdk/kotlin/nanosandbox-sdk-kotlin.jar nanosandbox.kt.RunKt
 ```
 
-Expected: `35 passed, 0 failed`.
+Expected: `40 passed, 0 failed`.
 
 ## Real microVM end-to-end
 
@@ -113,7 +113,7 @@ the Rust reference (`NANOSB_E2E=1`). See
 
 ```
 sdk/
-├── conformance/     # harness contract (SPEC.md) + 35 shared scenarios
+├── conformance/     # harness contract (SPEC.md) + 40 shared scenarios
 ├── rust/            # Rust client (re-exports nanosb-client) + ManagedRuntime
 ├── python/          # Python client + ManagedRuntime
 ├── typescript/      # TypeScript/Node client + ManagedRuntime

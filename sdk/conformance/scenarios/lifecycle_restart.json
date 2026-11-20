@@ -1,0 +1,14 @@
+{
+  "id": "lifecycle_restart",
+  "description": "restart a sandbox in place (the restart capability gates the verb)",
+  "capabilities": ["lifecycle", "restart"],
+  "steps": [
+    {
+      "expect": { "type": "restart", "name": "box" },
+      "respond": { "type": "ok", "version": "1.0.0" }
+    }
+  ],
+  "assert": {
+    "restart_acked": true
+  }
+}

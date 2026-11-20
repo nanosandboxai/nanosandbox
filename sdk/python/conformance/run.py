@@ -82,6 +82,7 @@ class DriverState:
         self.attach_events: List[Dict[str, Any]] = []
         self.attach_exit_code: Optional[int] = None
         self.ping_ok = False
+        self.wait_result: Optional[tuple] = None
         self.timeout_code: Optional[str] = None
         self.unsupported_observed = False
 
@@ -112,8 +113,17 @@ def drive_step(client: SandboxClient, state: DriverState, expect: Dict[str, Any]
             box.stop(force=expect.get("force", False))
             state.acked.add("stop")
         elif etype == "kill":
-            box.kill()
+            if "signal" in expect:
+                box.kill_with(expect["signal"])
+            else:
+                box.kill()
             state.acked.add("kill")
+        elif etype == "wait":
+            state.wait_result = box.wait(expect.get("timeout_secs"))
+            state.acked.add("wait")
+        elif etype == "restart":
+            box.restart()
+            state.acked.add("restart")
         elif etype == "remove":
             box.remove(force=expect.get("force", False))
             state.acked.add("remove")
@@ -366,6 +376,8 @@ _ACK_KEYS = {
     "start_acked": "start",
     "stop_acked": "stop",
     "kill_acked": "kill",
+    "wait_acked": "wait",
+    "restart_acked": "restart",
     "remove_acked": "remove",
     "drain_acked": "drain",
     "touch_acked": "touch",
@@ -411,6 +423,12 @@ def evaluate_assert(assert_block: Dict[str, Any], state: DriverState) -> List[st
     for key, name in _ACK_KEYS.items():
         if key in assert_block:
             check(name in state.acked, f"{key}: expected ack for {name!r}")
+    if "wait_exit_code" in assert_block:
+        got = state.wait_result[0] if state.wait_result else None
+        check(got == assert_block["wait_exit_code"], f"wait_exit_code: expected {assert_block['wait_exit_code']}, got {got}")
+    if "wait_state" in assert_block:
+        got = state.wait_result[2] if state.wait_result else None
+        check(got == assert_block["wait_state"], f"wait_state: expected {assert_block['wait_state']}, got {got}")
     if "get_name" in assert_block:
         check(state.get_result and state.get_result.get("name") == assert_block["get_name"], f"get_name: expected {assert_block['get_name']}, got {state.get_result and state.get_result.get('name')}")
     if "get_state" in assert_block:

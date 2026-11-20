@@ -31,6 +31,8 @@ import java.util.HashSet
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import kotlin.time.DurationUnit
+import kotlin.time.toDuration
 
 private const val READY_TIMEOUT_MS = 15000L
 private const val RECV_TIMEOUT_MS = 10000L
@@ -65,6 +67,7 @@ private class DriverState {
     val attachEvents = ArrayList<Json>()
     var attachExitCode = -1
     var pingOk = false
+    var waitResult: WaitResult? = null
     var timeoutCode = ""
     var unsupportedObserved = false
 }
@@ -131,8 +134,25 @@ private fun driveStep(client: KotlinClient, state: DriverState, expect: Json) {
             addAck(state, "stop")
         }
         "kill" -> {
-            box.kill()
+            if (expect.has("signal")) {
+                box.killWith(expect.getInt("signal").toInt())
+            } else {
+                box.kill()
+            }
             addAck(state, "kill")
+        }
+        "wait" -> {
+            val timeout = if (expect.has("timeout_secs")) {
+                expect.getInt("timeout_secs").toDouble().toDuration(DurationUnit.SECONDS)
+            } else {
+                null
+            }
+            state.waitResult = box.wait(timeout)
+            addAck(state, "wait")
+        }
+        "restart" -> {
+            box.restart()
+            addAck(state, "restart")
         }
         "remove" -> {
             box.remove(expect.getBool("force"))
@@ -340,14 +360,16 @@ private fun driveStep(client: KotlinClient, state: DriverState, expect: Json) {
 }
 
 private val ACK_KEYS = arrayOf(
-    "create_acked", "start_acked", "stop_acked", "kill_acked", "remove_acked",
+    "create_acked", "start_acked", "stop_acked", "kill_acked", "wait_acked",
+    "restart_acked", "remove_acked",
     "drain_acked", "touch_acked", "pause_acked", "resume_acked", "modify_acked",
     "write_acked", "mkdir_acked", "remove_dir_acked", "copy_acked", "rename_acked",
     "copy_from_host_acked", "copy_to_host_acked", "mount_add_acked", "set_acked",
     "restore_acked", "fork_acked", "input_acked", "resize_acked", "write_stream_acked")
 
 private val ACK_NAMES = arrayOf(
-    "create", "start", "stop", "kill", "remove",
+    "create", "start", "stop", "kill", "wait",
+    "restart", "remove",
     "drain", "touch", "pause", "resume", "modify",
     "write", "mkdir", "remove_dir", "copy", "rename",
     "copy_from_host", "copy_to_host", "mount_add", "set",
@@ -401,6 +423,16 @@ private fun evaluateAssert(assertBlock: Json, state: DriverState): List<String> 
             check(hasAck(state, ACK_NAMES[i]),
                 "${ACK_KEYS[i]}: expected ack for ${ACK_NAMES[i]}")
         }
+    }
+    if (assertBlock.has("wait_exit_code")) {
+        val want = assertBlock.getInt("wait_exit_code")
+        val got = state.waitResult?.exitCode?.toLong()
+        check(got == want, "wait_exit_code: expected $want, got $got")
+    }
+    if (assertBlock.has("wait_state")) {
+        val want = assertBlock.getStr("wait_state")
+        val got = state.waitResult?.state
+        check(got == want, "wait_state: expected $want, got $got")
     }
     if (assertBlock.has("get_name")) {
         val want = assertBlock.getStr("get_name")
