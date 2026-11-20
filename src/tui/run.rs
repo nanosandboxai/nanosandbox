@@ -989,18 +989,17 @@ pub async fn handle_event(
                 if !alive {
                     // Keep the panel (and its frozen output) so the failure is
                     // visible; still stop the dead supervisor / destroy the sandbox.
-                    let (name, supervisor_name, sandbox_arc) =
-                        match app.panels.get_mut(panel_idx) {
-                            Some(panel) => {
-                                if let Some(mut pm) = panel.project_mount.take() {
-                                    let _ = pm.teardown();
-                                }
-                                let sname = panel.supervisor_name().map(str::to_string);
-                                let arc = panel.take_sandbox();
-                                (panel.agent_name.clone(), sname, arc)
+                    let (name, supervisor_name, sandbox_arc) = match app.panels.get_mut(panel_idx) {
+                        Some(panel) => {
+                            if let Some(mut pm) = panel.project_mount.take() {
+                                let _ = pm.teardown();
                             }
-                            None => (String::new(), None, None),
-                        };
+                            let sname = panel.supervisor_name().map(str::to_string);
+                            let arc = panel.take_sandbox();
+                            (panel.agent_name.clone(), sname, arc)
+                        }
+                        None => (String::new(), None, None),
+                    };
                     if let Some(sb) = sandbox_arc {
                         spawn_sandbox_destroy(sb);
                     }
@@ -1021,8 +1020,7 @@ pub async fn handle_event(
                     app.set_status_message(format!("'{}' sandbox ended; see panel output.", name));
                 } else if let Some(panel) = app.panels.get_mut(panel_idx) {
                     let name = panel.agent_name.clone();
-                    let reason =
-                        error.unwrap_or_else(|| "agent exited (no exit code)".to_string());
+                    let reason = error.unwrap_or_else(|| "agent exited (no exit code)".to_string());
                     panel.terminal_handle = None;
                     panel.reconnecting = false;
                     panel.exited = Some(reason.clone());
@@ -1704,6 +1702,51 @@ fn spawn_sandbox_destroy(sandbox_arc: Arc<Mutex<Sandbox>>) {
             }
         }
     });
+}
+
+#[derive(Clone, Copy)]
+enum LifecycleOp {
+    Restart,
+    Pause,
+    Resume,
+}
+
+fn handle_lifecycle(app: &mut App, target: Option<&str>, op: LifecycleOp) {
+    let Some(idx) = app.resolve_panel_target(target) else {
+        app.set_status_message("No panel selected.");
+        return;
+    };
+    let display = app.panels[idx]
+        .display_name
+        .clone()
+        .unwrap_or_else(|| app.panels[idx].agent_name.clone());
+    let Some(sname) = app.panels[idx].supervisor_name().map(str::to_string) else {
+        app.set_status_message(format!("'{display}' has no supervised sandbox."));
+        return;
+    };
+    let result = nanosb_client::SandboxClient::for_sandbox(&sname).and_then(|client| {
+        let sandbox = client.sandbox(&sname);
+        match op {
+            LifecycleOp::Restart => sandbox.restart(),
+            LifecycleOp::Pause => sandbox.pause(),
+            LifecycleOp::Resume => sandbox.resume(),
+        }
+    });
+    let verb = match op {
+        LifecycleOp::Restart => "Restarted",
+        LifecycleOp::Pause => "Paused",
+        LifecycleOp::Resume => "Resumed",
+    };
+    match result {
+        Ok(()) => {
+            app.set_status_message(format!("{verb} '{display}'."));
+            if !matches!(op, LifecycleOp::Resume) {
+                app.panels[idx].mode = PanelMode::Loading;
+                app.panels[idx].loading_message = Some(format!("{verb}."));
+            }
+        }
+        Err(e) => app.set_status_message(format!("error: {e}")),
+    }
 }
 
 fn spawn_supervisor_stop(name: String) {
@@ -3077,6 +3120,11 @@ pub(crate) async fn handle_command(
                 app.set_status_message(format!("'{}' has no supervised sandbox to stop.", name));
             }
         }
+        Command::Restart { target } => {
+            handle_lifecycle(app, target.as_deref(), LifecycleOp::Restart)
+        }
+        Command::Pause { target } => handle_lifecycle(app, target.as_deref(), LifecycleOp::Pause),
+        Command::Resume { target } => handle_lifecycle(app, target.as_deref(), LifecycleOp::Resume),
         Command::Disk => {
             handle_disk_usage(app);
         }

@@ -11,6 +11,17 @@ protocol helper (`nanosb-runtime`) need three runtime artifacts:
 
 `$NANOSB_HOME` defaults to `~/.nanosandbox` and overrides every lookup above.
 
+## Toolchain prerequisites
+
+- `cargo check` / `cargo test` for the workspace need **no libclang**: the
+  `libkrun-sys` build script links the static library only when
+  `$LIBKRUN_LIB_DIR/libkrun.a` (default `~/.nanosandbox/lib/libkrun.a`) exists.
+- Building libkrun itself (`runtime/scripts/build-libkrun.sh`) **does** need
+  libclang for bindgen: `libclang-dev` on Linux with
+  `LIBCLANG_PATH="$(llvm-config --prefix)/lib"`, or `brew install llvm` with
+  `LIBCLANG_PATH="$(brew --prefix llvm)/lib"` on macOS. The script resolves
+  this automatically but fails loudly if `libclang.so` is absent.
+
 ## Install from source
 
 ```bash

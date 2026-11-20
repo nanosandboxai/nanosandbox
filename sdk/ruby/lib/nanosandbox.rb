@@ -330,6 +330,25 @@ module Nanosandbox
       @client.call_raw("type" => "kill", "name" => @name)
     end
 
+    def kill_with(signal)
+      @client.call_raw("type" => "kill", "name" => @name, "signal" => signal)
+    end
+
+    def restart
+      @client.call_raw("type" => "restart", "name" => @name)
+    end
+
+    def wait(timeout_secs = nil)
+      req = { "type" => "wait", "name" => @name }
+      req["timeout_secs"] = timeout_secs unless timeout_secs.nil?
+      resp = @client.call_raw(req)
+      {
+        exit_code: resp["exit_code"],
+        exited_at_ms: resp["exited_at_ms"],
+        state: resp["state"]
+      }
+    end
+
     def remove(force = false)
       @client.call_raw("type" => "remove", "name" => @name, "force" => force)
     end
@@ -355,17 +374,10 @@ module Nanosandbox
     end
 
     def wait_until_stopped(timeout_secs = 30.0)
-      deadline = Time.now + timeout_secs
-      loop do
-        st = state
-        return st if st == "stopped"
-        raise NanosbError.new("internal", "sandbox entered error state") if st == "error"
+      result = wait(timeout_secs)
+      raise NanosbError.new("internal", "sandbox entered error state") if result[:state] == "error"
 
-        if Time.now >= deadline
-          raise NanosbError.new("timeout", "sandbox '#{@name}' did not stop within #{timeout_secs}s")
-        end
-        sleep 0.1
-      end
+      result[:state]
     end
 
     def exec(command, args = nil)

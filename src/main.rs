@@ -305,6 +305,18 @@ mod cli {
             sandbox: String,
         },
 
+        /// Pause a running sandbox (freeze the guest)
+        Pause {
+            /// Sandbox ID or name
+            sandbox: String,
+        },
+
+        /// Resume a paused sandbox
+        Resume {
+            /// Sandbox ID or name
+            sandbox: String,
+        },
+
         /// Remove a sandbox
         #[command(alias = "delete")]
         Rm {
@@ -769,6 +781,8 @@ mod cli {
             }) => cmd_exec(&sandbox, shell, tty, follow, &command).await,
             Some(Commands::Ps { all }) => cmd_ps(all, cli.format).await,
             Some(Commands::Stop { sandbox }) => cmd_stop(&sandbox, cli.verbose).await,
+            Some(Commands::Pause { sandbox }) => cmd_pause(&sandbox, cli.verbose).await,
+            Some(Commands::Resume { sandbox }) => cmd_resume(&sandbox, cli.verbose).await,
             Some(Commands::Rm { sandbox, force }) => cmd_rm(&sandbox, force, cli.verbose).await,
             Some(Commands::Doctor) => cmd_doctor(cli.format).await,
             Some(Commands::Capacity) => cmd_capacity(cli.format).await,
@@ -1307,126 +1321,20 @@ mod cli {
         allow_no_env: bool,
         verbose: bool,
     ) -> anyhow::Result<()> {
-        use crate::supervisor::client::SupervisorClient;
-        use nanosb_cli::deploy::Origin;
-
-        let client = SupervisorClient::new(sandbox_id);
-        let dir = client.sandbox_dir().to_path_buf();
-        if !dir.exists() {
-            anyhow::bail!("sandbox not found: {}", sandbox_id);
-        }
-        let deploy_raw = std::fs::read_to_string(dir.join("deploy.json")).map_err(|_| {
-            anyhow::anyhow!(
-                "sandbox '{}' has no deploy.json (not supervisor-managed)",
-                sandbox_id
-            )
-        })?;
-        let deploy: serde_json::Value = serde_json::from_str(&deploy_raw)?;
-        let config_json = deploy["config_json"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let extra_mounts_json = deploy["extra_mounts_json"]
-            .as_str()
-            .unwrap_or("[]")
-            .to_string();
-        let timeout_secs = serde_json::from_str::<runtime::config::SandboxConfig>(&config_json)
-            .map(|c| c.timeout_secs)
-            .unwrap_or(600);
-
-        let origin = std::fs::read_to_string(dir.join("origin.json"))
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Origin>(&raw).ok())
-            .unwrap_or_default();
-
-        let boot_env_json = if allow_no_env {
-            match resolve_boot_env(&origin) {
-                Ok(Some(env)) => env,
-                _ => "{}".to_string(),
-            }
-        } else {
-            match resolve_boot_env(&origin)? {
-                Some(env) => env,
-                None => anyhow::bail!(
-                    "cannot restart '{}': its env/secrets cannot be re-resolved \
-                     (source: {}). Pass --allow-no-env to boot without them.",
-                    sandbox_id,
-                    if origin.source.is_empty() {
-                        "unknown (pre-dates origin tracking)"
-                    } else {
-                        origin.source.as_str()
-                    }
-                ),
-            }
-        };
-
         if verbose {
             eprintln!("Restarting sandbox '{}'", sandbox_id);
         }
-        if client.is_running() {
-            let _ = client.stop(true);
-            wait_supervisor_stopped(&client, 20).await;
+        let via_engine = nanosb_client::SandboxClient::local()
+            .and_then(|client| client.sandbox(sandbox_id).restart());
+        if let Err(e) = via_engine {
+            eprintln!(
+                "note: restarting '{}' via supervisor respawn (state reset): {e}",
+                sandbox_id
+            );
+            nanosb_cli::deploy::restart_sandbox(sandbox_id, allow_no_env, 60)?;
         }
-        let _ = std::fs::remove_file(dir.join("state.json"));
-        let _ = std::fs::remove_file(dir.join("config.json"));
-        let _ = std::fs::remove_dir_all(dir.join("logs"));
-
-        spawn_supervisor(
-            sandbox_id,
-            &config_json,
-            &extra_mounts_json,
-            &boot_env_json,
-            &origin.to_json(),
-            timeout_secs,
-        )?;
-        wait_supervisor_running(&client, 60).await?;
         println!("{} Restarted {}", "✓".green(), sandbox_id.bold());
         Ok(())
-    }
-
-    /// Re-resolve a sandbox's boot env from its recorded origin.
-    ///
-    /// Returns `None` when the origin is unknown/pre-dates tracking. Returns an
-    /// error when a key the sandbox needs is no longer available on the host.
-    fn resolve_boot_env(origin: &nanosb_cli::deploy::Origin) -> anyhow::Result<Option<String>> {
-        if origin.source.is_empty() {
-            return Ok(None);
-        }
-
-        let mut env: Vec<(String, String)> = Vec::new();
-
-        if origin.source == "cli" {
-            for path in &origin.env_files {
-                let files = vec![path.clone()];
-                env.extend(parse_env_vars(&[], &files)?);
-            }
-            let mut missing: Vec<String> = Vec::new();
-            for key in &origin.env_keys {
-                match std::env::var(key) {
-                    Ok(val) => {
-                        if !env.iter().any(|(k, _)| k == key) {
-                            env.push((key.clone(), val));
-                        }
-                    }
-                    Err(_) => {
-                        if !env.iter().any(|(k, _)| k == key) {
-                            missing.push(key.clone());
-                        }
-                    }
-                }
-            }
-            if !missing.is_empty() {
-                anyhow::bail!(
-                    "cannot re-resolve env for restart; not set on host: {}",
-                    missing.join(", ")
-                );
-            }
-        }
-
-        let map: std::collections::HashMap<String, String> = env.into_iter().collect();
-        Ok(Some(
-            serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string()),
-        ))
     }
 
     async fn cmd_describe(sandbox_id: &str) -> anyhow::Result<()> {
@@ -1995,6 +1903,36 @@ mod cli {
         Ok(())
     }
 
+    /// Pause a running sandbox.
+    async fn cmd_pause(sandbox_id: &str, verbose: bool) -> anyhow::Result<()> {
+        if verbose {
+            eprintln!("Pausing sandbox '{}'", sandbox_id);
+        }
+        let client = nanosb_client::SandboxClient::for_sandbox(sandbox_id)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        client
+            .sandbox(sandbox_id)
+            .pause()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("{} Paused {}", "✓".green(), sandbox_id.bold());
+        Ok(())
+    }
+
+    /// Resume a paused sandbox.
+    async fn cmd_resume(sandbox_id: &str, verbose: bool) -> anyhow::Result<()> {
+        if verbose {
+            eprintln!("Resuming sandbox '{}'", sandbox_id);
+        }
+        let client = nanosb_client::SandboxClient::for_sandbox(sandbox_id)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        client
+            .sandbox(sandbox_id)
+            .resume()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("{} Resumed {}", "✓".green(), sandbox_id.bold());
+        Ok(())
+    }
+
     /// Stop a running sandbox
     async fn cmd_stop(sandbox_id: &str, verbose: bool) -> anyhow::Result<()> {
         {
@@ -2006,6 +1944,7 @@ mod cli {
                 }
                 client.stop(false).map_err(|e| anyhow::anyhow!("{}", e))?;
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                let mut reached = false;
                 loop {
                     if let Some(state) = client.read_state() {
                         if matches!(
@@ -2013,6 +1952,7 @@ mod cli {
                             crate::supervisor::SandboxState::Stopped
                                 | crate::supervisor::SandboxState::Error
                         ) {
+                            reached = true;
                             break;
                         }
                     }
@@ -2020,6 +1960,12 @@ mod cli {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                if !reached {
+                    anyhow::bail!(
+                        "sandbox '{}' did not reach a terminal state within 20s; it may still be running",
+                        sandbox_id
+                    );
                 }
                 println!("{} Stopped {}", "✓".green(), sandbox_id.bold());
                 return Ok(());
@@ -2072,6 +2018,7 @@ mod cli {
                     }
                     let _ = client.stop(true);
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                    let mut reached = false;
                     loop {
                         if let Some(state) = client.read_state() {
                             if matches!(
@@ -2079,6 +2026,7 @@ mod cli {
                                 crate::supervisor::SandboxState::Stopped
                                     | crate::supervisor::SandboxState::Error
                             ) {
+                                reached = true;
                                 break;
                             }
                         }
@@ -2086,6 +2034,12 @@ mod cli {
                             break;
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                    if !reached {
+                        anyhow::bail!(
+                            "sandbox '{}' did not stop within 20s; leaving it on disk for `nanosb gc`",
+                            sandbox_id
+                        );
                     }
                 }
                 std::fs::remove_dir_all(client.sandbox_dir())?;
@@ -3148,4 +3102,25 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?
         .block_on(cli::run())
+}
+
+#[cfg(test)]
+mod cli_parse_tests {
+    use super::cli::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn lifecycle_commands_parse() {
+        let cli = Cli::try_parse_from(["nanosb", "pause", "box"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Pause { sandbox }) if sandbox == "box"));
+
+        let cli = Cli::try_parse_from(["nanosb", "resume", "box"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Resume { sandbox }) if sandbox == "box"));
+
+        let cli = Cli::try_parse_from(["nanosb", "restart", "box"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Restart { sandbox, .. }) if sandbox == "box"));
+
+        assert!(Cli::try_parse_from(["nanosb", "pause"]).is_err());
+        assert!(Cli::try_parse_from(["nanosb", "resume"]).is_err());
+    }
 }

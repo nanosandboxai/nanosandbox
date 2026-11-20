@@ -259,3 +259,69 @@ fn live_conformance_smoke() {
     client.sandbox(&name).remove(true).expect("remove");
     assert!(client.list(true).unwrap().iter().all(|s| s.name != name));
 }
+
+/// Lifecycle operations on a real VM: restart (in place, new pid), restart
+/// while paused (SIGCONT-then-stop), force kill, blocking wait, and starting a
+/// stopped sandbox through the helper.
+#[test]
+#[ignore]
+fn live_restart_start_kill() {
+    let daemon = start_daemon();
+    let client = SandboxClient::connect(&daemon.socket).expect("connect");
+    let image =
+        std::env::var("NANOSB_TEST_IMAGE").unwrap_or_else(|_| "library/alpine:latest".into());
+    let name = daemon.name.clone();
+    let sandbox = client
+        .create_with(
+            SandboxBuilder::new(&image)
+                .name(&name)
+                .cpus(2)
+                .memory_mb(1024),
+        )
+        .expect("create");
+    let before = client.get(&name).expect("get").pid;
+
+    sandbox.restart().expect("restart");
+    assert_eq!(sandbox.state().unwrap(), SandboxState::Running);
+    let after = client.get(&name).expect("get").pid;
+    assert_ne!(before, after, "restart must boot a new VM process");
+    assert_eq!(
+        sandbox
+            .exec("echo", &["after-restart"])
+            .expect("exec after restart")
+            .stdout
+            .trim(),
+        "after-restart"
+    );
+
+    sandbox.pause().expect("pause");
+    sandbox.restart().expect("restart while paused");
+    assert_eq!(
+        sandbox
+            .exec("echo", &["after-paused-restart"])
+            .expect("exec after paused restart")
+            .exit_code,
+        0
+    );
+
+    sandbox.kill().expect("kill");
+    let (_, _, state) = sandbox
+        .wait(Some(std::time::Duration::from_secs(30)))
+        .expect("wait after kill");
+    assert!(matches!(state, SandboxState::Stopped | SandboxState::Error));
+
+    sandbox
+        .start()
+        .expect("start a stopped sandbox through the helper");
+    assert_eq!(
+        sandbox
+            .exec("echo", &["after-start"])
+            .expect("exec after start")
+            .stdout
+            .trim(),
+        "after-start"
+    );
+
+    sandbox.stop(true).expect("stop");
+    sandbox.remove(true).expect("remove");
+}

@@ -3,6 +3,7 @@ package nanosandbox.kt
 import nanosandbox.Json
 import nanosandbox.Sandbox
 import java.util.function.Consumer
+import kotlin.time.Duration
 
 /**
  * Kotlin facade over the Java nanosandbox SDK's sandbox handle. A handle bound
@@ -43,6 +44,33 @@ class KotlinSandbox {
     /** Kills the sandbox. */
     fun kill() {
         delegate.kill()
+    }
+
+    /** Kills the sandbox with a signal selector (SIGTERM=15, SIGKILL=9). */
+    fun killWith(signal: Int) {
+        delegate.killWith(signal)
+    }
+
+    /** Re-boots the sandbox in place. */
+    fun restart() {
+        delegate.restart()
+    }
+
+    /**
+     * Blocks until the sandbox reaches a terminal state, returning the exit
+     * code, exit timestamp, and state. {@code timeout} bounds the wait; a null
+     * value waits indefinitely.
+     */
+    fun wait(timeout: Duration?): WaitResult {
+        val jt = timeout?.let { java.time.Duration.ofNanos(it.inWholeNanoseconds) }
+        val r = delegate.wait(jt)
+        return WaitResult(r.exitCode(), r.exitedAtMs(), r.state())
+    }
+
+    /** Blocks until the sandbox stops, returning the terminal state. */
+    fun waitUntilStopped(timeout: Duration): String {
+        val jt = java.time.Duration.ofNanos(timeout.inWholeNanoseconds)
+        return delegate.waitUntilStopped(jt)
     }
 
     /** Removes the sandbox. */
@@ -222,6 +250,12 @@ class KotlinSandbox {
         delegate.snapshotRemove(snapshot)
     }
 }
+
+/**
+ * The result of a blocking {@link KotlinSandbox#wait} call: the sandbox's exit
+ * code, the exit timestamp (epoch millis), and the terminal state.
+ */
+data class WaitResult(val exitCode: Int, val exitedAtMs: Long, val state: String)
 
 /**
  * A live attach session: drive console input/resize and read guest events on

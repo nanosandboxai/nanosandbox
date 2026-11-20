@@ -62,7 +62,7 @@ check capabilities before calling an optional verb.
 {
   "type": "hello_ok",
   "protocol": "1.0.0",
-  "helper_version": "0.3.0",
+  "helper_version": "0.4.0",
   "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "networking", "handles", "ephemeral", "signal", "wait", "exec_pty"]
 }
 ```
@@ -80,11 +80,13 @@ Clients gate optional verbs on these. The full set (`Capability::all()`):
 | `metrics` | metrics / metrics_stream |
 | `volumes` | volumes/* verbs |
 | `secrets` | secrets/* verbs |
-| `snapshots` | snapshot/* + pause/resume |
+| `snapshots` | snapshot/* verbs |
+| `pause` | pause / resume |
+| `restart` | restart |
 | `networking` | publish TCP/UDP ports + policy passthrough |
 | `handles` | labels + handles |
 | `ephemeral` | ephemeral sandboxes |
-| `signal` | `kill` with an explicit signal (`SIGTERM`/`SIGKILL`) |
+| `signal` | reserved — never advertised. `kill` accepts only `SIGTERM`/`SIGKILL` |
 | `wait` | blocking `wait` verb |
 | `exec_pty` | tty `exec_stream` + live stdin/`exec_resize` frames |
 
@@ -113,8 +115,9 @@ The complete inventory, matching `crates/protocol/src/verbs.rs` 1:1.
 | `status` | `{ name? }` | lifecycle |
 | `create` | `CreateRequest { spec: SandboxSpec }` | lifecycle |
 | `start` | `{ name? }` | lifecycle |
+| `restart` | `{ name? }` | restart |
 | `stop` | `{ name?, force }` | lifecycle |
-| `kill` | `{ name?, signal? }` | lifecycle (signal ⇒ `signal`) |
+| `kill` | `{ name?, signal? }` — `signal` is a selector: `SIGTERM` graceful, `SIGKILL`/none force; anything else is `unsupported` | lifecycle |
 | `wait` | `{ name?, timeout_secs? }` | wait |
 | `remove` | `{ name?, force }` | lifecycle |
 | `get` | `{ name }` | lifecycle |
@@ -122,8 +125,8 @@ The complete inventory, matching `crates/protocol/src/verbs.rs` 1:1.
 | `modify` | `{ name?, spec: ModifySpec }` | lifecycle |
 | `drain` | `{ name? }` | lifecycle |
 | `touch` | `{ name? }` | lifecycle |
-| `pause` | `{ name? }` | lifecycle/snapshots |
-| `resume` | `{ name? }` | lifecycle/snapshots |
+| `pause` | `{ name? }` | pause |
+| `resume` | `{ name? }` | pause |
 | `exec` | `ExecRequest` | exec |
 | `exec_stream` | `ExecRequest` | exec |
 | `exec_input` | `{ data }` — live stdin for a tty `exec_stream` | exec |
@@ -320,6 +323,27 @@ never left stuck in `running`.
 `fs_write_stream` is the inverse: the client sends the opening request, reads
 the ack, then sends one `fs_data` frame per chunk (each answered with an `ok`
 ack), the last with `eof: true`.
+
+### restart
+
+`restart` re-boots a sandbox while keeping its identity (same name and sandbox
+directory). Two paths, chosen by the caller:
+
+- **Running sandbox** — the supervisor answers it in process: it writes
+  `starting`, stops the VM (sending `SIGCONT` first if it was paused), re-boots
+  from the same config, swaps the console pipes in place, resets the exec
+  session, and writes `running` with a new pid. The supervisor process and the
+  control socket stay alive, so an attached client keeps its connection.
+- **Stopped sandbox** — the supervisor for a stopped sandbox has already exited
+  and removed its control socket. The long-lived helper (`nanosb-runtime`)
+  serves `restart` (and `start`) by spawning a fresh supervisor from the
+  persisted `deploy.json`, then answering once the sandbox is `running`.
+
+In both cases `running → starting → running` is observable; a boot failure
+leaves the sandbox in `error` and the request returns an `internal` error.
+`stop` keeps the sandbox directory (and therefore its persisted spec);
+`nanosb gc` may reclaim it, after which `restart`/`start` answer
+`invalid_state` because there is no spec left to boot.
 
 ### `StreamEvent`
 

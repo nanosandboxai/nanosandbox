@@ -11,4 +11,4 @@ keywords = ["sandbox", "microvm", "isolation", "sdk", "libkrun"]
 categories = ["development-tools", "api-bindings"]
 
 [dependencies]
-nanosb-client = { version = "0.3.0", path = "../../crates/client" }
+nanosb-client = { version = "0.4.0", path = "../../crates/client" }

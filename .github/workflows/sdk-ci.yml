@@ -184,13 +184,13 @@ jobs:
           name: nanosb-conformance
           path: target/debug
       - run: chmod +x target/debug/nanosb-conformance
-      - run: ./gradlew -p sdk/kotlin --no-daemon smokeTest
+      - run: sdk/kotlin/gradlew -p sdk/kotlin --no-daemon smokeTest
       - name: conformance
         env:
           NANOSB_CONFORMANCE_BIN: target/debug/nanosb-conformance
-        run: ./gradlew -p sdk/kotlin --no-daemon conformance
+        run: sdk/kotlin/gradlew -p sdk/kotlin --no-daemon conformance
       - name: package (dry run)
-        run: ./gradlew -p sdk/kotlin --no-daemon jar
+        run: sdk/kotlin/gradlew -p sdk/kotlin --no-daemon jar
 
   dotnet:
     name: dotnet

@@ -237,9 +237,24 @@ impl Runtime {
         self.backend.vm_exit_code(id)
     }
 
-    /// Stop a VM (force kill).
+    /// Graceful stop: SIGTERM to the VM process group, SIGKILL after a timeout.
     pub async fn kill(&self, id: &str) -> Result<()> {
         self.backend.stop(id).await
+    }
+
+    /// Send a signal to the VM process. Synchronous: callers may hold a
+    /// `std::sync::MutexGuard` (the supervisor teardown does).
+    pub fn signal(&self, id: &str, sig: i32) -> Result<()> {
+        let pid = self.backend.vm_pid(id).ok_or_else(|| {
+            crate::error::Error::InvalidState(format!("sandbox {id} has no running VM"))
+        })?;
+        if unsafe { libc::kill(pid, sig) } != 0 {
+            return Err(crate::error::Error::InvalidState(format!(
+                "failed to signal VM {pid}: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
     }
 
     /// Delete a VM and clean up resources.

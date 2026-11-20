@@ -195,13 +195,14 @@ canonical SDK operation name (reference: `nanosb-client` / `nanosandbox-python`)
 | `list` | lifecycle | `client.list(all)` |
 | `start` | lifecycle | `sandbox.start()` |
 | `stop` | lifecycle | `sandbox.stop(force)` |
-| `kill` | lifecycle/signal | `sandbox.kill()` / `sandbox.kill_with(signal)` |
+| `kill` | lifecycle | `sandbox.kill()` / `sandbox.kill_with(signal)` (signal selector: SIGTERM/SIGKILL) |
 | `wait` | wait | `sandbox.wait(timeout)` |
+| `restart` | restart | `sandbox.restart()` |
 | `remove` | lifecycle | `sandbox.remove(force)` |
 | `drain` | lifecycle | `sandbox.drain()` |
 | `touch` | lifecycle | `sandbox.touch()` |
-| `pause` | lifecycle/snapshots | `sandbox.pause()` |
-| `resume` | lifecycle/snapshots | `sandbox.resume()` |
+| `pause` | pause | `sandbox.pause()` |
+| `resume` | pause | `sandbox.resume()` |
 | `modify` | lifecycle | `sandbox.modify(spec)` |
 | `status` | lifecycle | `sandbox.state()` |
 | `ping` | lifecycle | `client.ping()` |
@@ -296,6 +297,7 @@ The driver interprets these keys (all optional; unknown keys ignored):
 | `attach_events`, `attach_exit_code` | Expected guest event sequence and exit code of an attach. |
 | `error_code`, `second_error_code` | Expected error code(s) of the first/second erroring step. |
 | `wait_exit_code`, `wait_state` | Expected terminal exit code / state of the `wait` result. |
+| `wait_acked`, `restart_acked` | The `wait` / `restart` operation acked. |
 | `error_message_contains` | Substring that must appear in the error message. |
 | `expects_timeout`, `timeout_code` | The driver must not send the timeout step's request and must observe a `timeout` error. |
 | `expects_unsupported`, `unsupported_verb` | The handshake must omit the capability and the verb must fail with `unsupported`. |

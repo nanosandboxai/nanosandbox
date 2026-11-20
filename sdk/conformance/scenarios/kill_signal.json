@@ -1,7 +1,7 @@
 {
   "id": "kill_signal",
   "description": "kill with an explicit SIGTERM signal is acked",
-  "capabilities": ["lifecycle", "signal"],
+  "capabilities": ["lifecycle"],
   "steps": [
     {
       "expect": { "type": "kill", "name": "box", "signal": 15 },

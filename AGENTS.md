@@ -158,8 +158,10 @@ Rules:
 
 ### Cutting a release
 
-1. `scripts/set-version.sh <X.Y.Z>` — writes `VERSION` and every manifest; then
-   `scripts/test-set-version.sh` must pass.
+1. `scripts/set-version.sh <X.Y.Z>` — writes `VERSION` and every manifest, including
+   intra-workspace `{ version, path }` pins; then `scripts/test-set-version.sh` must pass.
+   Also run `scripts/set-sdk-version.sh <X.Y.Z>` for the Ruby/Dotnet/Kotlin SDK manifests
+   and confirm `scripts/set-sdk-version.sh --check` reports no drift (the SDK CI gate).
 2. Commit `VERSION` + all manifests together (`chore(release): vX.Y.Z`).
 3. `git tag vX.Y.Z && git push origin vX.Y.Z` — the tag triggers
    `release.yml`, which builds and publishes the release (assets, checksums,

@@ -62,6 +62,8 @@ type DriverState struct {
 	AttachEvents      []nanosandbox.JsonValue
 	AttachExitCode    int
 	PingOk            bool
+	WaitResult        nanosandbox.WaitResult
+	WaitSet           bool
 	TimeoutCode       string
 	UnsupportedObserved bool
 }
@@ -152,11 +154,38 @@ func driveStep(client *nanosandbox.SandboxClient, state *DriverState, expect nan
 		}
 		addAck(state, "stop")
 	case "kill":
-		err := box.Kill()
+		if expect.Has("signal") {
+			sig, _ := expect.Int("signal")
+			err := box.KillWith(int(sig))
+			if err != nil {
+				return err
+			}
+		} else {
+			err := box.Kill()
+			if err != nil {
+				return err
+			}
+		}
+		addAck(state, "kill")
+	case "wait":
+		var timeout *float64
+		if expect.Has("timeout_secs") {
+			t, _ := expect.Num("timeout_secs")
+			timeout = &t
+		}
+		res, err := box.Wait(timeout)
 		if err != nil {
 			return err
 		}
-		addAck(state, "kill")
+		state.WaitResult = res
+		state.WaitSet = true
+		addAck(state, "wait")
+	case "restart":
+		err := box.Restart()
+		if err != nil {
+			return err
+		}
+		addAck(state, "restart")
 	case "remove":
 		force, _ := expect.Bool("force")
 		err := box.Remove(force)
@@ -779,7 +808,8 @@ func strOrEmpty(v nanosandbox.JsonValue, key string) string {
 }
 
 var ACK_KEYS = []string{
-	"create_acked", "start_acked", "stop_acked", "kill_acked", "remove_acked",
+	"create_acked", "start_acked", "stop_acked", "kill_acked", "wait_acked",
+	"restart_acked", "remove_acked",
 	"drain_acked", "touch_acked", "pause_acked", "resume_acked", "modify_acked",
 	"write_acked", "mkdir_acked", "remove_dir_acked", "copy_acked", "rename_acked",
 	"copy_from_host_acked", "copy_to_host_acked", "mount_add_acked", "set_acked",
@@ -787,7 +817,7 @@ var ACK_KEYS = []string{
 }
 
 var ACK_NAMES = []string{
-	"create", "start", "stop", "kill", "remove",
+	"create", "start", "stop", "kill", "wait", "restart", "remove",
 	"drain", "touch", "pause", "resume", "modify",
 	"write", "mkdir", "remove_dir", "copy", "rename",
 	"copy_from_host", "copy_to_host", "mount_add", "set",
@@ -832,6 +862,22 @@ func evaluateAssert(assertBlock nanosandbox.JsonValue, state *DriverState) []str
 		if assertBlock.Has(ACK_KEYS[i]) {
 			check(hasAck(state, ACK_NAMES[i]), fmt.Sprintf("%s: expected ack for %q", ACK_KEYS[i], ACK_NAMES[i]))
 		}
+	}
+	if assertBlock.Has("wait_exit_code") {
+		want, _ := assertBlock.Int("wait_exit_code")
+		got := -1
+		if state.WaitSet {
+			got = state.WaitResult.ExitCode
+		}
+		check(got == int(want), fmt.Sprintf("wait_exit_code: expected %d, got %d", want, got))
+	}
+	if assertBlock.Has("wait_state") {
+		want, _ := assertBlock.Str("wait_state")
+		got := ""
+		if state.WaitSet {
+			got = state.WaitResult.State
+		}
+		check(got == want, fmt.Sprintf("wait_state: expected %q, got %q", want, got))
 	}
 	if assertBlock.Has("get_name") {
 		want, _ := assertBlock.Str("get_name")

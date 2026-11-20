@@ -9,7 +9,7 @@ protocol target without a VM or network.
 sdk/conformance/
 ├── SPEC.md        # scenario schema + per-SDK driver contract (read this first)
 ├── README.md      # this file
-└── scenarios/     # 35 scripted scenario JSON files
+└── scenarios/     # 40 scripted scenario JSON files
 ```
 
 ## What this verifies
@@ -120,6 +120,9 @@ proc.terminate()
 | `lifecycle_kill_remove.json` | kill, remove |
 | `lifecycle_drain_touch.json` | drain, touch |
 | `lifecycle_pause_resume.json` | pause, resume |
+| `lifecycle_restart.json` | restart |
+| `wait_terminal.json` | wait (exit code + terminal state) |
+| `kill_signal.json` | kill with a signal selector (SIGTERM) |
 | `lifecycle_modify.json` | modify |
 | `lifecycle_full_flow.json` | create, start, exec, stop, remove (ordering) |
 | `lifecycle_create_rich_spec.json` | create (network/labels/ephemeral/hostname) |
@@ -127,6 +130,7 @@ proc.terminate()
 | `exec_env_cwd.json` | exec (env/cwd/user) |
 | `exec_stream_basic.json` | exec_stream |
 | `exec_stream_error.json` | exec_stream (stderr, non-zero exit) |
+| `exec_tty_stdin.json` | exec_stream with a PTY + live stdin |
 | `shell_basic.json` | shell |
 | `attach_interactive.json` | attach, attach_input, attach_resize |
 | `fs_write_read.json` | fs_write, fs_read |
@@ -149,6 +153,7 @@ proc.terminate()
 | `errors_bad_request.json` | fs_read→bad_request, snapshot_create→unsupported |
 | `timeout_step.json` | per-step timeout |
 | `capability_gating.json` | unadvertised capability → unsupported |
+| `security_context_rejected.json` | create with a security context → unsupported |
 
 ## Constraints
 

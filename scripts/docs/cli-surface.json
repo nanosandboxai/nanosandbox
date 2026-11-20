@@ -38,6 +38,14 @@
         "short": null
       },
       {
+        "long": "disk",
+        "short": null
+      },
+      {
+        "long": "max_pids",
+        "short": null
+      },
+      {
         "long": "permissions",
         "short": null
       },
@@ -152,6 +160,20 @@
         "subcommands": []
       },
       {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "pause",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "resume",
+        "subcommands": []
+      },
+      {
         "aliases": [
           "delete"
         ],
@@ -165,6 +187,13 @@
         "flags": [],
         "hidden": false,
         "name": "doctor",
+        "subcommands": []
+      },
+      {
+        "aliases": [],
+        "flags": [],
+        "hidden": false,
+        "name": "capacity",
         "subcommands": []
       },
       {
@@ -244,12 +273,17 @@
       "/mcp",
       "/mounts",
       "/open",
+      "/pause",
       "/project",
       "/projects",
       "/q",
       "/quit",
       "/reconnect",
+      "/restart",
+      "/restartweb",
+      "/resume",
       "/sandboxes",
+      "/sb",
       "/sk",
       "/skills",
       "/status",
@@ -262,10 +296,10 @@
     "help_entries": [
       {
         "description": "Add a new agent panel (interactive by default; --headless runs headless)",
-        "pattern": "/add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--env-file <path>] [--use-env <KEY>]..."
+        "pattern": "/add <agent> [--headless -p <prompt>] [--model <model>] [--tag <version>] [--run-as-root] [--image <img>] [--project <path>] [--branch <name>] [--name <name>] [--timeout <secs>] [--permissions <level>] [--env-file <path>] [--use-env <KEY>]..."
       },
       {
-        "description": "Toggle sandbox sidebar",
+        "description": "Toggle sandbox sidebar (alias: /sb)",
         "pattern": "/sandboxes"
       },
       {
@@ -379,6 +413,18 @@
       {
         "description": "Stop a sandbox (keeps the panel)",
         "pattern": "/stop [n|name]"
+      },
+      {
+        "description": "Restart a sandbox (in place when running)",
+        "pattern": "/restart [n|name]"
+      },
+      {
+        "description": "Pause a running sandbox",
+        "pattern": "/pause [n|name]"
+      },
+      {
+        "description": "Resume a paused sandbox",
+        "pattern": "/resume [n|name]"
       },
       {
         "description": "Show nanosb state disk usage",

@@ -1,7 +1,7 @@
 {
   "id": "lifecycle_pause_resume",
-  "description": "pause then resume a sandbox (snapshots capability gates these verbs)",
-  "capabilities": ["lifecycle", "snapshots"],
+  "description": "pause then resume a sandbox (the pause capability gates these verbs)",
+  "capabilities": ["lifecycle", "pause"],
   "steps": [
     {
       "expect": { "type": "pause", "name": "box" },

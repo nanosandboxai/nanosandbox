@@ -72,6 +72,9 @@ const LOG_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const LOG_ROTATION_COUNT: u32 = 3;
 
 /// In-memory scrollback ring buffer capacity (in bytes).
+/// One-shot reply slot for a pending restart, claimed by exactly one handler.
+type RestartReply = Arc<Mutex<Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>>>;
+
 const SCROLLBACK_CAPACITY: usize = 256 * 1024; // 256 KB
 
 /// Control socket protocol version.
@@ -278,37 +281,6 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     let extra_mounts: Vec<ExtraMount> =
         serde_json::from_str(&args.extra_mounts_json).unwrap_or_default();
 
-    // Console pipes (supervisor-owned): guest reads stdin_read and writes
-    // stdout_write/stderr_write; the supervisor keeps the other ends.
-    let (stdin_read, stdin_write) = match std::io::pipe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to create console pipes: {}", e);
-            std::process::exit(1);
-        }
-    };
-    let (stdout_read, stdout_write) = match std::io::pipe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to create console pipes: {}", e);
-            std::process::exit(1);
-        }
-    };
-    let (stderr_read, stderr_write) = match std::io::pipe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to create console pipes: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    let console = Some(ConsoleSpec {
-        stdin_fd: stdin_read.as_raw_fd(),
-        stdout_fd: stdout_write.as_raw_fd(),
-        stderr_fd: stderr_write.as_raw_fd(),
-        tty: false,
-    });
-
     // Compute config hash (simple SHA256 of the serialized config)
     let config_hash = {
         use sha2::{Digest, Sha256};
@@ -364,40 +336,20 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     // is `Send`, so `Arc<Mutex<Option<RuntimeSandbox>>>` is `Send + Sync`. The
     // `Option` lets the owner `take()` the sandbox out for the consuming
     // `destroy()` while the handle stays shared.
-    let sandbox = Arc::new(Mutex::new(Some(
-        match rt.block_on(RuntimeSandbox::create(config)) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("Failed to create sandbox: {}", e);
-                write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
-                std::process::exit(1);
+    let sandbox: Arc<Mutex<Option<RuntimeSandbox>>> = Arc::new(Mutex::new(None));
+    let booted = match first_boot(&rt, &sandbox, config.clone(), extra_mounts.clone()) {
+        Ok(booted) => booted,
+        Err(e) => {
+            error!("Failed to start sandbox (next mode): {}", e);
+            if let Some(sb) = sandbox.lock().unwrap().take() {
+                let _ = rt.block_on(sb.destroy());
             }
-        },
-    )));
-
-    if let Err(e) = rt.block_on(
-        sandbox
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .start_next(console, extra_mounts),
-    ) {
-        error!("Failed to start sandbox (next mode): {}", e);
-        if let Some(sb) = sandbox.lock().unwrap().take() {
-            let _ = rt.block_on(sb.destroy());
+            write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
+            std::process::exit(1);
         }
-        write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
-        std::process::exit(1);
-    }
-
-    // The VM child has duplicated copies of the console fds; drop the
-    // supervisor's guest-side ends so EOF propagates when the VM exits.
-    drop(stdin_read);
-    drop(stdout_write);
-    drop(stderr_write);
-
-    let vm_pid = sandbox.lock().unwrap().as_ref().unwrap().vm_pid();
+    };
+    let vm_pid = booted.vm_pid;
+    wait_for_guest_exec(&sandbox_dir, &config);
 
     // Update state with PID
     let state = SupervisorState {
@@ -415,7 +367,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     // Start the timeout clock only now that the VM is running, so image pull,
     // rootfs extraction, and boot time are not charged against the budget.
     // A timeout of 0 means "no timeout" (unlimited).
-    let deadline = deadline_for(args.timeout_secs);
+    let mut deadline = deadline_for(args.timeout_secs);
 
     // Set up console log file
     let log_path = logs_dir.join("console.log");
@@ -437,7 +389,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     let force_stop = Arc::new(AtomicBool::new(false));
     let log_file = Arc::new(Mutex::new(log_file));
     let current_log_size = Arc::new(Mutex::new(0u64));
-    let stdin_writer = Arc::new(Mutex::new(stdin_write));
+    let stdin_writer = Arc::new(Mutex::new(booted.stdin_writer));
     let subscribers: Subscribers = Arc::new(Mutex::new(Vec::new()));
     let next_subscriber_id = Arc::new(AtomicU64::new(1));
     let secrets = Arc::new(secrets::SecretStore::new());
@@ -446,6 +398,10 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     // In-flight `wait` handlers; the supervisor drains them before exiting so a
     // blocking wait always receives its terminal response.
     let active_waiters = Arc::new(AtomicUsize::new(0));
+    let restart_requested = Arc::new(AtomicBool::new(false));
+    let restart_reply: Arc<
+        Mutex<Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>>,
+    > = Arc::new(Mutex::new(None));
 
     // Start control socket listener
     let control_sock_path = sandbox_dir.join("control.sock");
@@ -467,9 +423,9 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         }
     };
 
-    let vm_threads = vec![
+    let mut vm_threads = vec![
         spawn_output_reader(
-            stdout_read,
+            booted.stdout_read,
             running.clone(),
             scrollback.clone(),
             log_file.clone(),
@@ -479,7 +435,7 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
             nanosb_protocol::LogSource::Stdout,
         ),
         spawn_output_reader(
-            stderr_read,
+            booted.stderr_read,
             running.clone(),
             scrollback.clone(),
             log_file.clone(),
@@ -506,6 +462,8 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
         let volumes = volumes.clone();
         let exec_session = exec_session.clone();
         let active_waiters = active_waiters.clone();
+        let restart_requested = restart_requested.clone();
+        let restart_reply = restart_reply.clone();
         let sandbox = sandbox.clone();
         std::thread::spawn(move || {
             accept_connections(
@@ -525,6 +483,8 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
                 volumes,
                 exec_session,
                 active_waiters,
+                restart_requested,
+                restart_reply,
                 sandbox,
             );
         })
@@ -536,10 +496,92 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     if let Some(bundle) = sandbox.lock().unwrap().as_ref().unwrap().bundle_path() {
         monitored_paths.push(bundle.clone());
     }
+    let mut restart_failed = false;
+    let mut restart_failed_at = Instant::now();
     loop {
         if stop_requested.load(Ordering::SeqCst) || STOP_SIGNAL.load(Ordering::SeqCst) {
             info!("Stop requested for sandbox '{}'", args.sandbox_name);
             break;
+        }
+        if restart_requested.swap(false, Ordering::SeqCst) {
+            info!("Restart requested for sandbox '{}'", args.sandbox_name);
+            {
+                let mut guard = sandbox.lock().unwrap();
+                if let Some(sb) = guard.as_mut() {
+                    if let Some(runtime) = sb.runtime_ref() {
+                        // A SIGSTOPped VMM defers SIGTERM; SIGCONT first so the
+                        // graceful stop is not stalled for the full kill timeout.
+                        let _ = runtime.signal(sb.id(), libc::SIGCONT);
+                    }
+                    let _ = rt.block_on(sb.stop());
+                }
+            }
+            for t in vm_threads.drain(..) {
+                let _ = t.join();
+            }
+            *exec_session.lock().unwrap() = None;
+            let outcome = match boot_existing(&rt, &sandbox, extra_mounts.clone()) {
+                Ok(booted) => {
+                    *stdin_writer.lock().unwrap() = booted.stdin_writer;
+                    vm_threads = vec![
+                        spawn_output_reader(
+                            booted.stdout_read,
+                            running.clone(),
+                            scrollback.clone(),
+                            log_file.clone(),
+                            current_log_size.clone(),
+                            logs_dir.clone(),
+                            subscribers.clone(),
+                            nanosb_protocol::LogSource::Stdout,
+                        ),
+                        spawn_output_reader(
+                            booted.stderr_read,
+                            running.clone(),
+                            scrollback.clone(),
+                            log_file.clone(),
+                            current_log_size.clone(),
+                            logs_dir.clone(),
+                            subscribers.clone(),
+                            nanosb_protocol::LogSource::Stderr,
+                        ),
+                    ];
+                    write_state(
+                        &sandbox_dir,
+                        &SupervisorState {
+                            sandbox_name: args.sandbox_name.clone(),
+                            state: SandboxState::Running,
+                            pid: booted.vm_pid,
+                            exit_code: None,
+                            started_at: chrono::Utc::now().to_rfc3339(),
+                            config_hash: config_hash.clone(),
+                            exited_at_ms: None,
+                            supervisor_pid,
+                        },
+                    );
+                    wait_for_guest_exec(&sandbox_dir, &config);
+                    deadline = deadline_for(args.timeout_secs);
+                    restart_failed = false;
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Failed to restart sandbox '{}': {}", args.sandbox_name, e);
+                    write_error_state(&sandbox_dir, &args.sandbox_name, &started_at, &config_hash);
+                    restart_failed = true;
+                    restart_failed_at = Instant::now();
+                    Err(e)
+                }
+            };
+            if let Some(tx) = restart_reply.lock().unwrap().take() {
+                let _ = tx.send(outcome);
+            }
+            continue;
+        }
+        if restart_failed {
+            if restart_failed_at.elapsed() > Duration::from_secs(60) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
         }
         if vm_threads.iter().all(|t| t.is_finished()) {
             info!("VM exited for sandbox '{}'", args.sandbox_name);
@@ -571,7 +613,23 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
 
     // Cleanup
     running.store(false, Ordering::SeqCst);
-    let _ = rt.block_on(sandbox.lock().unwrap().as_mut().unwrap().stop());
+    if let Some(tx) = restart_reply.lock().unwrap().take() {
+        let _ = tx.send(Err("sandbox is stopping".to_string()));
+    }
+    let force = force_stop.load(Ordering::SeqCst);
+    {
+        let mut guard = sandbox.lock().unwrap();
+        if let Some(sb) = guard.as_mut() {
+            if force {
+                if let Some(runtime) = sb.runtime_ref() {
+                    if let Err(e) = runtime.signal(sb.id(), libc::SIGKILL) {
+                        tracing::warn!("force kill failed for '{}': {e}", args.sandbox_name);
+                    }
+                }
+            }
+            let _ = rt.block_on(sb.stop());
+        }
+    }
     for t in vm_threads {
         let _ = t.join();
     }
@@ -597,18 +655,22 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     let _ = std::fs::remove_file(&control_sock_path);
     let _ = std::fs::remove_file(sandbox_dir.join("supervisor.pid"));
 
-    let final_state = SupervisorState {
-        sandbox_name: args.sandbox_name.clone(),
-        state: SandboxState::Stopped,
-        pid: None,
-        exit_code: Some(exit_code),
-        started_at,
-        config_hash,
-        exited_at_ms: Some(now_ms()),
-        // The owner is exiting: drop it so a later PID reuse can't read as running.
-        supervisor_pid: None,
-    };
-    write_state(&sandbox_dir, &final_state);
+    // A failed restart leaves the real `error` state in place; do not overwrite
+    // it with a `stopped` state that would hide the failure.
+    if !restart_failed {
+        let final_state = SupervisorState {
+            sandbox_name: args.sandbox_name.clone(),
+            state: SandboxState::Stopped,
+            pid: None,
+            exit_code: Some(exit_code),
+            started_at,
+            config_hash,
+            exited_at_ms: Some(now_ms()),
+            // The owner is exiting: drop it so a later PID reuse can't read as running.
+            supervisor_pid: None,
+        };
+        write_state(&sandbox_dir, &final_state);
+    }
 
     // Drain in-flight `wait` handlers so a blocking wait receives its terminal
     // response before the process exits (bounded to avoid a wedged client).
@@ -620,6 +682,98 @@ pub fn run_supervisor(args: SuperviseArgs) -> ! {
     cleanup_after_stop(&sandbox_dir, ephemeral);
 
     std::process::exit(exit_code);
+}
+
+fn wait_for_guest_exec(sandbox_dir: &Path, config: &runtime::config::SandboxConfig) {
+    if config.vsock_socket.is_none() {
+        return;
+    }
+    let exec_sock = sandbox_dir.join("exec.sock");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    // A stale socket file from the previous VM may still exist, so probe with a
+    // real connect instead of an existence check.
+    while std::os::unix::net::UnixStream::connect(&exec_sock).is_err() {
+        if Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+struct BootedVm {
+    stdin_writer: std::io::PipeWriter,
+    stdout_read: std::io::PipeReader,
+    stderr_read: std::io::PipeReader,
+    vm_pid: Option<i32>,
+}
+
+type ConsoleParts = (
+    ConsoleSpec,
+    std::io::PipeWriter,
+    std::io::PipeReader,
+    std::io::PipeReader,
+    std::io::PipeWriter,
+    std::io::PipeReader,
+    std::io::PipeWriter,
+);
+
+fn make_console() -> std::io::Result<ConsoleParts> {
+    let (stdin_read, stdin_write) = std::io::pipe()?;
+    let (stdout_read, stdout_write) = std::io::pipe()?;
+    let (stderr_read, stderr_write) = std::io::pipe()?;
+    let spec = ConsoleSpec {
+        stdin_fd: stdin_read.as_raw_fd(),
+        stdout_fd: stdout_write.as_raw_fd(),
+        stderr_fd: stderr_write.as_raw_fd(),
+        tty: false,
+    };
+    Ok((
+        spec,
+        stdin_write,
+        stdin_read,
+        stdout_read,
+        stdout_write,
+        stderr_read,
+        stderr_write,
+    ))
+}
+
+fn first_boot(
+    rt: &tokio::runtime::Runtime,
+    sandbox: &Arc<Mutex<Option<RuntimeSandbox>>>,
+    config: runtime::config::SandboxConfig,
+    extra_mounts: Vec<ExtraMount>,
+) -> std::result::Result<BootedVm, String> {
+    let sb = rt
+        .block_on(RuntimeSandbox::create(config))
+        .map_err(|e| e.to_string())?;
+    *sandbox.lock().unwrap() = Some(sb);
+    boot_existing(rt, sandbox, extra_mounts)
+}
+
+fn boot_existing(
+    rt: &tokio::runtime::Runtime,
+    sandbox: &Arc<Mutex<Option<RuntimeSandbox>>>,
+    extra_mounts: Vec<ExtraMount>,
+) -> std::result::Result<BootedVm, String> {
+    let (spec, stdin_writer, stdin_read, stdout_read, stdout_write, stderr_read, stderr_write) =
+        make_console().map_err(|e| e.to_string())?;
+    {
+        let mut guard = sandbox.lock().unwrap();
+        let sb = guard.as_mut().ok_or("sandbox handle missing")?;
+        rt.block_on(sb.start_next(Some(spec), extra_mounts))
+            .map_err(|e| e.to_string())?;
+    }
+    drop(stdin_read);
+    drop(stdout_write);
+    drop(stderr_write);
+    let vm_pid = sandbox.lock().unwrap().as_ref().and_then(|sb| sb.vm_pid());
+    Ok(BootedVm {
+        stdin_writer,
+        stdout_read,
+        stderr_read,
+        vm_pid,
+    })
 }
 
 fn cleanup_after_stop(sandbox_dir: &Path, ephemeral: bool) {
@@ -912,6 +1066,8 @@ fn accept_connections(
     volumes: Arc<volumes::VolumeRegistry>,
     exec_session: Arc<Mutex<Option<ExecHandle>>>,
     active_waiters: Arc<AtomicUsize>,
+    restart_requested: Arc<AtomicBool>,
+    restart_reply: RestartReply,
     sandbox: Arc<Mutex<Option<RuntimeSandbox>>>,
 ) {
     listener.set_nonblocking(true).ok();
@@ -944,6 +1100,8 @@ fn accept_connections(
                 let volumes = volumes.clone();
                 let exec_session = exec_session.clone();
                 let active_waiters = active_waiters.clone();
+                let restart_requested = restart_requested.clone();
+                let restart_reply = restart_reply.clone();
                 let sandbox = sandbox.clone();
 
                 std::thread::spawn(move || {
@@ -964,6 +1122,8 @@ fn accept_connections(
                         volumes,
                         exec_session,
                         active_waiters,
+                        restart_requested,
+                        restart_reply,
                         sandbox,
                     );
                 });
@@ -998,6 +1158,8 @@ fn handle_connection(
     volumes: Arc<volumes::VolumeRegistry>,
     exec_session: Arc<Mutex<Option<ExecHandle>>>,
     active_waiters: Arc<AtomicUsize>,
+    restart_requested: Arc<AtomicBool>,
+    restart_reply: RestartReply,
     sandbox: Arc<Mutex<Option<RuntimeSandbox>>>,
 ) {
     let _ = stream.set_nonblocking(false);
@@ -1085,6 +1247,8 @@ fn handle_connection(
                             volumes: volumes.as_ref(),
                             exec_session: exec_session.as_ref(),
                             active_waiters: active_waiters.as_ref(),
+                            restart_requested: restart_requested.as_ref(),
+                            restart_reply: restart_reply.as_ref(),
                         };
                         proto::serve(stream, reader, &ctx, hello);
                         return;

@@ -3,8 +3,6 @@
 // in `sandbox_fs.go` to keep this file focused.
 package nanosandbox
 
-import "time"
-
 // Sandbox is a handle bound to one sandbox.
 type Sandbox struct {
 	Client *SandboxClient
@@ -118,28 +116,60 @@ func (b *Sandbox) Modify(spec JsonValue) error {
 	return err
 }
 
+// WaitResult is the outcome of a blocking wait: the exit code, the wall-clock
+// time the sandbox exited (ms since epoch), and the terminal lifecycle state.
+type WaitResult struct {
+	ExitCode   int
+	ExitedAtMs uint64
+	State      string
+}
+
+// Wait blocks until the sandbox reaches a terminal state, returning the exit
+// code, exit timestamp, and state. A nil timeoutSecs waits indefinitely; a
+// non-nil value bounds the wait. An error response is surfaced as an error.
+func (b *Sandbox) Wait(timeoutSecs *float64) (WaitResult, error) {
+	req := JsonObjectValue()
+	req.Set("type", JsonStringValue("wait"))
+	req.Set("name", JsonStringValue(b.Name))
+	if timeoutSecs != nil {
+		req.Set("timeout_secs", JsonNumberValue(*timeoutSecs))
+	}
+	resp, err := b.Client.Call(req)
+	if err != nil {
+		return WaitResult{}, err
+	}
+	code, _ := resp.Int("exit_code")
+	at, _ := resp.Int("exited_at_ms")
+	state, _ := resp.Str("state")
+	return WaitResult{ExitCode: int(code), ExitedAtMs: uint64(at), State: state}, nil
+}
+
+// KillWith kills the sandbox with the given signal.
+func (b *Sandbox) KillWith(signal int) error {
+	req := JsonObjectValue()
+	req.Set("type", JsonStringValue("kill"))
+	req.Set("name", JsonStringValue(b.Name))
+	req.Set("signal", JsonIntValue(int64(signal)))
+	_, err := b.Client.Call(req)
+	return err
+}
+
+// Restart re-boots the sandbox.
+func (b *Sandbox) Restart() error {
+	req := JsonObjectValue()
+	req.Set("type", JsonStringValue("restart"))
+	req.Set("name", JsonStringValue(b.Name))
+	_, err := b.Client.Call(req)
+	return err
+}
+
 // WaitUntilStopped polls the sandbox state until it is stopped.
 func (b *Sandbox) WaitUntilStopped(timeoutSecs float64) (string, error) {
-	deadline := time.Now().Add(time.Duration(int64(timeoutSecs * 1e9)))
-	for {
-		st, err := b.State()
-		if err != nil {
-			return "", err
-		}
-		if st == "stopped" {
-			return st, nil
-		}
-		if st == "error" {
-			return "", &NanosbError{Code: "internal", Message: "sandbox entered error state while waiting"}
-		}
-		if time.Now().After(deadline) {
-			return "", &NanosbError{
-				Code:    "timeout",
-				Message: "sandbox '" + b.Name + "' did not stop within the timeout",
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
+	res, err := b.Wait(&timeoutSecs)
+	if err != nil {
+		return "", err
 	}
+	return res.State, nil
 }
 
 // Exec runs a buffered command and returns the exec result.

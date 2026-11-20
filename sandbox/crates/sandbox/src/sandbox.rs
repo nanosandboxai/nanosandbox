@@ -173,6 +173,36 @@ impl Sandbox {
         ))
     }
 
+    /// Freeze the guest (SIGSTOP). `exec` stalls until [`resume`].
+    pub fn pause(&mut self) -> Result<()> {
+        self.inner.pause()
+    }
+
+    /// Thaw the guest (SIGCONT).
+    pub fn resume(&mut self) -> Result<()> {
+        self.inner.resume()
+    }
+
+    /// Force-stop the guest immediately (SIGKILL).
+    pub fn kill(&mut self) -> Result<()> {
+        self.inner.kill()
+    }
+
+    /// Re-boot the sandbox: stop the VM, then start it again from the same
+    /// config (Next mode re-derives the console and extra mounts).
+    pub async fn restart(&mut self) -> Result<()> {
+        self.inner.stop().await?;
+        self.inner.start().await
+    }
+
+    /// Block until the sandbox reaches a terminal state.
+    pub fn wait(
+        &self,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<(i32, u64, runtime::SandboxStatus)> {
+        self.inner.wait(timeout)
+    }
+
     /// Start the sandbox.
     ///
     /// Before booting the VM, detects gateway mode from the rootfs, sets up

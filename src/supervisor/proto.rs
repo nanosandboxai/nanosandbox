@@ -51,6 +51,10 @@ pub struct Ctx<'a> {
     pub exec_session: &'a Mutex<Option<ExecHandle>>,
     /// In-flight `wait` handlers; the supervisor drains them before exiting.
     pub active_waiters: &'a AtomicUsize,
+    /// Set by a restart handler; the lifecycle loop re-boots the VM.
+    pub restart_requested: &'a AtomicBool,
+    /// One-shot reply slot owned by the restart handler that set the flag.
+    pub restart_reply: &'a Mutex<Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>>,
 }
 
 const HELPER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -82,7 +86,8 @@ fn capabilities(ctx: &Ctx) -> Vec<Capability> {
         Capability::Ephemeral,
         Capability::Secrets,
         Capability::Volumes,
-        Capability::Signal,
+        Capability::Pause,
+        Capability::Restart,
         Capability::Wait,
     ];
     if exec_configured(ctx) {
@@ -242,6 +247,7 @@ fn handle(
                 version: HELPER_VERSION.to_string(),
             },
         ),
+        Request::Restart { .. } => handle_restart(stream, ctx),
         Request::Pause { .. } => signal_vm(stream, ctx, libc::SIGSTOP),
         Request::Resume { .. } => signal_vm(stream, ctx, libc::SIGCONT),
         Request::Exec(spec) => exec_buffered(
@@ -573,7 +579,76 @@ fn handle_start(stream: &mut UnixStream, ctx: &Ctx) -> std::io::Result<()> {
             send_error(
                 stream,
                 nanosb_protocol::ErrorCode::InvalidState,
-                "sandbox is not running and cannot be restarted by this engine",
+                format!(
+                    "sandbox '{}' is not running; start it through the helper (nanosb-runtime)",
+                    ctx.sandbox_name
+                ),
+            );
+            Ok(())
+        }
+    }
+}
+
+fn handle_restart(stream: &mut UnixStream, ctx: &Ctx) -> std::io::Result<()> {
+    let state = read_current_state(ctx.sandbox_dir);
+    if matches!(
+        state.state,
+        crate::supervisor::SandboxState::Stopped | crate::supervisor::SandboxState::Error
+    ) {
+        send_error(
+            stream,
+            nanosb_protocol::ErrorCode::InvalidState,
+            format!(
+                "sandbox '{}' is not running; start it through the helper (nanosb-runtime)",
+                ctx.sandbox_name
+            ),
+        );
+        return Ok(());
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let mut slot = ctx.restart_reply.lock().unwrap();
+        if slot.is_some() {
+            drop(slot);
+            send_error(
+                stream,
+                nanosb_protocol::ErrorCode::InvalidState,
+                "restart already in progress",
+            );
+            return Ok(());
+        }
+        *slot = Some(tx);
+    }
+
+    // Starting is written before the flag so an in-flight `wait` never observes
+    // a terminal state during the re-boot.
+    super::write_state(
+        ctx.sandbox_dir,
+        &crate::supervisor::SupervisorState {
+            sandbox_name: ctx.sandbox_name.to_string(),
+            state: crate::supervisor::SandboxState::Starting,
+            pid: None,
+            exit_code: None,
+            started_at: chrono::Utc::now().to_rfc3339(),
+            config_hash: ctx.config_hash.to_string(),
+            exited_at_ms: None,
+            supervisor_pid: Some(std::process::id() as i32),
+        },
+    );
+    ctx.restart_requested.store(true, Ordering::SeqCst);
+
+    match rx.recv_timeout(std::time::Duration::from_secs(900)) {
+        Ok(Ok(())) => ack_ok(stream),
+        Ok(Err(msg)) => {
+            send_error(stream, nanosb_protocol::ErrorCode::Internal, msg);
+            Ok(())
+        }
+        Err(_) => {
+            send_error(
+                stream,
+                nanosb_protocol::ErrorCode::Timeout,
+                "restart timed out",
             );
             Ok(())
         }
@@ -1550,6 +1625,8 @@ mod tests {
         secrets: SecretStore,
         volumes: VolumeRegistry,
         exec_session: Mutex<Option<ExecHandle>>,
+        restart_requested: AtomicBool,
+        restart_reply: Mutex<Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>>,
     }
 
     impl TestHarness {
@@ -1582,6 +1659,8 @@ mod tests {
                 secrets,
                 volumes,
                 exec_session,
+                restart_requested: AtomicBool::new(false),
+                restart_reply: Mutex::new(None),
             }
         }
 
@@ -1602,6 +1681,8 @@ mod tests {
                 volumes: &self.volumes,
                 exec_session: &self.exec_session,
                 active_waiters: &self.active_waiters,
+                restart_requested: &self.restart_requested,
+                restart_reply: &self.restart_reply,
             }
         }
 
@@ -1635,6 +1716,50 @@ mod tests {
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         reader.read_line(&mut line).unwrap();
         serde_json::from_str(line.trim()).unwrap()
+    }
+
+    #[test]
+    fn capabilities_are_truthful() {
+        let h = TestHarness::new();
+        let caps = capabilities(&h.ctx());
+        for cap in [Capability::Pause, Capability::Restart, Capability::Wait] {
+            assert!(caps.contains(&cap), "missing {cap:?}");
+        }
+        assert!(!caps.contains(&Capability::Signal));
+        assert!(!caps.contains(&Capability::Snapshots));
+    }
+
+    #[test]
+    fn start_on_a_stopped_sandbox_points_at_the_helper() {
+        let h = TestHarness::new();
+        h.write_state(crate::supervisor::SandboxState::Stopped, Some(0));
+        let ctx = h.ctx();
+        let (mut server, mut client) = pair();
+        handle_start(&mut server, &ctx).unwrap();
+        match recv_resp(&mut client) {
+            Response::Error(e) => {
+                assert_eq!(e.code, nanosb_protocol::ErrorCode::InvalidState);
+                assert!(e.message.contains("through the helper"), "{e:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn restart_on_a_stopped_sandbox_points_at_the_helper() {
+        let h = TestHarness::new();
+        h.write_state(crate::supervisor::SandboxState::Stopped, Some(0));
+        let ctx = h.ctx();
+        let (mut server, mut client) = pair();
+        handle_restart(&mut server, &ctx).unwrap();
+        match recv_resp(&mut client) {
+            Response::Error(e) => {
+                assert_eq!(e.code, nanosb_protocol::ErrorCode::InvalidState);
+                assert!(e.message.contains("through the helper"), "{e:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!h.restart_requested.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -1864,6 +1989,9 @@ mod tests {
         let volumes = VolumeRegistry::with_root(dir.join("volumes"));
         let exec_session = Mutex::new(None::<ExecHandle>);
         let active_waiters = AtomicUsize::new(0);
+        let restart_requested = AtomicBool::new(false);
+        let restart_reply: Mutex<Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>> =
+            Mutex::new(None);
         let ctx = Ctx {
             sandbox_dir: &dir,
             sandbox_name: "t",
@@ -1880,6 +2008,8 @@ mod tests {
             volumes: &volumes,
             exec_session: &exec_session,
             active_waiters: &active_waiters,
+            restart_requested: &restart_requested,
+            restart_reply: &restart_reply,
         };
 
         let (server, client) = UnixStream::pair().unwrap();

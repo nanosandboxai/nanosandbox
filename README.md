@@ -47,6 +47,13 @@ cargo build --release -p nanosb-cli
 
 The binary will be at `target/release/nanosb`.
 
+`cargo check`/`cargo test` for the workspace need **no libclang and no prebuilt
+libkrun**: `runtime/crates/libkrun-sys/build.rs` links the static library only when
+it exists. Building libkrun itself (`runtime/scripts/build-libkrun.sh`, which the CI
+`rust` job and local VM runs need) does require libclang — `libclang-dev` on Linux
+with `LIBCLANG_PATH="$(llvm-config --prefix)/lib"`, or `brew install llvm` with
+`LIBCLANG_PATH="$(brew --prefix llvm)/lib"` on macOS.
+
 ## Quick Start
 
 ```bash
@@ -142,7 +149,7 @@ Notes:
 
 Eight protocol clients — **Rust, Python, TypeScript/Node, Go, Ruby, Java, C#/.NET, Kotlin** —
 plus a language-agnostic conformance harness, all speaking protocol **v1.0.0**
-(35 conformance scenarios). See [`sdk/README.md`](sdk/README.md) and the per-language
+(40 conformance scenarios). See [`sdk/README.md`](sdk/README.md) and the per-language
 READMEs under `sdk/<lang>/`.
 
 ```bash
@@ -226,7 +233,9 @@ nanosb ps [-a]                 # List sandboxes (running, or all with -a)
 nanosb logs <sandbox> [-f]     # Tail a sandbox console log
 nanosb attach <sandbox>        # Attach to a running sandbox
 nanosb stop <sandbox>          # Stop a running sandbox
-nanosb restart <sandbox>       # Restart a sandbox
+nanosb pause <sandbox>         # Pause a running sandbox (freeze the guest)
+nanosb resume <sandbox>        # Resume a paused sandbox
+nanosb restart <sandbox>       # Restart a sandbox (in place when running)
 nanosb rm [-f] <sandbox>       # Remove a sandbox
 nanosb describe <sandbox>      # Show a sandbox's resolved configuration
 nanosb apply [-f sandbox.yml]  # Apply sandbox.yml (redeploy); supports --dry-run/--prune
@@ -476,7 +485,9 @@ Housekeeping: `/disk` shows state usage, `/gc` reclaims dead supervisor dirs
 clones.
 
 Other TUI commands: `/logs [n]` (console tail), `/stop [n|name]` (stop a
-sandbox, keep the panel), `/exec <cmd>` (run in an exec-channel sandbox),
+sandbox, keep the panel), `/restart [n|name]` (re-boot it in place),
+`/pause` and `/resume` (freeze/thaw a running sandbox), `/exec <cmd>` (run in
+an exec-channel sandbox),
 `/mounts`, and `/apply` (fast-forward-merge `refs/nanosb/<id>` into your
 branch). Registered projects can be listed and switched with `/projects` and
 `/project <n|path>` — panels from different projects coexist in one TUI.

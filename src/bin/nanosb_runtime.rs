@@ -104,6 +104,9 @@ fn capabilities() -> Vec<Capability> {
         Capability::Secrets,
         Capability::Volumes,
         Capability::Snapshots,
+        Capability::Pause,
+        Capability::Restart,
+        Capability::Wait,
     ]
 }
 
@@ -181,7 +184,46 @@ fn handle(stream: UnixStream) -> anyhow::Result<()> {
     }
 }
 
+fn map_host_state(s: nanosb_cli::supervisor::SandboxState) -> nanosb_protocol::SandboxState {
+    use nanosb_cli::supervisor::SandboxState as H;
+    use nanosb_protocol::SandboxState as P;
+    match s {
+        H::Starting => P::Starting,
+        H::Running => P::Running,
+        H::Stopped => P::Stopped,
+        H::Error => P::Error,
+    }
+}
+
+fn start_or_restart(writer: &mut UnixStream, name: String, restart: bool) -> anyhow::Result<()> {
+    use nanosb_cli::supervisor::client::SupervisorClient;
+    let client = SupervisorClient::new(&name);
+    if client.is_running() {
+        let req = if restart {
+            Request::Restart { name: None }
+        } else {
+            Request::Start { name: None }
+        };
+        return proxy(writer, name, req);
+    }
+    match nanosb_cli::deploy::restart_sandbox(&name, false, 60) {
+        Ok(()) => send(
+            writer,
+            &Response::Ok {
+                version: HELPER_VERSION.to_string(),
+            },
+        ),
+        Err(e) => send(
+            writer,
+            &Response::Error(nanosb_protocol::ProtocolError::invalid_state(format!(
+                "{e}"
+            ))),
+        ),
+    }
+}
+
 fn dispatch(writer: &mut UnixStream, req: Request) -> anyhow::Result<()> {
+    use nanosb_cli::supervisor::client::SupervisorClient;
     match req {
         Request::Hello(_) => Ok(()),
         Request::Ping => send(
@@ -211,11 +253,54 @@ fn dispatch(writer: &mut UnixStream, req: Request) -> anyhow::Result<()> {
             None => send(writer, &Response::Error(not_found(&name))),
         },
         Request::Create(spec) => create(writer, spec.spec),
-        Request::Start { name } => {
-            proxy(writer, require_name(name)?, Request::Start { name: None })
-        }
+        Request::Start { name } => start_or_restart(writer, require_name(name)?, false),
+        Request::Restart { name } => start_or_restart(writer, require_name(name)?, true),
         Request::Status { name } => {
-            proxy(writer, require_name(name)?, Request::Status { name: None })
+            let name = require_name(name)?;
+            let client = SupervisorClient::new(&name);
+            if client.is_running() {
+                proxy(writer, name, Request::Status { name: None })
+            } else {
+                match client.read_state() {
+                    Some(st) => send(
+                        writer,
+                        &Response::Status {
+                            state: map_host_state(st.state),
+                            pid: st.pid,
+                            exit_code: st.exit_code,
+                            started_at: Some(st.started_at),
+                            config_hash: Some(st.config_hash),
+                        },
+                    ),
+                    None => send(writer, &Response::Error(not_found(&name))),
+                }
+            }
+        }
+        Request::Wait { name, timeout_secs } => {
+            let name = require_name(name)?;
+            let client = SupervisorClient::new(&name);
+            if client.is_running() {
+                proxy(
+                    writer,
+                    name,
+                    Request::Wait {
+                        name: None,
+                        timeout_secs,
+                    },
+                )
+            } else {
+                match client.read_state() {
+                    Some(st) => send(
+                        writer,
+                        &Response::Wait {
+                            exit_code: st.exit_code.unwrap_or(0),
+                            exited_at_ms: st.exited_at_ms.unwrap_or(0),
+                            state: map_host_state(st.state),
+                        },
+                    ),
+                    None => send(writer, &Response::Error(not_found(&name))),
+                }
+            }
         }
         Request::Stop { name, force } => proxy(
             writer,

@@ -43,6 +43,7 @@ class DriverState {
     public List<JsonValue> attachEvents;
     public int attachExitCode;
     public bool pingOk;
+    public WaitResult waitResult;
     public String timeoutCode;
     public bool unsupportedObserved;
 
@@ -115,8 +116,21 @@ class Driver {
             box.stop(expect.boolVal("force"));
             addAck(state, "stop");
         } else if (etype.Equals("kill")) {
-            box.kill();
+            if (expect.has("signal")) {
+                box.killWith((int) expect.intVal("signal"));
+            } else {
+                box.kill();
+            }
             addAck(state, "kill");
+        } else if (etype.Equals("wait")) {
+            TimeSpan? timeout = expect.has("timeout_secs")
+                ? TimeSpan.FromSeconds(expect.intVal("timeout_secs"))
+                : (TimeSpan?) null;
+            state.waitResult = box.wait(timeout);
+            addAck(state, "wait");
+        } else if (etype.Equals("restart")) {
+            box.restart();
+            addAck(state, "restart");
         } else if (etype.Equals("remove")) {
             box.remove(expect.boolVal("force"));
             addAck(state, "remove");
@@ -610,6 +624,20 @@ class Driver {
                 failures.Add(String.Format("exec_stdout: expected %s, got %s", want, state.stdout));
             }
         }
+        if (assertBlock.has("wait_exit_code")) {
+            long want = assertBlock.intVal("wait_exit_code");
+            int got = state.waitResult == null ? -1 : state.waitResult.ExitCode;
+            if (got != (int) want) {
+                failures.Add(String.Format("wait_exit_code: expected %d, got %d", want, got));
+            }
+        }
+        if (assertBlock.has("wait_state")) {
+            String want = assertBlock.str("wait_state");
+            String got = state.waitResult == null ? "" : state.waitResult.State;
+            if (!got.Equals(want)) {
+                failures.Add(String.Format("wait_state: expected %s, got %s", want, got));
+            }
+        }
         return failures;
     }
 
@@ -628,14 +656,16 @@ class Driver {
 
     private static void checkAcks(List<String> failures, JsonValue assertBlock, DriverState state) {
         String[] keys = {
-            "create_acked", "start_acked", "stop_acked", "kill_acked", "remove_acked",
+            "create_acked", "start_acked", "stop_acked", "kill_acked", "wait_acked",
+            "restart_acked", "remove_acked",
             "drain_acked", "touch_acked", "pause_acked", "resume_acked", "modify_acked",
             "write_acked", "mkdir_acked", "remove_dir_acked", "copy_acked", "rename_acked",
             "copy_from_host_acked", "copy_to_host_acked", "mount_add_acked", "set_acked",
             "restore_acked", "fork_acked", "input_acked", "resize_acked", "write_stream_acked"
         };
         String[] names = {
-            "create", "start", "stop", "kill", "remove",
+            "create", "start", "stop", "kill", "wait",
+            "restart", "remove",
             "drain", "touch", "pause", "resume", "modify",
             "write", "mkdir", "remove_dir", "copy", "rename",
             "copy_from_host", "copy_to_host", "mount_add", "set",

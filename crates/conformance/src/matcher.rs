@@ -31,6 +31,8 @@ pub fn required_capability(ty: &str) -> Option<Capability> {
     Some(match ty {
         "hello" | "ping" | "status" | "create" | "start" | "stop" | "kill" | "remove" | "get"
         | "list" | "modify" | "drain" | "touch" => Capability::Lifecycle,
+        "restart" => Capability::Restart,
+        "pause" | "resume" => Capability::Pause,
         "exec" | "exec_stream" | "shell" | "attach" | "attach_input" | "attach_resize"
         | "exec_input" | "exec_resize" => Capability::Exec,
         "wait" => Capability::Wait,
@@ -44,7 +46,7 @@ pub fn required_capability(ty: &str) -> Option<Capability> {
         }
         "secret_set" | "secret_list" | "secret_remove" => Capability::Secrets,
         "snapshot_create" | "snapshot_list" | "snapshot_restore" | "snapshot_fork"
-        | "snapshot_remove" | "pause" | "resume" => Capability::Snapshots,
+        | "snapshot_remove" => Capability::Snapshots,
         _ => return None,
     })
 }
@@ -93,6 +95,10 @@ mod tests {
         assert_eq!(required_capability("exec_input"), Some(Capability::Exec));
         assert_eq!(required_capability("exec_resize"), Some(Capability::Exec));
         assert_eq!(required_capability("wait"), Some(Capability::Wait));
+        assert_eq!(required_capability("restart"), Some(Capability::Restart));
+        assert_eq!(required_capability("pause"), Some(Capability::Pause));
+        assert_eq!(required_capability("resume"), Some(Capability::Pause));
+        assert_eq!(required_capability("frobnicate"), None);
         assert_eq!(required_capability("fs_write"), Some(Capability::Fs));
         assert_eq!(required_capability("logs"), Some(Capability::Logs));
         assert_eq!(
@@ -108,7 +114,7 @@ mod tests {
             required_capability("snapshot_fork"),
             Some(Capability::Snapshots)
         );
-        assert_eq!(required_capability("pause"), Some(Capability::Snapshots));
+        assert_eq!(required_capability("pause"), Some(Capability::Pause));
         assert_eq!(required_capability("bogus_verb"), None);
     }
 

@@ -1206,6 +1206,47 @@ async fn handler_stop_no_supervisor_reports() {
 }
 
 #[tokio::test]
+async fn handler_restart_pause_resume_report_without_supervisor() {
+    for command in [
+        Command::Restart { target: None },
+        Command::Pause { target: None },
+        Command::Resume { target: None },
+    ] {
+        let mut app = App::new();
+        app.panels.push(AgentPanel::new("claude"));
+        app.focused_panel = 0;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_command(&mut app, command, &tx).await;
+        assert!(
+            app.status_message.is_some(),
+            "lifecycle command should report with no supervisor"
+        );
+    }
+}
+
+#[tokio::test]
+async fn handler_restart_pause_resume_without_panel_reports() {
+    for command in [
+        Command::Restart { target: None },
+        Command::Pause { target: None },
+        Command::Resume { target: None },
+    ] {
+        let mut app = App::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_command(&mut app, command, &tx).await;
+        assert!(app.status_message.is_some());
+    }
+}
+
+#[test]
+fn format_help_lists_restart_pause_resume() {
+    let help = commands::format_help();
+    for command in ["/restart", "/pause", "/resume"] {
+        assert!(help.contains(command), "help text missing {command}");
+    }
+}
+
+#[tokio::test]
 async fn handler_discard_no_project_reports() {
     let mut app = App::new();
     app.panels.push(AgentPanel::new("claude"));

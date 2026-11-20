@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 import os
 import socket
-import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -295,6 +295,24 @@ class Sandbox:
     def kill(self) -> None:
         self._client._call({"type": "kill", "name": self._name})
 
+    def kill_with(self, signal: int) -> None:
+        self._client._call({"type": "kill", "name": self._name, "signal": signal})
+
+    def restart(self) -> None:
+        self._client._call({"type": "restart", "name": self._name})
+
+    def wait(self, timeout=None):
+        """Block until the sandbox reaches a terminal state."""
+        req = {"type": "wait", "name": self._name}
+        if timeout is not None:
+            if isinstance(timeout, datetime.timedelta):
+                timeout_secs = timeout.total_seconds()
+            else:
+                timeout_secs = float(timeout)
+            req["timeout_secs"] = int(timeout_secs)
+        resp = self._client._call(req)
+        return (resp["exit_code"], resp["exited_at_ms"], resp["state"])
+
     def remove(self, force: bool = False) -> None:
         self._client._call({"type": "remove", "name": self._name, "force": force})
 
@@ -314,19 +332,8 @@ class Sandbox:
         self._client._call({"type": "modify", "name": self._name, "spec": spec})
 
     def wait_until_stopped(self, timeout_secs: float = 30.0) -> str:
-        deadline = time.monotonic() + timeout_secs
-        while True:
-            st = self.state()
-            if st == "stopped":
-                return st
-            if st == "error":
-                raise NanosbError("internal", "sandbox entered error state while waiting")
-            if time.monotonic() >= deadline:
-                raise NanosbError(
-                    "timeout",
-                    f"sandbox '{self._name}' did not stop within {timeout_secs}s",
-                )
-            time.sleep(0.1)
+        _, _, state = self.wait(timeout_secs)
+        return state
 
     # execution ---------------------------------------------------------
     def exec(self, command: str, args: Optional[List[str]] = None) -> Dict[str, Any]:

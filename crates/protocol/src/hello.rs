@@ -25,15 +25,19 @@ pub enum Capability {
     Volumes,
     /// secrets/* verbs.
     Secrets,
-    /// snapshot/* + pause/resume.
+    /// snapshot/* verbs.
     Snapshots,
+    /// pause/resume verbs.
+    Pause,
+    /// restart verb (in-process reboot / helper-served start).
+    Restart,
     /// publish TCP/UDP ports + policy passthrough.
     Networking,
     /// labels + handles.
     Handles,
     /// ephemeral sandboxes.
     Ephemeral,
-    /// kill with an explicit signal (SIGTERM/SIGKILL).
+    /// Reserved; never advertised. Kill accepts only SIGTERM/SIGKILL.
     Signal,
     /// blocking wait verb.
     Wait,
@@ -53,6 +57,8 @@ impl Capability {
             Capability::Volumes,
             Capability::Secrets,
             Capability::Snapshots,
+            Capability::Pause,
+            Capability::Restart,
             Capability::Networking,
             Capability::Handles,
             Capability::Ephemeral,
@@ -73,6 +79,8 @@ impl Capability {
             Capability::Volumes => "volumes",
             Capability::Secrets => "secrets",
             Capability::Snapshots => "snapshots",
+            Capability::Pause => "pause",
+            Capability::Restart => "restart",
             Capability::Networking => "networking",
             Capability::Handles => "handles",
             Capability::Ephemeral => "ephemeral",
@@ -173,6 +181,22 @@ mod tests {
         assert!(version_in_range("1.0.0", "1.0.0", "1.2.0"));
         assert!(!version_in_range("1.3.0", "1.0.0", "1.2.0"));
         assert!(HelloRequest::new("c", "1.0.0").accepts("1.0.0"));
+    }
+
+    #[test]
+    fn new_capabilities_round_trip_on_the_wire() {
+        for (cap, wire) in [
+            (Capability::Restart, "restart"),
+            (Capability::Pause, "pause"),
+        ] {
+            assert_eq!(cap.as_str(), wire);
+            assert_eq!(
+                serde_json::from_str::<Capability>(&format!("\"{wire}\"")).unwrap(),
+                cap
+            );
+            assert!(Capability::all().contains(&cap));
+        }
+        assert!(serde_json::from_str::<Capability>("\"not_a_capability\"").is_err());
     }
 
     #[test]

@@ -27,6 +27,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
@@ -85,6 +86,7 @@ public class Run {
         boolean pingOk;
         String timeoutCode = "";
         boolean unsupportedObserved;
+        Sandbox.WaitResult waitResult;
     }
 
     private static boolean hasAck(DriverState state, String name) {
@@ -157,8 +159,25 @@ public class Run {
                 break;
             }
             case "kill": {
-                box.kill();
+                if (expect.has("signal")) {
+                    box.killWith((int) expect.getInt("signal"));
+                } else {
+                    box.kill();
+                }
                 addAck(state, "kill");
+                break;
+            }
+            case "wait": {
+                Duration timeout = expect.has("timeout_secs")
+                        ? Duration.ofSeconds(expect.getInt("timeout_secs"))
+                        : null;
+                state.waitResult = box.wait(timeout);
+                addAck(state, "wait");
+                break;
+            }
+            case "restart": {
+                box.restart();
+                addAck(state, "restart");
                 break;
             }
             case "remove": {
@@ -407,7 +426,8 @@ public class Run {
     }
 
     private static final String[] ACK_KEYS = {
-            "create_acked", "start_acked", "stop_acked", "kill_acked", "remove_acked",
+            "create_acked", "start_acked", "stop_acked", "kill_acked", "wait_acked",
+            "restart_acked", "remove_acked",
             "drain_acked", "touch_acked", "pause_acked", "resume_acked", "modify_acked",
             "write_acked", "mkdir_acked", "remove_dir_acked", "copy_acked", "rename_acked",
             "copy_from_host_acked", "copy_to_host_acked", "mount_add_acked", "set_acked",
@@ -415,7 +435,8 @@ public class Run {
     };
 
     private static final String[] ACK_NAMES = {
-            "create", "start", "stop", "kill", "remove",
+            "create", "start", "stop", "kill", "wait",
+            "restart", "remove",
             "drain", "touch", "pause", "resume", "modify",
             "write", "mkdir", "remove_dir", "copy", "rename",
             "copy_from_host", "copy_to_host", "mount_add", "set",
@@ -461,6 +482,16 @@ public class Run {
                 check.accept(hasAck(state, ACK_NAMES[i]),
                         ACK_KEYS[i] + ": expected ack for " + ACK_NAMES[i]);
             }
+        }
+        if (assertBlock.has("wait_exit_code")) {
+            long want = assertBlock.getInt("wait_exit_code");
+            long got = state.waitResult == null ? -1 : state.waitResult.exitCode();
+            check.accept(got == want, "wait_exit_code: expected " + want + ", got " + got);
+        }
+        if (assertBlock.has("wait_state")) {
+            String want = assertBlock.getStr("wait_state");
+            String got = state.waitResult == null ? "" : state.waitResult.state();
+            check.accept(want.equals(got), "wait_state: expected " + want + ", got " + got);
         }
         if (assertBlock.has("get_name")) {
             String want = assertBlock.getStr("get_name");

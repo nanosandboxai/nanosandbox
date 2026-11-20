@@ -15,7 +15,7 @@ trap 'rm -rf "$TMP"' EXIT
 # --- build a minimal repo skeleton in $TMP ----------------------------------
 mkdir -p "$TMP/scripts" \
          "$TMP/sdk/python" "$TMP/sdk/typescript" "$TMP/sdk/java" "$TMP/sdk/rust" \
-         "$TMP/guest/crates/exec-agent"
+         "$TMP/guest/crates/exec-agent" "$TMP/crates/client"
 
 cp "$REPO_ROOT/scripts/set-version.sh" "$TMP/scripts/set-version.sh"
 cp "$REPO_ROOT/Cargo.toml"              "$TMP/Cargo.toml"
@@ -25,6 +25,7 @@ cp "$REPO_ROOT/sdk/typescript/package.json"        "$TMP/sdk/typescript/package.
 cp "$REPO_ROOT/sdk/java/pom.xml"                   "$TMP/sdk/java/pom.xml"
 cp "$REPO_ROOT/sdk/rust/Cargo.toml"                "$TMP/sdk/rust/Cargo.toml"
 cp "$REPO_ROOT/guest/crates/exec-agent/Cargo.toml" "$TMP/guest/crates/exec-agent/Cargo.toml"
+cp "$REPO_ROOT/crates/client/Cargo.toml"          "$TMP/crates/client/Cargo.toml"
 
 # --- run set-version.sh against the temp copy -------------------------------
 "$TMP/scripts/set-version.sh" 9.9.9
@@ -66,7 +67,13 @@ check "sdk/typescript/package.json version is 9.9.9" \
   grep -q '"version": "9.9.9"' "$TMP/sdk/typescript/package.json"
 
 check "sdk/java/pom.xml version is 9.9.9" \
-  awk '/<artifactId>nanosandbox-java<\/artifactId>/{found=1; getline; exit !($0 ~ /<version>9.9.9<\/version>/)} END{exit !found}' "$TMP/sdk/java/pom.xml"
+  awk '/<artifactId>nanosandbox-sdk<\/artifactId>/{found=1; getline; exit !($0 ~ /<version>9.9.9<\/version>/)} END{exit !found}' "$TMP/sdk/java/pom.xml"
+
+check "crates/client path-dependency pin is 9.9.9" \
+  grep -q 'version = "9.9.9", path = "\.\./protocol"' "$TMP/crates/client/Cargo.toml"
+
+check "sdk/rust path-dependency pin is 9.9.9" \
+  grep -q 'version = "9.9.9", path = "\.\./\.\./crates/client"' "$TMP/sdk/rust/Cargo.toml"
 
 check "guest/crates/exec-agent/Cargo.toml version is 9.9.9" \
   awk '/^\[package\]/{inp=1} inp && /^version = /{found=1; exit !($0 ~ /"9.9.9"/)} END{exit !found}' "$TMP/guest/crates/exec-agent/Cargo.toml"
