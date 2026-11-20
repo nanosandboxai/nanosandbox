@@ -68,12 +68,13 @@ jobs:
       - name: Resolve libclang for the libkrun build
         run: |
           set -euo pipefail
-          prefix="$(llvm-config --prefix)"
-          if [ ! -e "$prefix/lib/libclang.so" ]; then
-            echo "::error::libclang not found under $prefix/lib; the libkrun build needs libclang-dev"
+          lib="$(find /usr/lib/llvm-*/lib /usr/lib /usr/local/lib -maxdepth 1 \
+                   -name 'libclang.so' -print 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$lib" ]; then
+            echo "::error::libclang.so not found; the libkrun build needs libclang-dev"
             exit 1
           fi
-          echo "LIBCLANG_PATH=$prefix/lib" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$(dirname "$lib")" >> "$GITHUB_ENV"
 
       - name: Build upstream libkrun
         run: bash runtime/scripts/build-libkrun.sh
