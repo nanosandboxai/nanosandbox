@@ -126,7 +126,7 @@ ci-fast: lint test
 
 REGISTRY_HOST ?= localhost:5050
 BASE_IMAGE_TAG ?= latest
-AGENTS := claude goose codex cursor
+AGENTS := claude goose codex cursor opencode aider gemini crush oh-my-openagent oh-my-codex oh-my-claude
 AGENTS_DIR := ../registries
 COMPOSE_FILE := $(AGENTS_DIR)/docker/docker-compose.yml
 
@@ -175,8 +175,10 @@ agents-build: agents-build-base
 # Smoke test: verify each agent image runs --version
 agents-test:
 	@for agent in $(AGENTS); do \
-		echo "Testing $$agent..."; \
-		docker run --rm $(REGISTRY_HOST)/nanosandboxai/nanosandbox/$$agent:$(BASE_IMAGE_TAG) $$agent --version \
+		bin="$$agent"; \
+		case "$$agent" in oh-my-openagent) bin=omo ;; oh-my-codex) bin=omx ;; oh-my-claude) bin=omc ;; esac; \
+		echo "Testing $$agent ($$bin)..."; \
+		docker run --rm $(REGISTRY_HOST)/nanosandboxai/nanosandbox/$$agent:$(BASE_IMAGE_TAG) $$bin --version \
 		&& echo "  $$agent: OK" \
 		|| echo "  $$agent: FAILED"; \
 	done
