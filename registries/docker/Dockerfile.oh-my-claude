@@ -1,0 +1,20 @@
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="oh-my-claude (OMC) agent for nanosandbox sandboxes"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Pinned via registries/docker/package.json (Dependabot-managed).
+ARG OMC_VERSION=5.8.4
+ARG CLAUDE_VERSION=2.1.318
+
+# OMC orchestrates Claude Code and shells out to `ps` for its process tooling.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pure install: OMC plus its underlying Claude Code CLI + sanity check.
+RUN npm install -g "oh-my-claude-sisyphus@${OMC_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
+    && npm cache clean --force
+
+RUN omc --version && claude --version && echo "oh-my-claude: OK"

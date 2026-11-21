@@ -23,6 +23,9 @@
 //! | Aider       | `aider`        | AI pair programming in terminal  |
 //! | Gemini CLI  | `gemini`       | Google's AI coding assistant     |
 //! | Crush       | `crush`        | AI coding agent                  |
+//! | Oh-My-OpenAgent | `omo`      | OmO agent harness                |
+//! | Oh-My-Codex | `omx`          | OMX agent harness                |
+//! | Oh-My-Claude | `omc`         | OMC agent harness                |
 //!
 //! ## Running Tests
 //!
@@ -93,6 +96,21 @@ const AGENTS: &[AgentDef] = &[
         command: "crush",
         version_args: &["--version"],
     },
+    AgentDef {
+        name: "Oh-My-OpenAgent",
+        command: "omo",
+        version_args: &["--version"],
+    },
+    AgentDef {
+        name: "Oh-My-Codex",
+        command: "omx",
+        version_args: &["--version"],
+    },
+    AgentDef {
+        name: "Oh-My-Claude",
+        command: "omc",
+        version_args: &["--version"],
+    },
 ];
 
 // =============================================================================
@@ -116,8 +134,12 @@ fn agent_image(agent_command: &str) -> String {
     let tag = std::env::var("NANOSB_E2E_TAG").unwrap_or_else(|_| IMAGE_TAG.to_string());
     // The image repository name differs from the in-guest binary for Cursor:
     // the image is `cursor`, but the binary it ships is `cursor-agent`.
+    // The oh-my-* agents likewise ship shorter binaries (omo/omx/omc).
     let repo = match agent_command {
         "cursor-agent" => "cursor",
+        "omo" => "oh-my-openagent",
+        "omx" => "oh-my-codex",
+        "omc" => "oh-my-claude",
         other => other,
     };
     format!("{}/{}:{}", registry, repo, tag)

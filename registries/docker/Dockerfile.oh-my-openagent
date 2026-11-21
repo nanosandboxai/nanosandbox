@@ -1,0 +1,24 @@
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="oh-my-openagent (OmO) agent for nanosandbox sandboxes"
+# Upstream is source-available under the Sustainable Use License 1.0, not an
+# OSI license. See LICENSES/SUL-1.0-NOTICE.md before redistributing.
+LABEL org.opencontainers.image.licenses="SUL-1.0"
+
+# Pinned via registries/docker/package.json (Dependabot-managed).
+# Note: omo-ai declares engines.node >= 24; it installs and runs on the shared
+# node:22 base (npm only warns), verified in
+# docs/plans/2026-11-20-oh-my-agents-spikes.md.
+ARG OMO_VERSION=5.1.79
+
+# OmO's lsp-daemon proxy sweep shells out to `ps`; the slim base has no procps.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pure install: OmO native CLI + sanity check.
+RUN npm install -g "omo-ai@${OMO_VERSION}" \
+    && npm cache clean --force
+
+RUN omo --version && echo "oh-my-openagent: OK"

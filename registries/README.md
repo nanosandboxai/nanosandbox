@@ -84,9 +84,13 @@ reads (Rust `sandbox::providers`, the docs-site configurator, the Python validat
 | aider | 379 | 12 | `aider/models.py` aliases + `model-settings.yml` |
 | gemini | 16 | 1 | Gemini CLI `models.ts` (aliases + IDs) |
 | crush | 1764 | 39 | Crush's Catwalk provider database |
+| oh-my-openagent | 4 | 2 | snapshot |
+| oh-my-codex | 8 | 1 | snapshot |
+| oh-my-claude | 44 | 1 | snapshot |
 
 Four agents (cursor, goose, opencode, crush) expose their catalogs dynamically at runtime,
-so their lists here are point-in-time snapshots rather than fixed allow-lists.
+so their lists here are point-in-time snapshots rather than fixed allow-lists. The three
+`oh-my-*` agents are likewise recorded as point-in-time snapshots.
 
 ### Syncing the catalog
 
@@ -153,7 +157,10 @@ Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
     ├── Dockerfile.opencode → ghcr.io/nanosandboxai/nanosandbox/opencode
     ├── Dockerfile.aider    → ghcr.io/nanosandboxai/nanosandbox/aider
     ├── Dockerfile.gemini   → ghcr.io/nanosandboxai/nanosandbox/gemini
-    └── Dockerfile.crush    → ghcr.io/nanosandboxai/nanosandbox/crush
+    ├── Dockerfile.crush    → ghcr.io/nanosandboxai/nanosandbox/crush
+    ├── Dockerfile.oh-my-openagent → ghcr.io/nanosandboxai/nanosandbox/oh-my-openagent
+    ├── Dockerfile.oh-my-codex     → ghcr.io/nanosandboxai/nanosandbox/oh-my-codex
+    └── Dockerfile.oh-my-claude    → ghcr.io/nanosandboxai/nanosandbox/oh-my-claude
 ```
 
 ### Base Image Contents
@@ -175,6 +182,9 @@ Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
 | aider | Aider | `ghcr.io/nanosandboxai/nanosandbox/aider:latest` |
 | gemini | Gemini CLI | `ghcr.io/nanosandboxai/nanosandbox/gemini:latest` |
 | crush | Crush | `ghcr.io/nanosandboxai/nanosandbox/crush:latest` |
+| oh-my-openagent | Oh-My-OpenAgent (OmO) | `ghcr.io/nanosandboxai/nanosandbox/oh-my-openagent:latest` |
+| oh-my-codex | Oh-My-Codex (OMX) | `ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:latest` |
+| oh-my-claude | Oh-My-Claude (OMC) | `ghcr.io/nanosandboxai/nanosandbox/oh-my-claude:latest` |
 
 ### Building Locally
 
@@ -183,6 +193,61 @@ cd docker
 docker build -f Dockerfile.base -t base:local .
 docker build -f Dockerfile.claude -t claude:local .
 ```
+
+The `oh-my-*` Dockerfiles (`Dockerfile.oh-my-openagent`,
+`Dockerfile.oh-my-codex`, `Dockerfile.oh-my-claude`) are built the same way,
+each from `Dockerfile.base`:
+
+```bash
+docker build -f Dockerfile.oh-my-openagent -t oh-my-openagent:local .
+docker build -f Dockerfile.oh-my-codex -t oh-my-codex:local .
+docker build -f Dockerfile.oh-my-claude -t oh-my-claude:local .
+```
+
+### CI build and registry publishing
+
+[`.github/workflows/registry-docker-build.yml`](../.github/workflows/registry-docker-build.yml)
+builds and publishes every image to GHCR:
+
+- **Triggers** — pushes to `main` that touch `registries/docker/**`, `v*` tags, and
+  manual `workflow_dispatch` (optionally a single `agent`).
+- **Order** — `base` first, then all eleven agent images in parallel, for
+  `linux/amd64` and `linux/arm64`.
+- **Target** — `ghcr.io/nanosandboxai/nanosandbox/<agent>`. `latest` is pushed only
+  on a clean `v*` tag; other runs publish the semver/sha tags.
+- **Registry-side verification** — each agent leg pulls its own just-pushed digest
+  back from GHCR and runs `<binary> --version`, so a broken published artifact
+  fails the workflow instead of shipping.
+
+To run an agent from the registry instead of a local build:
+
+```bash
+nanosb pull ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:latest
+nanosb run ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:latest
+```
+
+A bare agent name in `sandbox.yml` (`agent: oh-my-codex`) resolves to the same
+`ghcr.io/nanosandboxai/nanosandbox/<name>:latest` reference. The live registry
+E2E suite exercises all eleven agents against GHCR:
+
+```bash
+NANOSB_E2E_TAG=latest cargo test -p runtime --test agents_e2e_test \
+  --features integration-tests -- --ignored --nocapture
+```
+
+### Attribution & license risk
+
+The `oh-my-openagent` image installs and runs
+[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent), which is
+**not** distributed under an OSI-approved license. Upstream is available under
+the **Sustainable Use License, Version 1.0 (SUL-1.0)**, a non-commercial,
+source-available license: you may use or modify it for your own internal
+business purposes or for non-commercial or personal use, and may distribute it
+only free of charge for non-commercial purposes. See
+[`LICENSES/SUL-1.0-NOTICE.md`](../LICENSES/SUL-1.0-NOTICE.md) for the full
+attribution and risk note. **Evaluate or obtain a commercial license from the
+upstream authors before any commercial redistribution** of this image. The
+sibling `oh-my-codex` and `oh-my-claude` images are MIT-licensed.
 
 ## Contributing
 
