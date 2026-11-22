@@ -181,3 +181,33 @@ sandboxes:
       postgres:
         command: npx
         args: ["-y", "@modelcontextprotocol/server-postgres", "postgresql://postgres:postgres@localhost:5432/postgres"]
+
+  # 11. Oh-My-OpenAgent — headless scan with an OpenAI key.
+  #     No browser sign-in; MCP/skills delivery is deferred for this agent.
+  oh-my-openagent-scan:
+    type: oh-my-openagent
+    image: oh-my-openagent
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    auto_mode: true
+    prompt: "Scan the project in /workspace for TODOs."
+
+  # 12. Oh-My-Codex — headless refactor with an OpenAI or Codex key.
+  #     No browser sign-in; MCP/skills delivery is deferred for this agent.
+  oh-my-codex-refactor:
+    type: oh-my-codex
+    image: oh-my-codex
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    auto_mode: true
+    prompt: "Refactor the largest module into smaller, tested functions."
+
+  # 13. Oh-My-Claude — headless audit with an Anthropic key.
+  #     No browser sign-in; MCP/skills delivery is deferred for this agent.
+  oh-my-claude-audit:
+    type: oh-my-claude
+    image: oh-my-claude
+    env:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    auto_mode: true
+    prompt: "Audit the codebase in /workspace for security issues."

@@ -110,10 +110,15 @@ The SDK supports the following agent types, selectable via `sandbox.yml`
 | Aider     | `aider`       |
 | Gemini    | `gemini`      |
 | Crush     | `crush`       |
+| Oh-My-OpenAgent | `oh-my-openagent` |
+| Oh-My-Codex | `oh-my-codex` |
+| Oh-My-Claude | `oh-my-claude` |
 
 Accepted identifier spellings come from the `AgentType` parser: `claude-code`
 for Claude, `cursor-agent` for Cursor, `open-code` for OpenCode, and
-`gemini-cli` for Gemini.
+`gemini-cli` for Gemini. The three `oh-my-*` agents also accept the short
+aliases `omo` (Oh-My-OpenAgent), `omx` (Oh-My-Codex), and `omc`
+(Oh-My-Claude) in `type:` and on the CLI.
 
 `sandbox.yml` is validated strictly before any microVM is created. Unknown or
 misspelled fields are rejected at every level (`defaults`, each sandbox, `mcp`
@@ -138,11 +143,20 @@ into the guest:
 | Aider     | — (no native MCP support)                           | concatenated `~/.aider/CONVENTIONS.md` (loaded via `--read`)          |
 | Gemini    | JSON `~/.gemini/settings.json` (`mcpServers`)       | `~/.gemini/skills/<name>/SKILL.md` + `~/.gemini/GEMINI.md`           |
 | Crush     | JSON `~/.config/crush/crush.json` (`mcp`, `type: stdio`) | `~/.config/crush/skills/<name>/SKILL.md` + `~/.config/crush/CRUSH.md` |
+| Oh-My-OpenAgent | — (deferred) | — (deferred) |
+| Oh-My-Codex | — (deferred) | — (deferred) |
+| Oh-My-Claude | — (deferred) | — (deferred) |
+
+MCP and skills delivery is **deferred** for the three `oh-my-*` agents: they
+receive no generated MCP config and no generated skills/prompt files.
 
 Agent session state is kept in per-agent RW mounts under the guest home:
 `~/.claude`, `~/.codex` + `~/.agents`, `~/.config/goose` + `~/.local/share/goose`,
 `~/.cursor`, `~/.config/opencode`, `~/.aider`, `~/.gemini`, and
-`~/.config/crush` respectively (see `deploy::mount_planner`).
+`~/.config/crush` respectively (see `deploy::mount_planner`). The `oh-my-*`
+agents keep their state in `~/.omo` (Oh-My-OpenAgent), `~/.codex` + `~/.agents`
+(Oh-My-Codex), and `~/.claude` + `~/.config/claude-omc` + `~/.omc`
+(Oh-My-Claude).
 
 ## Related Components (monorepo)
 
