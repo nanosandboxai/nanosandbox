@@ -242,6 +242,21 @@ _EMBEDDED_AGENTS: dict[str, dict[str, Any]] = {
         "no_env": ["copilot"],
         "extra_keys": ["GOOGLE_API_KEY"],
     },
+    "oh-my-openagent": {
+        "mode": "derived",
+    },
+    "oh-my-codex": {
+        "mode": "single",
+        "default": "openai",
+        "alt": ["CODEX_API_KEY"],
+        "providers": ["openai"],
+    },
+    "oh-my-claude": {
+        "mode": "single",
+        "default": "anthropic",
+        "alt": ["CLAUDE_CODE_OAUTH_TOKEN"],
+        "providers": ["anthropic"],
+    },
 }
 
 

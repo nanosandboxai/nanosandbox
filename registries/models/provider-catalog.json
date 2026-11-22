@@ -250,6 +250,65 @@
         "openrouter"
       ]
     },
+    "oh-my-claude": {
+      "accepted_keys": [
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN"
+      ],
+      "alt": [
+        "CLAUDE_CODE_OAUTH_TOKEN"
+      ],
+      "case_sensitive": false,
+      "collapse": {},
+      "collapse_default": null,
+      "default": "anthropic",
+      "extra_keys": [],
+      "mode": "single",
+      "no_env": [],
+      "overrides": {},
+      "providers": [
+        "anthropic"
+      ]
+    },
+    "oh-my-codex": {
+      "accepted_keys": [
+        "CODEX_API_KEY",
+        "OPENAI_API_KEY"
+      ],
+      "alt": [
+        "CODEX_API_KEY"
+      ],
+      "case_sensitive": false,
+      "collapse": {},
+      "collapse_default": null,
+      "default": "openai",
+      "extra_keys": [],
+      "mode": "single",
+      "no_env": [],
+      "overrides": {},
+      "providers": [
+        "openai"
+      ]
+    },
+    "oh-my-openagent": {
+      "accepted_keys": [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY"
+      ],
+      "alt": [],
+      "case_sensitive": false,
+      "collapse": {},
+      "collapse_default": null,
+      "default": null,
+      "extra_keys": [],
+      "mode": "derived",
+      "no_env": [],
+      "overrides": {},
+      "providers": [
+        "anthropic",
+        "openai"
+      ]
+    },
     "opencode": {
       "accepted_keys": [
         "ANTHROPIC_API_KEY",
