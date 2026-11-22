@@ -186,6 +186,11 @@ Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
 | oh-my-codex | Oh-My-Codex (OMX) | `ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:latest` |
 | oh-my-claude | Oh-My-Claude (OMC) | `ghcr.io/nanosandboxai/nanosandbox/oh-my-claude:latest` |
 
+`latest` is published by the release pipeline on a clean `v*` tag. Between
+releases, CI/`workflow_dispatch` builds publish the semver, `sha-<sha>` and
+optional RC tags (for example `:rc2`), so use an explicit tag until the next
+release exists.
+
 ### Building Locally
 
 ```bash

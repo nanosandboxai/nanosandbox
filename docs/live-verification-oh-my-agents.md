@@ -87,12 +87,63 @@ created    omo                      dry-run
 The manifest used full names (`type: oh-my-openagent`, `oh-my-claude`) **and** the alias
 (`type: omx`), so parsing + bare-image resolution are exercised end to end.
 
-## 7. Known gaps
+## 7. Release-candidate verification (`:rc2`, published from CI)
+
+Workflow run [45008948624](https://github.com/nanosandboxai/nanosandbox/actions/runs/45008948624)
+(`workflow_dispatch`, `tag=rc2`) — **all 11 build-agent jobs + build-base succeeded**,
+each leg pulling its own pushed digest back from GHCR and running `<bin> --version`.
+
+In-image `--version` from the registry (per job log): `omo 5.1.79`,
+`oh-my-codex v0.22.11`, `5.8.4`.
+
+Pulled into the runtime cache (`nanosb pull …:rc2`): 11/12/11 layers,
+357.6 / 472.8 / 353.9 MB.
+
+### 7.1 TUI interactive launch (real microVM, real PTY)
+
+```
+NANOSB_TEST_AGENT_IMAGE=ghcr.io/nanosandboxai/nanosandbox/<agent>:rc2 \
+NANOSB_TEST_AGENT_TYPE=<agent> \
+NANOSB_BINARY_PATH="$PWD/target/debug/nanosb" \
+cargo test -p nanosb-cli --lib -- --ignored --exact \
+  tui::vm_test::test_interactive_launches_agent_command --nocapture
+```
+
+| Agent | Result |
+|---|---|
+| `oh-my-openagent` | **ok** — 21.84s |
+| `oh-my-codex` | **ok** — 30.55s |
+| `oh-my-claude` | **ok** — 23.50s |
+
+The test asserts the panel's PTY terminal received output from the real agent
+command — i.e. `/add` → supervisor → exec-agent PTY → agent.
+
+Getting there required two fixes:
+
+1. **Blocking validation** — the `oh-my-*` agents reject `/add` without a key.
+   The test now sets dummy keys, so the panel is created and the agent launches
+   (it then prints its own auth error, which still proves the command ran).
+2. **Deterministic OmO startup** — OmO downloaded `fd`/`ripgrep` on first run.
+   `Dockerfile.oh-my-openagent` now installs `ripgrep` + `fd-find` and symlinks
+   `fd`; verified inside the guest: `/usr/local/bin/fd`, `/usr/bin/rg`, and no
+   "Downloading" lines in the OmO TUI output.
+
+### 7.2 Headless smoke (inside the sandbox, dummy keys)
+
+| Agent | Command | Observed |
+|---|---|---|
+| `oh-my-openagent` | `omo -p --no-session "say hi"` | real API call → `401 invalid x-api-key` (i.e. it ran) |
+| `oh-my-codex` | `omx exec --skip-git-repo-check --json "say hi"` | Codex websocket attempts, `[omx] codex exited with code 1` |
+| `oh-my-claude` | `omc ask claude "say hi"` | wrote `~/.omc/artifacts/ask/claude-say-hi-<ts>.md`, exit 1 |
+
+All three launch and terminate; exit 1 is the expected auth failure without a real key.
+
+## 8. Known gaps
 
 | Item | Status |
 |---|---|
-| amd64 local build | Not completed (QEMU too slow). CI buildx is the gate. |
-| VM boot / headless E2E | Not run: requires a built libkrun + codesigned `nanosb`. Command: `NANOSB_BINARY_PATH="$PWD/target/release/nanosb" cargo test -p nanosb-cli tui::vm_test -- --ignored --nocapture`, plus `nanosb run --image oh-my-codex --headless -p "echo hi"` against a stub base URL. |
-| Images published | Not pushed locally. Workflow publishes on merge / `workflow_dispatch`. |
-| `cargo clippy --workspace -- -D warnings` | Fails on **pre-existing** lints in `crates/protocol` (`derivable_impls`, `field_reassign_with_default`) and `runtime-config` (`items_after_test_module` — the tests module sits at HEAD line 968, before the constants at HEAD line 1260). No new lint is attributable to the lines added here. |
-| Web docs | Live in `nanosandboxai/nanosandboxai.github.io` (not in this workspace). Pages to change: `content/docs/cli/commands.md`, `content/docs/cli/configuration.md`, `content/docs/cli/tui-mode.md`, `content/docs/architecture/*`. |
+| amd64 local build | Not run locally (QEMU too slow). CI buildx built `linux/amd64` + `linux/arm64` on native amd64 runners for both `rc1` and `rc2`. |
+| Real-API runs | Interactive/headless paths verified with dummy keys (agents launch, auth fails as expected). A real-key run per agent is still desirable before declaring the release done. |
+| `latest` tag | Only published on a clean `v*` tag. Until then use `:rc2`. |
+| `cargo clippy --workspace -- -D warnings` | Fails on **pre-existing** lints in `crates/protocol` (`derivable_impls`, `field_reassign_with_default`) and `runtime-config` (`items_after_test_module`). No new lint is attributable to the lines added here. |
+| Web docs | Updated and opened as [nanosandboxai.github.io#21](https://github.com/nanosandboxai/nanosandboxai.github.io/pull/21). |
