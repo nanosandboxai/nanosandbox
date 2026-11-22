@@ -95,6 +95,15 @@ impl AgentCommandBuilder {
             AgentType::Crush => {
                 Self::build_crush(prompt, interactive, effective_permissions, model)
             }
+            AgentType::OhMyOpenAgent => {
+                Self::build_oh_my_openagent(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::OhMyCodex => {
+                Self::build_oh_my_codex(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::OhMyClaude => {
+                Self::build_oh_my_claude(prompt, effective_permissions, interactive, model)
+            }
         }
     }
 
@@ -529,6 +538,121 @@ impl AgentCommandBuilder {
             binary: "crush".to_string(),
             args,
         }
+    }
+
+    // ── Oh My OpenAgent (omo) ───────────────────────────────────────
+
+    fn build_oh_my_openagent(
+        prompt: &str,
+        interactive: bool,
+        permissions: Permissions,
+        model: Option<&str>,
+    ) -> AgentCommand {
+        let mut args = Vec::new();
+        if !interactive {
+            args.push("-p".to_string());
+            args.push("--no-session".to_string());
+        }
+        match permissions {
+            Permissions::AllowAll => {
+                args.push("--permission-preset".to_string());
+                args.push("full-access".to_string());
+            }
+            Permissions::AcceptEdits => {
+                args.push("--permission-preset".to_string());
+                args.push("accept-edits".to_string());
+            }
+            Permissions::Default => {}
+        }
+        if let Some(m) = model {
+            args.push("--model".to_string());
+            args.push(m.to_string());
+        }
+        if !interactive && !prompt.is_empty() {
+            args.push(prompt.to_string());
+        }
+        if interactive {
+            return AgentCommand {
+                binary: "omo".to_string(),
+                args,
+            };
+        }
+        wrap_in_stdin_redirect("omo", args)
+    }
+
+    // ── Oh My Codex (omx) ───────────────────────────────────────────
+
+    fn build_oh_my_codex(
+        prompt: &str,
+        interactive: bool,
+        permissions: Permissions,
+        model: Option<&str>,
+    ) -> AgentCommand {
+        let mut args = Vec::new();
+        if !interactive {
+            args.push("exec".to_string());
+            args.push("--skip-git-repo-check".to_string());
+            args.push("--json".to_string());
+            match permissions {
+                Permissions::AllowAll | Permissions::AcceptEdits => {
+                    args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+                }
+                Permissions::Default => {}
+            }
+        }
+        if let Some(m) = model {
+            args.push("-m".to_string());
+            args.push(m.to_string());
+        }
+        if !interactive && !prompt.is_empty() {
+            args.push(prompt.to_string());
+        }
+        if interactive {
+            return AgentCommand {
+                binary: "omx".to_string(),
+                args,
+            };
+        }
+        wrap_in_stdin_redirect("omx", args)
+    }
+
+    // ── Oh My Claude (omc) ──────────────────────────────────────────
+
+    fn build_oh_my_claude(
+        prompt: &str,
+        _permissions: Permissions,
+        interactive: bool,
+        _model: Option<&str>,
+    ) -> AgentCommand {
+        if interactive {
+            return AgentCommand {
+                binary: "omc".to_string(),
+                args: vec!["launch".to_string()],
+            };
+        }
+        let mut args = vec!["ask".to_string(), "claude".to_string()];
+        if !prompt.is_empty() {
+            args.push(prompt.to_string());
+        }
+        wrap_in_stdin_redirect("omc", args)
+    }
+}
+
+/// Wrap a headless agent invocation in a shell that redirects stdin to
+/// `/dev/null`. Several agents (codex, opencode, omx) read additional input
+/// from stdin when it is not a TTY, and the runtime hands the agent a pipe, so
+/// without this they block. `"$@"` forwards the args verbatim.
+fn wrap_in_stdin_redirect(bin: &str, args: Vec<String>) -> AgentCommand {
+    let mut wrapped = vec![
+        "-c".to_string(),
+        "exec \"$@\" < /dev/null".to_string(),
+        "sh".to_string(),
+        bin.to_string(),
+    ];
+    wrapped.extend(args);
+    AgentCommand {
+        binary: "sh".to_string(),
+        args: wrapped,
     }
 }
 
@@ -1253,6 +1377,27 @@ mod tests {
                 &["-p", "do it"],
             ),
             (AgentType::Crush, "crush", &[], "crush", &["run", "do it"]),
+            (
+                AgentType::OhMyOpenAgent,
+                "omo",
+                &[],
+                "sh",
+                &["-p", "--no-session", "do it"],
+            ),
+            (
+                AgentType::OhMyCodex,
+                "omx",
+                &[],
+                "sh",
+                &["exec", "--skip-git-repo-check", "--json", "do it"],
+            ),
+            (
+                AgentType::OhMyClaude,
+                "omc",
+                &["launch"],
+                "sh",
+                &["ask", "claude", "do it"],
+            ),
         ];
 
         assert_eq!(

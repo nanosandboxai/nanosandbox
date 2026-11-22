@@ -1254,6 +1254,30 @@ mod tests {
         assert!(config.console.is_none());
         assert!(config.extra_mounts.is_empty());
     }
+
+    #[test]
+    fn test_normalize_image_oh_my_agents() {
+        assert_eq!(
+            normalize_image("oh-my-codex"),
+            "ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:latest"
+        );
+        assert_eq!(
+            normalize_image("oh-my-openagent"),
+            "ghcr.io/nanosandboxai/nanosandbox/oh-my-openagent:latest"
+        );
+        assert_eq!(
+            normalize_image("oh-my-claude"),
+            "ghcr.io/nanosandboxai/nanosandbox/oh-my-claude:latest"
+        );
+    }
+
+    #[test]
+    fn test_normalize_image_claude_unchanged() {
+        assert_eq!(
+            normalize_image("claude"),
+            "ghcr.io/nanosandboxai/nanosandbox/claude:latest"
+        );
+    }
 }
 
 /// Default OCI registry for agent images.
@@ -1261,7 +1285,19 @@ pub const DEFAULT_AGENTS_REGISTRY: &str = "ghcr.io/nanosandboxai/nanosandbox";
 
 /// Known code-agent image names hosted in the agents registry.
 const AGENT_IMAGES: &[&str] = &[
-    "base", "claude", "codex", "cursor", "goose", "opencode", "aider", "gemini", "crush", "legacy",
+    "base",
+    "claude",
+    "codex",
+    "cursor",
+    "goose",
+    "opencode",
+    "aider",
+    "gemini",
+    "crush",
+    "oh-my-openagent",
+    "oh-my-codex",
+    "oh-my-claude",
+    "legacy",
 ];
 
 /// Normalize an image reference: known agent names get the nanosandbox agent

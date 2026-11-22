@@ -47,3 +47,15 @@ gemini:
 crush:
   cpus: 2
   memory_mb: 2048
+
+oh-my-openagent:
+  cpus: 2
+  memory_mb: 2048
+
+oh-my-codex:
+  cpus: 2
+  memory_mb: 2048
+
+oh-my-claude:
+  cpus: 2
+  memory_mb: 2048

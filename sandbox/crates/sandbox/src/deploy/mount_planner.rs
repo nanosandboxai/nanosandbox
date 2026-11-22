@@ -114,6 +114,13 @@ fn agent_state_dirs(agent_type: AgentType) -> Vec<&'static str> {
             // not under ~/.config/crush.
             "/home/developer/.local/share/crush",
         ],
+        AgentType::OhMyOpenAgent => vec!["/home/developer/.omo"],
+        AgentType::OhMyCodex => vec!["/home/developer/.codex", "/home/developer/.agents"],
+        AgentType::OhMyClaude => vec![
+            "/home/developer/.claude",
+            "/home/developer/.config/claude-omc",
+            "/home/developer/.omc",
+        ],
     }
 }
 
@@ -133,6 +140,7 @@ fn agent_config_guest_paths(agent_type: AgentType) -> Vec<(&'static str, &'stati
         AgentType::Aider => vec![("/home/developer/.aider", "aider")],
         AgentType::Gemini => vec![("/home/developer/.gemini", "gemini")],
         AgentType::Crush => vec![("/home/developer/.config/crush", "crush")],
+        AgentType::OhMyOpenAgent | AgentType::OhMyCodex | AgentType::OhMyClaude => vec![],
     }
 }
 
@@ -646,6 +654,43 @@ mod tests {
             !auth_mount.unwrap().readonly,
             ".config/cursor login mount should be RW"
         );
+    }
+
+    #[test]
+    fn test_plan_oh_my_agents_state_mounts() {
+        let cases: &[(AgentType, &[&str])] = &[
+            (AgentType::OhMyOpenAgent, &["/home/developer/.omo"]),
+            (
+                AgentType::OhMyCodex,
+                &["/home/developer/.codex", "/home/developer/.agents"],
+            ),
+            (
+                AgentType::OhMyClaude,
+                &[
+                    "/home/developer/.claude",
+                    "/home/developer/.config/claude-omc",
+                    "/home/developer/.omc",
+                ],
+            ),
+        ];
+
+        for (agent_type, state_dirs) in cases {
+            let config = make_config(Some(*agent_type));
+            let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+            let mounts = MountPlanner::plan(&config, agent_type, sandbox_dir, None);
+
+            for dir in *state_dirs {
+                let m = mounts
+                    .iter()
+                    .find(|m| m.guest_path == *dir)
+                    .unwrap_or_else(|| panic!("{:?} missing state mount {}", agent_type, dir));
+                assert!(
+                    !m.readonly,
+                    "{:?} state mount {} should be RW",
+                    agent_type, dir
+                );
+            }
+        }
     }
 
     #[test]

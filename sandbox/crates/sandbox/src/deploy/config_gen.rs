@@ -29,6 +29,9 @@ pub enum McpConfigFormat {
     Aider,
     Gemini,
     Crush,
+    OhMyOpenAgent,
+    OhMyCodex,
+    OhMyClaude,
 }
 
 impl From<AgentType> for McpConfigFormat {
@@ -42,6 +45,9 @@ impl From<AgentType> for McpConfigFormat {
             AgentType::Aider => McpConfigFormat::Aider,
             AgentType::Gemini => McpConfigFormat::Gemini,
             AgentType::Crush => McpConfigFormat::Crush,
+            AgentType::OhMyOpenAgent => McpConfigFormat::OhMyOpenAgent,
+            AgentType::OhMyCodex => McpConfigFormat::OhMyCodex,
+            AgentType::OhMyClaude => McpConfigFormat::OhMyClaude,
         }
     }
 }
@@ -127,6 +133,12 @@ impl ConfigGenerator {
                         content,
                     });
                 }
+            }
+            McpConfigFormat::OhMyOpenAgent
+            | McpConfigFormat::OhMyCodex
+            | McpConfigFormat::OhMyClaude => {
+                // No native MCP config is delivered for this agent in MVP; MCP
+                // handling is deferred.
             }
         }
 
@@ -591,6 +603,24 @@ mod tests {
         let servers = sample_servers();
         let files = ConfigGenerator::generate_all(&servers, &AgentType::Aider);
         assert!(files.is_empty(), "aider must not get an MCP config file");
+    }
+
+    #[test]
+    fn test_generate_oh_my_agents_has_no_mcp() {
+        // Oh My agents defer MCP handling in MVP, so no MCP config file is written.
+        let servers = sample_servers();
+        for agent_type in [
+            AgentType::OhMyOpenAgent,
+            AgentType::OhMyCodex,
+            AgentType::OhMyClaude,
+        ] {
+            let files = ConfigGenerator::generate_all(&servers, &agent_type);
+            assert!(
+                files.is_empty(),
+                "{:?} must not get an MCP config file in MVP",
+                agent_type
+            );
+        }
     }
 
     #[test]
