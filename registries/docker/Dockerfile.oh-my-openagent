@@ -12,9 +12,13 @@ LABEL org.opencontainers.image.licenses="SUL-1.0"
 # docs/plans/2026-11-20-oh-my-agents-spikes.md.
 ARG OMO_VERSION=5.1.79
 
-# OmO's lsp-daemon proxy sweep shells out to `ps`; the slim base has no procps.
+# OmO's lsp-daemon proxy sweep shells out to `ps`, and its interactive TUI
+# downloads `fd`/`ripgrep` on first run when they are missing. Install them so
+# startup needs no network access and is deterministic. Debian ships `fd` as
+# `fdfind`; OmO looks for `fd` on PATH.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends procps \
+    && apt-get install -y --no-install-recommends procps ripgrep fd-find \
+    && ln -sf "$(command -v fdfind)" /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*
 
 # Pure install: OmO native CLI + sanity check.
