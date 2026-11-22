@@ -753,7 +753,17 @@ async fn add_agent_does_not_show_validation_popup() {
 }
 
 const ALL_AGENTS: &[&str] = &[
-    "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
+    "claude",
+    "codex",
+    "goose",
+    "cursor",
+    "opencode",
+    "aider",
+    "gemini",
+    "crush",
+    "oh-my-openagent",
+    "oh-my-codex",
+    "oh-my-claude",
 ];
 
 #[tokio::test]

@@ -3942,7 +3942,17 @@ fn find_panel_at(app: &App, x: u16, y: u16) -> Option<(usize, ratatui::layout::R
 
 /// Known agent type names for CLI command resolution and API key detection.
 const KNOWN_AGENTS: &[&str] = &[
-    "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
+    "claude",
+    "codex",
+    "goose",
+    "cursor",
+    "opencode",
+    "aider",
+    "gemini",
+    "crush",
+    "oh-my-openagent",
+    "oh-my-codex",
+    "oh-my-claude",
 ];
 
 /// Detect the base agent type from a Docker image name.
@@ -4961,16 +4971,14 @@ fn truncate_str(s: &str, max: usize) -> String {
 }
 
 fn detect_agent_type_from_image(image: &str) -> Option<String> {
-    // Get the last path segment first, then strip the tag.
-    // This avoids confusing registry port (localhost:5050) with tag separator.
     let last_segment = image.rsplit('/').next().unwrap_or(image);
-    // Strip tag (the part after the last colon in the segment)
     let image_name = last_segment.split(':').next().unwrap_or(last_segment);
-
+    // Exact match wins: "oh-my-codex" must not fall through to "codex" below.
+    if let Some(agent) = KNOWN_AGENTS.iter().find(|a| image_name == **a) {
+        return Some((*agent).to_string());
+    }
     for agent in KNOWN_AGENTS {
-        // Match patterns: "agent-claude", "nanosb-claude", "claude", etc.
-        if image_name == *agent
-            || image_name.ends_with(&format!("-{}", agent))
+        if image_name.ends_with(&format!("-{}", agent))
             || image_name.starts_with(&format!("{}-", agent))
         {
             return Some(agent.to_string());
@@ -5021,6 +5029,12 @@ pub(crate) fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
             ("OPENROUTER_API_KEY", false),
         ],
         "cursor" => vec![("CURSOR_API_KEY", true)],
+        "oh-my-openagent" => vec![("OPENAI_API_KEY", true), ("ANTHROPIC_API_KEY", false)],
+        "oh-my-codex" => vec![("OPENAI_API_KEY", true), ("CODEX_API_KEY", false)],
+        "oh-my-claude" => vec![
+            ("ANTHROPIC_API_KEY", true),
+            ("CLAUDE_CODE_OAUTH_TOKEN", false),
+        ],
         _ => vec![],
     }
 }
@@ -5713,6 +5727,9 @@ fn detect_agent_session_id_from_state(
         "aider" => state_root.join(".aider"),
         "gemini" => state_root.join(".gemini"),
         "crush" => state_root.join(".config_crush"),
+        "oh-my-openagent" => state_root.join(".omo"),
+        "oh-my-codex" => state_root.join(".codex"),
+        "oh-my-claude" => state_root.join(".claude"),
         _ => state_root.to_path_buf(),
     };
 
@@ -6485,6 +6502,28 @@ mod tests {
         assert_eq!(
             detect_agent_type_from_image("codex:latest"),
             Some("codex".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_agent_type_oh_my_agents_exact_match() {
+        // Regression: "oh-my-codex" must not fall through to "codex", and
+        // "oh-my-claude" must not fall through to "claude".
+        assert_eq!(
+            detect_agent_type_from_image("oh-my-codex:latest"),
+            Some("oh-my-codex".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("oh-my-openagent:latest"),
+            Some("oh-my-openagent".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("oh-my-claude:latest"),
+            Some("oh-my-claude".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:v1"),
+            Some("oh-my-codex".to_string())
         );
     }
 

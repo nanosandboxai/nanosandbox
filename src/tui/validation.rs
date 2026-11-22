@@ -243,6 +243,24 @@ pub fn agent_requirements(agent: &str) -> &'static [AgentRequirement] {
             mandatory: true,
             hint: "export ANTHROPIC_API_KEY=... or OPENAI_API_KEY=... before launching the TUI, or sign in through the browser",
         }],
+        "oh-my-openagent" => &[AgentRequirement {
+            label: "OpenAI API key (OmO)",
+            keys: &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+            mandatory: true,
+            hint: "export OPENAI_API_KEY=sk-... (or ANTHROPIC_API_KEY=...) before launching the TUI. OmO has no browser sign-in flow in this sandbox.",
+        }],
+        "oh-my-codex" => &[AgentRequirement {
+            label: "OpenAI API key (OMX)",
+            keys: &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            mandatory: true,
+            hint: "export OPENAI_API_KEY=sk-... (or CODEX_API_KEY=...) before launching the TUI. OMX has no browser sign-in flow in this sandbox.",
+        }],
+        "oh-my-claude" => &[AgentRequirement {
+            label: "Anthropic API key (OMC)",
+            keys: &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+            mandatory: true,
+            hint: "export ANTHROPIC_API_KEY=sk-ant-... (or CLAUDE_CODE_OAUTH_TOKEN=...) before launching the TUI. OMC has no browser sign-in flow in this sandbox.",
+        }],
         _ => &[],
     }
 }
@@ -458,6 +476,26 @@ mod tests {
     }
 
     #[test]
+    fn oh_my_agents_are_blocking_when_key_missing() {
+        for agent in ["oh-my-openagent", "oh-my-codex", "oh-my-claude"] {
+            let reqs = agent_requirements(agent);
+            assert!(
+                reqs.iter().any(|r| r.mandatory),
+                "{agent} should have a mandatory requirement"
+            );
+            let result = validate_agent(agent, &env(&[]));
+            assert!(
+                matches!(result, ValidationResult::Blocking(_)),
+                "{agent} should be Blocking, got {result:?}"
+            );
+            assert!(
+                !agent_supports_browser_login(agent),
+                "{agent} must not support browser sign-in"
+            );
+        }
+    }
+
+    #[test]
     fn can_start_contract() {
         assert!(ValidationResult::Ok.can_start());
         assert!(ValidationResult::Advisory("warn".into()).can_start());
@@ -592,7 +630,9 @@ mod tests {
             "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
         ] {
             let accepted: std::collections::BTreeSet<String> =
-                sandbox::providers::accepted_keys(agent).into_iter().collect();
+                sandbox::providers::accepted_keys(agent)
+                    .into_iter()
+                    .collect();
             let required: std::collections::BTreeSet<String> = agent_requirements(agent)
                 .iter()
                 .flat_map(|r| r.keys.iter().map(|k| (*k).to_string()))
