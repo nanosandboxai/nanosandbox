@@ -1,0 +1,39 @@
+# Interactive TUI run of oh-my-openagent (OmO) with our OpenRouter model.
+#
+# Launch the TUI from this directory:
+#   cd examples/sandboxes/omo-interactive
+#   export OPENROUTER_API_KEY="$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.local/share/opencode/auth.json')))['openrouter']['key'])")"
+#   ../../../../target/debug/nanosb
+#
+# The panel opens OmO's own interactive TUI (`omo`) over a PTY; you drive it
+# from the Nanosandbox TUI. No prompt/auto_mode here -> interactive mode.
+sandboxes:
+  omo-openrouter:
+    type: oh-my-openagent
+    image: oh-my-openagent:rc2
+    interactive: true
+    permissions: accept_edits
+    env:
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+    # OmO 5.1.79 reads its model from two places:
+    #   * ~/.omo/omo.jsonc  -> [native].model_profile (a "provider/model" pin)
+    #     and [native].categories.<name>.model
+    #   * ~/.omo/agent/settings.json -> defaultProvider + defaultModel
+    # The top-level "model_profile"/"model_profiles" keys are NOT read by 5.1.79
+    # (that was the earlier shape), which is why OmO kept falling back to its
+    # built-in default (moonshotai/kimi-k2.5).
+    agent_config:
+      .omo/omo.jsonc: |
+        {
+          "[native]": {
+            "model_profile": "openrouter/deepseek/deepseek-v4.1-flash-1017",
+            "categories": {
+              "default": { "model": "openrouter/deepseek/deepseek-v4.1-flash-1017" }
+            }
+          }
+        }
+      .omo/agent/settings.json: |
+        {
+          "defaultProvider": "openrouter",
+          "defaultModel": "deepseek/deepseek-v4.1-flash-1017"
+        }

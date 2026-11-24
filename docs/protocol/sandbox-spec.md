@@ -62,6 +62,7 @@ or has a serde default, so a minimal create is `{"image":"alpine"}`.
 | `stat_virtualization` | `Option<StatVirtualization>` | `stat_virtualization` | `None` (skip) | no | — | `strict` \| `relaxed` \| `off`. |
 | `security_profile` | `SecurityProfile` | `security_profile` | `default` | no | — | `default` \| `restricted`. |
 | `security` | `Option<SecurityContext>` | `security` | `None` (skip) | no | — | See [`SecurityContext`](#securitycontext). |
+| `agent_config` | `HashMap<String,String>` | `agent_config` | `{}` (skip) | no | — | Inline agent-native config files. Keys are guest-relative to the guest home (e.g. `.omo/omo.jsonc`); values are the raw file body. The host layer writes each file to `<sandbox_dir>/agent-config/<key>` and mounts it at `<home>/<key>` (read-write, single-file). Keys must be relative, non-empty, NUL-free, and contain no `..`, `.`, or empty components; limits are 32 files / 256 KiB each / 1 MiB total; symlinked host parents or targets are rejected. |
 
 ## `MountSpec`
 

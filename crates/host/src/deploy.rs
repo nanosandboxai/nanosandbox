@@ -93,6 +93,70 @@ impl Origin {
     }
 }
 
+/// Limits for inline `agent_config` files (see plan §4.2).
+const AGENT_CONFIG_MAX_FILES: usize = 32;
+const AGENT_CONFIG_MAX_FILE_BYTES: usize = 256 * 1024;
+const AGENT_CONFIG_MAX_TOTAL_BYTES: usize = 1024 * 1024;
+
+/// Validate an `agent_config` key: relative, non-empty, no NUL, no `..`.
+fn validate_agent_config_key(key: &str) -> anyhow::Result<()> {
+    if key.is_empty() {
+        anyhow::bail!("agent_config key must not be empty");
+    }
+    if key.contains('\0') {
+        anyhow::bail!("agent_config key must not contain NUL bytes");
+    }
+    let p = Path::new(key);
+    if p.is_absolute() {
+        anyhow::bail!("agent_config key must be relative, got absolute: {key}");
+    }
+    for comp in p.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                anyhow::bail!("agent_config key must not contain '..': {key}")
+            }
+            std::path::Component::CurDir => {
+                anyhow::bail!("agent_config key must not contain '.': {key}")
+            }
+            _ => {}
+        }
+    }
+    if key.split('/').any(|c| c == "." || c.is_empty()) {
+        anyhow::bail!("agent_config key must not contain '.' or empty path components: {key}");
+    }
+    Ok(())
+}
+
+/// Reject writing through a symlinked parent component under `root`.
+fn reject_symlink_parents(root: &Path, target: &Path) -> anyhow::Result<()> {
+    // Reject a symlinked target too: `std::fs::write` follows it, so a link
+    // planted at the planned file path could redirect the write outside the
+    // sandbox directory.
+    if let Ok(meta) = std::fs::symlink_metadata(target) {
+        if meta.file_type().is_symlink() {
+            anyhow::bail!("agent_config target is a symlink: {}", target.display());
+        }
+    }
+    let rel = target
+        .strip_prefix(root)
+        .map_err(|_| anyhow::anyhow!("agent_config target escapes the sandbox dir"))?;
+    let mut cur = root.to_path_buf();
+    for comp in rel.parent().unwrap_or(Path::new("")).components() {
+        cur.push(comp);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                anyhow::bail!(
+                    "agent_config parent component is a symlink: {}",
+                    cur.display()
+                )
+            }
+            Ok(_) => {}
+            Err(_) => break, // component not yet created; nothing to check
+        }
+    }
+    Ok(())
+}
+
 /// Split a serialized sandbox config into (config without env, env JSON object).
 ///
 /// Secrets must not be persisted to disk nor placed on the supervisor command
@@ -129,6 +193,42 @@ pub fn prepare_supervisor_spawn(
     let mut config = crate::spec::spec_to_config(spec)?;
 
     let sandbox_dir = crate::supervisor::sandboxes_root().join(&name);
+
+    // Materialize inline agent config files and append file mounts after the
+    // spec's existing mounts so they override directory mounts.
+    if !spec.agent_config.is_empty() {
+        if spec.agent_config.len() > AGENT_CONFIG_MAX_FILES {
+            anyhow::bail!("agent_config exceeds the {AGENT_CONFIG_MAX_FILES}-file limit");
+        }
+        let home = config
+            .home
+            .clone()
+            .unwrap_or_else(|| "/home/developer".to_string());
+        let agent_config_dir = sandbox_dir.join("agent-config");
+        let mut total_bytes = 0usize;
+        for (key, body) in &spec.agent_config {
+            validate_agent_config_key(key)?;
+            if body.len() > AGENT_CONFIG_MAX_FILE_BYTES {
+                anyhow::bail!("agent_config file '{key}' exceeds the 256 KiB limit");
+            }
+            total_bytes += body.len();
+            if total_bytes > AGENT_CONFIG_MAX_TOTAL_BYTES {
+                anyhow::bail!("agent_config exceeds the 1 MiB total limit");
+            }
+            let host_file = agent_config_dir.join(key);
+            reject_symlink_parents(&sandbox_dir, &host_file)?;
+            if let Some(parent) = host_file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&host_file, body)?;
+            let guest_path = format!("{home}/{key}");
+            let mut mount = runtime_config::Mount::virtiofs(&host_file, &guest_path);
+            mount.file = true;
+            mount.readonly = false;
+            config.mounts.push(mount);
+        }
+    }
+
     let agent_dir = sandbox_dir.join("agent");
     let guest_path = stage_exec_agent(&agent_dir)?;
     let exec_sock = sandbox_dir.join("exec.sock");
@@ -278,5 +378,138 @@ mod tests {
         std::env::remove_var("NANOSB_GUEST_BIN_DIR");
         std::env::remove_var("NANOSB_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn setup_env(tmp: &Path) {
+        let guest_bin = tmp.join("guest-bin");
+        std::fs::create_dir_all(&guest_bin).unwrap();
+        std::fs::write(guest_bin.join("exec-agent"), b"#!/bin/sh\n").unwrap();
+        std::env::set_var("NANOSB_GUEST_BIN_DIR", &guest_bin);
+        std::env::set_var("NANOSB_HOME", tmp.join("home"));
+    }
+
+    fn teardown_env(tmp: &Path) {
+        std::env::remove_var("NANOSB_GUEST_BIN_DIR");
+        std::env::remove_var("NANOSB_HOME");
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn prepare_spawn_materializes_agent_config_and_appends_file_mount() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("nanosb-host-agent-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        setup_env(&tmp);
+
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("agent-config-test".to_string());
+        spec.home = Some("/home/developer".to_string());
+        spec.agent_config
+            .insert(".omo/omo.jsonc".into(), "{\"categories\":{}}".into());
+        let sp = prepare_supervisor_spawn(&spec).unwrap();
+
+        let cfg: runtime_config::SandboxConfig = serde_json::from_str(&sp.config_json).unwrap();
+        // The file mount is appended after the spec's mounts (none here).
+        assert_eq!(cfg.mounts.len(), 1);
+        let m = &cfg.mounts[0];
+        assert!(m.file);
+        assert!(!m.readonly);
+        assert_eq!(m.container_path, "/home/developer/.omo/omo.jsonc");
+        assert!(m.host_path.ends_with("agent-config/.omo/omo.jsonc"));
+        // File written byte-identical.
+        let written = std::fs::read_to_string(&m.host_path).unwrap();
+        assert_eq!(written, "{\"categories\":{}}");
+
+        teardown_env(&tmp);
+    }
+
+    #[test]
+    fn prepare_spawn_rejects_agent_config_traversal() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "nanosb-host-agent-config-traversal-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        setup_env(&tmp);
+
+        for bad in [
+            "../escape",
+            "/abs/path",
+            "a/../b",
+            "a/./b",
+            "a//b",
+            "a/",
+            "./a",
+            "",
+        ] {
+            let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+            spec.name = Some("agent-config-traversal-test".to_string());
+            spec.agent_config.insert(bad.to_string(), "x".into());
+            assert!(
+                prepare_supervisor_spawn(&spec).is_err(),
+                "expected rejection for key {bad:?}"
+            );
+        }
+
+        teardown_env(&tmp);
+    }
+
+    #[test]
+    fn reject_symlink_parents_rejects_symlinked_target() {
+        let dir =
+            std::env::temp_dir().join(format!("nanosb-host-symlink-target-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sandbox_dir = dir.join("sandbox");
+        std::fs::create_dir_all(sandbox_dir.join("agent-config").join(".omo")).unwrap();
+        let outside = dir.join("outside.jsonc");
+        std::fs::write(&outside, "{}").unwrap();
+        let target = sandbox_dir
+            .join("agent-config")
+            .join(".omo")
+            .join("omo.jsonc");
+        std::os::unix::fs::symlink(&outside, &target).unwrap();
+
+        let err = reject_symlink_parents(&sandbox_dir, &target).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "got: {err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prepare_spawn_enforces_agent_config_limits() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "nanosb-host-agent-config-limits-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        setup_env(&tmp);
+
+        // Per-file limit: 256 KiB + 1.
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("agent-config-limit-test".to_string());
+        spec.agent_config
+            .insert("big".into(), "x".repeat(256 * 1024 + 1));
+        assert!(prepare_supervisor_spawn(&spec).is_err());
+
+        // File-count limit: 33 files.
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("agent-config-limit-test".to_string());
+        for i in 0..33 {
+            spec.agent_config.insert(format!("f{i}"), "x".into());
+        }
+        assert!(prepare_supervisor_spawn(&spec).is_err());
+
+        // Total limit: 1 MiB + 1 across two files.
+        let mut spec = nanosb_protocol::SandboxSpec::new("alpine");
+        spec.name = Some("agent-config-limit-test".to_string());
+        spec.agent_config.insert("a".into(), "x".repeat(512 * 1024));
+        spec.agent_config
+            .insert("b".into(), "x".repeat(512 * 1024 + 1));
+        assert!(prepare_supervisor_spawn(&spec).is_err());
+
+        teardown_env(&tmp);
     }
 }

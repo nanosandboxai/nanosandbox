@@ -1144,7 +1144,7 @@ mod cli {
     fn deploy_plan_for(
         config: &sandbox::AgentSandboxConfig,
         sandbox_dir: &std::path::Path,
-    ) -> (sandbox::deploy::DeployPlan, runtime::config::SandboxConfig) {
+    ) -> anyhow::Result<(sandbox::deploy::DeployPlan, runtime::config::SandboxConfig)> {
         nanosb_cli::deploy::deploy_plan_for(config, sandbox_dir)
     }
 
@@ -1193,7 +1193,7 @@ mod cli {
             }
 
             let sandbox_dir = SupervisorClient::new(&name).sandbox_dir().to_path_buf();
-            let (plan, rc) = deploy_plan_for(config, &sandbox_dir);
+            let (plan, rc) = deploy_plan_for(config, &sandbox_dir)?;
             let config_json_full = serde_json::to_string(&rc)?;
             let desired_hash = sha256_hex(&config_json_full);
             let (config_json, boot_env_json) =

@@ -440,6 +440,12 @@ pub struct AgentSandboxConfig {
     /// Agent-native session id to resume (e.g. codex `resume <id>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,
+    /// Inline agent-native config files. Keys are guest-relative to the guest
+    /// home (e.g. `.omo/omo.jsonc`, `.claude/settings.json`); values are the
+    /// raw file bodies, written verbatim into the sandbox state dir at deploy
+    /// time. `agent_config` wins over any generated config at the same path.
+    #[serde(default)]
+    pub agent_config: HashMap<String, String>,
 }
 
 impl Default for AgentSandboxConfig {
@@ -458,6 +464,7 @@ impl Default for AgentSandboxConfig {
             model: None,
             claude_settings: None,
             resume_session_id: None,
+            agent_config: HashMap::new(),
         }
     }
 }
@@ -522,6 +529,10 @@ impl AgentSandboxConfigBuilder {
     }
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.config.model = Some(model.into());
+        self
+    }
+    pub fn agent_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.config.agent_config.insert(key.into(), value.into());
         self
     }
     pub fn build(self) -> AgentSandboxConfig {

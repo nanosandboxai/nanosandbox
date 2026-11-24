@@ -601,6 +601,11 @@ pub struct SandboxSpec {
     /// create (see [`SecurityContext::unenforced_field`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<SecurityContext>,
+    /// Inline agent-native config files. Keys are guest-relative to the guest
+    /// home (e.g. `.omo/omo.jsonc`); values are the raw file body. The host
+    /// layer writes each file and mounts it at `<home>/<key>`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_config: HashMap<String, String>,
 }
 
 impl SandboxSpec {
@@ -635,6 +640,7 @@ impl SandboxSpec {
             stat_virtualization: None,
             security_profile: SecurityProfile::default(),
             security: None,
+            agent_config: HashMap::new(),
         }
     }
 }
@@ -752,6 +758,37 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_spec_agent_config_roundtrips() {
+        let mut spec = SandboxSpec::new("alpine");
+        spec.agent_config
+            .insert(".omo/omo.jsonc".into(), "{\"categories\":{}}".into());
+        let s = serde_json::to_string(&spec).unwrap();
+        let back: SandboxSpec = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back.agent_config.get(".omo/omo.jsonc").map(String::as_str),
+            Some("{\"categories\":{}}")
+        );
+    }
+
+    #[test]
+    fn sandbox_spec_agent_config_defaults_empty() {
+        let spec = SandboxSpec::new("alpine");
+        assert!(spec.agent_config.is_empty());
+        // Empty map is elided from the wire (skip_serializing_if).
+        let s = serde_json::to_string(&spec).unwrap();
+        assert!(!s.contains("agent_config"));
+        let back: SandboxSpec = serde_json::from_str(&s).unwrap();
+        assert!(back.agent_config.is_empty());
+    }
+
+    #[test]
+    fn sandbox_spec_legacy_json_without_agent_config_still_parses() {
+        let legacy = r#"{"name":"a","image":"alpine","detached":true,"replace":false}"#;
+        let spec: SandboxSpec = serde_json::from_str(legacy).unwrap();
+        assert!(spec.agent_config.is_empty());
+    }
+
+    #[test]
     fn network_spec_default_enables_egress() {
         assert!(NetworkSpec::default().enabled);
         assert!(SandboxSpec::new("alpine").network.enabled);
@@ -831,6 +868,8 @@ mod tests {
             no_new_privileges: None,
             run_as_user: Some("1000".into()),
         });
+        spec.agent_config
+            .insert(".omo/omo.jsonc".into(), "{}".into());
         spec
     }
 

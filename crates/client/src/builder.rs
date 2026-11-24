@@ -185,6 +185,13 @@ impl SandboxBuilder {
         self
     }
 
+    /// Supply an inline agent-native config file. `key` is guest-relative to
+    /// the guest home (e.g. `.omo/omo.jsonc`); `body` is the raw file content.
+    pub fn agent_config(mut self, key: impl Into<String>, body: impl Into<String>) -> Self {
+        self.spec.agent_config.insert(key.into(), body.into());
+        self
+    }
+
     pub fn replace(mut self, replace: bool) -> Self {
         self.spec.replace = replace;
         self
@@ -349,6 +356,17 @@ mod tests {
         assert_eq!(
             spec.secret_env.get("API_KEY").map(String::as_str),
             Some("api-key")
+        );
+    }
+
+    #[test]
+    fn builds_agent_config() {
+        let spec = SandboxBuilder::new("alpine")
+            .agent_config(".omo/omo.jsonc", "{\"categories\":{}}")
+            .build();
+        assert_eq!(
+            spec.agent_config.get(".omo/omo.jsonc").map(String::as_str),
+            Some("{\"categories\":{}}")
         );
     }
 

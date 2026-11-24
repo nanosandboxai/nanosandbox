@@ -11,6 +11,12 @@ prompts. Use it to try the `nanosb` TUI yourself.
 | `sandbox.yml` | 13 sandboxes across all 11 agent types with different skill/MCP combos |
 | `sample.env` | API keys / tokens, loaded by the sandboxes via `env_file:` (edit it first) |
 | `data/` | host directory for the read-only mount example (`claude-net-mounts`) |
+| `omo-interactive/` | standalone interactive oh-my-openagent (OmO) panel; sets its model via `agent_config` + a model profile (see its `sandbox.yml`) |
+
+`omo-interactive/` is a separate directory on purpose: launch the TUI from there
+(`cd examples/sandboxes/omo-interactive && nanosb`) and it opens OmO's own
+interactive TUI with the OpenRouter model configured inline through
+`agent_config` (`.omo/omo.jsonc` + `.omo/agent/settings.json`).
 
 ## Run it
 

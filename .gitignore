@@ -66,3 +66,23 @@ examples/sandboxes/.cursor/
 examples/sandboxes/.local/
 examples/sandboxes/.nanosandbox/
 examples/sandboxes/.npm/
+
+# The same runtime state appears in nested example dirs (e.g. examples/sandboxes/<name>/)
+examples/sandboxes/*/.agents/
+examples/sandboxes/*/.aider/
+examples/sandboxes/*/.cache/
+examples/sandboxes/*/.claude/
+examples/sandboxes/*/.codex/
+examples/sandboxes/*/.config/
+examples/sandboxes/*/.crush/
+examples/sandboxes/*/.cursor/
+examples/sandboxes/*/.local/
+examples/sandboxes/*/.nanosandbox/
+examples/sandboxes/*/.npm/
+examples/sandboxes/*/.omo/
+
+# Agent runtime state written when a sandbox mounts the repo root itself
+/.cache/
+/.npm/
+/.omx/
+/.claude.json

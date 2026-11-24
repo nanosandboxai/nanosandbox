@@ -244,10 +244,10 @@ pub fn agent_requirements(agent: &str) -> &'static [AgentRequirement] {
             hint: "export ANTHROPIC_API_KEY=... or OPENAI_API_KEY=... before launching the TUI, or sign in through the browser",
         }],
         "oh-my-openagent" => &[AgentRequirement {
-            label: "OpenAI API key (OmO)",
-            keys: &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+            label: "OmO provider API key",
+            keys: &["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"],
             mandatory: true,
-            hint: "export OPENAI_API_KEY=sk-... (or ANTHROPIC_API_KEY=...) before launching the TUI. OmO has no browser sign-in flow in this sandbox.",
+            hint: "export OPENAI_API_KEY=sk-..., ANTHROPIC_API_KEY=sk-ant-..., or OPENROUTER_API_KEY=sk-or-... before launching the TUI. OmO has no browser sign-in flow in this sandbox.",
         }],
         "oh-my-codex" => &[AgentRequirement {
             label: "OpenAI API key (OMX)",
@@ -491,6 +491,28 @@ mod tests {
             assert!(
                 !agent_supports_browser_login(agent),
                 "{agent} must not support browser sign-in"
+            );
+        }
+    }
+
+    #[test]
+    fn oh_my_openagent_accepts_openrouter_key() {
+        assert_eq!(
+            validate_agent(
+                "oh-my-openagent",
+                &env(&[("OPENROUTER_API_KEY", "sk-or-test")])
+            ),
+            ValidationResult::Ok,
+            "OmO must accept an OpenRouter key (native model_profiles can target OpenRouter)"
+        );
+        // Scope guard: the other oh-my-* agents must still require their own provider key.
+        for agent in ["oh-my-codex", "oh-my-claude"] {
+            assert!(
+                matches!(
+                    validate_agent(agent, &env(&[("OPENROUTER_API_KEY", "sk-or-test")])),
+                    ValidationResult::Blocking(_)
+                ),
+                "{agent} must not be unblocked by an OpenRouter key"
             );
         }
     }

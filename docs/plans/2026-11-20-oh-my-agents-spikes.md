@@ -79,8 +79,10 @@ printed every `--version` (`ARCH=aarch64`, `omo`, `oh-my-codex`, `codex-cli`,
    - OMC: `omc ask claude "<prompt>"`
 3. **Interactive argv**: `omo`, `omx`, `omc launch`.
 4. **Permission flags**: OmO `--permission-preset full-access` (allow-all) /
-   `accept-edits` (accept-edits); OMX `--dangerously-bypass-approvals-and-sandbox`
-   (allow-all/accept-edits, forwarded to codex); OMC none for MVP (documented).
+   `accept-edits` (accept-edits); OMX `--yolo` (interactive) /
+   `--dangerously-bypass-approvals-and-sandbox` (headless); OMC `--madmax`
+   (interactive and headless). *(Superseded the earlier "OMC none" MVP
+   decision — `omc launch`/`omc ask` accept `--madmax`/`--yolo`.)*
 5. **Model flag**: OmO `--model`, OMX `-m/--model`; OMC none (documented).
 6. **API keys**: OmO `OPENAI_API_KEY` (required; `ANTHROPIC_API_KEY` optional),
    OMX `OPENAI_API_KEY` (required), OMC `ANTHROPIC_API_KEY` (required).
