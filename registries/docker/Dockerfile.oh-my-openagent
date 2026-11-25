@@ -7,9 +7,9 @@ LABEL org.opencontainers.image.description="oh-my-openagent (OmO) agent for nano
 LABEL org.opencontainers.image.licenses="SUL-1.0"
 
 # Pinned via registries/docker/package.json (Dependabot-managed).
-# Note: omo-ai declares engines.node >= 24; it installs and runs on the shared
-# node:22 base (npm only warns), verified in
-# docs/plans/2026-11-20-oh-my-agents-spikes.md.
+# Note: omo-ai declares engines.node >= 24; the shared base is node:26-slim,
+# which satisfies it. The 2026-11-20 spike ran on node:22, where npm only
+# warned -- see docs/plans/2026-11-20-oh-my-agents-spikes.md.
 ARG OMO_VERSION=5.1.81
 
 # OmO's lsp-daemon proxy sweep shells out to `ps`, and its interactive TUI
