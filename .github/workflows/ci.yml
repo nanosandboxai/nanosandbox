@@ -149,6 +149,38 @@ jobs:
           name: cli-surface
           path: scripts/docs/cli-surface.json
 
+  agent-image-deps:
+    name: Agent image dependency gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run agent-image-deps gate on real tree
+        run: bash scripts/check-agent-image-deps.sh
+
+      - name: Assert gate fails on every negative fixture
+        run: |
+          count=0
+          for fx in test/check-agent-image-deps/fixtures/*/; do
+            [ -d "$fx" ] || continue
+            count=$((count + 1))
+            if bash scripts/check-agent-image-deps.sh "$fx"; then
+              echo "::error::agent-image-deps gate passed on $fx; it must fail"
+              exit 1
+            fi
+            echo "gate correctly rejected $fx"
+          done
+          if [ "$count" -lt 2 ]; then
+            echo "::error::expected at least 2 negative fixtures, found $count"
+            exit 1
+          fi
+
   models:
     name: Models registry gate
     runs-on: ubuntu-latest

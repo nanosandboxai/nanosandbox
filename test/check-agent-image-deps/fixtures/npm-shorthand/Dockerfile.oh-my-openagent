@@ -1,0 +1,2 @@
+ARG GHOST_VERSION=1.0.0
+RUN npm i -g "ghost-pkg@${GHOST_VERSION}"

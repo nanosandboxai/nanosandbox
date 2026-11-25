@@ -1,0 +1,2 @@
+ARG GHOST_VERSION=5.1.79
+RUN npm install -g "omo-ai@${GHOST_VERSION}" && npm cache clean --force

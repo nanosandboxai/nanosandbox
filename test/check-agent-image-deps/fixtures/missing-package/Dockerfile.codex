@@ -1,0 +1,2 @@
+ARG CODEX_VERSION=0.166.0
+RUN npm install -g "not-a-real-package@${CODEX_VERSION}" && npm cache clean --force
