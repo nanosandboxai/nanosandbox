@@ -45,7 +45,7 @@ jobs:
         with:
           node-version: "24"
       - if: matrix.sdk == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.27"
       - if: matrix.sdk == 'ruby'
