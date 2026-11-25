@@ -53,7 +53,7 @@ jobs:
         with:
           fetch-depth: 0
       - if: matrix.sdk == 'rust'
-        uses: dtolnay/rust-toolchain@1.94.0
+        uses: dtolnay/rust-toolchain@1.120.0
       - if: matrix.sdk == 'python'
         uses: actions/setup-python@v5
         with:
@@ -153,7 +153,7 @@ jobs:
         with:
           dotnet-version: "8.0.x"
       - if: matrix.sdk == 'rust'
-        uses: dtolnay/rust-toolchain@1.94.0
+        uses: dtolnay/rust-toolchain@1.120.0
       - run: scripts/sdk/install-smoke.sh ${{ matrix.sdk }} ${{ needs.plan.outputs.version }}
 
   release:
