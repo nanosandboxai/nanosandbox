@@ -1,0 +1,2 @@
+ARG OMO_VERSION=5.1.79
+RUN npm install -g omo-ai@${OMO_VERSION}

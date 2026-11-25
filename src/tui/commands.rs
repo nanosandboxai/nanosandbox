@@ -189,7 +189,17 @@ pub enum ParseResult {
 
 /// Supported agent names for `/add`.
 const SUPPORTED_AGENTS: &[&str] = &[
-    "claude", "goose", "codex", "cursor", "opencode", "aider", "gemini", "crush",
+    "claude",
+    "goose",
+    "codex",
+    "cursor",
+    "opencode",
+    "aider",
+    "gemini",
+    "crush",
+    "oh-my-openagent",
+    "oh-my-codex",
+    "oh-my-claude",
 ];
 
 /// A single line of `/help` output: a command pattern and its description.

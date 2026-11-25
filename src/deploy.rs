@@ -112,7 +112,7 @@ fn spawn_supervisor_child(
         &origin_path,
         &supervisor_log_path,
     ] {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
     }
     let supervisor_log_err = supervisor_log.try_clone()?;
 
@@ -200,6 +200,50 @@ pub fn materialize_plan(
         }
         std::fs::write(&path, &file.content)?;
     }
+
+    // Inline agent-config files are written AFTER generated config files so
+    // user overrides win at the same guest path. They carry absolute host
+    // paths under the sandbox state dir; parents are created and the file is
+    // mode 0644 on Unix (agent config is non-secret and must be guest-readable).
+    for file in &plan.agent_config_files {
+        if let Some(parent) = file.host_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file.host_path, &file.content)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file.host_path, std::fs::Permissions::from_mode(0o644))?;
+        }
+    }
+
+    // Agent state dirs hold session state and tokens, so keep them private
+    // (0700). OmO's device service refuses a state dir that other users can
+    // read (`insecure_state_dir`), which otherwise breaks its sign-in.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let state = sandbox_dir.join("state");
+        let mut state_dirs: Vec<&std::path::Path> = Vec::new();
+        state_dirs.push(&state);
+        for mount in &plan.mounts {
+            if mount.host_path.starts_with(&state) {
+                state_dirs.push(&mount.host_path);
+            }
+        }
+        for file in &plan.agent_config_files {
+            if let Some(parent) = file.host_path.parent() {
+                if parent.starts_with(&state) {
+                    state_dirs.push(parent);
+                }
+            }
+        }
+        for dir in state_dirs {
+            if dir.exists() {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -223,7 +267,7 @@ pub fn extra_mounts_from_plan(
 pub fn deploy_plan_for(
     config: &sandbox::AgentSandboxConfig,
     sandbox_dir: &std::path::Path,
-) -> (sandbox::deploy::DeployPlan, runtime::config::SandboxConfig) {
+) -> anyhow::Result<(sandbox::deploy::DeployPlan, runtime::config::SandboxConfig)> {
     let mut resolved =
         config
             .resolved_agent
@@ -248,7 +292,8 @@ pub fn deploy_plan_for(
     if let Some(prompt) = config.prompt.as_ref().filter(|p| !p.is_empty()) {
         resolved.prompt = prompt.clone();
     }
-    let plan = sandbox::deploy::DeployPlanner::plan(config, &resolved, sandbox_dir, None);
+    let plan = sandbox::deploy::DeployPlanner::plan(config, &resolved, sandbox_dir, None)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let mut rc = config.sandbox.clone();
     rc.runtime_mode = runtime::config::RuntimeMode::Next;
     let has_agent = config.agent_type.is_some()
@@ -277,7 +322,7 @@ pub fn deploy_plan_for(
             crate::tui::run::resolve_goose_env(&mut rc.env, config.model.as_deref());
         }
     }
-    (plan, rc)
+    Ok((plan, rc))
 }
 
 /// SHA-256 hex digest of a string (used for deploy config hashing).
@@ -370,7 +415,7 @@ mod tests {
         config.sandbox.image = "claude".to_string();
         config.agent_type = Some(sandbox::AgentType::Claude);
         let dir = std::env::temp_dir().join("nanosb-deploy-test-defaults");
-        let (_plan, rc) = deploy_plan_for(&config, &dir);
+        let (_plan, rc) = deploy_plan_for(&config, &dir).unwrap();
         assert_eq!(rc.user.as_deref(), Some("developer"));
         assert_eq!(rc.home.as_deref(), Some("/home/developer"));
     }
@@ -383,7 +428,7 @@ mod tests {
         config.sandbox.user = Some("2000".to_string());
         config.agent_type = Some(sandbox::AgentType::Claude);
         let dir = std::env::temp_dir().join("nanosb-deploy-test-explicit");
-        let (_plan, rc) = deploy_plan_for(&config, &dir);
+        let (_plan, rc) = deploy_plan_for(&config, &dir).unwrap();
         assert_eq!(rc.user.as_deref(), Some("2000"));
     }
 
@@ -417,7 +462,7 @@ mod tests {
 
         let sandbox_dir = std::env::temp_dir().join("nanosb-materialize-test");
         let _ = std::fs::remove_dir_all(&sandbox_dir);
-        let (plan, _rc) = deploy_plan_for(&config, &sandbox_dir);
+        let (plan, _rc) = deploy_plan_for(&config, &sandbox_dir).unwrap();
         materialize_plan(&sandbox_dir, &plan).unwrap();
 
         // Merged config lives in the sandbox state dir (mounted at ~/.claude), not the workspace.
@@ -430,6 +475,126 @@ mod tests {
             "config must not be written into the workspace dir"
         );
         let _ = std::fs::remove_dir_all(&sandbox_dir);
+    }
+
+    #[test]
+    fn materialize_writes_agent_config_byte_identical_with_0644() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut config = sandbox::AgentSandboxConfig::default();
+        config.sandbox.name = "agent-config-materialize".to_string();
+        config.sandbox.image = "claude".to_string();
+        config.agent_type = Some(sandbox::AgentType::OhMyOpenAgent);
+        config.agent_config.insert(
+            ".omo/omo.jsonc".to_string(),
+            "{\"categories\":{\"default\":{\"model\":\"x\"}}}\n".to_string(),
+        );
+
+        let sandbox_dir = std::env::temp_dir().join("nanosb-agent-config-materialize");
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
+        let (plan, _rc) = deploy_plan_for(&config, &sandbox_dir).unwrap();
+        materialize_plan(&sandbox_dir, &plan).unwrap();
+
+        let written = sandbox_dir.join("state/.omo/omo.jsonc");
+        assert!(written.exists(), "agent_config file must be written");
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "{\"categories\":{\"default\":{\"model\":\"x\"}}}\n",
+            "content must be byte-identical"
+        );
+        let mode = std::fs::metadata(&written).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644, "agent_config file must be 0644");
+
+        // No writes outside the sandbox state dir.
+        assert!(
+            !sandbox_dir.join("config").join(".omo").exists(),
+            "agent_config must not be written under config/"
+        );
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
+    }
+
+    #[test]
+    fn materialize_keeps_state_dirs_private_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut config = sandbox::AgentSandboxConfig::default();
+        config.sandbox.name = "state-dir-private-0700".to_string();
+        config.sandbox.image = "claude".to_string();
+        config.agent_type = Some(sandbox::AgentType::OhMyOpenAgent);
+        config
+            .agent_config
+            .insert(".omo/omo.jsonc".to_string(), "{}\n".to_string());
+        config
+            .agent_config
+            .insert(".omo/agent/settings.json".to_string(), "{}\n".to_string());
+
+        let sandbox_dir = std::env::temp_dir().join("nanosb-state-dir-private-0700");
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
+        let (plan, _rc) = deploy_plan_for(&config, &sandbox_dir).unwrap();
+        materialize_plan(&sandbox_dir, &plan).unwrap();
+
+        for dir in [
+            sandbox_dir.join("state"),
+            sandbox_dir.join("state/.omo"),
+            sandbox_dir.join("state/.omo/agent"),
+        ] {
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o700,
+                "{} must be 0700, got {:o}",
+                dir.display(),
+                mode
+            );
+        }
+        let _ = std::fs::remove_dir_all(&sandbox_dir);
+    }
+
+    #[test]
+    fn materialize_keeps_all_oh_my_state_dirs_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for (agent, name) in [
+            (sandbox::AgentType::OhMyOpenAgent, "omo"),
+            (sandbox::AgentType::OhMyCodex, "omx"),
+            (sandbox::AgentType::OhMyClaude, "omc"),
+        ] {
+            let mut config = sandbox::AgentSandboxConfig::default();
+            config.sandbox.name = format!("state-private-{name}");
+            config.sandbox.image = "x".to_string();
+            config.agent_type = Some(agent);
+
+            let sandbox_dir = std::env::temp_dir().join(format!("nanosb-state-private-{name}"));
+            let _ = std::fs::remove_dir_all(&sandbox_dir);
+            let (plan, _rc) = deploy_plan_for(&config, &sandbox_dir).unwrap();
+            materialize_plan(&sandbox_dir, &plan).unwrap();
+
+            let state = sandbox_dir.join("state");
+            let state_mounts: Vec<_> = plan
+                .mounts
+                .iter()
+                .filter(|m| m.host_path.starts_with(&state))
+                .collect();
+            assert!(
+                !state_mounts.is_empty(),
+                "{name}: expected at least one state mount"
+            );
+            for mount in state_mounts {
+                let mode = std::fs::metadata(&mount.host_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(
+                    mode, 0o700,
+                    "{name}: state dir {:?} must be 0700, got {:o}",
+                    mount.host_path, mode
+                );
+            }
+            let state_mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+            assert_eq!(state_mode, 0o700, "{name}: state root must be 0700");
+            let _ = std::fs::remove_dir_all(&sandbox_dir);
+        }
     }
 
     #[test]
@@ -469,7 +634,7 @@ mod tests {
         config.sandbox.run_as_root = true;
         config.agent_type = Some(sandbox::AgentType::Claude);
         let dir = std::env::temp_dir().join("nanosb-deploy-test-root");
-        let (_plan, rc) = deploy_plan_for(&config, &dir);
+        let (_plan, rc) = deploy_plan_for(&config, &dir).unwrap();
         assert_ne!(rc.user.as_deref(), Some("developer"));
     }
 
@@ -492,12 +657,57 @@ mod tests {
             claude_settings: None,
         });
         let dir = std::env::temp_dir().join("nanosb-deploy-test-prompt");
-        let (plan, _rc) = deploy_plan_for(&config, &dir);
+        let (plan, _rc) = deploy_plan_for(&config, &dir).unwrap();
         assert!(plan.agent_command.args.contains(&"--print".to_string()));
         assert!(plan
             .agent_command
             .args
             .contains(&"do the thing".to_string()));
+    }
+
+    #[test]
+    fn deploy_plan_forwards_model_to_agent_command() {
+        let dir = std::env::temp_dir().join(format!("nanosb-deploy-model-{}", std::process::id()));
+
+        // (a) Claude + model → `--model <id>` on the agent CLI.
+        let mut config = sandbox::AgentSandboxConfig::default();
+        config.sandbox.name = "model-test".to_string();
+        config.sandbox.image = "claude".to_string();
+        config.agent_type = Some(sandbox::AgentType::Claude);
+        config.model = Some("claude-sonnet-4-5-20250929".to_string());
+        let (plan, _rc) = deploy_plan_for(&config, &dir).unwrap();
+        assert!(plan.agent_command.args.contains(&"--model".to_string()));
+        assert!(plan
+            .agent_command
+            .args
+            .contains(&"claude-sonnet-4-5-20250929".to_string()));
+
+        // (b) Claude + no model → no `--model` flag.
+        let mut config = sandbox::AgentSandboxConfig::default();
+        config.sandbox.name = "model-test".to_string();
+        config.sandbox.image = "claude".to_string();
+        config.agent_type = Some(sandbox::AgentType::Claude);
+        config.model = None;
+        let (plan, _rc) = deploy_plan_for(&config, &dir).unwrap();
+        assert!(!plan.agent_command.args.contains(&"--model".to_string()));
+
+        // (c) Goose + model → GOOSE_PROVIDER/GOOSE_MODEL env, prefix stripped.
+        let mut config = sandbox::AgentSandboxConfig::default();
+        config.sandbox.name = "model-test".to_string();
+        config.sandbox.image = "goose".to_string();
+        config.agent_type = Some(sandbox::AgentType::Goose);
+        config.model = Some("anthropic/claude-sonnet-4-5-20250929".to_string());
+        let (_plan, rc) = deploy_plan_for(&config, &dir).unwrap();
+        assert_eq!(
+            rc.env.get("GOOSE_PROVIDER").map(String::as_str),
+            Some("anthropic")
+        );
+        assert_eq!(
+            rc.env.get("GOOSE_MODEL").map(String::as_str),
+            Some("claude-sonnet-4-5-20250929")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

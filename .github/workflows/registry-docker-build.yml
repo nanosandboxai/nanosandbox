@@ -28,6 +28,9 @@ on:
           - aider
           - gemini
           - crush
+          - oh-my-openagent
+          - oh-my-codex
+          - oh-my-claude
 
 env:
   REGISTRY: ghcr.io
@@ -53,7 +56,7 @@ jobs:
 
       - name: Log in to Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -61,7 +64,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/base
           tags: |
@@ -71,7 +74,7 @@ jobs:
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
 
       - name: Build and push base image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: registries
           file: registries/docker/Dockerfile.base
@@ -96,7 +99,7 @@ jobs:
           if [ -n "${{ inputs.agent }}" ]; then
             echo 'agents=["${{ inputs.agent }}"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'agents=["claude","goose","codex","cursor","opencode","aider","gemini","crush"]' >> "$GITHUB_OUTPUT"
+            echo 'agents=["claude","goose","codex","cursor","opencode","aider","gemini","crush","oh-my-openagent","oh-my-codex","oh-my-claude"]' >> "$GITHUB_OUTPUT"
           fi
 
   # ===========================================================================
@@ -129,11 +132,14 @@ jobs:
             echo "codex=$(node -p "require('./package.json').dependencies['@openai/codex']")"
             echo "gemini=$(node -p "require('./package.json').dependencies['@google/gemini-cli']")"
             echo "crush=$(node -p "require('./package.json').dependencies['@charmland/crush']")"
+            echo "omo=$(node -p "require('./package.json').dependencies['omo-ai']")"
+            echo "omx=$(node -p "require('./package.json').dependencies['oh-my-codex']")"
+            echo "omc=$(node -p "require('./package.json').dependencies['oh-my-claude-sisyphus']")"
           } >> "$GITHUB_OUTPUT"
 
       - name: Log in to Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -141,7 +147,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.agent }}
           tags: |
@@ -151,7 +157,8 @@ jobs:
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
 
       - name: Build and push agent image
-        uses: docker/build-push-action@v5
+        id: build
+        uses: docker/build-push-action@v7
         with:
           context: registries
           file: registries/docker/Dockerfile.${{ matrix.agent }}
@@ -164,14 +171,39 @@ jobs:
             CODEX_VERSION=${{ steps.versions.outputs.codex }}
             GEMINI_VERSION=${{ steps.versions.outputs.gemini }}
             CRUSH_VERSION=${{ steps.versions.outputs.crush }}
+            OMO_VERSION=${{ steps.versions.outputs.omo }}
+            OMX_VERSION=${{ steps.versions.outputs.omx }}
+            OMC_VERSION=${{ steps.versions.outputs.omc }}
           cache-from: type=gha,scope=${{ matrix.agent }}
           cache-to: type=gha,scope=${{ matrix.agent }},mode=max
           platforms: linux/amd64,linux/arm64
+
+      # Run the just-pushed image *from the registry* (not from the local build
+      # cache) to prove the GHCR artifact is actually runnable. Pulls by the
+      # pushed manifest digest, so this validates exactly what consumers get.
+      - name: Run pushed image from registry
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          # The in-image binary name differs from the image repository for a few
+          # agents (see registries/README.md).
+          bin="${{ matrix.agent }}"
+          case "$bin" in
+            cursor) bin=cursor-agent ;;
+            oh-my-openagent) bin=omo ;;
+            oh-my-codex) bin=omx ;;
+            oh-my-claude) bin=omc ;;
+          esac
+          image="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.agent }}@${{ steps.build.outputs.digest }}"
+          echo "Pulling and running from registry: $image"
+          docker pull "$image"
+          docker run --rm "$image" "$bin" --version
 
       - name: Generate build summary
         run: |
           echo "## ${{ matrix.agent }} Agent Image" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.agent }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
           echo "### Tags" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY

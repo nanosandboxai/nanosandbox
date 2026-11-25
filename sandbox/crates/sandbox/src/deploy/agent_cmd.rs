@@ -95,6 +95,15 @@ impl AgentCommandBuilder {
             AgentType::Crush => {
                 Self::build_crush(prompt, interactive, effective_permissions, model)
             }
+            AgentType::OhMyOpenAgent => {
+                Self::build_oh_my_openagent(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::OhMyCodex => {
+                Self::build_oh_my_codex(prompt, interactive, effective_permissions, model)
+            }
+            AgentType::OhMyClaude => {
+                Self::build_oh_my_claude(prompt, effective_permissions, interactive, model)
+            }
         }
     }
 
@@ -264,6 +273,18 @@ impl AgentCommandBuilder {
         }
 
         if interactive {
+            match permissions {
+                Permissions::AllowAll => {
+                    args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+                }
+                Permissions::AcceptEdits => {
+                    args.push("-a".to_string());
+                    args.push("on-request".to_string());
+                    args.push("-s".to_string());
+                    args.push("workspace-write".to_string());
+                }
+                Permissions::Default => {}
+            }
             return AgentCommand {
                 binary: "codex".to_string(),
                 args,
@@ -421,7 +442,7 @@ impl AgentCommandBuilder {
     fn build_aider(
         prompt: &str,
         interactive: bool,
-        _permissions: Permissions,
+        permissions: Permissions,
         model: Option<&str>,
     ) -> AgentCommand {
         let mut args = Vec::new();
@@ -441,6 +462,15 @@ impl AgentCommandBuilder {
             // Aider auto-commits by default; disable so the sandbox workspace
             // git history is not polluted with agent commits.
             args.push("--no-auto-commits".to_string());
+        }
+
+        if interactive {
+            match permissions {
+                Permissions::AllowAll | Permissions::AcceptEdits => {
+                    args.push("--yes-always".to_string());
+                }
+                Permissions::Default => {}
+            }
         }
 
         if let Some(m) = model {
@@ -481,7 +511,11 @@ impl AgentCommandBuilder {
                 args.push("--approval-mode".to_string());
                 args.push("yolo".to_string());
             }
-            Permissions::AcceptEdits | Permissions::Default => {}
+            Permissions::AcceptEdits => {
+                args.push("--approval-mode".to_string());
+                args.push("auto_edit".to_string());
+            }
+            Permissions::Default => {}
         }
 
         if let Some(m) = model {
@@ -529,6 +563,146 @@ impl AgentCommandBuilder {
             binary: "crush".to_string(),
             args,
         }
+    }
+
+    // ── Oh My OpenAgent (omo) ───────────────────────────────────────
+
+    fn build_oh_my_openagent(
+        prompt: &str,
+        interactive: bool,
+        permissions: Permissions,
+        model: Option<&str>,
+    ) -> AgentCommand {
+        let mut args = Vec::new();
+        if !interactive {
+            args.push("-p".to_string());
+            args.push("--no-session".to_string());
+        }
+        match permissions {
+            Permissions::AllowAll => {
+                args.push("--permission-preset".to_string());
+                args.push("full-access".to_string());
+            }
+            Permissions::AcceptEdits => {
+                args.push("--permission-preset".to_string());
+                args.push("accept-edits".to_string());
+            }
+            Permissions::Default => {}
+        }
+        if let Some(m) = model {
+            args.push("--model".to_string());
+            args.push(m.to_string());
+        }
+        if !interactive && !prompt.is_empty() {
+            args.push(prompt.to_string());
+        }
+        if interactive {
+            return AgentCommand {
+                binary: "omo".to_string(),
+                args,
+            };
+        }
+        wrap_in_stdin_redirect("omo", args)
+    }
+
+    // ── Oh My Codex (omx) ───────────────────────────────────────────
+
+    fn build_oh_my_codex(
+        prompt: &str,
+        interactive: bool,
+        permissions: Permissions,
+        model: Option<&str>,
+    ) -> AgentCommand {
+        let mut args = Vec::new();
+        if interactive {
+            // `omx` defaults to a detached tmux leader whose authority handshake
+            // fails under the sandbox's exec-agent PTY ("malformed detached
+            // leader authority"). The panel already owns the PTY, so launch
+            // Codex directly instead.
+            args.push("--direct".to_string());
+        } else {
+            args.push("exec".to_string());
+            args.push("--skip-git-repo-check".to_string());
+            args.push("--json".to_string());
+            match permissions {
+                Permissions::AllowAll | Permissions::AcceptEdits => {
+                    args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+                }
+                Permissions::Default => {}
+            }
+        }
+        if let Some(m) = model {
+            args.push("-m".to_string());
+            args.push(m.to_string());
+        }
+        if !interactive && !prompt.is_empty() {
+            args.push(prompt.to_string());
+        }
+        if interactive {
+            match permissions {
+                Permissions::AllowAll | Permissions::AcceptEdits => {
+                    args.push("--yolo".to_string());
+                }
+                Permissions::Default => {}
+            }
+            return AgentCommand {
+                binary: "omx".to_string(),
+                args,
+            };
+        }
+        wrap_in_stdin_redirect("omx", args)
+    }
+
+    // ── Oh My Claude (omc) ──────────────────────────────────────────
+
+    fn build_oh_my_claude(
+        prompt: &str,
+        permissions: Permissions,
+        interactive: bool,
+        _model: Option<&str>,
+    ) -> AgentCommand {
+        if interactive {
+            let mut args = vec!["launch".to_string()];
+            match permissions {
+                Permissions::AllowAll | Permissions::AcceptEdits => {
+                    args.push("--madmax".to_string());
+                }
+                Permissions::Default => {}
+            }
+            return AgentCommand {
+                binary: "omc".to_string(),
+                args,
+            };
+        }
+        let mut args = vec!["ask".to_string(), "claude".to_string()];
+        match permissions {
+            Permissions::AllowAll | Permissions::AcceptEdits => {
+                args.insert(0, "--madmax".to_string());
+            }
+            Permissions::Default => {}
+        }
+        if !prompt.is_empty() {
+            args.push(prompt.to_string());
+        }
+        wrap_in_stdin_redirect("omc", args)
+    }
+}
+
+/// Wrap a headless agent invocation in a shell that redirects stdin to
+/// `/dev/null`. Several agents (codex, opencode, omx) read additional input
+/// from stdin when it is not a TTY, and the runtime hands the agent a pipe, so
+/// without this they block. `"$@"` forwards the args verbatim.
+fn wrap_in_stdin_redirect(bin: &str, args: Vec<String>) -> AgentCommand {
+    let mut wrapped = vec![
+        "-c".to_string(),
+        "exec \"$@\" < /dev/null".to_string(),
+        "sh".to_string(),
+        bin.to_string(),
+    ];
+    wrapped.extend(args);
+    AgentCommand {
+        binary: "sh".to_string(),
+        args: wrapped,
     }
 }
 
@@ -1253,6 +1427,27 @@ mod tests {
                 &["-p", "do it"],
             ),
             (AgentType::Crush, "crush", &[], "crush", &["run", "do it"]),
+            (
+                AgentType::OhMyOpenAgent,
+                "omo",
+                &[],
+                "sh",
+                &["-p", "--no-session", "do it"],
+            ),
+            (
+                AgentType::OhMyCodex,
+                "omx",
+                &["--direct"],
+                "sh",
+                &["exec", "--skip-git-repo-check", "--json", "do it"],
+            ),
+            (
+                AgentType::OhMyClaude,
+                "omc",
+                &["launch"],
+                "sh",
+                &["ask", "claude", "do it"],
+            ),
         ];
 
         assert_eq!(
@@ -1310,5 +1505,269 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_codex_interactive_permissions_add_bypass() {
+        let allow = AgentCommandBuilder::build(
+            &AgentType::Codex,
+            "",
+            false,
+            true,
+            Permissions::AllowAll,
+            None,
+        );
+        assert_eq!(allow.binary, "codex");
+        assert!(
+            allow
+                .args
+                .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
+            "codex allow-all must bypass approvals, got {:?}",
+            allow.args
+        );
+
+        let accept = AgentCommandBuilder::build(
+            &AgentType::Codex,
+            "",
+            false,
+            true,
+            Permissions::AcceptEdits,
+            None,
+        );
+        assert_eq!(
+            accept.args,
+            vec![
+                "-a".to_string(),
+                "on-request".to_string(),
+                "-s".to_string(),
+                "workspace-write".to_string()
+            ],
+            "codex accept-edits must auto-accept workspace writes, got {:?}",
+            accept.args
+        );
+
+        let default = AgentCommandBuilder::build(
+            &AgentType::Codex,
+            "",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert!(
+            default.args.is_empty(),
+            "codex default interactive must stay bare, got {:?}",
+            default.args
+        );
+    }
+
+    #[test]
+    fn test_gemini_permissions_add_approval_mode() {
+        let allow = AgentCommandBuilder::build(
+            &AgentType::Gemini,
+            "",
+            false,
+            true,
+            Permissions::AllowAll,
+            None,
+        );
+        assert!(
+            allow
+                .args
+                .windows(2)
+                .any(|w| w == ["--approval-mode".to_string(), "yolo".to_string()]),
+            "gemini allow-all must use yolo, got {:?}",
+            allow.args
+        );
+
+        let accept = AgentCommandBuilder::build(
+            &AgentType::Gemini,
+            "",
+            false,
+            true,
+            Permissions::AcceptEdits,
+            None,
+        );
+        assert!(
+            accept
+                .args
+                .windows(2)
+                .any(|w| w == ["--approval-mode".to_string(), "auto_edit".to_string()]),
+            "gemini accept-edits must use auto_edit, got {:?}",
+            accept.args
+        );
+
+        let default = AgentCommandBuilder::build(
+            &AgentType::Gemini,
+            "",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert!(
+            !default.args.contains(&"--approval-mode".to_string()),
+            "gemini default must not set an approval mode, got {:?}",
+            default.args
+        );
+    }
+
+    #[test]
+    fn test_aider_interactive_permissions_add_yes_always() {
+        for permissions in [Permissions::AllowAll, Permissions::AcceptEdits] {
+            let cmd =
+                AgentCommandBuilder::build(&AgentType::Aider, "", false, true, permissions, None);
+            assert!(
+                cmd.args.contains(&"--yes-always".to_string()),
+                "aider interactive {:?} must auto-confirm, got {:?}",
+                permissions,
+                cmd.args
+            );
+        }
+    }
+
+    #[test]
+    fn test_omx_interactive_permissions_add_yolo() {
+        for permissions in [Permissions::AllowAll, Permissions::AcceptEdits] {
+            let cmd = AgentCommandBuilder::build(
+                &AgentType::OhMyCodex,
+                "",
+                false,
+                true,
+                permissions,
+                None,
+            );
+            assert_eq!(cmd.binary, "omx");
+            assert!(
+                cmd.args.contains(&"--yolo".to_string()),
+                "omx interactive {:?} must be yolo, got {:?}",
+                permissions,
+                cmd.args
+            );
+        }
+        let default = AgentCommandBuilder::build(
+            &AgentType::OhMyCodex,
+            "",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(
+            default.args,
+            vec!["--direct".to_string()],
+            "omx interactive must always launch direct (no detached tmux)"
+        );
+    }
+
+    #[test]
+    fn test_omc_permissions_add_madmax_in_both_modes() {
+        let interactive = AgentCommandBuilder::build(
+            &AgentType::OhMyClaude,
+            "",
+            false,
+            true,
+            Permissions::AllowAll,
+            None,
+        );
+        assert_eq!(interactive.binary, "omc");
+        assert_eq!(
+            interactive.args,
+            vec!["launch".to_string(), "--madmax".to_string()]
+        );
+
+        let headless = AgentCommandBuilder::build(
+            &AgentType::OhMyClaude,
+            "do it",
+            false,
+            false,
+            Permissions::AllowAll,
+            None,
+        );
+        assert_eq!(headless.binary, "sh");
+        assert_eq!(
+            &headless.args[3..7],
+            &["omc", "--madmax", "ask", "claude"],
+            "omc headless must put --madmax before the subcommand, got {:?}",
+            headless.args
+        );
+
+        let default = AgentCommandBuilder::build(
+            &AgentType::OhMyClaude,
+            "do it",
+            false,
+            false,
+            Permissions::Default,
+            None,
+        );
+        assert_eq!(
+            &default.args[3..6],
+            &["omc", "ask", "claude"],
+            "omc default headless must not add --madmax, got {:?}",
+            default.args
+        );
+    }
+
+    #[test]
+    fn test_oh_my_openagent_permissions_add_preset() {
+        let allow = AgentCommandBuilder::build(
+            &AgentType::OhMyOpenAgent,
+            "",
+            false,
+            true,
+            Permissions::AllowAll,
+            None,
+        );
+        assert_eq!(
+            allow.args,
+            vec!["--permission-preset".to_string(), "full-access".to_string()]
+        );
+
+        let accept = AgentCommandBuilder::build(
+            &AgentType::OhMyOpenAgent,
+            "",
+            false,
+            true,
+            Permissions::AcceptEdits,
+            None,
+        );
+        assert_eq!(
+            accept.args,
+            vec![
+                "--permission-preset".to_string(),
+                "accept-edits".to_string()
+            ]
+        );
+
+        let default = AgentCommandBuilder::build(
+            &AgentType::OhMyOpenAgent,
+            "",
+            false,
+            true,
+            Permissions::Default,
+            None,
+        );
+        assert!(
+            default.args.is_empty(),
+            "omO default interactive must stay bare, got {:?}",
+            default.args
+        );
+
+        let headless_allow = AgentCommandBuilder::build(
+            &AgentType::OhMyOpenAgent,
+            "do it",
+            false,
+            false,
+            Permissions::AllowAll,
+            None,
+        );
+        assert!(
+            headless_allow
+                .args
+                .windows(2)
+                .any(|w| w == ["--permission-preset".to_string(), "full-access".to_string()]),
+            "omO headless allow-all must pass full-access, got {:?}",
+            headless_allow.args
+        );
     }
 }

@@ -42,7 +42,8 @@
         "registry": { "type": "array", "items": { "$ref": "#/$defs/RegistrySpec" } },
         "stat_virtualization": { "enum": ["strict", "relaxed", "off"] },
         "security_profile": { "enum": ["default", "restricted"] },
-        "security": { "$ref": "#/$defs/SecurityContext" }
+        "security": { "$ref": "#/$defs/SecurityContext" },
+        "agent_config": { "type": "object", "additionalProperties": { "type": "string" } }
       },
       "required": ["image"],
       "additionalProperties": false

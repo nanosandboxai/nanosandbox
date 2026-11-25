@@ -127,6 +127,11 @@ impl ModelsRegistry {
             Some(m) => m,
             None => return Ok(()), // Unknown agent type — skip validation
         };
+        // An agent entry with an empty model list must not reject every model:
+        // an empty catalog means "no constraint", not "no valid models".
+        if models.is_empty() {
+            return Ok(());
+        }
         if models.iter().any(|m| m == model) {
             Ok(())
         } else {
@@ -225,6 +230,15 @@ agents:
     fn test_validate_unknown_agent_type_skips() {
         let registry = test_registry();
         assert!(registry.validate("unknown-agent", "any-model").is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_model_list_skips() {
+        // An agent entry with an empty model list must not reject every model.
+        let registry =
+            ModelsRegistry::from_json(r#"{"version":1,"agents":{"oh-my-codex":{"models":[]}}}"#)
+                .expect("should parse");
+        assert!(registry.validate("oh-my-codex", "any-model").is_ok());
     }
 
     #[test]

@@ -8,9 +8,15 @@ prompts. Use it to try the `nanosb` TUI yourself.
 
 | File | Purpose |
 |------|---------|
-| `sandbox.yml` | 10 sandboxes across all 8 agent types with different skill/MCP combos |
+| `sandbox.yml` | 13 sandboxes across all 11 agent types with different skill/MCP combos |
 | `sample.env` | API keys / tokens, loaded by the sandboxes via `env_file:` (edit it first) |
 | `data/` | host directory for the read-only mount example (`claude-net-mounts`) |
+| `omo-interactive/` | standalone interactive oh-my-openagent (OmO) panel; sets its model via `agent_config` + a model profile (see its `sandbox.yml`) |
+
+`omo-interactive/` is a separate directory on purpose: launch the TUI from there
+(`cd examples/sandboxes/omo-interactive && nanosb`) and it opens OmO's own
+interactive TUI with the OpenRouter model configured inline through
+`agent_config` (`.omo/omo.jsonc` + `.omo/agent/settings.json`).
 
 ## Run it
 
@@ -56,6 +62,9 @@ In the TUI, inspect what each sandbox resolved with the slash commands:
 | `gemini-docs` | gemini | writing-skills, research-documentation, doc-coauthoring | time | docs-focused |
 | `crush-review` | crush | github-pr-review, requesting-code-review, receiving-code-review | github | needs GITHUB token |
 | `claude-net-mounts` | claude | tool-design, mcp-builder | postgres | network + read-only mount |
+| `oh-my-openagent-scan` | oh-my-openagent | — | — | headless, auto-mode, OpenAI key |
+| `oh-my-codex-refactor` | oh-my-codex | — | — | headless, auto-mode, OpenAI/Codex key |
+| `oh-my-claude-audit` | oh-my-claude | — | — | headless, auto-mode, Anthropic key |
 
 ## Notes
 

@@ -335,23 +335,42 @@ async fn test_interactive_tty_roundtrip() {
 /// Interactive mode launches the **real agent command** (no shell override).
 ///
 /// Unlike [`test_interactive_tty_roundtrip`] (which overrides the command with
-/// `/bin/sh` to probe the PTY), this boots with `agent_type = Claude` and no
+/// `/bin/sh` to probe the PTY), this boots with a real agent type and no
 /// command override, so `spawn_supervisor_panel` runs the command built by
-/// `AgentCommandBuilder` (bare `claude`, interactive) over the exec-agent PTY.
-/// It asserts the agent produced output — i.e. the real agent command actually
-/// launched and rendered on the PTY.
+/// `AgentCommandBuilder` over the exec-agent PTY. It asserts the agent produced
+/// output — i.e. the real agent command actually launched and rendered.
 ///
-/// Requires an agent image with the `claude` binary on PATH:
-///   NANOSB_TEST_AGENT_IMAGE=localhost:5050/claude:latest \
+/// `NANOSB_TEST_AGENT_TYPE` selects the agent type (default `claude`), so the
+/// same test covers the `oh-my-*` agents (`oh-my-openagent`, `oh-my-codex`,
+/// `oh-my-claude`) with their respective images. Pre-pull the image with
+/// `nanosb pull` so the pull time does not count against the test deadline.
+///
+///   NANOSB_TEST_AGENT_IMAGE=ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:rc1 \
+///   NANOSB_TEST_AGENT_TYPE=oh-my-codex \
 ///   NANOSB_BINARY_PATH="$PWD/target/debug/nanosb" \
 ///   cargo test -p nanosb-cli tui::vm_test::test_interactive_launches_agent_command -- --ignored --nocapture
 #[tokio::test]
 #[ignore]
 async fn test_interactive_launches_agent_command() {
     let Ok(image) = std::env::var("NANOSB_TEST_AGENT_IMAGE") else {
-        eprintln!("skipped: set NANOSB_TEST_AGENT_IMAGE=<agent image with `claude`> to run");
+        eprintln!("skipped: set NANOSB_TEST_AGENT_IMAGE=<agent image> to run");
         return;
     };
+    let agent_type = std::env::var("NANOSB_TEST_AGENT_TYPE")
+        .unwrap_or_else(|_| "claude".to_string())
+        .parse::<sandbox::AgentType>()
+        .expect("NANOSB_TEST_AGENT_TYPE must be a valid agent type");
+    // The oh-my-* agents have blocking credential validation, so a dummy key is
+    // needed for /add to create the panel at all. The agent still launches and
+    // prints its own auth error, which is enough to prove the command ran.
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CODEX_API_KEY",
+    ] {
+        std::env::set_var(key, "test-key");
+    }
     let name = format!("tui-agent-cmd-test-{}", std::process::id());
 
     let mut config = AgentSandboxConfig::builder()
@@ -362,7 +381,7 @@ async fn test_interactive_launches_agent_command() {
         .timeout_secs(600)
         .build();
     config.interactive = true;
-    config.agent_type = Some(sandbox::AgentType::Claude);
+    config.agent_type = Some(agent_type);
     // No `config.sandbox.command` override: the real agent command runs.
 
     let mut app = App::new();

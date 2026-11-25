@@ -52,6 +52,11 @@ impl SkillsGenerator {
             AgentType::Aider => Self::generate_aider(skills, agent_name, prompt),
             AgentType::Gemini => Self::generate_gemini(skills, agent_name, prompt),
             AgentType::Crush => Self::generate_crush(skills, agent_name, prompt),
+            AgentType::OhMyOpenAgent | AgentType::OhMyCodex | AgentType::OhMyClaude => {
+                // No native skills config is delivered for this agent in MVP;
+                // skills handling is deferred.
+                Vec::new()
+            }
         }
     }
 
@@ -572,6 +577,29 @@ mod tests {
         // Even with empty skills, we still get the prompt file
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "claude/CLAUDE.md");
+    }
+
+    #[test]
+    fn test_generate_oh_my_agents_has_no_skills() {
+        // Oh My agents defer skills handling in MVP, so no skills files are written.
+        let skills = sample_skills();
+        for agent_type in [
+            AgentType::OhMyOpenAgent,
+            AgentType::OhMyCodex,
+            AgentType::OhMyClaude,
+        ] {
+            let files = SkillsGenerator::generate_all(
+                &skills,
+                &agent_type,
+                "python-dev",
+                "You are a Python dev.",
+            );
+            assert!(
+                files.is_empty(),
+                "{:?} must not get skills files in MVP",
+                agent_type
+            );
+        }
     }
 
     #[test]

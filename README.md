@@ -118,11 +118,13 @@ Notes:
   `sandbox.yml` and is applied by redeploying (`nanosb apply`). There is no
   in-TUI hot-reload.
 - `/add` validates that the agent has the credentials it needs before it
-  creates the sandbox. Validation is **advisory** for agents that support
-  browser sign-in (all built-in agents): a missing variable is shown as a hint
-  but the agent still starts and signs in through the auto-opened browser URL.
-  Agents without a browser sign-in path are blocked, so they cannot start and
-  immediately exit with code 1. See
+  creates the sandbox. Validation is **advisory** for the built-in agents that
+  support browser sign-in: a missing variable is shown as a hint but the agent
+  still starts and signs in through the auto-opened browser URL. Agents without
+  a browser sign-in path are blocked, so they cannot start and immediately exit
+  with code 1. This includes the three `oh-my-*` agents (`oh-my-openagent`,
+  `oh-my-codex`, `oh-my-claude`), which have no browser sign-in and are blocked
+  when their API key is missing. See
   [Prerequisite validation](https://nanosandboxai.github.io/docs/cli/tui-mode#prerequisite-validation)
   for the per-agent requirements and the browser sign-in hosts.
 - When the TUI opens a browser sign-in URL that carries a `localhost` OAuth
@@ -136,7 +138,7 @@ Notes:
 # Add panel and import selected startup env keys
 /add claude --use-env OPENAI_API_KEY --use-env GITHUB_TOKEN
 
-# Supported agents: claude, codex, goose, cursor, opencode, aider, gemini, crush
+# Supported agents: claude, codex, goose, cursor, opencode, aider, gemini, crush, oh-my-openagent, oh-my-codex, oh-my-claude
 # Interactive (the default): opens the agent's TUI
 /add opencode
 # Headless (auto-approved run): --headless (or the alias --auto-mode) with -p
@@ -399,10 +401,48 @@ sandboxes:
     image: crush
     auto_mode: true
     prompt: "Add tests for the parser and run them."
+
+  oh-my-openagent:
+    type: oh-my-openagent
+    image: oh-my-openagent
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    auto_mode: true
+    prompt: "Scan the project in /home/developer for TODOs."
+    agent_config:
+      .omo/omo.jsonc: |
+        {
+          "[native]": {
+            "model_profile": "anthropic/claude-sonnet-4-5",
+            "categories": { "default": { "model": "anthropic/claude-sonnet-4-5" } }
+          }
+        }
+      .omo/agent/settings.json: |
+        {
+          "defaultProvider": "anthropic",
+          "defaultModel": "claude-sonnet-4-5"
+        }
+
+  oh-my-codex:
+    type: oh-my-codex
+    image: oh-my-codex
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    auto_mode: true
+    prompt: "Refactor the module in /home/developer."
+
+  oh-my-claude:
+    type: oh-my-claude
+    image: oh-my-claude
+    env:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    auto_mode: true
+    prompt: "Audit the codebase in /home/developer."
 ```
 
 Bare agent image names (`claude`, `codex`, `goose`, `cursor`, `opencode`,
-`aider`, `gemini`, `crush`) are automatically resolved to
+`aider`, `gemini`, `crush`, `oh-my-openagent`, `oh-my-codex`,
+`oh-my-claude`) are automatically resolved to
 `ghcr.io/nanosandboxai/nanosandbox/<name>:latest`; any other bare name
 resolves to the matching Docker Hub library image.
 
@@ -417,6 +457,16 @@ servers, `network`, `mounts`, `project`, `claude`, `workspace`), unknown
 `skills` are rejected when an agents registry is available, and an unknown or
 invalid `model` fails fast with a clear error. The model catalog is compiled
 into the binary and can be overridden at `~/.nanosandbox/models.json`.
+
+`agent_config` injects agent-native config files inline, so a sandbox can run
+with a different model or provider set without editing host state dirs or
+baking a custom image. Keys are guest-relative paths under the agent's state
+dirs (for example `.omo/omo.jsonc` for OmO); values are the raw file body,
+written verbatim into the guest. It is available on `defaults` and per-sandbox,
+with per-sandbox entries overriding `defaults` per key. `agent_config` is for
+non-secret settings only: secrets belong in `env:`/`secrets`, which are
+encrypted and never written to disk. See
+[`sandbox/README.md`](sandbox/README.md) for the full field reference.
 
 ### Interactive agent panels
 
@@ -445,7 +495,7 @@ as `nanosb exec --tty`).
 
 ### Supported agents
 
-Nanosandbox ships images for eight agent CLIs in
+Nanosandbox ships images for eleven agent CLIs in
 `ghcr.io/nanosandboxai/nanosandbox/`. At boot, nanosb runs the agent's CLI
 inside the VM with the invocation below (bare when interactive, with the listed
 flags when headless). API keys are injected from the panel environment via
@@ -461,15 +511,44 @@ flags when headless). API keys are injected from the panel environment via
 | Aider | `.../aider:latest` | `aider` | `aider --message <prompt> --yes --no-auto-commits` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
 | Gemini CLI | `.../gemini:latest` | `gemini` | `gemini -p <prompt>` | `GEMINI_API_KEY` (required) |
 | Crush | `.../crush:latest` | `crush` | `crush run <prompt>` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
+| Oh-My-OpenAgent (OmO) | `.../oh-my-openagent:latest` | `omo` | `omo -p --no-session "<prompt>"` | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY` (any one) |
+| Oh-My-Codex (OMX) | `.../oh-my-codex:latest` | `omx --direct` | `omx exec --skip-git-repo-check --json "<prompt>"` | `OPENAI_API_KEY` or `CODEX_API_KEY` (either) |
+| Oh-My-Claude (OMC) | `.../oh-my-claude:latest` | `omc launch` | `omc ask claude "<prompt>"` | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (either) |
 
 Image references above are shorthand for
-`ghcr.io/nanosandboxai/nanosandbox/<name>:latest`. Permission flags are
-added per agent rather than globally: `allow-all` (or auto-mode) adds
-`--dangerously-skip-permissions` for claude, `--dangerously-bypass-approvals-and-sandbox`
-for codex, `--auto` for opencode, `--approval-mode yolo` for gemini, and
-`--force` (plus `--trust --approve-mcps` in auto-mode) for cursor; goose instead
-sets the `GOOSE_MODE` env var (`auto` for allow-all, `smart_approve` for
-accept-edits); crush adds `--yolo` to its interactive TUI under allow-all.
+`ghcr.io/nanosandboxai/nanosandbox/<name>:latest`. Permission flags are added
+per agent rather than globally, and apply in **both** interactive and headless
+modes unless noted:
+
+- **Claude** — `--dangerously-skip-permissions` (allow-all) /
+  `--permission-mode acceptEdits` (accept-edits)
+- **Codex** — `--dangerously-bypass-approvals-and-sandbox` (allow-all);
+  `-a on-request -s workspace-write` (accept-edits, interactive); headless
+  accept-edits uses the bypass flag
+- **Goose** — `GOOSE_MODE` env var (`auto` for allow-all, `smart_approve` for
+  accept-edits)
+- **Cursor** — `--force` (allow-all; plus `--trust --approve-mcps` in
+  auto-mode); `--trust` under accept-edits auto-mode
+- **OpenCode** — `--auto` (allow-all)
+- **Aider** — `--yes-always` in interactive mode under allow-all and
+  accept-edits (headless always passes `--yes`)
+- **Gemini** — `--approval-mode yolo` (allow-all) / `--approval-mode auto_edit`
+  (accept-edits)
+- **Crush** — `--yolo` (allow-all)
+- **OmO** — `--permission-preset full-access` (allow-all) /
+  `--permission-preset accept-edits` (accept-edits)
+- **OMX** — `--yolo` (interactive) /
+  `--dangerously-bypass-approvals-and-sandbox` (headless), under allow-all and
+  accept-edits
+- **OMC** — `--madmax` (interactive and headless), under allow-all and
+  accept-edits
+
+Unlike the built-in agents, the `oh-my-*` agents have no browser sign-in and no
+generated MCP or skills config (MCP/skills delivery is deferred for them).
+
+Interactive OMX launches with `omx --direct`: the panel already owns the PTY, and
+OMX's default detached tmux leader fails its authority handshake under the
+sandbox (`malformed detached leader authority`).
 
 ### Reviewing and applying agent changes
 
@@ -494,8 +573,9 @@ clones.
 
 Other TUI commands: `/logs [n]` (console tail), `/stop [n|name]` (stop a
 sandbox, keep the panel), `/restart [n|name]` (re-boot it in place),
-`/pause` and `/resume` (freeze/thaw a running sandbox), `/exec <cmd>` (run in
-an exec-channel sandbox),
+`/reconnect` (re-attach the panel's terminal; if the sandbox stopped, redeploy
+it from its saved config first), `/pause` and `/resume` (freeze/thaw a running
+sandbox), `/exec <cmd>` (run in an exec-channel sandbox),
 `/mounts`, and `/apply` (fast-forward-merge `refs/nanosb/<id>` into your
 branch). Registered projects can be listed and switched with `/projects` and
 `/project <n|path>` — panels from different projects coexist in one TUI.

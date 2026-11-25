@@ -13,7 +13,9 @@ use tokio::sync::mpsc;
 use super::app::{AgentPanel, App, ChatMessage, MessageRole, PanelMode};
 use super::commands::{self, Command, ParseResult};
 use super::event::AppEvent;
-use super::run::{handle_command, handle_event, resolve_agent_configs};
+use super::run::{
+    handle_command, handle_event, plan_reconnect, resolve_agent_configs, ReconnectPlan,
+};
 use super::terminal::SshTerminal;
 use super::theme::ThemeName;
 
@@ -716,6 +718,191 @@ async fn handler_add_pushes_panel() {
 }
 
 #[tokio::test]
+async fn handler_add_propagates_model_into_deploy_plan() {
+    ensure_test_agent_env();
+    let mut app = App::new();
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    handle_command(
+        &mut app,
+        Command::AddAgent {
+            agent: "claude".into(),
+            image: None,
+            tag: None,
+            project: None,
+            branch: None,
+            name: None,
+            auto_mode: false,
+            interactive: true,
+            prompt: None,
+            model: Some("claude-sonnet-4-5-20250929".into()),
+            use_env: vec![],
+            env_file: None,
+            run_as_root: false,
+            timeout: None,
+            permissions: None,
+        },
+        &tx,
+    )
+    .await;
+
+    assert_eq!(app.panels.len(), 1, "should have 1 panel");
+    assert_eq!(
+        app.panels[0].model.as_deref(),
+        Some("claude-sonnet-4-5-20250929"),
+        "panel must record the requested model"
+    );
+
+    let config = app.panels[0]
+        .original_config
+        .clone()
+        .expect("add_agent must persist the built sandbox config");
+    assert_eq!(
+        config.model.as_deref(),
+        Some("claude-sonnet-4-5-20250929"),
+        "/add --model must reach the deploy config, not only the panel"
+    );
+
+    let sandbox_dir = std::env::temp_dir().join(format!(
+        "nanosb-tui-model-propagation-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&sandbox_dir);
+    let (plan, _rc) = crate::deploy::deploy_plan_for(&config, &sandbox_dir)
+        .expect("deploy plan must build for the /add config");
+    assert!(
+        plan.agent_command.args.iter().any(|a| a == "--model"),
+        "claude must receive --model, got {:?}",
+        plan.agent_command.args
+    );
+    assert!(
+        plan.agent_command
+            .args
+            .iter()
+            .any(|a| a == "claude-sonnet-4-5-20250929"),
+        "deploy plan must forward the model id to the agent CLI, got {:?}",
+        plan.agent_command.args
+    );
+    let _ = std::fs::remove_dir_all(&sandbox_dir);
+}
+
+#[tokio::test]
+async fn handler_add_propagates_env_into_sandbox_config() {
+    ensure_test_agent_env();
+    let mut app = App::new();
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    // Sentinel key in the runtime env pool must reach the sandbox config env.
+    app.runtime_env_pool.insert(
+        "OPENROUTER_API_KEY".to_string(),
+        "sk-or-test-sentinel".to_string(),
+    );
+
+    handle_command(
+        &mut app,
+        Command::AddAgent {
+            agent: "claude".into(),
+            image: None,
+            tag: None,
+            project: None,
+            branch: None,
+            name: None,
+            auto_mode: false,
+            interactive: true,
+            prompt: None,
+            model: None,
+            use_env: vec![],
+            env_file: None,
+            run_as_root: false,
+            timeout: None,
+            permissions: None,
+        },
+        &tx,
+    )
+    .await;
+
+    assert_eq!(app.panels.len(), 1, "should have 1 panel");
+    let config = app.panels[0]
+        .original_config
+        .as_ref()
+        .expect("add_agent must persist the built sandbox config");
+    assert_eq!(
+        config
+            .sandbox
+            .env
+            .get("OPENROUTER_API_KEY")
+            .map(String::as_str),
+        Some("sk-or-test-sentinel"),
+        "panel env must be copied into config.sandbox.env"
+    );
+
+    let sandbox_dir =
+        std::env::temp_dir().join(format!("nanosb-tui-env-propagation-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&sandbox_dir);
+    let (plan, _rc) = crate::deploy::deploy_plan_for(config, &sandbox_dir)
+        .expect("deploy plan must build for the /add config");
+    assert_eq!(
+        plan.env.get("OPENROUTER_API_KEY").map(String::as_str),
+        Some("sk-or-test-sentinel"),
+        "deploy plan env must carry the sentinel key to the VM"
+    );
+    let _ = std::fs::remove_dir_all(&sandbox_dir);
+}
+
+#[tokio::test]
+async fn resume_restores_model_onto_config() {
+    let mut app = App::new();
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    // Simulate a session saved before the fix: the panel recorded the model,
+    // but the persisted config lost it.
+    let mut config = sandbox::AgentSandboxConfig::default();
+    config.sandbox.name = format!("resume-model-{}", std::process::id());
+    config.sandbox.image = "claude".to_string();
+    config.agent_type = Some(sandbox::AgentType::Claude);
+    config.model = None;
+
+    let session = sandbox::session::Session {
+        version: sandbox::session::SESSION_VERSION,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        project_path: std::env::temp_dir(),
+        config_hash: "test".to_string(),
+        panels: vec![sandbox::session::SessionPanel {
+            agent_name: "claude".to_string(),
+            display_name: None,
+            sandbox_short_id: "abcd1234".to_string(),
+            config,
+            clone_path: None,
+            branches: vec![],
+            auto_mode: false,
+            permissions: sandbox::Permissions::Default,
+            agent_type: Some(sandbox::AgentType::Claude),
+            model: Some("claude-sonnet-4-5-20250929".to_string()),
+            prompt: None,
+            env_keys: vec![],
+            visible: true,
+            had_interaction: false,
+            selected_agent_session_id: None,
+        }],
+    };
+
+    super::run::resume_session(&mut app, &session, &tx)
+        .expect("resume_session must accept a saved panel");
+
+    assert_eq!(app.panels.len(), 1, "should resume 1 panel");
+    let resumed = app.panels[0]
+        .original_config
+        .as_ref()
+        .expect("resume must persist the rebuilt config");
+    assert_eq!(
+        resumed.model.as_deref(),
+        Some("claude-sonnet-4-5-20250929"),
+        "resume must restore the saved model onto the config"
+    );
+}
+
+#[tokio::test]
 async fn add_agent_does_not_show_validation_popup() {
     ensure_test_agent_env();
     let mut app = App::new();
@@ -753,7 +940,17 @@ async fn add_agent_does_not_show_validation_popup() {
 }
 
 const ALL_AGENTS: &[&str] = &[
-    "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
+    "claude",
+    "codex",
+    "goose",
+    "cursor",
+    "opencode",
+    "aider",
+    "gemini",
+    "crush",
+    "oh-my-openagent",
+    "oh-my-codex",
+    "oh-my-claude",
 ];
 
 #[tokio::test]
@@ -981,6 +1178,35 @@ async fn handler_reconnect_sets_reconnecting() {
         PanelMode::Loading,
         "panel mode should be Loading"
     );
+}
+
+#[test]
+fn plan_reconnect_without_supervisor_is_no_sandbox() {
+    let panel = AgentPanel::new("claude");
+    assert!(matches!(plan_reconnect(&panel), ReconnectPlan::NoSandbox));
+}
+
+#[test]
+fn plan_reconnect_stopped_sandbox_with_saved_config_restarts() {
+    let mut panel = AgentPanel::new("claude");
+    panel.set_supervisor(format!("reconnect-restart-{}", std::process::id()));
+    let mut config = sandbox::AgentSandboxConfig::default();
+    config.sandbox.name = format!("reconnect-restart-{}", std::process::id());
+    config.sandbox.image = "claude".to_string();
+    panel.original_config = Some(config);
+
+    assert!(
+        matches!(plan_reconnect(&panel), ReconnectPlan::Restart(_)),
+        "a stopped sandbox must be redeployed, not re-attached"
+    );
+}
+
+#[test]
+fn plan_reconnect_stopped_sandbox_without_saved_config_attaches() {
+    let mut panel = AgentPanel::new("claude");
+    panel.set_supervisor(format!("reconnect-noconfig-{}", std::process::id()));
+
+    assert!(matches!(plan_reconnect(&panel), ReconnectPlan::Attach));
 }
 
 #[tokio::test]

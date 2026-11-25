@@ -40,7 +40,7 @@ jobs:
 
       - name: Cache kernel bundle
         id: kernel-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: kernel-aarch64.c
           key: kernel-bundle-aarch64-${{ hashFiles('runtime/deps/libkrunfw/**') }}
@@ -65,7 +65,7 @@ jobs:
           ls -lh ../../../kernel-aarch64.c
 
       - name: Upload kernel bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kernel-bundles
           path: kernel-aarch64.c

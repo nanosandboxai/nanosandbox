@@ -1,0 +1,6 @@
+{
+  "name": "unwired-arg-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": { "omo-ai": "5.1.79" }
+}

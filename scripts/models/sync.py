@@ -36,6 +36,11 @@ CATALOG = REPO / "registries" / "models" / "models.json"
 PROVIDER_CATALOG = REPO / "registries" / "models" / "provider-catalog.json"
 README = REPO / "registries" / "README.md"
 
+# Agents whose model list is delegated to a sibling agent's catalog. AGENTS
+# order puts each delegating agent after its sibling, so the sibling is already
+# in ``agents`` when the delegation runs.
+DELEGATE_MODELS = {"oh-my-codex": "codex", "oh-my-claude": "claude"}
+
 
 def build(offline: bool) -> tuple[dict, dict[str, str]]:
     """Assemble the v2 catalog from the adapters. Returns (data, notes)."""
@@ -56,6 +61,8 @@ def build(offline: bool) -> tuple[dict, dict[str, str]]:
             if model not in seen:
                 seen.add(model)
                 models.append(model)
+        if not models and agent in DELEGATE_MODELS and DELEGATE_MODELS[agent] in agents:
+            models = list(agents[DELEGATE_MODELS[agent]]["models"])
         agents[agent] = {
             "models": models,
             "providers": providers.providers_for(agent, models),

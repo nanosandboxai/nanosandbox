@@ -30,7 +30,23 @@ AGENTS = (
     "aider",
     "gemini",
     "crush",
+    "oh-my-openagent",
+    "oh-my-codex",
+    "oh-my-claude",
 )
+
+# Agent ids contain hyphens, which are not valid Python module names. Map each
+# hyphenated agent id to its underscore module name.
+MODULE_ALIASES = {
+    "oh-my-openagent": "oh_my_openagent",
+    "oh-my-codex": "oh_my_codex",
+    "oh-my-claude": "oh_my_claude",
+}
+
+
+def module_name(agent: str) -> str:
+    return MODULE_ALIASES.get(agent, agent)
+
 
 TIMEOUT = 5
 
@@ -69,12 +85,12 @@ def make_snapshot(
 
 
 def strict_providers(agent: str) -> frozenset[str]:
-    module = importlib.import_module(f".{agent}", __name__)
+    module = importlib.import_module(f".{module_name(agent)}", __name__)
     return frozenset(getattr(module, "STRICT_PROVIDERS", ()))
 
 
 def fetch_agent(agent: str, current_models: list[str], offline: bool = False) -> dict:
-    module = importlib.import_module(f".{agent}", __name__)
+    module = importlib.import_module(f".{module_name(agent)}", __name__)
     if offline:
         return module.snapshot(current_models)
     return module.fetch(current_models)

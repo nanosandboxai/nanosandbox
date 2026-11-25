@@ -1,0 +1,41 @@
+ARG BASE_IMAGE=ghcr.io/nanosandboxai/nanosandbox/base:latest
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.description="oh-my-codex (OMX) agent for nanosandbox sandboxes"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Pinned via registries/docker/package.json (Dependabot-managed).
+ARG OMX_VERSION=0.22.15
+ARG CODEX_VERSION=0.169.0
+
+# OMX drives the Codex CLI, shells out to `ps` (statusline/reaper) and uses
+# tmux for its durable team runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends procps tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install OMX plus its underlying Codex CLI. Codex needs its platform-specific
+# native binary installed explicitly: buildx multi-arch builds under QEMU skip
+# optional deps whose cpu/os constraints don't match detection, leaving runtime
+# broken with "Missing optional dependency @openai/codex-linux-x64". Same alias
+# form as registries/docker/Dockerfile.codex.
+RUN npm install -g "oh-my-codex@${OMX_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+    && ARCH="$(uname -m)" \
+    && case "$ARCH" in \
+         x86_64)  PLATFORM="linux-x64" ;; \
+         aarch64) PLATFORM="linux-arm64" ;; \
+         *) echo "Unsupported arch for codex: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && npm install -g "@openai/codex-${PLATFORM}@npm:@openai/codex@${CODEX_VERSION}-${PLATFORM}" \
+    && npm cache clean --force
+
+# QEMU materializes /usr/local/bin/codex as a regular file copy instead of a
+# symlink to the module's bin/codex.js, so createRequire cannot resolve the
+# sibling global package. Use an exec wrapper (same fix as Dockerfile.codex).
+RUN CODEX_JS="/usr/local/lib/node_modules/@openai/codex/bin/codex.js" \
+    && test -f "$CODEX_JS" \
+    && rm -f /usr/local/bin/codex \
+    && printf '#!/bin/sh\nexec node %s "$@"\n' "$CODEX_JS" > /usr/local/bin/codex \
+    && chmod +x /usr/local/bin/codex
+
+RUN omx --version && codex --version && tmux -V && echo "oh-my-codex: OK"

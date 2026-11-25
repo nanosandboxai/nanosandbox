@@ -39,8 +39,10 @@ static CATALOG: OnceLock<ProviderCatalog> = OnceLock::new();
 
 fn catalog() -> &'static ProviderCatalog {
     CATALOG.get_or_init(|| {
-        serde_json::from_str(include_str!("../../../../registries/models/provider-catalog.json"))
-            .expect("embedded provider catalog must parse")
+        serde_json::from_str(include_str!(
+            "../../../../registries/models/provider-catalog.json"
+        ))
+        .expect("embedded provider catalog must parse")
     })
 }
 
@@ -86,11 +88,7 @@ fn normalize_segment(segment: &str) -> String {
 /// map, and falls back to the normalized segment when unknown.
 pub fn canonical(segment: &str) -> String {
     let norm = normalize_segment(segment);
-    catalog()
-        .canonical
-        .get(&norm)
-        .cloned()
-        .unwrap_or(norm)
+    catalog().canonical.get(&norm).cloned().unwrap_or(norm)
 }
 
 /// The outcome of resolving a model id for an agent.
@@ -229,9 +227,12 @@ pub fn goose_provider(model: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const AGENTS: [&str; 8] = [
-        "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
-    ];
+    fn agents() -> Vec<&'static str> {
+        crate::config::AgentType::ALL
+            .iter()
+            .map(|a| a.as_str())
+            .collect()
+    }
 
     /// Union of keys from `nanosb_cli::validation::agent_requirements(agent)`,
     /// mirrored here because the `sandbox` crate cannot depend on `nanosb-cli`.
@@ -315,6 +316,9 @@ mod tests {
                 "AWS_SECRET_ACCESS_KEY",
                 "GOOGLE_APPLICATION_CREDENTIALS",
             ],
+            "oh-my-openagent" => vec!["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+            "oh-my-codex" => vec!["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "oh-my-claude" => vec!["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
             _ => vec![],
         }
     }
@@ -351,13 +355,16 @@ mod tests {
                 "OPENROUTER_API_KEY",
             ],
             "cursor" => vec!["CURSOR_API_KEY"],
+            "oh-my-openagent" => vec!["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+            "oh-my-codex" => vec!["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "oh-my-claude" => vec!["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
             _ => vec![],
         }
     }
 
     #[test]
     fn accepted_keys_agree_with_agent_requirements() {
-        for agent in AGENTS {
+        for agent in agents() {
             let accepted = accepted_keys(agent);
             let req = req_keys(agent);
             // req - accepted ⊆ {GOOSE_PROVIDER, GOOSE_MODEL}
@@ -381,7 +388,7 @@ mod tests {
 
     #[test]
     fn every_provider_resolves() {
-        for agent in AGENTS {
+        for agent in agents() {
             let no_env = catalog().agents[agent].no_env.clone();
             for p in providers_for(agent) {
                 let creds = credentials(&p);
@@ -397,7 +404,7 @@ mod tests {
     fn every_prefixed_model_resolves() {
         let registry = crate::config::models::ModelsRegistry::load()
             .expect("built-in models catalog should load");
-        for agent in AGENTS {
+        for agent in agents() {
             for m in registry.models_for(agent) {
                 if !m.contains('/') {
                     continue;
@@ -426,7 +433,7 @@ mod tests {
 
     #[test]
     fn required_api_keys_subset_of_accepted() {
-        for agent in AGENTS {
+        for agent in agents() {
             let accepted = accepted_keys(agent);
             for k in required_api_keys(agent) {
                 assert!(

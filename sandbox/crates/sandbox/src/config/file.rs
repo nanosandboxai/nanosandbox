@@ -65,6 +65,8 @@ pub struct SandboxDefaults {
     pub workspace: Option<WorkspaceDef>,
     /// Working directory for the guest command (default: the guest home).
     pub workdir: Option<String>,
+    /// Inline agent-native config files (guest-relative keys, verbatim bodies).
+    pub agent_config: Option<HashMap<String, String>>,
 }
 
 /// Per-sandbox definition — same fields as defaults plus a name override.
@@ -114,6 +116,8 @@ pub struct SandboxDefinition {
     pub workspace: Option<WorkspaceDef>,
     /// Working directory for the guest command (default: the guest home).
     pub workdir: Option<String>,
+    /// Inline agent-native config files (guest-relative keys, verbatim bodies).
+    pub agent_config: Option<HashMap<String, String>>,
 }
 
 /// Host project sharing mode in YAML.
@@ -535,6 +539,32 @@ pub fn resolve_sandbox_configs(
                     .map_err(|e| format!("Sandbox '{}': {}", key, e))?,
             );
         }
+
+        // Agent config: defaults then per-sandbox (per-sandbox wins per key).
+        // Requires a resolved `type:` so paths can be validated against the
+        // agent's allowed state dirs.
+        let mut agent_config_map = HashMap::new();
+        if let Some(ref defaults_ac) = defaults.agent_config {
+            for (k, v) in defaults_ac {
+                agent_config_map.insert(k.clone(), v.clone());
+            }
+        }
+        if let Some(ref def_ac) = def.agent_config {
+            for (k, v) in def_ac {
+                agent_config_map.insert(k.clone(), v.clone());
+            }
+        }
+        if !agent_config_map.is_empty() {
+            let agent_type = agent_config.agent_type.ok_or_else(|| {
+                format!(
+                    "Sandbox '{}': 'agent_config' requires a resolved 'type:' (agent type)",
+                    key
+                )
+            })?;
+            crate::deploy::validate_agent_config(&agent_config_map, agent_type)
+                .map_err(|e| format!("Sandbox '{}': {}", key, e))?;
+        }
+        agent_config.agent_config = agent_config_map;
 
         // Model: per-sandbox overrides defaults.
         agent_config.model = def.model.clone().or_else(|| defaults.model.clone());
@@ -1661,6 +1691,131 @@ sandboxes:
         commmand: npx
 "#;
         assert!(parse_sandbox_file(yaml).is_err());
+    }
+
+    #[test]
+    fn test_yaml_agent_config_parses_on_defaults_and_sandbox() {
+        let yaml = r#"
+defaults:
+  image: base:latest
+  agent_config:
+    .omo/omo.jsonc: |
+      {"categories": {"default": {"model": "a"}}}
+sandboxes:
+  test:
+    type: oh-my-openagent
+    agent_config:
+      .claude/settings.json: |
+        {"theme": "dark"}
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        assert_eq!(
+            file.defaults.agent_config.as_ref().unwrap()[".omo/omo.jsonc"],
+            "{\"categories\": {\"default\": {\"model\": \"a\"}}}\n"
+        );
+        assert_eq!(
+            file.sandboxes["test"].agent_config.as_ref().unwrap()[".claude/settings.json"],
+            "{\"theme\": \"dark\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_yaml_agent_config_merges_defaults_then_sandbox() {
+        let yaml = r#"
+defaults:
+  image: base:latest
+  agent_config:
+    .omc/config.json: from-defaults
+    .claude/settings.json: from-defaults
+sandboxes:
+  test:
+    type: oh-my-claude
+    agent_config:
+      .claude/settings.json: from-sandbox
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let configs = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap();
+        let ac = &configs[0].1.agent_config;
+        assert_eq!(ac[".omc/config.json"], "from-defaults");
+        assert_eq!(ac[".claude/settings.json"], "from-sandbox");
+    }
+
+    #[test]
+    fn test_yaml_agent_config_requires_type() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: base:latest
+    agent_config:
+      .omo/omo.jsonc: "{}"
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("requires a resolved 'type:'"), "got: {err}");
+    }
+
+    #[test]
+    fn test_yaml_agent_config_rejects_traversal_key() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: base:latest
+    type: oh-my-openagent
+    agent_config:
+      ../escape: "{}"
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains(".."), "got: {err}");
+    }
+
+    #[test]
+    fn test_yaml_agent_config_rejects_outside_prefix() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: base:latest
+    type: oh-my-openagent
+    agent_config:
+      /etc/passwd: "{}"
+"#;
+        let file = parse_sandbox_file(yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("relative to the guest home"), "got: {err}");
+    }
+
+    #[test]
+    fn test_yaml_agent_config_rejects_oversized_file() {
+        let big = "x".repeat(256 * 1024 + 1);
+        let yaml = format!(
+            r#"
+sandboxes:
+  test:
+    image: base:latest
+    type: oh-my-openagent
+    agent_config:
+      .omo/big.json: "{}"
+"#,
+            big
+        );
+        let file = parse_sandbox_file(&yaml).unwrap();
+        let err = resolve_sandbox_configs(&file, std::path::Path::new("/tmp")).unwrap_err();
+        assert!(err.contains("256 KiB"), "got: {err}");
+    }
+
+    #[test]
+    fn test_yaml_agent_config_unknown_field_still_rejected() {
+        let yaml = r#"
+sandboxes:
+  test:
+    image: base:latest
+    type: oh-my-openagent
+    agent_config:
+      .omo/omo.jsonc: "{}"
+    agent_configg: {}
+"#;
+        let err = parse_sandbox_file(yaml).unwrap_err();
+        assert!(err.contains("agent_configg"), "got: {err}");
     }
 
     #[test]

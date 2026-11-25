@@ -84,9 +84,13 @@ reads (Rust `sandbox::providers`, the docs-site configurator, the Python validat
 | aider | 379 | 12 | `aider/models.py` aliases + `model-settings.yml` |
 | gemini | 16 | 1 | Gemini CLI `models.ts` (aliases + IDs) |
 | crush | 1764 | 39 | Crush's Catwalk provider database |
+| oh-my-openagent | 4 | 2 | snapshot |
+| oh-my-codex | 8 | 1 | snapshot |
+| oh-my-claude | 44 | 1 | snapshot |
 
 Four agents (cursor, goose, opencode, crush) expose their catalogs dynamically at runtime,
-so their lists here are point-in-time snapshots rather than fixed allow-lists.
+so their lists here are point-in-time snapshots rather than fixed allow-lists. The three
+`oh-my-*` agents are likewise recorded as point-in-time snapshots.
 
 ### Syncing the catalog
 
@@ -144,7 +148,7 @@ This directory also contains the Docker images for running agents inside nanosan
 ### Image Architecture
 
 ```
-Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
+Dockerfile.base (node:26-slim + minimal system deps + python3/uv)
     |
     ├── Dockerfile.claude   → ghcr.io/nanosandboxai/nanosandbox/claude
     ├── Dockerfile.codex    → ghcr.io/nanosandboxai/nanosandbox/codex
@@ -153,12 +157,15 @@ Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
     ├── Dockerfile.opencode → ghcr.io/nanosandboxai/nanosandbox/opencode
     ├── Dockerfile.aider    → ghcr.io/nanosandboxai/nanosandbox/aider
     ├── Dockerfile.gemini   → ghcr.io/nanosandboxai/nanosandbox/gemini
-    └── Dockerfile.crush    → ghcr.io/nanosandboxai/nanosandbox/crush
+    ├── Dockerfile.crush    → ghcr.io/nanosandboxai/nanosandbox/crush
+    ├── Dockerfile.oh-my-openagent → ghcr.io/nanosandboxai/nanosandbox/oh-my-openagent
+    ├── Dockerfile.oh-my-codex     → ghcr.io/nanosandboxai/nanosandbox/oh-my-codex
+    └── Dockerfile.oh-my-claude    → ghcr.io/nanosandboxai/nanosandbox/oh-my-claude
 ```
 
 ### Base Image Contents
 
-- `node:22-slim` with minimal system deps (curl, ca-certificates, git, bash)
+- `node:26-slim` with minimal system deps (curl, ca-certificates, git, bash)
 - Python 3 + uv/uvx (runtime for Python-based MCP servers like mcp-server-fetch)
 - Pure installation: no user/group, no `/workspace`, no `CMD`/`ENTRYPOINT`
 - No nanosb runtime code: sandbox setup happens at the microVM layer
@@ -175,6 +182,14 @@ Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
 | aider | Aider | `ghcr.io/nanosandboxai/nanosandbox/aider:latest` |
 | gemini | Gemini CLI | `ghcr.io/nanosandboxai/nanosandbox/gemini:latest` |
 | crush | Crush | `ghcr.io/nanosandboxai/nanosandbox/crush:latest` |
+| oh-my-openagent | Oh-My-OpenAgent (OmO) | `ghcr.io/nanosandboxai/nanosandbox/oh-my-openagent:latest` |
+| oh-my-codex | Oh-My-Codex (OMX) | `ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:latest` |
+| oh-my-claude | Oh-My-Claude (OMC) | `ghcr.io/nanosandboxai/nanosandbox/oh-my-claude:latest` |
+
+`latest` is published by the release pipeline on a clean `v*` tag. Between
+releases, CI/`workflow_dispatch` builds publish the semver, `sha-<sha>` and
+optional RC tags (for example `:rc2`), so use an explicit tag until the next
+release exists.
 
 ### Building Locally
 
@@ -183,6 +198,109 @@ cd docker
 docker build -f Dockerfile.base -t base:local .
 docker build -f Dockerfile.claude -t claude:local .
 ```
+
+The `oh-my-*` Dockerfiles (`Dockerfile.oh-my-openagent`,
+`Dockerfile.oh-my-codex`, `Dockerfile.oh-my-claude`) are built the same way,
+each from `Dockerfile.base`:
+
+```bash
+docker build -f Dockerfile.oh-my-openagent -t oh-my-openagent:local .
+docker build -f Dockerfile.oh-my-codex -t oh-my-codex:local .
+docker build -f Dockerfile.oh-my-claude -t oh-my-claude:local .
+```
+
+### CI build and registry publishing
+
+[`.github/workflows/registry-docker-build.yml`](../.github/workflows/registry-docker-build.yml)
+builds and publishes every image to GHCR:
+
+- **Triggers** — pushes to `main` that touch `registries/docker/**`, `v*` tags, and
+  manual `workflow_dispatch` (optionally a single `agent`).
+- **Order** — `base` first, then all eleven agent images in parallel, for
+  `linux/amd64` and `linux/arm64`.
+- **Target** — `ghcr.io/nanosandboxai/nanosandbox/<agent>`. `latest` is pushed only
+  on a clean `v*` tag; other runs publish the semver/sha tags.
+- **Registry-side verification** — each agent leg pulls its own just-pushed digest
+  back from GHCR and runs `<binary> --version`, so a broken published artifact
+  fails the workflow instead of shipping.
+
+To run an agent from the registry instead of a local build:
+
+```bash
+nanosb pull ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:latest
+nanosb run ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:latest
+```
+
+A bare agent name in `sandbox.yml` (`agent: oh-my-codex`) resolves to the same
+`ghcr.io/nanosandboxai/nanosandbox/<name>:latest` reference. The live registry
+E2E suite exercises all eleven agents against GHCR:
+
+```bash
+NANOSB_E2E_TAG=latest cargo test -p runtime --test agents_e2e_test \
+  --features integration-tests -- --ignored --nocapture
+```
+
+### Version updates (Dependabot)
+
+The Dockerfiles install the agent CLIs and pin their versions. For npm-installed
+CLIs the canonical pin lives in [`docker/package.json`](docker/package.json), and
+the build workflow
+([`../.github/workflows/registry-docker-build.yml`](../.github/workflows/registry-docker-build.yml))
+reads those versions and passes them as build-args (`CLAUDE_VERSION`,
+`CODEX_VERSION`, `GEMINI_VERSION`, `CRUSH_VERSION`, `OMO_VERSION`, `OMX_VERSION`,
+`OMC_VERSION`). A break in any link of the pin → manifest → build-arg chain means
+a Dependabot bump never reaches the image.
+
+[`../.github/dependabot.yml`](../.github/dependabot.yml) runs the npm ecosystem
+weekly on `/registries/docker` against `docker/package.json`, with
+`open-pull-requests-limit: 10` (the default of 5 can starve the queue when
+several agent bumps are in flight). Dependabot's npm ecosystem reads only
+`package.json`; it does not see `npm install -g` inside a Dockerfile. The docker
+ecosystem only parses literal `FROM image:tag` lines (it cannot resolve
+`FROM ${BASE_IMAGE}` and ignores `:latest`), so the shared base is tracked
+through [`docker/Dockerfile.base`](docker/Dockerfile.base)'s `FROM node:26-slim`.
+
+| Image | Version source | Version updates |
+|-------|----------------|-----------------|
+| claude, codex, gemini, crush, oh-my-openagent, oh-my-codex, oh-my-claude | `docker/package.json` (npm) | Dependabot (npm ecosystem, weekly) |
+| aider | PyPI `aider-chat`, installed with `uv tool` | Manual |
+| goose | GitHub release tarball | Manual |
+| opencode | curl installer with `--version` | Manual |
+| cursor | curl installer, unpinned | Manual |
+
+[`../scripts/check-agent-image-deps.sh`](../scripts/check-agent-image-deps.sh),
+run in CI by the `agent-image-deps` job, enforces the contract: every npm package
+installed by a Dockerfile must be a `package.json` dependency, every dependency
+must be installed by a Dockerfile, each `ARG *_VERSION` default must equal the
+manifest value, and every such ARG must be passed as a build-arg. Images with no
+`npm install -g` are skipped automatically, which is how the four manual images
+are excluded.
+
+**Adding a new npm-installed agent image.**
+
+1. Add the package to [`docker/package.json`](docker/package.json).
+2. Declare `ARG <NAME>_VERSION=<same version>` and install with
+   `npm install -g "<pkg>@${<NAME>_VERSION}"` in the Dockerfile.
+3. Add the version to the `node -p` resolution step and the `build-args:` block
+   in [`registry-docker-build.yml`](../.github/workflows/registry-docker-build.yml).
+   The build-arg is named `<NAME>_VERSION` and must be wired to
+   `${{ steps.versions.outputs.<name> }}`, where `<name>` is the variable name
+   without `_VERSION`, lowercased.
+4. Run `bash scripts/check-agent-image-deps.sh` and require exit 0.
+
+### Attribution & license risk
+
+The `oh-my-openagent` image installs and runs
+[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent), which is
+**not** distributed under an OSI-approved license. Upstream is available under
+the **Sustainable Use License, Version 1.0 (SUL-1.0)**, a non-commercial,
+source-available license: you may use or modify it for your own internal
+business purposes or for non-commercial or personal use, and may distribute it
+only free of charge for non-commercial purposes. See
+[`LICENSES/SUL-1.0-NOTICE.md`](../LICENSES/SUL-1.0-NOTICE.md) for the full
+attribution and risk note. **Evaluate or obtain a commercial license from the
+upstream authors before any commercial redistribution** of this image. The
+sibling `oh-my-codex` and `oh-my-claude` images are MIT-licensed.
 
 ## Contributing
 

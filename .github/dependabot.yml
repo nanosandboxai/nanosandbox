@@ -1,10 +1,14 @@
 version: 2
 updates:
-  # Pinned agent CLI versions (npm-installed agents: claude, codex, gemini, crush)
+  # Pinned agent CLI versions (npm-installed agents: claude, codex, gemini,
+  # crush, oh-my-openagent, oh-my-codex, oh-my-claude). All 7 must be able to
+  # hold open PRs at once; the default open-pull-requests-limit (5) starves the
+  # queue once 5+ bumps are in flight, so raise it with headroom.
   - package-ecosystem: npm
     directory: /registries/docker
     schedule:
       interval: weekly
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
 

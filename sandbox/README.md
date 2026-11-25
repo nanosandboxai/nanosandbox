@@ -43,6 +43,47 @@ All agent configuration is delivered at deploy time via the `deploy` module:
 
 No in-VM CRUD APIs remain. Config is regenerated host-side on every deploy and merged into the agent state mounts.
 
+### `agent_config` — inline agent config overrides
+
+`agent_config` lets a sandbox supply agent-native config files **inline**, so it
+can run with a different model/provider set without editing host state dirs,
+baking a custom image, or using an out-of-band script. It is a
+`HashMap<String, String>`:
+
+- **Keys** are guest-relative paths under the guest home (`/home/developer`),
+  e.g. `.omo/omo.jsonc`, `.codex/config.toml`, `.claude/settings.json`.
+- **Values** are the raw file body, written verbatim (JSONC/TOML/YAML as the
+  agent expects). Nanosb does not parse or validate the content; the agent
+  validates its own format.
+- **Precedence:** available on `defaults` and per-sandbox; per-sandbox entries
+  override `defaults` per key. An `agent_config` entry for a path that a
+  generated config would also write wins (it is written last).
+- **Allowed paths:** keys must be relative, non-empty, contain no NUL, `..`,
+  `.`, or empty components, and resolve under the guest home and an allowed
+  agent state dir (e.g. `.omo`, `.claude`, `.codex`, `.config/goose`,
+  `.config/opencode`, `.config/cursor`, `.config/crush`, `.aider`, `.gemini`,
+  `.config/claude-omc`). Each key must name a file inside the state dir, not the
+  directory itself. Absolute keys, traversal, and symlinked host parents or
+  targets are rejected. Limits: ≤ 32 files, ≤ 256 KiB per file, ≤ 1 MiB total.
+- **Security:** `agent_config` is for **non-secret** settings. Secrets belong in
+  `env:`/`secrets`, which are encrypted and never written to disk. Files are
+  written with mode `0644` on Unix so the in-guest agent can read them.
+- **Protocol exposure:** the same field is exposed on the wire as
+  `SandboxSpec.agent_config`, so cloud/shim/SDK consumers can deliver config
+  files through the shared host layer (`prepare_supervisor_spawn`), which
+  validates each key and appends file mounts to the guest home.
+
+```yaml
+sandboxes:
+  reviewer:
+    type: oh-my-openagent
+    agent_config:
+      .omo/omo.jsonc: |
+        {
+          "categories": { "default": { "model": "anthropic/claude-sonnet-4-5" } }
+        }
+```
+
 ## Protocol SDKs
 
 The C FFI is retired (Epic 1, WS8). Multi-language support is protocol-first:
@@ -110,10 +151,15 @@ The SDK supports the following agent types, selectable via `sandbox.yml`
 | Aider     | `aider`       |
 | Gemini    | `gemini`      |
 | Crush     | `crush`       |
+| Oh-My-OpenAgent | `oh-my-openagent` |
+| Oh-My-Codex | `oh-my-codex` |
+| Oh-My-Claude | `oh-my-claude` |
 
 Accepted identifier spellings come from the `AgentType` parser: `claude-code`
 for Claude, `cursor-agent` for Cursor, `open-code` for OpenCode, and
-`gemini-cli` for Gemini.
+`gemini-cli` for Gemini. The three `oh-my-*` agents also accept the short
+aliases `omo` (Oh-My-OpenAgent), `omx` (Oh-My-Codex), and `omc`
+(Oh-My-Claude) in `type:` and on the CLI.
 
 `sandbox.yml` is validated strictly before any microVM is created. Unknown or
 misspelled fields are rejected at every level (`defaults`, each sandbox, `mcp`
@@ -138,11 +184,24 @@ into the guest:
 | Aider     | — (no native MCP support)                           | concatenated `~/.aider/CONVENTIONS.md` (loaded via `--read`)          |
 | Gemini    | JSON `~/.gemini/settings.json` (`mcpServers`)       | `~/.gemini/skills/<name>/SKILL.md` + `~/.gemini/GEMINI.md`           |
 | Crush     | JSON `~/.config/crush/crush.json` (`mcp`, `type: stdio`) | `~/.config/crush/skills/<name>/SKILL.md` + `~/.config/crush/CRUSH.md` |
+| Oh-My-OpenAgent | — (deferred) | — (deferred) |
+| Oh-My-Codex | — (deferred) | — (deferred) |
+| Oh-My-Claude | — (deferred) | — (deferred) |
+
+MCP and skills delivery is **deferred** for the three `oh-my-*` agents: they
+receive no generated MCP config and no generated skills/prompt files. For any
+agent, `agent_config` (see above) is the general escape hatch for supplying
+config files the generators do not cover; `claude.theme` is a convenience alias
+that generates `.claude/settings.json` unless `agent_config` already provides
+that path.
 
 Agent session state is kept in per-agent RW mounts under the guest home:
 `~/.claude`, `~/.codex` + `~/.agents`, `~/.config/goose` + `~/.local/share/goose`,
 `~/.cursor`, `~/.config/opencode`, `~/.aider`, `~/.gemini`, and
-`~/.config/crush` respectively (see `deploy::mount_planner`).
+`~/.config/crush` respectively (see `deploy::mount_planner`). The `oh-my-*`
+agents keep their state in `~/.omo` (Oh-My-OpenAgent), `~/.codex` + `~/.agents`
+(Oh-My-Codex), and `~/.claude` + `~/.config/claude-omc` + `~/.omc`
+(Oh-My-Claude).
 
 ## Related Components (monorepo)
 

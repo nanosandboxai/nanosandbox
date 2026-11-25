@@ -1521,7 +1521,19 @@ async fn spawn_supervisor_panel(
         None::<sandbox::ProjectMount>
     };
 
-    let (plan, rc) = deploy::deploy_plan_for(&config, &sandbox_dir);
+    let (plan, rc) = match deploy::deploy_plan_for(&config, &sandbox_dir) {
+        Ok(pair) => pair,
+        Err(e) => {
+            if let Some(mut pm) = project_mount {
+                let _ = pm.teardown();
+            }
+            let _ = tx.send(AppEvent::SandboxFailed {
+                panel_id,
+                error: format!("Failed to plan deploy: {}", e),
+            });
+            return;
+        }
+    };
     if let Err(e) = deploy::materialize_plan(&sandbox_dir, &plan) {
         if let Some(mut pm) = project_mount {
             let _ = pm.teardown();
@@ -1729,6 +1741,24 @@ fn spawn_supervisor_stop(name: String) {
             tracing::warn!(sandbox = %name, error = %e, "supervisor stop failed");
         }
     });
+}
+
+pub(crate) enum ReconnectPlan {
+    Attach,
+    Restart(Box<sandbox::AgentSandboxConfig>),
+    NoSandbox,
+}
+
+pub(crate) fn plan_reconnect(panel: &AgentPanel) -> ReconnectPlan {
+    let Some(name) = panel.supervisor_name() else {
+        return ReconnectPlan::NoSandbox;
+    };
+    if !crate::supervisor::client::SupervisorClient::new(name).is_running() {
+        if let Some(config) = panel.original_config.clone() {
+            return ReconnectPlan::Restart(Box::new(config));
+        }
+    }
+    ReconnectPlan::Attach
 }
 
 /// Spawn a background task that re-attaches to `panel_id`'s supervised
@@ -2611,49 +2641,60 @@ pub(crate) async fn handle_command(
                 let console_name = panel.supervisor_name().map(|s| s.to_string());
                 let exec_pty = panel.exec_pty.clone();
 
-                if let Some(name) = console_name {
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        let result = match exec_pty {
-                            Some((sock, program, args)) => {
-                                super::terminal::connect_exec_pty(
-                                    sock,
-                                    program,
-                                    args,
-                                    pty_cols,
-                                    pty_rows,
-                                    panel_id,
-                                    tx.clone(),
-                                )
-                                .await
+                match plan_reconnect(panel) {
+                    ReconnectPlan::NoSandbox => {
+                        panel.loading_error = Some(
+                            "No supervised sandbox for this panel. Cannot reconnect.".to_string(),
+                        );
+                        panel.reconnecting = false;
+                    }
+                    ReconnectPlan::Restart(config) => {
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            spawn_supervisor_panel(*config, panel_id, &tx).await;
+                        });
+                    }
+                    ReconnectPlan::Attach => {
+                        let name = console_name.expect("Attach implies a supervisor name");
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            let result = match exec_pty {
+                                Some((sock, program, args)) => {
+                                    super::terminal::connect_exec_pty(
+                                        sock,
+                                        program,
+                                        args,
+                                        pty_cols,
+                                        pty_rows,
+                                        panel_id,
+                                        tx.clone(),
+                                    )
+                                    .await
+                                }
+                                None => {
+                                    super::terminal::connect_console(
+                                        name,
+                                        pty_cols,
+                                        pty_rows,
+                                        panel_id,
+                                        tx.clone(),
+                                    )
+                                    .await
+                                }
+                            };
+                            match result {
+                                Ok(handle) => {
+                                    let _ = tx.send(AppEvent::SshConnected { panel_id, handle });
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(AppEvent::SshDisconnected {
+                                        panel_id,
+                                        error: Some(format!("Console reconnect failed: {}", e)),
+                                    });
+                                }
                             }
-                            None => {
-                                super::terminal::connect_console(
-                                    name,
-                                    pty_cols,
-                                    pty_rows,
-                                    panel_id,
-                                    tx.clone(),
-                                )
-                                .await
-                            }
-                        };
-                        match result {
-                            Ok(handle) => {
-                                let _ = tx.send(AppEvent::SshConnected { panel_id, handle });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::SshDisconnected {
-                                    panel_id,
-                                    error: Some(format!("Console reconnect failed: {}", e)),
-                                });
-                            }
-                        }
-                    });
-                } else {
-                    panel.loading_error =
-                        Some("No supervised sandbox for this panel. Cannot reconnect.".to_string());
-                    panel.reconnecting = false;
+                        });
+                    }
                 }
             } else {
                 app.set_system_message(ChatMessage {
@@ -3942,7 +3983,17 @@ fn find_panel_at(app: &App, x: u16, y: u16) -> Option<(usize, ratatui::layout::R
 
 /// Known agent type names for CLI command resolution and API key detection.
 const KNOWN_AGENTS: &[&str] = &[
-    "claude", "codex", "goose", "cursor", "opencode", "aider", "gemini", "crush",
+    "claude",
+    "codex",
+    "goose",
+    "cursor",
+    "opencode",
+    "aider",
+    "gemini",
+    "crush",
+    "oh-my-openagent",
+    "oh-my-codex",
+    "oh-my-claude",
 ];
 
 /// Detect the base agent type from a Docker image name.
@@ -4961,16 +5012,14 @@ fn truncate_str(s: &str, max: usize) -> String {
 }
 
 fn detect_agent_type_from_image(image: &str) -> Option<String> {
-    // Get the last path segment first, then strip the tag.
-    // This avoids confusing registry port (localhost:5050) with tag separator.
     let last_segment = image.rsplit('/').next().unwrap_or(image);
-    // Strip tag (the part after the last colon in the segment)
     let image_name = last_segment.split(':').next().unwrap_or(last_segment);
-
+    // Exact match wins: "oh-my-codex" must not fall through to "codex" below.
+    if let Some(agent) = KNOWN_AGENTS.iter().find(|a| image_name == **a) {
+        return Some((*agent).to_string());
+    }
     for agent in KNOWN_AGENTS {
-        // Match patterns: "agent-claude", "nanosb-claude", "claude", etc.
-        if image_name == *agent
-            || image_name.ends_with(&format!("-{}", agent))
+        if image_name.ends_with(&format!("-{}", agent))
             || image_name.starts_with(&format!("{}-", agent))
         {
             return Some(agent.to_string());
@@ -5021,6 +5070,16 @@ pub(crate) fn required_api_keys(agent: &str) -> Vec<(&'static str, bool)> {
             ("OPENROUTER_API_KEY", false),
         ],
         "cursor" => vec![("CURSOR_API_KEY", true)],
+        "oh-my-openagent" => vec![
+            ("OPENAI_API_KEY", true),
+            ("ANTHROPIC_API_KEY", false),
+            ("OPENROUTER_API_KEY", false),
+        ],
+        "oh-my-codex" => vec![("OPENAI_API_KEY", true), ("CODEX_API_KEY", false)],
+        "oh-my-claude" => vec![
+            ("ANTHROPIC_API_KEY", true),
+            ("CLAUDE_CODE_OAUTH_TOKEN", false),
+        ],
         _ => vec![],
     }
 }
@@ -5297,11 +5356,20 @@ fn add_agent(
     }
     config.interactive = panel.interactive;
 
+    // Propagate the selected model onto the config: deploy planning reads
+    // `config.model` (not the panel field) to emit `--model` / `GOOSE_MODEL`.
+    config.model = panel.model.clone();
+
     // Pass auto_sync setting to project config so sandbox creation
     // knows whether to use setup() or setup_deferred().
     if let Some(ref mut proj) = config.sandbox.project {
         proj.auto_sync = app.settings.gitsync.auto_sync;
     }
+
+    // Copy the resolved panel env into the sandbox config so the deploy planner
+    // receives it: deploy planning reads `config.sandbox.env`, not `panel.env`.
+    // Panel values win over any builder defaults.
+    config.sandbox.env.extend(panel.env.clone());
 
     // Store the config for session persistence. The panel title keeps the
     // user-supplied name when present, otherwise the agent name; the unique
@@ -5713,6 +5781,9 @@ fn detect_agent_session_id_from_state(
         "aider" => state_root.join(".aider"),
         "gemini" => state_root.join(".gemini"),
         "crush" => state_root.join(".config_crush"),
+        "oh-my-openagent" => state_root.join(".omo"),
+        "oh-my-codex" => state_root.join(".codex"),
+        "oh-my-claude" => state_root.join(".claude"),
         _ => state_root.to_path_buf(),
     };
 
@@ -5753,7 +5824,8 @@ fn should_resume_panel(had_interaction: bool, selected_agent_session_id: Option<
 /// For each panel in the session, this creates a fresh sandbox with the saved config
 /// but reuses the existing project clone (if still present). The agent is launched
 /// with an explicit native session id when available.
-fn resume_session(
+// Visibility: pub(crate) so the #[cfg(test)] TUI tests can call it.
+pub(crate) fn resume_session(
     app: &mut App,
     session: &sandbox::session::Session,
     tx: &mpsc::UnboundedSender<AppEvent>,
@@ -5779,6 +5851,13 @@ fn resume_session(
         panel.visible = sp.visible;
         panel.agent_type = sp.agent_type;
         panel.model = sp.model.clone();
+
+        // Sessions saved before the model was propagated onto the config carry
+        // `panel.model` but `config.model == None`; restore it so resume
+        // rebuilds the same agent command.
+        if let Some(m) = &sp.model {
+            config.model = Some(m.clone());
+        }
         panel.original_config = Some(config.clone());
 
         // Copy env vars from config to panel.
@@ -6485,6 +6564,28 @@ mod tests {
         assert_eq!(
             detect_agent_type_from_image("codex:latest"),
             Some("codex".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_agent_type_oh_my_agents_exact_match() {
+        // Regression: "oh-my-codex" must not fall through to "codex", and
+        // "oh-my-claude" must not fall through to "claude".
+        assert_eq!(
+            detect_agent_type_from_image("oh-my-codex:latest"),
+            Some("oh-my-codex".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("oh-my-openagent:latest"),
+            Some("oh-my-openagent".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("oh-my-claude:latest"),
+            Some("oh-my-claude".to_string())
+        );
+        assert_eq!(
+            detect_agent_type_from_image("ghcr.io/nanosandboxai/nanosandbox/oh-my-codex:v1"),
+            Some("oh-my-codex".to_string())
         );
     }
 

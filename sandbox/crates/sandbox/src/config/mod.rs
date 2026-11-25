@@ -67,6 +67,12 @@ pub enum AgentType {
     Aider,
     Gemini,
     Crush,
+    #[serde(rename = "oh-my-openagent")]
+    OhMyOpenAgent,
+    #[serde(rename = "oh-my-codex")]
+    OhMyCodex,
+    #[serde(rename = "oh-my-claude")]
+    OhMyClaude,
 }
 
 impl AgentType {
@@ -79,6 +85,9 @@ impl AgentType {
         AgentType::Aider,
         AgentType::Gemini,
         AgentType::Crush,
+        AgentType::OhMyOpenAgent,
+        AgentType::OhMyCodex,
+        AgentType::OhMyClaude,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -91,6 +100,9 @@ impl AgentType {
             AgentType::Aider => "aider",
             AgentType::Gemini => "gemini",
             AgentType::Crush => "crush",
+            AgentType::OhMyOpenAgent => "oh-my-openagent",
+            AgentType::OhMyCodex => "oh-my-codex",
+            AgentType::OhMyClaude => "oh-my-claude",
         }
     }
 }
@@ -113,8 +125,11 @@ impl std::str::FromStr for AgentType {
             "aider" => Ok(AgentType::Aider),
             "gemini" | "gemini-cli" => Ok(AgentType::Gemini),
             "crush" => Ok(AgentType::Crush),
+            "oh-my-openagent" | "omo" => Ok(AgentType::OhMyOpenAgent),
+            "oh-my-codex" | "omx" => Ok(AgentType::OhMyCodex),
+            "oh-my-claude" | "omc" => Ok(AgentType::OhMyClaude),
             _ => Err(format!(
-                "unknown agent type '{}': expected claude, codex, goose, cursor, opencode, aider, gemini, or crush",
+                "unknown agent type '{}': expected claude, codex, goose, cursor, opencode, aider, gemini, crush, oh-my-openagent, oh-my-codex, or oh-my-claude",
                 s
             )),
         }
@@ -212,6 +227,27 @@ fn builtin_agent_defaults() -> HashMap<AgentType, AgentComputeDefaults> {
     );
     m.insert(
         AgentType::Crush,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::OhMyOpenAgent,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::OhMyCodex,
+        AgentComputeDefaults {
+            cpus: 2,
+            memory_mb: 2048,
+        },
+    );
+    m.insert(
+        AgentType::OhMyClaude,
         AgentComputeDefaults {
             cpus: 2,
             memory_mb: 2048,
@@ -404,6 +440,12 @@ pub struct AgentSandboxConfig {
     /// Agent-native session id to resume (e.g. codex `resume <id>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,
+    /// Inline agent-native config files. Keys are guest-relative to the guest
+    /// home (e.g. `.omo/omo.jsonc`, `.claude/settings.json`); values are the
+    /// raw file bodies, written verbatim into the sandbox state dir at deploy
+    /// time. `agent_config` wins over any generated config at the same path.
+    #[serde(default)]
+    pub agent_config: HashMap<String, String>,
 }
 
 impl Default for AgentSandboxConfig {
@@ -422,6 +464,7 @@ impl Default for AgentSandboxConfig {
             model: None,
             claude_settings: None,
             resume_session_id: None,
+            agent_config: HashMap::new(),
         }
     }
 }
@@ -488,6 +531,10 @@ impl AgentSandboxConfigBuilder {
         self.config.model = Some(model.into());
         self
     }
+    pub fn agent_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.config.agent_config.insert(key.into(), value.into());
+        self
+    }
     pub fn build(self) -> AgentSandboxConfig {
         self.config
     }
@@ -542,6 +589,96 @@ mod tests {
         assert!(
             cfg.resume_session_id.is_none(),
             "missing resume_session_id must default to None"
+        );
+    }
+
+    #[test]
+    fn oh_my_agents_serialize_to_kebab_case_names() {
+        assert_eq!(
+            serde_json::to_string(&AgentType::OhMyOpenAgent).unwrap(),
+            "\"oh-my-openagent\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::OhMyCodex).unwrap(),
+            "\"oh-my-codex\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::OhMyClaude).unwrap(),
+            "\"oh-my-claude\""
+        );
+    }
+
+    #[test]
+    fn oh_my_agents_deserialize_round_trip() {
+        for (name, variant) in [
+            ("oh-my-openagent", AgentType::OhMyOpenAgent),
+            ("oh-my-codex", AgentType::OhMyCodex),
+            ("oh-my-claude", AgentType::OhMyClaude),
+        ] {
+            let parsed: AgentType = serde_json::from_str(&format!("\"{}\"", name)).unwrap();
+            assert_eq!(parsed, variant);
+            assert_eq!(
+                serde_json::to_string(&parsed).unwrap(),
+                format!("\"{}\"", name)
+            );
+        }
+    }
+
+    #[test]
+    fn oh_my_agents_parse_from_aliases_and_canonical_names() {
+        assert_eq!(
+            "omo".parse::<AgentType>().unwrap(),
+            AgentType::OhMyOpenAgent
+        );
+        assert_eq!("omx".parse::<AgentType>().unwrap(), AgentType::OhMyCodex);
+        assert_eq!("omc".parse::<AgentType>().unwrap(), AgentType::OhMyClaude);
+        assert_eq!(
+            "oh-my-openagent".parse::<AgentType>().unwrap(),
+            AgentType::OhMyOpenAgent
+        );
+        assert_eq!(
+            "oh-my-codex".parse::<AgentType>().unwrap(),
+            AgentType::OhMyCodex
+        );
+        assert_eq!(
+            "oh-my-claude".parse::<AgentType>().unwrap(),
+            AgentType::OhMyClaude
+        );
+    }
+
+    #[test]
+    fn existing_agents_still_serialize_to_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&AgentType::Opencode).unwrap(),
+            "\"opencode\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::Claude).unwrap(),
+            "\"claude\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::Codex).unwrap(),
+            "\"codex\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::Goose).unwrap(),
+            "\"goose\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::Cursor).unwrap(),
+            "\"cursor\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::Aider).unwrap(),
+            "\"aider\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::Gemini).unwrap(),
+            "\"gemini\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentType::Crush).unwrap(),
+            "\"crush\""
         );
     }
 }

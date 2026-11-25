@@ -114,6 +114,13 @@ fn agent_state_dirs(agent_type: AgentType) -> Vec<&'static str> {
             // not under ~/.config/crush.
             "/home/developer/.local/share/crush",
         ],
+        AgentType::OhMyOpenAgent => vec!["/home/developer/.omo"],
+        AgentType::OhMyCodex => vec!["/home/developer/.codex", "/home/developer/.agents"],
+        AgentType::OhMyClaude => vec![
+            "/home/developer/.claude",
+            "/home/developer/.config/claude-omc",
+            "/home/developer/.omc",
+        ],
     }
 }
 
@@ -133,6 +140,7 @@ fn agent_config_guest_paths(agent_type: AgentType) -> Vec<(&'static str, &'stati
         AgentType::Aider => vec![("/home/developer/.aider", "aider")],
         AgentType::Gemini => vec![("/home/developer/.gemini", "gemini")],
         AgentType::Crush => vec![("/home/developer/.config/crush", "crush")],
+        AgentType::OhMyOpenAgent | AgentType::OhMyCodex | AgentType::OhMyClaude => vec![],
     }
 }
 
@@ -158,6 +166,174 @@ pub fn merged_config_path(relative_path: &str) -> Option<String> {
 /// The guest user's home directory. Pure agent images ship no `developer`
 /// user, so the runtime creates it at this fixed non-root home.
 pub const GUEST_HOME: &str = "/home/developer";
+
+/// Maximum number of `agent_config` files per sandbox.
+pub const MAX_AGENT_CONFIG_FILES: usize = 32;
+/// Maximum size of a single `agent_config` file.
+pub const MAX_AGENT_CONFIG_FILE_BYTES: usize = 256 * 1024;
+/// Maximum total size of all `agent_config` files.
+pub const MAX_AGENT_CONFIG_TOTAL_BYTES: usize = 1024 * 1024;
+
+/// A planned agent-config file: an absolute host path under the sandbox state
+/// dir plus the verbatim bytes to write there.
+#[derive(Debug, Clone)]
+pub struct PlannedFile {
+    pub host_path: PathBuf,
+    pub content: Vec<u8>,
+}
+
+/// Per-agent state directory prefixes, guest-relative (stripped of `GUEST_HOME`).
+/// e.g. Claude → `[".claude"]`, OhMyClaude → `[".claude", ".config/claude-omc", ".omc"]`.
+pub fn agent_state_prefixes(agent_type: AgentType) -> Vec<&'static str> {
+    agent_state_dirs(agent_type)
+        .into_iter()
+        .map(|dir| dir.trim_start_matches("/home/developer/"))
+        .collect()
+}
+
+/// Validate an `agent_config` map against the §4.2 rules: relative keys under
+/// an allowed agent state dir, no `..`/NUL/absolute/empty, and the file limits
+/// (≤ 32 files, ≤ 256 KiB each, ≤ 1 MiB total).
+pub fn validate_agent_config(
+    map: &std::collections::HashMap<String, String>,
+    agent_type: AgentType,
+) -> Result<(), String> {
+    if map.len() > MAX_AGENT_CONFIG_FILES {
+        return Err(format!(
+            "agent_config exceeds the {} file limit ({} files)",
+            MAX_AGENT_CONFIG_FILES,
+            map.len()
+        ));
+    }
+    let prefixes = agent_state_prefixes(agent_type);
+    let mut total = 0usize;
+    for (key, value) in map {
+        validate_agent_config_key(key, &prefixes)?;
+        if value.len() > MAX_AGENT_CONFIG_FILE_BYTES {
+            return Err(format!(
+                "agent_config file '{}' exceeds the {} KiB per-file limit ({} bytes)",
+                key,
+                MAX_AGENT_CONFIG_FILE_BYTES / 1024,
+                value.len()
+            ));
+        }
+        total += value.len();
+    }
+    if total > MAX_AGENT_CONFIG_TOTAL_BYTES {
+        return Err(format!(
+            "agent_config total size exceeds the 1 MiB limit ({} bytes)",
+            total
+        ));
+    }
+    Ok(())
+}
+
+fn validate_agent_config_key(key: &str, prefixes: &[&str]) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("agent_config key cannot be empty".to_string());
+    }
+    if key.contains('\0') {
+        return Err(format!("agent_config key '{}' contains a NUL byte", key));
+    }
+    if key.starts_with('/') {
+        return Err(format!(
+            "agent_config key '{}' must be relative to the guest home",
+            key
+        ));
+    }
+    if key
+        .split('/')
+        .any(|c| c == ".." || c == "." || c.is_empty())
+    {
+        return Err(format!(
+            "agent_config key '{}' must not contain '..', '.', or empty path components",
+            key
+        ));
+    }
+    if !prefixes.iter().any(|p| key.starts_with(&format!("{}/", p))) {
+        return Err(format!(
+            "agent_config key '{}' must name a file under an allowed agent state dir (allowed: {})",
+            key,
+            prefixes.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve an `agent_config` key to its absolute host path under the sandbox
+/// state dir: `<sandbox_dir>/state/<normalized-state-dir>/<remainder>`, where
+/// the state dir is the longest matching agent state prefix with `/` → `_`.
+/// Rejects traversal keys and symlinked host parents.
+pub fn resolve_agent_config_host_path(
+    sandbox_dir: &Path,
+    key: &str,
+    agent_type: AgentType,
+) -> Result<PathBuf, String> {
+    let prefixes = agent_state_prefixes(agent_type);
+    validate_agent_config_key(key, &prefixes)?;
+
+    let matched = prefixes
+        .iter()
+        .filter(|p| key == **p || key.starts_with(&format!("{}/", p)))
+        .max_by_key(|p| p.len())
+        .ok_or_else(|| {
+            format!(
+                "agent_config key '{}' is not under an allowed agent state dir (allowed: {})",
+                key,
+                prefixes.join(", ")
+            )
+        })?;
+
+    let remainder = key.trim_start_matches(matched).trim_start_matches('/');
+    if remainder.is_empty() {
+        return Err(format!(
+            "agent_config key '{}' must name a file under '{}', not the directory itself",
+            key, matched
+        ));
+    }
+
+    let state_dir_name = matched.replace('/', "_");
+    let host_path = sandbox_dir
+        .join("state")
+        .join(&state_dir_name)
+        .join(remainder);
+
+    reject_symlinked_parents(sandbox_dir, &host_path)?;
+    Ok(host_path)
+}
+
+/// Reject when any existing host parent component under `sandbox_dir` is a
+/// symlink, so a write can never escape the sandbox state dir.
+fn reject_symlinked_parents(sandbox_dir: &Path, path: &Path) -> Result<(), String> {
+    // Reject a symlinked target too: `fs::write` follows it, so a link planted
+    // at the planned file path could redirect the write outside the sandbox.
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "agent_config host target '{}' is a symlink; refusing",
+                path.display()
+            ));
+        }
+    }
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        if dir == sandbox_dir || !dir.starts_with(sandbox_dir) {
+            break;
+        }
+        match std::fs::symlink_metadata(dir) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "agent_config host parent '{}' is a symlink; refusing",
+                    dir.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+        current = dir.parent();
+    }
+    Ok(())
+}
 
 /// Mount planner: computes the full set of virtiofs mounts for a sandbox.
 pub struct MountPlanner;
@@ -646,6 +822,227 @@ mod tests {
             !auth_mount.unwrap().readonly,
             ".config/cursor login mount should be RW"
         );
+    }
+
+    #[test]
+    fn test_plan_oh_my_agents_state_mounts() {
+        let cases: &[(AgentType, &[&str])] = &[
+            (AgentType::OhMyOpenAgent, &["/home/developer/.omo"]),
+            (
+                AgentType::OhMyCodex,
+                &["/home/developer/.codex", "/home/developer/.agents"],
+            ),
+            (
+                AgentType::OhMyClaude,
+                &[
+                    "/home/developer/.claude",
+                    "/home/developer/.config/claude-omc",
+                    "/home/developer/.omc",
+                ],
+            ),
+        ];
+
+        for (agent_type, state_dirs) in cases {
+            let config = make_config(Some(*agent_type));
+            let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+            let mounts = MountPlanner::plan(&config, agent_type, sandbox_dir, None);
+
+            for dir in *state_dirs {
+                let m = mounts
+                    .iter()
+                    .find(|m| m.guest_path == *dir)
+                    .unwrap_or_else(|| panic!("{:?} missing state mount {}", agent_type, dir));
+                assert!(
+                    !m.readonly,
+                    "{:?} state mount {} should be RW",
+                    agent_type, dir
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_agent_state_prefixes_strip_guest_home() {
+        assert_eq!(agent_state_prefixes(AgentType::Claude), vec![".claude"]);
+        assert_eq!(
+            agent_state_prefixes(AgentType::OhMyClaude),
+            vec![".claude", ".config/claude-omc", ".omc"]
+        );
+        assert_eq!(
+            agent_state_prefixes(AgentType::Goose),
+            vec![".config/goose", ".local/share/goose", ".local/state/goose",]
+        );
+    }
+
+    #[test]
+    fn test_resolve_agent_config_host_path_omo() {
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let path =
+            resolve_agent_config_host_path(sandbox_dir, ".omo/omo.jsonc", AgentType::OhMyOpenAgent)
+                .unwrap();
+        assert_eq!(
+            path,
+            sandbox_dir.join("state").join(".omo").join("omo.jsonc")
+        );
+    }
+
+    #[test]
+    fn test_resolve_agent_config_host_path_nested_remainder() {
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let path = resolve_agent_config_host_path(
+            sandbox_dir,
+            ".config/claude-omc/settings.json",
+            AgentType::OhMyClaude,
+        )
+        .unwrap();
+        assert_eq!(
+            path,
+            sandbox_dir
+                .join("state")
+                .join(".config_claude-omc")
+                .join("settings.json")
+        );
+    }
+
+    #[test]
+    fn test_resolve_agent_config_longest_prefix_wins() {
+        // `.config/claude-omc` is longer than `.claude`; a key under it must
+        // resolve to the `.config_claude-omc` state dir, not `.claude`.
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let path = resolve_agent_config_host_path(
+            sandbox_dir,
+            ".config/claude-omc/theme.json",
+            AgentType::OhMyClaude,
+        )
+        .unwrap();
+        assert_eq!(
+            path,
+            sandbox_dir
+                .join("state")
+                .join(".config_claude-omc")
+                .join("theme.json")
+        );
+    }
+
+    #[test]
+    fn test_resolve_agent_config_rejects_traversal() {
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        for key in [
+            "../escape",
+            ".omo/../../etc/passwd",
+            "/home/developer/.omo/omo.jsonc",
+            ".omo/",
+            ".omo/./omo.jsonc",
+            ".omo//omo.jsonc",
+            "",
+            ".omo/omo\0.jsonc",
+            "not-an-allowed-dir/file",
+        ] {
+            let result = resolve_agent_config_host_path(sandbox_dir, key, AgentType::OhMyOpenAgent);
+            assert!(result.is_err(), "key {:?} must be rejected", key);
+        }
+    }
+
+    #[test]
+    fn test_resolve_agent_config_rejects_directory_key() {
+        let sandbox_dir = Path::new("/tmp/.nanosandbox/sandboxes/test");
+        let result = resolve_agent_config_host_path(sandbox_dir, ".omo", AgentType::OhMyOpenAgent);
+        assert!(result.is_err(), "a bare prefix must be rejected");
+    }
+
+    #[test]
+    fn test_resolve_agent_config_rejects_symlinked_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = dir.path().join("sandbox");
+        std::fs::create_dir_all(sandbox_dir.join("state")).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, sandbox_dir.join("state").join(".omo")).unwrap();
+
+        let result = resolve_agent_config_host_path(
+            &sandbox_dir,
+            ".omo/omo.jsonc",
+            AgentType::OhMyOpenAgent,
+        );
+        assert!(result.is_err(), "symlinked parent must be rejected");
+        assert!(result.unwrap_err().contains("symlink"));
+    }
+
+    #[test]
+    fn test_resolve_agent_config_rejects_symlinked_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = dir.path().join("sandbox");
+        std::fs::create_dir_all(sandbox_dir.join("state").join(".omo")).unwrap();
+        let outside = dir.path().join("outside.jsonc");
+        std::fs::write(&outside, "{}").unwrap();
+        std::os::unix::fs::symlink(
+            &outside,
+            sandbox_dir.join("state").join(".omo").join("omo.jsonc"),
+        )
+        .unwrap();
+
+        let result = resolve_agent_config_host_path(
+            &sandbox_dir,
+            ".omo/omo.jsonc",
+            AgentType::OhMyOpenAgent,
+        );
+        assert!(result.is_err(), "symlinked target must be rejected");
+        assert!(result.unwrap_err().contains("symlink"));
+    }
+
+    #[test]
+    fn test_resolve_agent_config_accepts_existing_plain_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox_dir = dir.path().join("sandbox");
+        std::fs::create_dir_all(sandbox_dir.join("state").join(".omo")).unwrap();
+        let path = resolve_agent_config_host_path(
+            &sandbox_dir,
+            ".omo/omo.jsonc",
+            AgentType::OhMyOpenAgent,
+        )
+        .unwrap();
+        assert_eq!(
+            path,
+            sandbox_dir.join("state").join(".omo").join("omo.jsonc")
+        );
+    }
+
+    #[test]
+    fn test_validate_agent_config_limits() {
+        let mut map = std::collections::HashMap::new();
+        for i in 0..33 {
+            map.insert(format!(".omo/file{}", i), "x".to_string());
+        }
+        let err = validate_agent_config(&map, AgentType::OhMyOpenAgent).unwrap_err();
+        assert!(err.contains("32 file limit"), "got: {err}");
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            ".omo/big".to_string(),
+            "x".repeat(MAX_AGENT_CONFIG_FILE_BYTES + 1),
+        );
+        let err = validate_agent_config(&map, AgentType::OhMyOpenAgent).unwrap_err();
+        assert!(err.contains("256 KiB"), "got: {err}");
+
+        // Five files each exactly at the per-file limit exceed the 1 MiB total
+        // while passing the per-file check.
+        let mut map = std::collections::HashMap::new();
+        for i in 0..5 {
+            map.insert(
+                format!(".omo/file{}", i),
+                "x".repeat(MAX_AGENT_CONFIG_FILE_BYTES),
+            );
+        }
+        let err = validate_agent_config(&map, AgentType::OhMyOpenAgent).unwrap_err();
+        assert!(err.contains("1 MiB"), "got: {err}");
+    }
+
+    #[test]
+    fn test_validate_agent_config_ok() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(".omc/config.json".to_string(), "{}".to_string());
+        map.insert(".claude/settings.json".to_string(), "{}".to_string());
+        assert!(validate_agent_config(&map, AgentType::OhMyClaude).is_ok());
     }
 
     #[test]
