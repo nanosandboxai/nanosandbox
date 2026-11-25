@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: "3.12"
       - if: matrix.sdk == 'typescript'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
       - if: matrix.sdk == 'go'
