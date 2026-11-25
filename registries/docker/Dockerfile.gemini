@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 LABEL org.opencontainers.image.description="Gemini CLI agent for nanosandbox sandboxes"
 
 # Pinned via registries/docker/package.json (Dependabot-managed).
-ARG GEMINI_VERSION=0.68.0
+ARG GEMINI_VERSION=0.70.0
 
 # Pure install: Gemini CLI via npm + sanity check.
 RUN npm install -g "@google/gemini-cli@${GEMINI_VERSION}" \
