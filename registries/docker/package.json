@@ -6,7 +6,7 @@
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.326",
     "@openai/codex": "0.169.0",
-    "@google/gemini-cli": "0.68.0",
+    "@google/gemini-cli": "0.70.0",
     "@charmland/crush": "0.102.0",
     "omo-ai": "5.1.81",
     "oh-my-codex": "0.22.15",
