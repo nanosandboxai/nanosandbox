@@ -69,9 +69,11 @@ printed every `--version` (`ARCH=aarch64`, `omo`, `oh-my-codex`, `codex-cli`,
 
 ## Decisions
 
-1. **Base stays `node:22-slim`.** All three install and run on 22; OmO's `node>=24`
-   engine is advisory in npm. This avoids rebuilding/risking the eight existing
-   agent images.
+1. ~~**Base stays `node:22-slim`.**~~ **Superseded (2026-11-25):** the base moved
+   to `node:26-slim` (Node 26 is Active LTS) once the CLI pins were raised,
+   since `omo-ai` declares `engines.node >= 24`. The original finding stands as
+   history: all three install and run on 22, with OmO's `node>=24` engine only
+   advisory in npm, which had avoided rebuilding the eight existing agent images.
 2. **Headless argv** (all wrapped in `sh -c 'exec "$@" < /dev/null'` because OMX
    explicitly reads stdin and the runtime hands the agent a pipe):
    - OmO: `omo -p --no-session "<prompt>"`

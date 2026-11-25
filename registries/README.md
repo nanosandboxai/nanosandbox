@@ -148,7 +148,7 @@ This directory also contains the Docker images for running agents inside nanosan
 ### Image Architecture
 
 ```
-Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
+Dockerfile.base (node:26-slim + minimal system deps + python3/uv)
     |
     ├── Dockerfile.claude   → ghcr.io/nanosandboxai/nanosandbox/claude
     ├── Dockerfile.codex    → ghcr.io/nanosandboxai/nanosandbox/codex
@@ -165,7 +165,7 @@ Dockerfile.base (node:22-slim + minimal system deps + python3/uv)
 
 ### Base Image Contents
 
-- `node:22-slim` with minimal system deps (curl, ca-certificates, git, bash)
+- `node:26-slim` with minimal system deps (curl, ca-certificates, git, bash)
 - Python 3 + uv/uvx (runtime for Python-based MCP servers like mcp-server-fetch)
 - Pure installation: no user/group, no `/workspace`, no `CMD`/`ENTRYPOINT`
 - No nanosb runtime code: sandbox setup happens at the microVM layer
@@ -239,6 +239,54 @@ E2E suite exercises all eleven agents against GHCR:
 NANOSB_E2E_TAG=latest cargo test -p runtime --test agents_e2e_test \
   --features integration-tests -- --ignored --nocapture
 ```
+
+### Version updates (Dependabot)
+
+The Dockerfiles install the agent CLIs and pin their versions. For npm-installed
+CLIs the canonical pin lives in [`docker/package.json`](docker/package.json), and
+the build workflow
+([`../.github/workflows/registry-docker-build.yml`](../.github/workflows/registry-docker-build.yml))
+reads those versions and passes them as build-args (`CLAUDE_VERSION`,
+`CODEX_VERSION`, `GEMINI_VERSION`, `CRUSH_VERSION`, `OMO_VERSION`, `OMX_VERSION`,
+`OMC_VERSION`). A break in any link of the pin → manifest → build-arg chain means
+a Dependabot bump never reaches the image.
+
+[`../.github/dependabot.yml`](../.github/dependabot.yml) runs the npm ecosystem
+weekly on `/registries/docker` against `docker/package.json`, with
+`open-pull-requests-limit: 10` (the default of 5 can starve the queue when
+several agent bumps are in flight). Dependabot's npm ecosystem reads only
+`package.json`; it does not see `npm install -g` inside a Dockerfile. The docker
+ecosystem only parses literal `FROM image:tag` lines (it cannot resolve
+`FROM ${BASE_IMAGE}` and ignores `:latest`), so the shared base is tracked
+through [`docker/Dockerfile.base`](docker/Dockerfile.base)'s `FROM node:26-slim`.
+
+| Image | Version source | Version updates |
+|-------|----------------|-----------------|
+| claude, codex, gemini, crush, oh-my-openagent, oh-my-codex, oh-my-claude | `docker/package.json` (npm) | Dependabot (npm ecosystem, weekly) |
+| aider | PyPI `aider-chat`, installed with `uv tool` | Manual |
+| goose | GitHub release tarball | Manual |
+| opencode | curl installer with `--version` | Manual |
+| cursor | curl installer, unpinned | Manual |
+
+[`../scripts/check-agent-image-deps.sh`](../scripts/check-agent-image-deps.sh),
+run in CI by the `agent-image-deps` job, enforces the contract: every npm package
+installed by a Dockerfile must be a `package.json` dependency, every dependency
+must be installed by a Dockerfile, each `ARG *_VERSION` default must equal the
+manifest value, and every such ARG must be passed as a build-arg. Images with no
+`npm install -g` are skipped automatically, which is how the four manual images
+are excluded.
+
+**Adding a new npm-installed agent image.**
+
+1. Add the package to [`docker/package.json`](docker/package.json).
+2. Declare `ARG <NAME>_VERSION=<same version>` and install with
+   `npm install -g "<pkg>@${<NAME>_VERSION}"` in the Dockerfile.
+3. Add the version to the `node -p` resolution step and the `build-args:` block
+   in [`registry-docker-build.yml`](../.github/workflows/registry-docker-build.yml).
+   The build-arg is named `<NAME>_VERSION` and must be wired to
+   `${{ steps.versions.outputs.<name> }}`, where `<name>` is the variable name
+   without `_VERSION`, lowercased.
+4. Run `bash scripts/check-agent-image-deps.sh` and require exit 0.
 
 ### Attribution & license risk
 
