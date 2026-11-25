@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 LABEL org.opencontainers.image.description="Crush agent for nanosandbox sandboxes"
 
 # Pinned via registries/docker/package.json (Dependabot-managed).
-ARG CRUSH_VERSION=0.99.0
+ARG CRUSH_VERSION=0.102.0
 
 # Pure install: Crush CLI via npm + sanity check.
 RUN npm install -g "@charmland/crush@${CRUSH_VERSION}" \

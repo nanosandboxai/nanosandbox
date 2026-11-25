@@ -10,7 +10,7 @@ LABEL org.opencontainers.image.licenses="SUL-1.0"
 # Note: omo-ai declares engines.node >= 24; it installs and runs on the shared
 # node:22 base (npm only warns), verified in
 # docs/plans/2026-11-20-oh-my-agents-spikes.md.
-ARG OMO_VERSION=5.1.79
+ARG OMO_VERSION=5.1.81
 
 # OmO's lsp-daemon proxy sweep shells out to `ps`, and its interactive TUI
 # downloads `fd`/`ripgrep` on first run when they are missing. Install them so

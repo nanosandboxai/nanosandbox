@@ -3,7 +3,7 @@ FROM ${BASE_IMAGE}
 
 # Pinned so CLI flags and the login flow stay stable across rebuilds.
 # Pinned via registries/docker/package.json (Dependabot-managed).
-ARG CODEX_VERSION=0.166.0
+ARG CODEX_VERSION=0.169.0
 
 LABEL org.opencontainers.image.description="Codex agent for nanosandbox sandboxes"
 

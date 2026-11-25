@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 LABEL org.opencontainers.image.description="Claude Code agent for nanosandbox sandboxes"
 
 # Pinned via registries/docker/package.json (Dependabot-managed).
-ARG CLAUDE_VERSION=2.1.318
+ARG CLAUDE_VERSION=2.1.326
 
 # Pure install: Claude Code CLI + sanity check.
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \

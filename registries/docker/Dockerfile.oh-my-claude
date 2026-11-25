@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 # Pinned via registries/docker/package.json (Dependabot-managed).
 ARG OMC_VERSION=5.8.4
-ARG CLAUDE_VERSION=2.1.318
+ARG CLAUDE_VERSION=2.1.326
 
 # OMC orchestrates Claude Code and shells out to `ps` for its process tooling.
 RUN apt-get update \
