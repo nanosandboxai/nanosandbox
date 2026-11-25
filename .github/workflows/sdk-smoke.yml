@@ -30,7 +30,7 @@ jobs:
             echo "version=${GITHUB_REF_NAME#sdk-v}" >> "$GITHUB_OUTPUT"
           fi
       - if: contains(fromJSON('["java","kotlin"]'), matrix.sdk)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
