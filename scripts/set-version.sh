@@ -34,8 +34,8 @@ if [ "$#" -ne 1 ]; then
   exit 1
 fi
 NEW_VERSION="$1"
-if ! printf '%s' "$NEW_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-  echo "error: '$NEW_VERSION' is not a valid semver (expected X.Y.Z)" >&2
+if ! printf '%s' "$NEW_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+  echo "error: '$NEW_VERSION' is not a valid semver (expected X.Y.Z or X.Y.Z-<prerelease>)" >&2
   exit 1
 fi
 

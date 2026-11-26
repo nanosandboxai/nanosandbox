@@ -81,8 +81,17 @@ check "guest/crates/exec-agent/Cargo.toml version is 9.9.9" \
 check "sdk/rust/Cargo.toml still uses version.workspace = true" \
   grep -q '^version\.workspace = true' "$TMP/sdk/rust/Cargo.toml"
 
+# --- prerelease versions must be accepted (release candidates) --------------
+"$TMP/scripts/set-version.sh" 9.9.9-rc1
+
+check "prerelease VERSION is 9.9.9-rc1" \
+  grep -qx '9.9.9-rc1' "$TMP/VERSION"
+
+check "prerelease Cargo.toml version is 9.9.9-rc1" \
+  awk '/^\[workspace\.package\]/{inws=1} inws && /^version = /{found=1; exit !($0 ~ /"9.9.9-rc1"/)} END{exit !found}' "$TMP/Cargo.toml"
+
 if [ "$fail" -eq 0 ]; then
-  echo "==> PASS: all components aligned to 9.9.9"
+  echo "==> PASS: all set-version checks passed"
   exit 0
 else
   echo "==> FAIL: one or more components not aligned" >&2
