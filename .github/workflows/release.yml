@@ -174,10 +174,10 @@ jobs:
             GOWORK=off go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
 
       - name: Build runtime (zigbuild)
-        run: cargo zigbuild --release -p runtime --target ${{ matrix.rust_target }}
+        run: cargo zigbuild --release -p runtime --target ${{ matrix.rust_target }} --config 'target."cfg(target_os = \"linux\")".rustflags=[]'
 
       - name: Build nanosb-runtime (zigbuild)
-        run: cargo zigbuild --release -p nanosb-cli --bin nanosb-runtime --no-default-features --features runtime-host --target ${{ matrix.rust_target }}
+        run: cargo zigbuild --release -p nanosb-cli --bin nanosb-runtime --no-default-features --features runtime-host --target ${{ matrix.rust_target }} --config 'target."cfg(target_os = \"linux\")".rustflags=[]'
 
       - name: Download exec-agent artifact
         uses: actions/download-artifact@v4
@@ -432,7 +432,7 @@ jobs:
           grep '^version' Cargo.toml | head -1
 
       - name: Build release binary (glibc floor 2.28)
-        run: cargo zigbuild --release -p nanosb-cli --target x86_64-unknown-linux-gnu.2.28
+        run: cargo zigbuild --release -p nanosb-cli --target x86_64-unknown-linux-gnu.2.28 --config 'target."cfg(target_os = \"linux\")".rustflags=[]'
 
       - name: Verify binary
         run: |
@@ -492,7 +492,7 @@ jobs:
           grep '^version' Cargo.toml | head -1
 
       - name: Build release binary (glibc floor 2.28)
-        run: cargo zigbuild --release -p nanosb-cli --target aarch64-unknown-linux-gnu.2.28
+        run: cargo zigbuild --release -p nanosb-cli --target aarch64-unknown-linux-gnu.2.28 --config 'target."cfg(target_os = \"linux\")".rustflags=[]'
 
       - name: Verify binary
         run: |
