@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 # Pinned via registries/docker/package.json (Dependabot-managed).
 ARG OMX_VERSION=0.22.15
-ARG CODEX_VERSION=0.169.0
+ARG CODEX_VERSION=0.171.0
 
 # OMX drives the Codex CLI, shells out to `ps` (statusline/reaper) and uses
 # tmux for its durable team runtime.

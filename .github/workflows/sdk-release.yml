@@ -61,12 +61,12 @@ jobs:
       - if: matrix.sdk == 'python'
         run: python -m pip install --upgrade build twine
       - if: matrix.sdk == 'typescript'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
       - if: matrix.sdk == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.27"
       - if: matrix.sdk == 'ruby'
@@ -74,7 +74,7 @@ jobs:
         with:
           ruby-version: "3.3"
       - if: matrix.sdk == 'dotnet'
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
       - name: publish
@@ -96,7 +96,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
@@ -126,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - if: contains(fromJSON('["java","kotlin"]'), matrix.sdk)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
@@ -137,11 +137,11 @@ jobs:
         with:
           python-version: "3.12"
       - if: matrix.sdk == 'typescript'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
       - if: matrix.sdk == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.27"
       - if: matrix.sdk == 'ruby'
@@ -149,7 +149,7 @@ jobs:
         with:
           ruby-version: "3.3"
       - if: matrix.sdk == 'dotnet'
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
       - if: matrix.sdk == 'rust'
