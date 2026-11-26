@@ -19,7 +19,7 @@
 // Provisioning is configured by env. `NANOSB_VERSION` selects the runtime
 // version to download; when the user has not set it, the SDK pins it to its own
 // version (read from the package manifest), so `npm install
-// nanosandbox-sdk@0.2.0` provisions runtime v0.2.0. Other knobs:
+// nanosandbox-sdk@0.3.0` provisions runtime v0.3.0. Other knobs:
 // `NANOSB_HOME`, `NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`, and
 // `NANOSB_OFFLINE=1` to never download.
 
@@ -161,7 +161,7 @@ function findProvisioner() {
 
 // The SDK's own release version, read from the package manifest. Used to pin
 // the runtime version when the user has not set NANOSB_VERSION, so `npm
-// install nanosandbox-sdk@0.2.0` provisions the matching runtime v0.2.0.
+// install nanosandbox-sdk@0.3.0` provisions the matching runtime v0.3.0.
 function sdkVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
@@ -169,7 +169,7 @@ function sdkVersion() {
   } catch {
     // not installed / manifest unreadable
   }
-  return "0.2.0";
+  return "0.3.0";
 }
 
 // Environment for the provisioner child process: inherits the caller's

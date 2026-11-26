@@ -94,7 +94,7 @@ an embedded copy shipped in the gem. Provisioning is configured by env:
 | Variable | Description |
 |---|---|
 | `NANOSB_HOME` | Install root (default `~/.nanosandbox`) |
-| `NANOSB_VERSION` | Runtime version to install (defaults to the SDK's own version, e.g. `0.2.0`) |
+| `NANOSB_VERSION` | Runtime version to install (defaults to the SDK's own version, e.g. `0.3.0`) |
 | `NANOSB_RUNTIME_URL` | Release base URL (default the GitHub release) |
 | `NANOSB_RUNTIME_SHA256` | Expected sha256 of the bundle (optional, verified) |
 | `NANOSB_OFFLINE` | `1` = never download (fail if missing) |

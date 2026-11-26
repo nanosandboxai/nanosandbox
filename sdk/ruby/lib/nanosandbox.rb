@@ -14,7 +14,7 @@ module Nanosandbox
   CLIENT_NAME = "nanosandbox-ruby"
   # The SDK's own release version, used to pin the runtime version when the user
   # has not set NANOSB_VERSION (see nanosandbox/runtime.rb).
-  VERSION = "0.2.0"
+  VERSION = "0.3.0"
 
   class NanosbError < StandardError
     attr_reader :code, :message

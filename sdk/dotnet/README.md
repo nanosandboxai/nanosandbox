@@ -130,7 +130,7 @@ provisioner is resolved from `NANOSB_PROVISIONER`, then
 `scripts/sdk/ensure-runtime.sh` relative to the package/repo, then an embedded
 copy shipped with the SDK. Provisioning config is read from the environment:
 `NANOSB_HOME` (install root), `NANOSB_VERSION` (version to download; defaults to
-the SDK's own version, e.g. `0.2.0`), `NANOSB_RUNTIME_URL` (release base URL),
+the SDK's own version, e.g. `0.3.0`), `NANOSB_RUNTIME_URL` (release base URL),
 `NANOSB_RUNTIME_SHA256` (optional bundle checksum), and `NANOSB_OFFLINE=1`
 (never download).
 
