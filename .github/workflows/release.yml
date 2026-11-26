@@ -697,6 +697,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.94.0
 
+      - name: Install macOS build dependencies
+        run: |
+          brew install lld llvm
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+
+      - name: Build upstream libkrun
+        run: bash runtime/scripts/build-libkrun.sh
+
       - name: Download runtime artifacts
         uses: actions/download-artifact@v4
         with:
@@ -815,6 +823,9 @@ jobs:
           PRERELEASE_FLAG=""
           if echo "$TAG_NAME" | grep -qE '[-](rc|alpha|beta|dev)'; then
             PRERELEASE_FLAG="--prerelease"
+          fi
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release delete "$TAG_NAME" --yes
           fi
           gh release create "$TAG_NAME" \
             --title "nanosandbox $TAG_NAME" \
