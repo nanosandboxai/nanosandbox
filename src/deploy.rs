@@ -319,7 +319,7 @@ pub fn deploy_plan_for(
         // Goose needs `GOOSE_PROVIDER`/`GOOSE_MODEL`; reuse the TUI resolver
         // (no-op when `GOOSE_PROVIDER` is already set, so explicit env wins).
         if agent_type == sandbox::AgentType::Goose {
-            crate::tui::run::resolve_goose_env(&mut rc.env, config.model.as_deref());
+            crate::agent_env::resolve_goose_env(&mut rc.env, config.model.as_deref());
         }
     }
     Ok((plan, rc))
