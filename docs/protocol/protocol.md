@@ -62,8 +62,8 @@ check capabilities before calling an optional verb.
 {
   "type": "hello_ok",
   "protocol": "1.0.0",
-  "helper_version": "0.4.0",
-  "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "networking", "handles", "ephemeral", "signal", "wait", "exec_pty"]
+  "helper_version": "0.3.0",
+  "capabilities": ["lifecycle", "exec", "fs", "logs", "metrics", "volumes", "secrets", "snapshots", "pause", "restart", "networking", "handles", "ephemeral", "signal", "wait", "exec_pty"]
 }
 ```
 

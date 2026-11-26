@@ -92,14 +92,14 @@ guest-bin/exec-agent    # in-guest exec agent
 entitlements.plist      # macOS hypervisor entitlement
 ```
 
-The release pipeline builds one bundle per platform (macOS arm64, Linux x86_64)
-from already-built pieces (helper from `target/release/nanosb-runtime`,
+The release pipeline builds one bundle per platform (macOS arm64, Linux x86_64,
+Linux arm64) from already-built pieces (helper from `target/release/nanosb-runtime`,
 gvproxy + libkrunfw + exec-agent from `$NANOSB_SRC_HOME`, `entitlements.plist`
 from the repo root) and attaches it to each GitHub release, along with a
 `.sha256` sidecar:
 
 ```bash
-scripts/sdk/build-runtime-bundle.sh 0.2.0 --out dist
+scripts/sdk/build-runtime-bundle.sh 0.3.0 --out dist
 # → dist/nanosandbox-runtime-darwin-arm64.tar.gz (+ .sha256)
 ```
 
