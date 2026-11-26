@@ -14,9 +14,9 @@
 #   - guest/crates/exec-agent/Cargo.toml
 #
 # sdk/rust uses `version.workspace = true` (implicit) and is verified, never
-# hardcoded. sdk/go (versioned via git tags), sdk/ruby (no gemspec), sdk/kotlin
-# (no gradle manifest) and sdk/dotnet (non-packable test project) carry no
-# version field and are reported as skipped.
+# hardcoded. sdk/go has no manifest version; sdk/ruby, sdk/kotlin and sdk/dotnet
+# manifests are synced by scripts/set-sdk-version.sh. All four are reported as
+# skipped here.
 #
 # Idempotent: running it twice with the same version is a no-op. Fails loudly
 # if a required file or version pattern is missing.
@@ -171,13 +171,11 @@ else
   exit 1
 fi
 
-# --- 9. SDKs without a version field (reported, not rewritten) --------------
-# sdk/go: versioned via git tags (go.mod carries no version).
-# sdk/ruby: no gemspec / packaging manifest.
-# sdk/kotlin: no gradle manifest (built via build.sh into a jar).
-# sdk/dotnet: non-packable test project (IsPackable=false).
+# --- 9. SDKs handled by set-sdk-version.sh (reported, not rewritten) --------
+# sdk/go: no manifest version (go.mod); pinned via the sdkVersion constant.
+# sdk/ruby, sdk/kotlin, sdk/dotnet: manifests are synced by set-sdk-version.sh.
 for sdk in go ruby kotlin dotnet; do
-  echo "  sdk/$sdk: no version field (skipped)"
+  echo "  sdk/$sdk: handled by set-sdk-version.sh (skipped)"
 done
 
 echo "==> all components aligned to $NEW_VERSION"
