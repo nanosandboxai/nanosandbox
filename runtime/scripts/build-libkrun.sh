@@ -172,6 +172,19 @@ cargo build --release --features "$LIBKRUN_FEATURES" -j "$JOBS" 2>&1
 # Restore the original Cargo.toml
 mv "$CARGO_TOML.bak" "$CARGO_TOML"
 
+# A Rust staticlib bundles its own std. Linking it into another Rust binary
+# duplicates std symbols; GNU ld accepts --allow-multiple-definition for that,
+# but zig cc (the glibc-2.28 cross linker) rejects it. Weaken the archive's
+# globals instead so the final binary's strong std definitions win.
+if [ "$(uname)" != "Darwin" ]; then
+    weakdir="$(mktemp -d)"
+    lib_abs="$PWD/target/release/libkrun.a"
+    ( cd "$weakdir" && ar x "$lib_abs" \
+      && for o in *.o; do objcopy --weaken "$o"; done \
+      && ar rcs "$lib_abs" *.o )
+    rm -rf "$weakdir"
+fi
+
 # 4. Copy the static library to the output directory
 mkdir -p "$LIBKRUN_OUTPUT_DIR"
 cp "target/release/libkrun.a" "$LIBKRUN_OUTPUT_DIR/"
