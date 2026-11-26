@@ -1656,7 +1656,9 @@ async fn spawn_supervisor_panel(
     }
 
     let client = crate::supervisor::client::SupervisorClient::new(&name);
-    if let Err(e) = deploy::wait_supervisor_running(&client, 60).await {
+    if let Err(e) =
+        deploy::wait_supervisor_running(&client, deploy::SUPERVISOR_START_TIMEOUT_SECS).await
+    {
         let _ = tx.send(AppEvent::SandboxFailed {
             panel_id,
             error: format!("Supervisor did not start: {}", e),

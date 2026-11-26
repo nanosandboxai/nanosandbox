@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 /// Guest vsock port the exec agent listens on (bridged to a host socket).
 pub const EXEC_VSOCK_PORT: u32 = 1024;
 
+/// Default budget for a sandbox to reach `Running` and for its exec channel to
+/// come up. A cold start includes the image pull and rootfs extraction, which
+/// can exceed one minute for large agent images, so allow five.
+pub const SUPERVISOR_START_TIMEOUT_SECS: u64 = 300;
+
 /// Host directory holding the cross-compiled guest binaries (exec agent).
 ///
 /// Resolution order: `NANOSB_GUEST_BIN_DIR`, then `$NANOSB_HOME/guest-bin`,

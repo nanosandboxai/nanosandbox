@@ -8,6 +8,7 @@ use crate::supervisor::client::SupervisorClient;
 pub use nanosb_host::deploy::{
     exec_agent_path, extract_boot_env, guest_bin_dir, prepare_supervisor_spawn, stage_exec_agent,
     wait_for_exec_channel, wait_for_running, Origin, SupervisorSpawn, EXEC_VSOCK_PORT,
+    SUPERVISOR_START_TIMEOUT_SECS,
 };
 
 /// Spawn a detached supervisor process for `sandbox_name`.

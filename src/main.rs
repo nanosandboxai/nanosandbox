@@ -1254,7 +1254,11 @@ mod cli {
                     );
                 }
                 if outcome.is_ok() {
-                    outcome = wait_supervisor_running(&client, 60).await;
+                    outcome = wait_supervisor_running(
+                        &client,
+                        nanosb_cli::deploy::SUPERVISOR_START_TIMEOUT_SECS,
+                    )
+                    .await;
                 }
                 outcome
             };
@@ -1504,7 +1508,7 @@ mod cli {
             timeout,
         )?;
         let client = SupervisorClient::new(sandbox_name);
-        wait_supervisor_running(&client, 60).await?;
+        wait_supervisor_running(&client, nanosb_cli::deploy::SUPERVISOR_START_TIMEOUT_SECS).await?;
         if !json_mode {
             println!("{} Sandbox {} started", "✓".green(), sandbox_name.bold());
         }
@@ -2131,7 +2135,10 @@ mod cli {
         let mut child = nanosb_cli::deploy::spawn_supervisor_foreground(&sp)?;
         let pid = child.id();
         // Readiness handshake: report only once the sandbox is Running.
-        if let Err(e) = nanosb_cli::deploy::wait_for_running(&sp.name, 60) {
+        if let Err(e) = nanosb_cli::deploy::wait_for_running(
+            &sp.name,
+            nanosb_cli::deploy::SUPERVISOR_START_TIMEOUT_SECS,
+        ) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(e);
