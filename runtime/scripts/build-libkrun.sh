@@ -143,6 +143,11 @@ if [ -z "${LIBCLANG_PATH:-}" ] || { [ ! -e "${LIBCLANG_PATH}/libclang.so" ] && [
     exit 1
 fi
 echo "==> LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>}"
+# Some build scripts (krun-input) link libclang dynamically, so the loader must
+# find it at build-script runtime too.
+if [ "$(uname)" != "Darwin" ]; then
+    export LD_LIBRARY_PATH="${LIBCLANG_PATH}:${LD_LIBRARY_PATH:-}"
+fi
 export NET=1
 export BLK=1
 export INIT_BLOB=1
