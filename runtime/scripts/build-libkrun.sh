@@ -135,7 +135,7 @@ if [ -z "${LIBCLANG_PATH:-}" ]; then
         fi
     fi
 fi
-if [ -z "${LIBCLANG_PATH:-}" ] || [ ! -e "${LIBCLANG_PATH}/libclang.so" ]; then
+if [ -z "${LIBCLANG_PATH:-}" ] || { [ ! -e "${LIBCLANG_PATH}/libclang.so" ] && [ ! -e "${LIBCLANG_PATH}/libclang.dylib" ]; }; then
     err "libclang not found (LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>}).
   The libkrun build needs libclang for bindgen. Install it and set LIBCLANG_PATH:
     Ubuntu/Debian: sudo apt-get install -y libclang-dev && export LIBCLANG_PATH=\$(llvm-config --prefix)/lib
