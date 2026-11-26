@@ -514,6 +514,9 @@ jobs:
   build-cli-macos:
     name: Build CLI (macOS arm64)
     runs-on: macos-latest
+    env:
+      HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -546,6 +549,7 @@ jobs:
         run: cargo build --release -p nanosb-cli --target aarch64-apple-darwin
 
       - name: Sign (Developer ID)
+        if: env.HAS_SIGNING == 'true'
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -564,7 +568,16 @@ jobs:
             target/aarch64-apple-darwin/release/nanosb
           codesign --verify --verbose=2 target/aarch64-apple-darwin/release/nanosb
 
+      - name: Ad-hoc sign with hypervisor entitlement (no Developer ID cert)
+        if: env.HAS_SIGNING != 'true'
+        run: |
+          codesign --sign - --entitlements entitlements.plist --force \
+            target/aarch64-apple-darwin/release/nanosb
+          codesign --verify --verbose=2 target/aarch64-apple-darwin/release/nanosb
+          echo "::warning::Developer ID signing skipped (MACOS_CERT_P12 not set); ad-hoc signed with the hypervisor entitlement"
+
       - name: Notarize and staple
+        if: env.HAS_NOTARY == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -575,6 +588,10 @@ jobs:
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple target/aarch64-apple-darwin/release/nanosb
           spctl -a -vv target/aarch64-apple-darwin/release/nanosb
+
+      - name: Skip notarization (no Apple credentials)
+        if: env.HAS_NOTARY != 'true'
+        run: echo "::warning::Notarization skipped (APPLE_ID / APPLE_APP_PASSWORD not set)"
 
       - name: Verify binary
         run: |
