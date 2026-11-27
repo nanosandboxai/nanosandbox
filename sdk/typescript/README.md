@@ -35,9 +35,9 @@ import { ManagedRuntime, SandboxBuilder, SandboxClient } from "nanosandbox-sdk";
 
 const rt = await ManagedRuntime.start();
 try {
-  const client = SandboxClient.connect(rt.socket);
-  const box = client.create(
-    new SandboxBuilder("library/alpine:latest").withName("demo").build(),
+  const client = await SandboxClient.connect(rt.socket);
+  const box = await client.create(
+    new SandboxBuilder("library/alpine:latest").withName("demo").withResources(1, 512).build(),
   );
   await box.start();
 
@@ -163,6 +163,12 @@ release version. Config comes from the environment: `NANOSB_HOME`,
 `NANOSB_RUNTIME_SHA256`, `NANOSB_OFFLINE=1` to never download, and
 `NANOSB_PROVISIONER`. So `npm install nanosandbox-sdk` is the only setup step
 needed.
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

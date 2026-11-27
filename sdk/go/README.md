@@ -74,7 +74,9 @@ func main() {
 	}
 
 	box, err := client.CreateWith(
-		nanosandbox.NewSandboxBuilder("library/alpine:latest").WithName("demo"),
+		nanosandbox.NewSandboxBuilder("library/alpine:latest").
+			WithName("demo").
+			WithResources(1, 512),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -221,6 +223,12 @@ which downloads, verifies, and installs the per-platform runtime bundle under
 environment: `NANOSB_HOME`, `NANOSB_VERSION` (required to download),
 `NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`, `NANOSB_OFFLINE=1` to never
 download, and `NANOSB_PROVISIONER`.
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

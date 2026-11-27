@@ -143,7 +143,7 @@ This makes `dotnet add package Nanosandbox.Sdk` the only step needed.
 ```csharp
 using (var rt = ManagedRuntime.start()) {
     var client = SandboxClient.connect(rt.Socket);
-    var box = client.createWith(new SandboxBuilder("library/alpine:latest").withName("demo"));
+var box = client.createWith(new SandboxBuilder("library/alpine:latest").withName("demo").withResources(1, 512));
     Console.WriteLine(box.exec("echo", new List<String> { "hello from a microVM" }).str("stdout"));
 }
 ```
@@ -157,6 +157,12 @@ copy shipped with the SDK. Provisioning config is read from the environment:
 the SDK's own version, e.g. `0.3.0`), `NANOSB_RUNTIME_URL` (release base URL),
 `NANOSB_RUNTIME_SHA256` (optional bundle checksum), and `NANOSB_OFFLINE=1`
 (never download).
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

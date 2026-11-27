@@ -36,7 +36,7 @@ from nanosandbox import ManagedRuntime, SandboxBuilder, SandboxClient
 with ManagedRuntime() as rt:
     client = SandboxClient.connect(str(rt.socket))
     box = client.create_with(
-        SandboxBuilder("library/alpine:latest").with_name("demo")
+        SandboxBuilder("library/alpine:latest").with_name("demo").with_resources(1, 512)
     )
     box.start()
 
@@ -140,6 +140,12 @@ to the SDK's release version. So `pip install nanosandbox-sdk` is the only step
 needed. Config comes from the environment: `NANOSB_HOME`, `NANOSB_VERSION`
 (required to download), `NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`,
 `NANOSB_OFFLINE=1` to never download, and `NANOSB_PROVISIONER`.
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

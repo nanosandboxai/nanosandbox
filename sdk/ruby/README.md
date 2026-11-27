@@ -29,7 +29,7 @@ require "nanosandbox/runtime"
 Nanosandbox::ManagedRuntime.open do |rt|
   client = Nanosandbox::SandboxClient.connect(rt.socket)
   box = client.create(
-    Nanosandbox::SandboxBuilder.new("library/alpine:latest").with_name("demo").build
+    Nanosandbox::SandboxBuilder.new("library/alpine:latest").with_name("demo").with_resources(1, 512).build
   )
   box.start
 
@@ -127,6 +127,12 @@ an embedded copy shipped in the gem. Provisioning is configured by env:
 | `NANOSB_RUNTIME_SHA256` | Expected sha256 of the bundle (optional, verified) |
 | `NANOSB_OFFLINE` | `1` = never download (fail if missing) |
 | `NANOSB_PROVISIONER` | Explicit path to the provisioner script |
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

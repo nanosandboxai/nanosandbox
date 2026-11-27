@@ -25,7 +25,12 @@ fn main() -> Result<()> {
     let rt = ManagedRuntime::start().unwrap();
     let client = SandboxClient::connect(rt.socket())?;
     let sandbox = client
-        .create_with(SandboxBuilder::new("library/alpine:latest").name("demo"))?;
+        .create_with(
+            SandboxBuilder::new("library/alpine:latest")
+                .name("demo")
+                .cpus(1)
+                .memory_mb(512),
+        )?;
 
     sandbox.start()?;
     let out = sandbox.exec("echo", &["hello from a microVM"])?;
@@ -91,6 +96,12 @@ download, and `NANOSB_PROVISIONER`.
 ```bash
 cargo build -p nanosandbox-sdk
 ```
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

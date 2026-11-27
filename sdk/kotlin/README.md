@@ -67,6 +67,8 @@ fun main() {
         val spec = KtJson.obj()
         spec.set("image", KtJson.str("library/alpine:latest"))
         spec.set("name", KtJson.str("demo"))
+        spec.set("cpus", KtJson.num(1))
+        spec.set("memory_mb", KtJson.num(512))
 
         val box = client.create(spec)
         box.start()
@@ -193,6 +195,12 @@ The canonical build is Gradle (wrapper committed):
 The jar is self-contained: the Kotlin facade, the `KtJson` Java shim, and the
 Java SDK classes (`sdk/java`) in one artifact. `bash sdk/kotlin/build.sh`
 remains as a no-Gradle fallback that produces `sdk/kotlin/nanosandbox-sdk-kotlin.jar`.
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

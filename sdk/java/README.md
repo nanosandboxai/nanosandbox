@@ -65,7 +65,7 @@ public class Demo {
     try (ManagedRuntime rt = ManagedRuntime.start()) {
       SandboxClient client = SandboxClient.connect(rt.socket.toString());
       Sandbox sandbox = client.createWith(
-          new SandboxBuilder("library/alpine:latest").withName("demo"));
+          new SandboxBuilder("library/alpine:latest").withName("demo").withResources(1, 512));
       sandbox.start();
 
       System.out.print(sandbox.exec("echo", new String[]{"hello from a microVM"}).getStr("stdout"));
@@ -180,6 +180,12 @@ SDK), which downloads + verifies + installs the runtime under `$NANOSB_HOME`,
 pinned to the SDK's release version. Config env: `NANOSB_HOME`, `NANOSB_VERSION`
 (required to download), `NANOSB_RUNTIME_URL`, `NANOSB_OFFLINE`,
 `NANOSB_RUNTIME_SHA256`, and `NANOSB_PROVISIONER`.
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

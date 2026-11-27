@@ -50,7 +50,7 @@ Or let the SDK **start the helper for you** via `ManagedRuntime` (locates/spawns
 |---|---|
 | Rust | `let rt = ManagedRuntime::start()?; SandboxClient::connect(rt.socket())?` |
 | Python | `with ManagedRuntime() as rt: SandboxClient.connect(str(rt.socket))` |
-| TypeScript | `const rt = await ManagedRuntime.start(); SandboxClient.connect(rt.socket)` |
+| TypeScript | `const rt = await ManagedRuntime.start(); await SandboxClient.connect(rt.socket)` |
 | Go | `rt, _ := nanosandbox.StartRuntime(15*time.Second)` |
 | Ruby | `Nanosandbox::ManagedRuntime.open { \|rt\| ... }` |
 | Java | `try (var rt = ManagedRuntime.start()) { ... }` |
@@ -71,6 +71,53 @@ root, default `~/.nanosandbox`), `NANOSB_VERSION` (runtime version to download,
 pinned to the SDK's release version), `NANOSB_RUNTIME_URL` (release base URL),
 `NANOSB_RUNTIME_SHA256` (expected sha256, verified), `NANOSB_OFFLINE=1` (never
 download), and `NANOSB_PROVISIONER` (explicit provisioner path).
+
+## Headless code agents
+
+Use an agent image and its headless command instead of Alpine. Inject the
+provider key as an environment variable, start the sandbox, and exec the
+command.
+
+| Agent | Image (under `ghcr.io/nanosandboxai/nanosandbox/`) | Headless command | Environment |
+|---|---|---|---|
+| Claude Code | `claude:latest` | `claude --print "<prompt>"` | `ANTHROPIC_API_KEY` |
+| Codex | `codex:latest` | `codex exec --skip-git-repo-check --json "<prompt>" < /dev/null` | `CODEX_API_KEY` (and `OPENAI_API_KEY`) |
+| Gemini CLI | `gemini:latest` | `gemini -p "<prompt>"` | `GEMINI_API_KEY` |
+| Goose | `goose:latest` | `goose run --text "<prompt>"` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
+| Aider | `aider:latest` | `aider --message "<prompt>" --yes --no-auto-commits` | provider key |
+| OpenCode | `opencode:latest` | `opencode run "<prompt>"` | provider key |
+| Crush | `crush:latest` | `crush run "<prompt>"` | provider key |
+
+Verified Codex example (run against `v0.3.0-rc2`; the final event carries the
+agent message `ok`):
+
+```python
+import os
+from nanosandbox import ManagedRuntime, SandboxBuilder, SandboxClient
+
+with ManagedRuntime() as rt:
+    client = SandboxClient.connect(str(rt.socket))
+    box = client.create_with(
+        SandboxBuilder("ghcr.io/nanosandboxai/nanosandbox/codex:latest")
+        .with_name("codex-agent")
+        .with_env("OPENAI_API_KEY", os.environ["OPENAI_API_KEY"])
+        .with_env("CODEX_API_KEY", os.environ["OPENAI_API_KEY"])
+        .with_resources(2, 2048)
+    )
+    box.start()
+    out = box.exec(
+        "sh",
+        ["-c", "codex exec --skip-git-repo-check --json 'Reply with exactly: ok' < /dev/null"],
+    )
+    print(out["stdout"])
+    box.remove(force=True)
+```
+
+Codex waits for stdin when it is not a TTY, so redirect it from `/dev/null`;
+this image uses `CODEX_API_KEY` for API-key auth. For Claude, use
+`claude --print "<prompt>"` with `ANTHROPIC_API_KEY`. See
+<https://nanosandbox.ai/docs/sdk/agents> for the full guide and per-language
+adapters.
 
 ## Conformance suite
 
