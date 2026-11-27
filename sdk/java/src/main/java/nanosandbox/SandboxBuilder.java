@@ -22,10 +22,19 @@ public final class SandboxBuilder {
 
     /** Sets the CPU/memory resource limits. */
     public SandboxBuilder withResources(int cpus, int memoryMb) {
-        Json res = Json.object();
-        res.set("cpus", Json.ofNumber(cpus));
-        res.set("memory_mb", Json.ofNumber(memoryMb));
-        spec.set("resources", res);
+        spec.set("cpus", Json.ofNumber(cpus));
+        spec.set("memory_mb", Json.ofNumber(memoryMb));
+        return this;
+    }
+
+    /** Adds an environment variable for the guest. */
+    public SandboxBuilder withEnv(String key, String value) {
+        Json env = spec.get("env");
+        if (env.kind() != Json.Kind.OBJECT) {
+            env = Json.object();
+            spec.set("env", env);
+        }
+        env.set(key, Json.ofString(value));
         return this;
     }
 
