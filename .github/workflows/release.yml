@@ -139,7 +139,7 @@ jobs:
           go-version: '1.27'
 
       - name: Download kernel bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kernel-bundles
           path: .
@@ -168,7 +168,7 @@ jobs:
         run: cargo zigbuild --release -p nanosb-cli --bin nanosb-runtime --target ${{ matrix.rust_target }}
 
       - name: Download exec-agent artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: exec-agent
           path: artifacts/exec-agent
@@ -262,7 +262,7 @@ jobs:
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
       - name: Download kernel bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kernel-bundles
           path: .
@@ -296,7 +296,7 @@ jobs:
           GOWORK=off CGO_ENABLED=0 go build -ldflags="-s -w" -o gvproxy ./cmd/gvproxy
 
       - name: Download exec-agent artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: exec-agent
           path: artifacts/exec-agent
@@ -634,13 +634,13 @@ jobs:
         uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Download runtime artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-darwin-arm64
           path: artifacts/release-darwin-arm64
 
       - name: Download exec-agent artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: exec-agent
           path: artifacts/exec-agent
@@ -694,7 +694,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 

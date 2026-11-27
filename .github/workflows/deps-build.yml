@@ -135,7 +135,7 @@ jobs:
         run: bash runtime/scripts/ci/${{ matrix.distro.script }}
 
       - name: Download kernel bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kernel-bundles
           path: .
@@ -257,7 +257,7 @@ jobs:
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
       - name: Download kernel bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kernel-bundles
           path: .
