@@ -336,7 +336,6 @@ sandboxes:
     env:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     env_file: .env.claude
-    agent: python-developer
     skills: [git-workflow, tdd]
     model: claude-sonnet-4
     permissions: accept-edits
