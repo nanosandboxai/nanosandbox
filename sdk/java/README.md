@@ -49,6 +49,39 @@ sdk/java/
     └── Run.java                     # conformance driver (single-file source launch)
 ```
 
+## Quickstart (complete program)
+
+Requires JDK 21+; the first run downloads the runtime bundle. Save as
+`Demo.java` and run it with the SDK on the classpath:
+
+```java
+import nanosandbox.ManagedRuntime;
+import nanosandbox.Sandbox;
+import nanosandbox.SandboxBuilder;
+import nanosandbox.SandboxClient;
+
+public class Demo {
+  public static void main(String[] args) throws Exception {
+    try (ManagedRuntime rt = ManagedRuntime.start()) {
+      SandboxClient client = SandboxClient.connect(rt.socket.toString());
+      Sandbox sandbox = client.createWith(
+          new SandboxBuilder("library/alpine:latest").withName("demo"));
+      sandbox.start();
+
+      System.out.print(sandbox.exec("echo", new String[]{"hello from a microVM"}).getStr("stdout"));
+
+      sandbox.remove(true);
+    }
+  }
+}
+```
+
+Expected output:
+
+```text
+hello from a microVM
+```
+
 ## Usage
 
 ```java
@@ -157,7 +190,7 @@ temp Unix socket:
 mvn -q -f sdk/java/pom.xml test
 ```
 
-Conformance driver — runs all 35 scenarios in `sdk/conformance/scenarios/`
+Conformance driver — runs all 40 scenarios in `sdk/conformance/scenarios/`
 against the `nanosb-conformance` harness:
 
 ```bash
@@ -169,7 +202,7 @@ java -cp sdk/java/target/classes sdk/java/conformance/Run.java
 
 Run from the repository root (the driver resolves `sdk/conformance/scenarios`
 and `target/debug/nanosb-conformance` relative to the working directory).
-Expected output: `35 passed, 0 failed`, exit code 0.
+Expected output: `40 passed, 0 failed`, exit code 0.
 
 Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 

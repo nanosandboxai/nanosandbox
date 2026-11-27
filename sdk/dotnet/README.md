@@ -8,7 +8,7 @@ for tests only.
 
 The client surface mirrors the other SDKs and the driver contract in
 [`sdk/conformance/SPEC.md`](../conformance/SPEC.md). It passes the shared
-conformance suite (35/35).
+conformance suite (40/40).
 
 ## Requirements
 
@@ -41,6 +41,30 @@ sdk/dotnet/
     ├── conformance.csproj           # exe
     ├── Run.cs                       # conformance driver
     └── Driver.cs                    # step dispatch + assert evaluation
+```
+
+## Quickstart (complete program)
+
+Requires .NET SDK 8.0+; the first run downloads the runtime bundle. In a console
+project with the package installed:
+
+```csharp
+using System;
+using System.Collections.Generic;
+
+using var rt = ManagedRuntime.start();
+var client = SandboxClient.connect(rt.Socket);
+var box = client.createWith(new SandboxBuilder("library/alpine:latest").withName("demo"));
+
+box.start();
+Console.Write(box.exec("echo", new List<string> { "hello from a microVM" }).str("stdout"));
+box.remove(true);
+```
+
+Expected output:
+
+```text
+hello from a microVM
 ```
 
 ## Usage
@@ -84,7 +108,7 @@ var inner = stat.has("stat") ? stat.get("stat") : stat; // is_dir at inner.boolV
 // Logs (buffered + follow) and metrics (+ stream).
 var lines = box.logsWith(10, -1, null).arr("lines");
 box.metrics().intVal("disk_used_bytes");
-box.metricsStream(100, sample => Console.WriteLine(sample.getNum("cpu_percent")));
+box.metricsStream(100, sample => Console.WriteLine(sample.num("cpu_percent")));
 
 // Volumes, secrets, snapshots.
 box.volumeCreate("data", "/host/volumes/data");
@@ -142,7 +166,7 @@ Unit tests (no VM required):
 dotnet test sdk/dotnet
 ```
 
-Conformance driver — all 35 scenarios in `sdk/conformance/scenarios/`:
+Conformance driver — all 40 scenarios in `sdk/conformance/scenarios/`:
 
 ```bash
 dotnet run --project sdk/dotnet/conformance
@@ -155,4 +179,4 @@ Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 NANOSB_E2E=1 dotnet test sdk/dotnet --filter E2ETest
 ```
 
-Expected conformance output: `35 passed, 0 failed`, exit code 0.
+Expected conformance output: `40 passed, 0 failed`, exit code 0.

@@ -7,7 +7,7 @@ the standard library (`socket`, `json`, `base64`) — no third-party dependencie
 The client surface mirrors the Rust reference client
 (`crates/client/src/client.rs`) and the driver contract in
 [`sdk/conformance/SPEC.md`](../conformance/SPEC.md). It passes the shared
-conformance suite (35/35).
+conformance suite (40/40).
 
 ## Requirements
 
@@ -23,6 +23,32 @@ For local development, install from the repo:
 
 ```bash
 pip install ./sdk/python          # or: pip install -e ./sdk/python
+```
+
+## Quickstart (complete program)
+
+`ManagedRuntime` starts the helper on first use; the first run also downloads
+the runtime bundle. Save as `demo.py` and run `python demo.py`:
+
+```python
+from nanosandbox import ManagedRuntime, SandboxBuilder, SandboxClient
+
+with ManagedRuntime() as rt:
+    client = SandboxClient.connect(str(rt.socket))
+    box = client.create_with(
+        SandboxBuilder("library/alpine:latest").with_name("demo")
+    )
+    box.start()
+
+    print(box.exec("echo", ["hello from a microVM"])["stdout"], end="")
+
+    box.remove(force=True)
+```
+
+Expected output:
+
+```text
+hello from a microVM
 ```
 
 ## Usage
@@ -62,7 +88,7 @@ box.fs_read_to_string("/tmp/x")          # "hello"
 box.fs_read("/tmp/x")                    # b"hello"
 box.fs_exists("/tmp/x")                  # True
 box.fs_mkdir("/tmp/dir", recursive=True)
-box.fs_stat("/tmp/dir")["stat"]["is_dir"]  # True
+box.fs_stat("/tmp/dir")["is_dir"]  # True
 
 # Logs (buffered + follow) and metrics (+ stream).
 lines = box.logs_with(tail=10, cursor=0, source="stdout")   # list of log lines
@@ -123,7 +149,7 @@ Unit tests (in-process fake helper, no VM):
 python3 -m unittest discover -s sdk/python/tests
 ```
 
-Conformance driver — all 35 scenarios in `sdk/conformance/scenarios/`:
+Conformance driver — all 40 scenarios in `sdk/conformance/scenarios/`:
 
 ```bash
 python3 sdk/python/conformance/run.py

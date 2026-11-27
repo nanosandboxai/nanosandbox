@@ -17,6 +17,34 @@ and the driver contract in `sdk/conformance/SPEC.md`.
 gem install nanosandbox-sdk
 ```
 
+## Quickstart (complete program)
+
+Requires Ruby 2.6+; the first run downloads the runtime bundle. Save as
+`demo.rb` and run `ruby demo.rb`:
+
+```ruby
+require "nanosandbox"
+require "nanosandbox/runtime"
+
+Nanosandbox::ManagedRuntime.open do |rt|
+  client = Nanosandbox::SandboxClient.connect(rt.socket)
+  box = client.create(
+    Nanosandbox::SandboxBuilder.new("library/alpine:latest").with_name("demo").build
+  )
+  box.start
+
+  print box.exec("echo", ["hello from a microVM"])["stdout"]
+
+  box.remove(true)
+end
+```
+
+Expected output:
+
+```text
+hello from a microVM
+```
+
 ## Usage
 
 ```ruby
@@ -108,14 +136,14 @@ Unit tests (minitest, in-process fake helper):
 ruby -I sdk/ruby/lib sdk/ruby/test/test_client.rb
 ```
 
-Conformance driver — runs all 35 scenarios in `sdk/conformance/scenarios/`:
+Conformance driver — runs all 40 scenarios in `sdk/conformance/scenarios/`:
 
 ```bash
 ruby -I sdk/ruby/lib sdk/ruby/conformance/run.rb
 # NANOSB_CONFORMANCE_BIN=/path/to/nanosb-conformance ruby -I sdk/ruby/lib sdk/ruby/conformance/run.rb
 ```
 
-Expected output: `35 passed, 0 failed`, exit code 0.
+Expected output: `40 passed, 0 failed`, exit code 0.
 
 Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 

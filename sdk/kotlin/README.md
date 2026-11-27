@@ -38,17 +38,53 @@ sdk/kotlin/
 ├── src/test/nanosandbox/
 │   └── SmokeTest.kt                  # smoke test: KtJson round-trip + facade vs a fake NDJSON helper
 └── conformance/
-    └── Run.kt                        # conformance driver (runs all 35 scenarios)
+    └── Run.kt                        # conformance driver (runs all 40 scenarios)
 ```
 
 ### Why `KtJson.java`?
 
 Kotlin cannot call `Json.object()` directly: a Java static method named
 `object` breaks the Kotlin compiler's companion-object synthesis for the whole
-class (kotlinc 2.4.21), so every static factory on `Json` becomes unresolvable
+class, so every static factory on `Json` becomes unresolvable
 from Kotlin. `KtJson` re-exposes the factories (`obj`, `arr`, `str`, `bool`,
 `num`, `nul`, `parse`) under names Kotlin can resolve; the facade and driver
 use those. `Json` is still used as a type throughout.
+
+## Quickstart (complete program)
+
+Requires JDK 21+; the first run downloads the runtime bundle. In your Kotlin/JVM
+app with the SDK on the classpath:
+
+```kotlin
+import nanosandbox.ManagedRuntime
+import nanosandbox.kt.KotlinClient
+import nanosandbox.kt.KtJson
+
+fun main() {
+    val rt = ManagedRuntime.start()
+    try {
+        val client = KotlinClient.connect(rt.socket.toString())
+        val spec = KtJson.obj()
+        spec.set("image", KtJson.str("library/alpine:latest"))
+        spec.set("name", KtJson.str("demo"))
+
+        val box = client.create(spec)
+        box.start()
+
+        print(box.exec("echo", arrayOf("hello from a microVM")).getStr("stdout"))
+
+        box.remove(true)
+    } finally {
+        rt.close()
+    }
+}
+```
+
+Expected output:
+
+```text
+hello from a microVM
+```
 
 ## Usage
 
@@ -168,7 +204,7 @@ fake NDJSON helper on a temp Unix socket:
 # expected: all tests passed, exit code 0
 ```
 
-Conformance driver — runs all 35 scenarios in `sdk/conformance/scenarios/`
+Conformance driver — runs all 40 scenarios in `sdk/conformance/scenarios/`
 against the `nanosb-conformance` harness:
 
 ```bash
@@ -178,7 +214,7 @@ cargo build -p nanosb-conformance     # the harness
 
 `conformance` runs from the repository root (the driver resolves
 `sdk/conformance/scenarios` and `target/debug/nanosb-conformance`); override the
-harness path with `NANOSB_CONFORMANCE_BIN`. Expected output: `35 passed, 0
+harness path with `NANOSB_CONFORMANCE_BIN`. Expected output: `40 passed, 0
 failed`, exit code 0.
 
 Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):

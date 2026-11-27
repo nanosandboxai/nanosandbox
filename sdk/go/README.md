@@ -37,6 +37,71 @@ sdk/go/
 The repo root `go.work` file puts `sdk/go` in a Go workspace so the module is
 resolvable from the repository root.
 
+## Install
+
+Requires Go 1.27 or newer and macOS Apple Silicon or Linux x86_64/aarch64.
+
+```bash
+go get github.com/nanosandboxai/nanosandbox/sdk/go
+```
+
+## Quickstart (complete program)
+
+The first run downloads the per-platform runtime bundle. Save this as
+`main.go` and run `go run main.go`:
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/nanosandboxai/nanosandbox/sdk/go/nanosandbox"
+)
+
+func main() {
+	rt, err := nanosandbox.StartRuntime(15 * time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rt.Close()
+
+	client, err := nanosandbox.Connect(rt.Socket)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	box, err := client.CreateWith(
+		nanosandbox.NewSandboxBuilder("library/alpine:latest").WithName("demo"),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := box.Start(); err != nil {
+		log.Fatal(err)
+	}
+
+	out, err := box.Exec("echo", []string{"hello from a microVM"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	stdout, _ := out.Str("stdout")
+	fmt.Print(stdout)
+
+	if err := box.Remove(true); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Expected output:
+
+```text
+hello from a microVM
+```
+
 ## Usage
 
 ```go
@@ -162,7 +227,7 @@ temp Unix socket:
 go test ./sdk/go/...
 ```
 
-Conformance driver — runs all 35 scenarios in `sdk/conformance/scenarios/`
+Conformance driver — runs all 40 scenarios in `sdk/conformance/scenarios/`
 against the `nanosb-conformance` harness:
 
 ```bash
@@ -170,7 +235,7 @@ go run ./sdk/go/conformance/run.go
 # NANOSB_CONFORMANCE_BIN=/path/to/nanosb-conformance go run ./sdk/go/conformance/run.go
 ```
 
-Expected output: `35 passed, 0 failed`, exit code 0.
+Expected output: `40 passed, 0 failed`, exit code 0.
 
 Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 

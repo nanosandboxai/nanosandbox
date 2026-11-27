@@ -25,10 +25,41 @@ or vendor the sources directly:
 cp -r sdk/typescript/nanosandbox ./vendor/nanosandbox
 ```
 
+## Quickstart (complete program)
+
+Requires Node.js 24+ and an ESM package; the first run downloads the runtime
+bundle. Save as `demo.mjs` and run `node demo.mjs`:
+
+```javascript
+import { ManagedRuntime, SandboxBuilder, SandboxClient } from "nanosandbox-sdk";
+
+const rt = await ManagedRuntime.start();
+try {
+  const client = SandboxClient.connect(rt.socket);
+  const box = client.create(
+    new SandboxBuilder("library/alpine:latest").withName("demo").build(),
+  );
+  await box.start();
+
+  const out = await box.exec("echo", ["hello from a microVM"]);
+  process.stdout.write(out.stdout);
+
+  await box.remove(true);
+} finally {
+  await rt.close();
+}
+```
+
+Expected output:
+
+```text
+hello from a microVM
+```
+
 ## Usage
 
 ```js
-import { SandboxClient, SandboxBuilder } from "nanosandbox";
+import { SandboxClient, SandboxBuilder } from "nanosandbox-sdk";
 
 // Connect to the helper socket (performs the hello handshake).
 const client = await SandboxClient.connect("/path/to/helper.sock");
@@ -108,7 +139,7 @@ until the terminal frame (`guest exit/error` or `event done`).
 you can boot and manage microVMs without launching it yourself:
 
 ```js
-import { ManagedRuntime, SandboxClient } from "nanosandbox";
+import { ManagedRuntime, SandboxClient } from "nanosandbox-sdk";
 
 const rt = await ManagedRuntime.start();
 try {
@@ -142,7 +173,7 @@ temp Unix socket:
 node --test "sdk/typescript/tests/*.test.mjs"
 ```
 
-Conformance driver — runs all 35 scenarios in `sdk/conformance/scenarios/`
+Conformance driver — runs all 40 scenarios in `sdk/conformance/scenarios/`
 against the `nanosb-conformance` harness:
 
 ```bash
@@ -150,7 +181,7 @@ node sdk/typescript/conformance/run.mjs
 # NANOSB_CONFORMANCE_BIN=/path/to/nanosb-conformance node sdk/typescript/conformance/run.mjs
 ```
 
-Expected output: `35 passed, 0 failed`, exit code 0.
+Expected output: `40 passed, 0 failed`, exit code 0.
 
 Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 
