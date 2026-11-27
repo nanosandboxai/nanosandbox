@@ -510,7 +510,7 @@ flags when headless). API keys are injected from the panel environment via
 | Aider | `.../aider:latest` | `aider` | `aider --message <prompt> --yes --no-auto-commits` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
 | Gemini CLI | `.../gemini:latest` | `gemini` | `gemini -p <prompt>` | `GEMINI_API_KEY` (required) |
 | Crush | `.../crush:latest` | `crush` | `crush run <prompt>` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (either) |
-| Oh-My-OpenAgent (OmO) | `.../oh-my-openagent:latest` | `omo` | `omo -p --no-session "<prompt>"` | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY` (any one) |
+| Oh-My-OpenAgent (OmO) | `.../oh-my-openagent:latest` | `omo` | `omo -p --no-session "<prompt>"` | one of the provider keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`; see `registries/models/providers.yaml`) |
 | Oh-My-Codex (OMX) | `.../oh-my-codex:latest` | `omx --direct` | `omx exec --skip-git-repo-check --json "<prompt>"` | `OPENAI_API_KEY` or `CODEX_API_KEY` (either) |
 | Oh-My-Claude (OMC) | `.../oh-my-claude:latest` | `omc launch` | `omc ask claude "<prompt>"` | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (either) |
 
