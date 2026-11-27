@@ -21,7 +21,7 @@ jobs:
       matrix:
         sdk: [rust, python, typescript, go, ruby, java, kotlin, dotnet]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: v
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
