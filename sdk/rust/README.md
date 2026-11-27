@@ -45,6 +45,8 @@ hello from a microVM
 
 ## Usage
 
+The snippet below is a fragment; see the Quickstart for a complete program.
+
 ```rust
 use nanosandbox_sdk::{SandboxBuilder, SandboxClient};
 

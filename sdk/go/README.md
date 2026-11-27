@@ -104,6 +104,9 @@ hello from a microVM
 
 ## Usage
 
+The snippets below are illustrative fragments (not a complete program); the
+Quickstart above is the runnable end-to-end example.
+
 ```go
 import "github.com/nanosandboxai/nanosandbox/sdk/go/nanosandbox"
 
@@ -130,6 +133,7 @@ result, err := box.Exec("echo", []string{"hi"})
 // { exit_code: 0, stdout: "hi\n", stderr: "", duration_ms: 1 }
 
 // Streamed exec: opening `ok`, then guest frames until `exit`/`error`.
+req := nanosandbox.JsonParseOr(`{"type":"exec","name":"demo","command":"echo","args":["hi"]}`)
 code, err := box.ExecStream(req, func(ev nanosandbox.JsonValue) {
     event, _ := ev.Str("event")
     if event == "stdout" {
