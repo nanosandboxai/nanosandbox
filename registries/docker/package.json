@@ -4,7 +4,7 @@
   "private": true,
   "description": "Pinned versions for the npm-installed agent CLIs in registries/docker. Managed by Dependabot (npm ecosystem).",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.330",
+    "@anthropic-ai/claude-code": "2.1.331",
     "@openai/codex": "0.171.0",
     "@google/gemini-cli": "0.70.0",
     "@charmland/crush": "0.102.0",
