@@ -25,6 +25,17 @@ GEMSPEC="sdk/ruby/nanosandbox.gemspec"
 CSPROJ="sdk/dotnet/nanosandbox/Nanosandbox.csproj"
 GRADLE="sdk/kotlin/build.gradle.kts"
 
+# Code-level version constants the SDKs read at runtime to pin the runtime they
+# provision. Manifests alone are not enough: Ruby/Go/Java carry their own
+# constant, and Python/TypeScript/.NET fall back to one when package metadata is
+# unavailable, so all six must move with VERSION.
+RUBY_LIB="sdk/ruby/lib/nanosandbox.rb"
+GO_RUNTIME="sdk/go/nanosandbox/runtime.go"
+JAVA_SRC="sdk/java/src/main/java/nanosandbox/ManagedRuntime.java"
+PY_RUNTIME="sdk/python/nanosandbox/runtime.py"
+TS_RUNTIME="sdk/typescript/nanosandbox/runtime.mjs"
+CS_RUNTIME="sdk/dotnet/nanosandbox/ManagedRuntime.cs"
+
 # Workspace crates whose Cargo.lock [[package]] version tracks the SDK version.
 CARGO_PACKAGES=(
   nanosb-cli nanosandbox-sdk nanosb-protocol nanosb-client nanosb-host
@@ -40,6 +51,12 @@ read_version() {
     ruby)       awk -F'"' '/spec\.version/{print $2; exit}' "$GEMSPEC" ;;
     dotnet)     awk -F'[<>]' '/<Version>/{print $3; exit}' "$CSPROJ" ;;
     kotlin)     awk -F'"' '/^version = /{print $2; exit}' "$GRADLE" ;;
+    ruby-lib)   awk -F'"' '/^  VERSION = /{print $2; exit}' "$RUBY_LIB" ;;
+    go)         awk -F'"' '/^const sdkVersion =/{print $2; exit}' "$GO_RUNTIME" ;;
+    java-src)   awk -F'"' '/SDK_VERSION =/{print $2; exit}' "$JAVA_SRC" ;;
+    python-src) awk -F'"' '/^        return "/{print $2; exit}' "$PY_RUNTIME" ;;
+    typescript-src) awk -F'"' '/^  return "/{print $2; exit}' "$TS_RUNTIME" ;;
+    dotnet-src) awk -F'"' '/return v == null \? "/{print $2; exit}' "$CS_RUNTIME" ;;
     *)          echo "unknown manifest: $1" >&2; return 2 ;;
   esac
 }
@@ -60,6 +77,12 @@ write_all() {
   perl -i -pe 's/(spec\.version\s*= ")[^"]+(")/${1}'"$v"'${2}/' "$GEMSPEC"
   perl -i -pe 's/(<Version>)[^<]+(<\/Version>)/${1}'"$v"'${2}/' "$CSPROJ"
   perl -i -pe 's/^version = "[^"]+"/version = "'"$v"'"/' "$GRADLE"
+  perl -i -pe 's/(^  VERSION = ")[^"]+(")/${1}'"$v"'${2}/' "$RUBY_LIB"
+  perl -i -pe 's/(^const sdkVersion = ")[^"]+(")/${1}'"$v"'${2}/' "$GO_RUNTIME"
+  perl -i -pe 's/(static final String SDK_VERSION = ")[^"]+(")/${1}'"$v"'${2}/' "$JAVA_SRC"
+  perl -i -pe 's/(^        return ")[^"]+(")/${1}'"$v"'${2}/' "$PY_RUNTIME"
+  perl -i -pe 's/(^  return ")[^"]+(";)/${1}'"$v"'${2}/' "$TS_RUNTIME"
+  perl -i -pe 's/(return v == null \? ")[^"]+(" :)/${1}'"$v"'${2}/' "$CS_RUNTIME"
 
   local pkg
   for pkg in "${CARGO_PACKAGES[@]}"; do
@@ -69,7 +92,8 @@ write_all() {
 
 check_all() {
   local expected="$1" drift=0 got n
-  for n in cargo-toml python typescript java ruby dotnet kotlin; do
+  for n in cargo-toml python typescript java ruby dotnet kotlin \
+           ruby-lib go java-src python-src typescript-src dotnet-src; do
     got="$(read_version "$n")"
     if [ "$got" != "$expected" ]; then
       printf 'drift: %-12s %s (expected %s)\n' "$n" "${got:-<none>}" "$expected"

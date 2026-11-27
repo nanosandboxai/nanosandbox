@@ -23,7 +23,7 @@ contract in `sdk/conformance/SPEC.md`.
 <dependency>
   <groupId>ai.nanosandbox</groupId>
   <artifactId>nanosandbox-sdk</artifactId>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
 </dependency>
 ```
 
@@ -47,6 +47,39 @@ sdk/java/
 │   └── JsonTest.java                # unit tests + fake NDJSON helper
 └── conformance/
     └── Run.java                     # conformance driver (single-file source launch)
+```
+
+## Quickstart (complete program)
+
+Requires JDK 21+; the first run downloads the runtime bundle. Save as
+`Demo.java` and run it with the SDK on the classpath:
+
+```java
+import nanosandbox.ManagedRuntime;
+import nanosandbox.Sandbox;
+import nanosandbox.SandboxBuilder;
+import nanosandbox.SandboxClient;
+
+public class Demo {
+  public static void main(String[] args) throws Exception {
+    try (ManagedRuntime rt = ManagedRuntime.start()) {
+      SandboxClient client = SandboxClient.connect(rt.socket.toString());
+      Sandbox sandbox = client.createWith(
+          new SandboxBuilder("library/alpine:latest").withName("demo").withResources(1, 512));
+      sandbox.start();
+
+      System.out.print(sandbox.exec("echo", new String[]{"hello from a microVM"}).getStr("stdout"));
+
+      sandbox.remove(true);
+    }
+  }
+}
+```
+
+Expected output:
+
+```text
+hello from a microVM
 ```
 
 ## Usage
@@ -148,6 +181,12 @@ pinned to the SDK's release version. Config env: `NANOSB_HOME`, `NANOSB_VERSION`
 (required to download), `NANOSB_RUNTIME_URL`, `NANOSB_OFFLINE`,
 `NANOSB_RUNTIME_SHA256`, and `NANOSB_PROVISIONER`.
 
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
+
 ## Testing
 
 Unit tests exercise the client against an in-process fake NDJSON helper on a
@@ -157,7 +196,7 @@ temp Unix socket:
 mvn -q -f sdk/java/pom.xml test
 ```
 
-Conformance driver — runs all 35 scenarios in `sdk/conformance/scenarios/`
+Conformance driver — runs all 40 scenarios in `sdk/conformance/scenarios/`
 against the `nanosb-conformance` harness:
 
 ```bash
@@ -169,7 +208,7 @@ java -cp sdk/java/target/classes sdk/java/conformance/Run.java
 
 Run from the repository root (the driver resolves `sdk/conformance/scenarios`
 and `target/debug/nanosb-conformance` relative to the working directory).
-Expected output: `35 passed, 0 failed`, exit code 0.
+Expected output: `40 passed, 0 failed`, exit code 0.
 
 Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 

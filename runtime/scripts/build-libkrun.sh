@@ -135,7 +135,7 @@ if [ -z "${LIBCLANG_PATH:-}" ]; then
         fi
     fi
 fi
-if [ -z "${LIBCLANG_PATH:-}" ] || [ ! -e "${LIBCLANG_PATH}/libclang.so" ]; then
+if [ -z "${LIBCLANG_PATH:-}" ] || { [ ! -e "${LIBCLANG_PATH}/libclang.so" ] && [ ! -e "${LIBCLANG_PATH}/libclang.dylib" ]; }; then
     err "libclang not found (LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>}).
   The libkrun build needs libclang for bindgen. Install it and set LIBCLANG_PATH:
     Ubuntu/Debian: sudo apt-get install -y libclang-dev && export LIBCLANG_PATH=\$(llvm-config --prefix)/lib
@@ -143,6 +143,11 @@ if [ -z "${LIBCLANG_PATH:-}" ] || [ ! -e "${LIBCLANG_PATH}/libclang.so" ]; then
     exit 1
 fi
 echo "==> LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>}"
+# Some build scripts (krun-input) link libclang dynamically, so the loader must
+# find it at build-script runtime too.
+if [ "$(uname)" != "Darwin" ]; then
+    export LD_LIBRARY_PATH="${LIBCLANG_PATH}:${LD_LIBRARY_PATH:-}"
+fi
 export NET=1
 export BLK=1
 export INIT_BLOB=1
@@ -166,6 +171,19 @@ cargo build --release --features "$LIBKRUN_FEATURES" -j "$JOBS" 2>&1
 
 # Restore the original Cargo.toml
 mv "$CARGO_TOML.bak" "$CARGO_TOML"
+
+# A Rust staticlib bundles its own std. Linking it into another Rust binary
+# duplicates std symbols; GNU ld accepts --allow-multiple-definition for that,
+# but zig cc (the glibc-2.28 cross linker) rejects it. Weaken the archive's
+# globals instead so the final binary's strong std definitions win.
+if [ "$(uname)" != "Darwin" ]; then
+    weakdir="$(mktemp -d)"
+    lib_abs="$PWD/target/release/libkrun.a"
+    ( cd "$weakdir" && ar x "$lib_abs" \
+      && for o in *.o; do objcopy --weaken "$o"; done \
+      && ar rcs "$lib_abs" *.o )
+    rm -rf "$weakdir"
+fi
 
 # 4. Copy the static library to the output directory
 mkdir -p "$LIBKRUN_OUTPUT_DIR"

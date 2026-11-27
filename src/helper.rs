@@ -65,8 +65,8 @@ pub fn create_sandbox(spec: &SandboxSpec) -> anyhow::Result<()> {
         &sp.origin_json,
         sp.timeout_secs,
     )?;
-    deploy::wait_for_running(&sp.name, 60)?;
-    deploy::wait_for_exec_channel(&sp.name, 60)?;
+    deploy::wait_for_running(&sp.name, deploy::SUPERVISOR_START_TIMEOUT_SECS)?;
+    deploy::wait_for_exec_channel(&sp.name, deploy::SUPERVISOR_START_TIMEOUT_SECS)?;
     Ok(())
 }
 

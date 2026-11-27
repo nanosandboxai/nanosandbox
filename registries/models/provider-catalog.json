@@ -292,8 +292,42 @@
     },
     "oh-my-openagent": {
       "accepted_keys": [
+        "ALIBABA_TOKEN_PLAN_API_KEY",
         "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY"
+        "ANT_LING_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "BASETEN_API_KEY",
+        "CEREBRAS_API_KEY",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_API_KEY",
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_GATEWAY_ID",
+        "DEEPSEEK_API_KEY",
+        "DEVIN_API_KEY",
+        "FIREWORKS_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GROQ_API_KEY",
+        "HF_TOKEN",
+        "KIMI_CODING_API_KEY",
+        "MINIMAX_API_KEY",
+        "MISTRAL_API_KEY",
+        "MOONSHOT_API_KEY",
+        "NVIDIA_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENCODE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "OPEN_GATEWAY_API_KEY",
+        "QWEN_TOKEN_PLAN_API_KEY",
+        "RADIUS_API_KEY",
+        "TOGETHER_API_KEY",
+        "VENICE_API_KEY",
+        "VERCEL_API_KEY",
+        "XAI_API_KEY",
+        "XIAOMI_API_KEY",
+        "ZAI_API_KEY"
       ],
       "alt": [],
       "case_sensitive": false,
@@ -302,11 +336,48 @@
       "default": null,
       "extra_keys": [],
       "mode": "derived",
-      "no_env": [],
+      "no_env": [
+        "chatgpt_subscription",
+        "copilot"
+      ],
       "overrides": {},
       "providers": [
+        "alibaba_token_plan",
+        "ant_ling",
         "anthropic",
-        "openai"
+        "azure_openai_responses",
+        "baseten",
+        "bedrock",
+        "cerebras",
+        "chatgpt_subscription",
+        "cloudflare_ai_gateway",
+        "cloudflare_workers_ai",
+        "copilot",
+        "deepseek",
+        "devin",
+        "fireworks",
+        "google",
+        "groq",
+        "huggingface",
+        "kimi_coding",
+        "minimax",
+        "minimax_cn",
+        "mistral",
+        "moonshot",
+        "nvidia",
+        "openai",
+        "opencode",
+        "opengateway",
+        "openrouter",
+        "qwen_token_plan",
+        "radius",
+        "together",
+        "venice",
+        "vercel",
+        "vertex_ai",
+        "xai",
+        "xiaomi",
+        "zai"
       ]
     },
     "opencode": {
@@ -349,11 +420,15 @@
     "aimlapi": "openrouter",
     "alibaba": "alibaba",
     "alibaba-singapore": "alibaba_singapore",
+    "alibaba-token-plan": "alibaba_token_plan",
     "alibaba-us": "alibaba_us",
+    "amazon-bedrock": "bedrock",
+    "ant-ling": "ant_ling",
     "anthropic": "anthropic",
     "atlascloud": "atlascloud",
     "avian": "avian",
     "azure": "azure",
+    "azure-openai-responses": "azure_openai_responses",
     "bakeryhub": "opencode",
     "baseten": "baseten",
     "bedrock": "bedrock",
@@ -361,7 +436,10 @@
     "bedrock_converse": "bedrock",
     "celeris": "celeris",
     "cerebras": "cerebras",
+    "chatgpt-subscription": "chatgpt_subscription",
     "chutes": "chutes",
+    "cloudflare-ai-gateway": "cloudflare_ai_gateway",
+    "cloudflare-workers-ai": "cloudflare_workers_ai",
     "cohere_chat": "cohere",
     "copilot": "copilot",
     "coralbricks": "coralbricks",
@@ -370,6 +448,7 @@
     "custom_deepseek": "custom_deepseek",
     "custom_tensorix": "custom_tensorix",
     "deepseek": "deepseek",
+    "devin": "devin",
     "empiriolabs": "empiriolabs",
     "eurouter": "openrouter",
     "fireworks": "fireworks",
@@ -379,7 +458,9 @@
     "friendli": "friendli",
     "futurmix": "openrouter",
     "gemini": "gemini",
+    "github-copilot": "copilot",
     "google": "google",
+    "google-vertex": "vertex_ai",
     "groq": "groq",
     "hf": "huggingface",
     "huggingface": "huggingface",
@@ -392,8 +473,11 @@
     "meta": "openrouter",
     "minimax": "minimax",
     "minimax-china": "minimax",
+    "minimax-cn": "minimax_cn",
     "mistral": "mistral",
     "moonshot": "moonshot",
+    "moonshotai": "moonshot",
+    "moonshotai-cn": "moonshot",
     "nearai": "nearai",
     "nebius": "nebius",
     "neuralwatt": "neuralwatt",
@@ -405,6 +489,7 @@
     "opencode-zen": "opencode",
     "opencode_go": "opencode",
     "opencode_zen": "opencode",
+    "opengateway": "opengateway",
     "openrouter": "openrouter",
     "opper": "opper",
     "orcarouter": "openrouter",
@@ -414,6 +499,11 @@
     "pioneer": "pioneer",
     "pleumrouter": "openrouter",
     "qiniucloud": "qiniucloud",
+    "qwen-token-plan": "qwen_token_plan",
+    "qwen-token-plan-cn": "qwen_token_plan",
+    "qwen-token-plan-individual": "qwen_token_plan",
+    "qwen-token-plan-individual-cn": "qwen_token_plan",
+    "radius": "radius",
     "routerplex": "openrouter",
     "routstr": "openrouter",
     "sakana": "sakana",
@@ -427,11 +517,17 @@
     "typesafe": "typesafe",
     "venice": "venice",
     "vercel": "vercel",
+    "vercel-ai-gateway": "vercel",
     "vercel_ai_gateway": "openrouter",
     "vertex_ai": "vertex_ai",
     "vertexai": "vertex_ai",
     "xai": "xai",
+    "xiaomi": "xiaomi",
+    "xiaomi-token-plan-ams": "xiaomi",
+    "xiaomi-token-plan-cn": "xiaomi",
+    "xiaomi-token-plan-sgp": "xiaomi",
     "zai": "zai",
+    "zai-coding-cn": "zai",
     "zai-org": "zai",
     "zai_coding_plan": "zai",
     "zhipu": "zhipu",
@@ -447,8 +543,14 @@
     "alibaba_singapore": [
       "ALIBABA_SINGAPORE_API_KEY"
     ],
+    "alibaba_token_plan": [
+      "ALIBABA_TOKEN_PLAN_API_KEY"
+    ],
     "alibaba_us": [
       "ALIBABA_US_API_KEY"
+    ],
+    "ant_ling": [
+      "ANT_LING_API_KEY"
     ],
     "anthropic": [
       "ANTHROPIC_API_KEY"
@@ -460,6 +562,9 @@
       "AVIAN_API_KEY"
     ],
     "azure": [
+      "AZURE_OPENAI_API_KEY"
+    ],
+    "azure_openai_responses": [
       "AZURE_OPENAI_API_KEY"
     ],
     "baseten": [
@@ -475,8 +580,18 @@
     "cerebras": [
       "CEREBRAS_API_KEY"
     ],
+    "chatgpt_subscription": [],
     "chutes": [
       "CHUTES_API_KEY"
+    ],
+    "cloudflare_ai_gateway": [
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_ACCOUNT_ID",
+      "CLOUDFLARE_GATEWAY_ID"
+    ],
+    "cloudflare_workers_ai": [
+      "CLOUDFLARE_ACCOUNT_ID",
+      "CLOUDFLARE_API_KEY"
     ],
     "cohere": [
       "COHERE_API_KEY"
@@ -502,6 +617,9 @@
     ],
     "deepseek": [
       "DEEPSEEK_API_KEY"
+    ],
+    "devin": [
+      "DEVIN_API_KEY"
     ],
     "empiriolabs": [
       "EMPIRIOLABS_API_KEY"
@@ -548,6 +666,9 @@
     "minimax": [
       "MINIMAX_API_KEY"
     ],
+    "minimax_cn": [
+      "MINIMAX_API_KEY"
+    ],
     "mistral": [
       "MISTRAL_API_KEY"
     ],
@@ -575,6 +696,9 @@
     "opencode": [
       "OPENCODE_API_KEY"
     ],
+    "opengateway": [
+      "OPEN_GATEWAY_API_KEY"
+    ],
     "openrouter": [
       "OPENROUTER_API_KEY"
     ],
@@ -592,6 +716,12 @@
     ],
     "qiniucloud": [
       "QINIUCLOUD_API_KEY"
+    ],
+    "qwen_token_plan": [
+      "QWEN_TOKEN_PLAN_API_KEY"
+    ],
+    "radius": [
+      "RADIUS_API_KEY"
     ],
     "sakana": [
       "SAKANA_API_KEY"
@@ -628,6 +758,9 @@
     ],
     "xai": [
       "XAI_API_KEY"
+    ],
+    "xiaomi": [
+      "XIAOMI_API_KEY"
     ],
     "zai": [
       "ZAI_API_KEY"

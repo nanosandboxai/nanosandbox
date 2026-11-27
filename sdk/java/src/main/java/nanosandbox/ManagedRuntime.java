@@ -25,8 +25,8 @@ import java.util.stream.Stream;
  *
  * <p>Provisioning is configured by env: {@code NANOSB_VERSION} selects the
  * runtime version to download; when the user has not set it, the SDK pins it to
- * its own version ({@link #SDK_VERSION}), so a {@code 0.2.0} artifact provisions
- * runtime v0.2.0. Other knobs: {@code NANOSB_HOME}, {@code NANOSB_RUNTIME_URL},
+ * its own version ({@link #SDK_VERSION}), so a {@code 0.3.0} artifact provisions
+ * runtime v0.3.0. Other knobs: {@code NANOSB_HOME}, {@code NANOSB_RUNTIME_URL},
  * {@code NANOSB_RUNTIME_SHA256}, and {@code NANOSB_OFFLINE=1} to never download.
  *
  * <pre>{@code
@@ -40,10 +40,10 @@ import java.util.stream.Stream;
 public final class ManagedRuntime implements AutoCloseable {
   /**
    * The SDK's own release version, used to pin the runtime version when the user
-   * has not set {@code NANOSB_VERSION}, so {@code ai.nanosandbox:nanosandbox-sdk:0.2.0}
-   * provisions the matching runtime v0.2.0. The Kotlin SDK reuses this class.
+   * has not set {@code NANOSB_VERSION}, so {@code ai.nanosandbox:nanosandbox-sdk:0.3.0}
+   * provisions the matching runtime v0.3.0. The Kotlin SDK reuses this class.
    */
-  static final String SDK_VERSION = "0.2.0";
+  static final String SDK_VERSION = "0.3.0";
 
   private final Process proc;
   public final Path dir;

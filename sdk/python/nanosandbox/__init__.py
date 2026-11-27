@@ -6,8 +6,8 @@ Unix stream socket. Stdlib only.
     from nanosandbox import SandboxClient, SandboxBuilder
 
     client = SandboxClient.connect("/path/to/helper.sock")
-    box = client.create_with(SandboxBuilder("library/alpine:latest").name("demo"))
-    print(box.exec("echo", ["hi"]).stdout)
+    box = client.create_with(SandboxBuilder("library/alpine:latest").with_name("demo"))
+    print(box.exec("echo", ["hi"])["stdout"])
 """
 
 from .client import (

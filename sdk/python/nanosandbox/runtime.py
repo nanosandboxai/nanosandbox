@@ -12,7 +12,7 @@ verifies it, and installs it under `$NANOSB_HOME`.
 Provisioning is configured by env. `NANOSB_VERSION` selects the runtime version
 to download; when the user has not set it, the SDK pins it to its own release
 version (read from the installed distribution metadata), so `pip install
-nanosandbox-sdk==0.2.0` provisions runtime `v0.2.0`. Other knobs:
+nanosandbox-sdk==0.3.0` provisions runtime `v0.3.0`. Other knobs:
 `NANOSB_HOME`, `NANOSB_RUNTIME_URL`, `NANOSB_RUNTIME_SHA256`, and
 `NANOSB_OFFLINE=1` to never download.
 
@@ -153,7 +153,7 @@ def _sdk_version() -> str:
 
         return _dist_version("nanosandbox-sdk")
     except Exception:
-        return "0.2.0"
+        return "0.3.0"
 
 
 def _provisioner_env() -> dict:
@@ -161,7 +161,7 @@ def _provisioner_env() -> dict:
 
     Inherits the caller's environment and pins ``NANOSB_VERSION`` to the SDK's
     own version when the user has not provided one, so ``pip install
-    nanosandbox-sdk==0.2.0`` provisions the matching runtime ``v0.2.0``. A
+    nanosandbox-sdk==0.3.0`` provisions the matching runtime ``v0.3.0``. A
     user-provided ``NANOSB_VERSION`` is never overridden."""
     env = os.environ.copy()
     if not env.get("NANOSB_VERSION"):

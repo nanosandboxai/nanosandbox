@@ -368,12 +368,21 @@ install_runtime_bundle() {
     fi
 
     local asset="nanosandbox-runtime-${os}-${arch}.tar.gz"
-    local url
+
+    # Resolve a concrete tag for "latest": GitHub's /releases/latest/ 404s when
+    # the newest release is a prerelease, so use the same prerelease-aware
+    # resolver as the CLI and deps downloads.
+    local tag
     if [[ "$NANOSB_VERSION" == "latest" ]]; then
-        url="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset}"
+        tag="$(resolve_latest_tag || true)"
+        if [[ -z "$tag" ]]; then
+            warn "Could not resolve latest release tag for ${asset}"
+            return 0
+        fi
     else
-        url="https://github.com/${RELEASE_REPO}/releases/download/v${NANOSB_VERSION}/${asset}"
+        tag="v${NANOSB_VERSION}"
     fi
+    local url="https://github.com/${RELEASE_REPO}/releases/download/${tag}/${asset}"
 
     local tmpdir
     tmpdir="$(mktemp -d)"

@@ -84,7 +84,7 @@ reads (Rust `sandbox::providers`, the docs-site configurator, the Python validat
 | aider | 379 | 12 | `aider/models.py` aliases + `model-settings.yml` |
 | gemini | 16 | 1 | Gemini CLI `models.ts` (aliases + IDs) |
 | crush | 1764 | 39 | Crush's Catwalk provider database |
-| oh-my-openagent | 4 | 2 | snapshot |
+| oh-my-openagent | 1994 | 36 | snapshot |
 | oh-my-codex | 8 | 1 | snapshot |
 | oh-my-claude | 44 | 1 | snapshot |
 

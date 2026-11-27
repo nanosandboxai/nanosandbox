@@ -8,6 +8,7 @@ use crate::supervisor::client::SupervisorClient;
 pub use nanosb_host::deploy::{
     exec_agent_path, extract_boot_env, guest_bin_dir, prepare_supervisor_spawn, stage_exec_agent,
     wait_for_exec_channel, wait_for_running, Origin, SupervisorSpawn, EXEC_VSOCK_PORT,
+    SUPERVISOR_START_TIMEOUT_SECS,
 };
 
 /// Spawn a detached supervisor process for `sandbox_name`.
@@ -319,7 +320,7 @@ pub fn deploy_plan_for(
         // Goose needs `GOOSE_PROVIDER`/`GOOSE_MODEL`; reuse the TUI resolver
         // (no-op when `GOOSE_PROVIDER` is already set, so explicit env wins).
         if agent_type == sandbox::AgentType::Goose {
-            crate::tui::run::resolve_goose_env(&mut rc.env, config.model.as_deref());
+            crate::agent_env::resolve_goose_env(&mut rc.env, config.model.as_deref());
         }
     }
     Ok((plan, rc))

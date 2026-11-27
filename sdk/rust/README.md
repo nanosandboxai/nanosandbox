@@ -4,7 +4,53 @@ The Rust SDK for the [nanosandbox](https://github.com/nanosandboxai/nanosandbox)
 protocol helper. It re-exports the reference `nanosb-client` crate under the
 stable `nanosandbox-sdk` name, mirroring the other language SDKs.
 
+## Install
+
+Requires Rust 1.94 or newer (the release toolchain) and macOS Apple Silicon or
+Linux x86_64/aarch64.
+
+```bash
+cargo add nanosandbox-sdk
+```
+
+## Quickstart (complete program)
+
+The first run downloads the per-platform runtime bundle. Save this as
+`src/main.rs` in a new crate and run `cargo run`:
+
+```rust
+use nanosandbox_sdk::{ManagedRuntime, Result, SandboxBuilder, SandboxClient};
+
+fn main() -> Result<()> {
+    let rt = ManagedRuntime::start().unwrap();
+    let client = SandboxClient::connect(rt.socket())?;
+    let sandbox = client
+        .create_with(
+            SandboxBuilder::new("library/alpine:latest")
+                .name("demo")
+                .cpus(1)
+                .memory_mb(512),
+        )?;
+
+    sandbox.start()?;
+    let out = sandbox.exec("echo", &["hello from a microVM"])?;
+    print!("{}", out.stdout);
+
+    sandbox.remove(true)?;
+    drop(rt);
+    Ok(())
+}
+```
+
+Expected output:
+
+```text
+hello from a microVM
+```
+
 ## Usage
+
+The snippet below is a fragment; see the Quickstart for a complete program.
 
 ```rust
 use nanosandbox_sdk::{SandboxBuilder, SandboxClient};
@@ -50,6 +96,12 @@ download, and `NANOSB_PROVISIONER`.
 ```bash
 cargo build -p nanosandbox-sdk
 ```
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 

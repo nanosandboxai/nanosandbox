@@ -175,6 +175,47 @@ const ACCEPTED_AIDER: &[&str] = &[
     "GOOGLE_APPLICATION_CREDENTIALS",
 ];
 
+/// Accepted provider credential keys for Oh-My-OpenAgent (mirrors the
+/// configurator's provider->env-key table; superset of `required_api_keys`).
+const ACCEPTED_OMO: &[&str] = &[
+    "ALIBABA_TOKEN_PLAN_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANT_LING_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "BASETEN_API_KEY",
+    "CEREBRAS_API_KEY",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_KEY",
+    "CLOUDFLARE_API_TOKEN",
+    "CLOUDFLARE_GATEWAY_ID",
+    "DEEPSEEK_API_KEY",
+    "DEVIN_API_KEY",
+    "FIREWORKS_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GROQ_API_KEY",
+    "HF_TOKEN",
+    "KIMI_CODING_API_KEY",
+    "MINIMAX_API_KEY",
+    "MISTRAL_API_KEY",
+    "MOONSHOT_API_KEY",
+    "NVIDIA_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENCODE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPEN_GATEWAY_API_KEY",
+    "QWEN_TOKEN_PLAN_API_KEY",
+    "RADIUS_API_KEY",
+    "TOGETHER_API_KEY",
+    "VENICE_API_KEY",
+    "VERCEL_API_KEY",
+    "XAI_API_KEY",
+    "XIAOMI_API_KEY",
+    "ZAI_API_KEY",
+];
+
 /// Returns the requirements for an agent.
 ///
 /// Agents not listed here (custom images, unknown names) have no mandatory
@@ -245,9 +286,9 @@ pub fn agent_requirements(agent: &str) -> &'static [AgentRequirement] {
         }],
         "oh-my-openagent" => &[AgentRequirement {
             label: "OmO provider API key",
-            keys: &["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"],
+            keys: ACCEPTED_OMO,
             mandatory: true,
-            hint: "export OPENAI_API_KEY=sk-..., ANTHROPIC_API_KEY=sk-ant-..., or OPENROUTER_API_KEY=sk-or-... before launching the TUI. OmO has no browser sign-in flow in this sandbox.",
+            hint: "export one of the provider keys (e.g. OPENAI_API_KEY=sk-..., ANTHROPIC_API_KEY=sk-ant-..., or OPENROUTER_API_KEY=sk-or-...) before launching the TUI. OmO has no browser sign-in flow in this sandbox.",
         }],
         "oh-my-codex" => &[AgentRequirement {
             label: "OpenAI API key (OMX)",

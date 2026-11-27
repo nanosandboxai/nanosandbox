@@ -8,7 +8,7 @@ for tests only.
 
 The client surface mirrors the other SDKs and the driver contract in
 [`sdk/conformance/SPEC.md`](../conformance/SPEC.md). It passes the shared
-conformance suite (35/35).
+conformance suite (40/40).
 
 ## Requirements
 
@@ -41,6 +41,30 @@ sdk/dotnet/
     ├── conformance.csproj           # exe
     ├── Run.cs                       # conformance driver
     └── Driver.cs                    # step dispatch + assert evaluation
+```
+
+## Quickstart (complete program)
+
+Requires .NET SDK 8.0+; the first run downloads the runtime bundle. In a console
+project with the package installed:
+
+```csharp
+using System;
+using System.Collections.Generic;
+
+using var rt = ManagedRuntime.start();
+var client = SandboxClient.connect(rt.Socket);
+var box = client.createWith(new SandboxBuilder("library/alpine:latest").withName("demo"));
+
+box.start();
+Console.Write(box.exec("echo", new List<string> { "hello from a microVM" }).str("stdout"));
+box.remove(true);
+```
+
+Expected output:
+
+```text
+hello from a microVM
 ```
 
 ## Usage
@@ -84,7 +108,7 @@ var inner = stat.has("stat") ? stat.get("stat") : stat; // is_dir at inner.boolV
 // Logs (buffered + follow) and metrics (+ stream).
 var lines = box.logsWith(10, -1, null).arr("lines");
 box.metrics().intVal("disk_used_bytes");
-box.metricsStream(100, sample => Console.WriteLine(sample.getNum("cpu_percent")));
+box.metricsStream(100, sample => Console.WriteLine(sample.num("cpu_percent")));
 
 // Volumes, secrets, snapshots.
 box.volumeCreate("data", "/host/volumes/data");
@@ -119,7 +143,7 @@ This makes `dotnet add package Nanosandbox.Sdk` the only step needed.
 ```csharp
 using (var rt = ManagedRuntime.start()) {
     var client = SandboxClient.connect(rt.Socket);
-    var box = client.createWith(new SandboxBuilder("library/alpine:latest").withName("demo"));
+var box = client.createWith(new SandboxBuilder("library/alpine:latest").withName("demo").withResources(1, 512));
     Console.WriteLine(box.exec("echo", new List<String> { "hello from a microVM" }).str("stdout"));
 }
 ```
@@ -130,9 +154,15 @@ provisioner is resolved from `NANOSB_PROVISIONER`, then
 `scripts/sdk/ensure-runtime.sh` relative to the package/repo, then an embedded
 copy shipped with the SDK. Provisioning config is read from the environment:
 `NANOSB_HOME` (install root), `NANOSB_VERSION` (version to download; defaults to
-the SDK's own version, e.g. `0.2.0`), `NANOSB_RUNTIME_URL` (release base URL),
+the SDK's own version, e.g. `0.3.0`), `NANOSB_RUNTIME_URL` (release base URL),
 `NANOSB_RUNTIME_SHA256` (optional bundle checksum), and `NANOSB_OFFLINE=1`
 (never download).
+
+## Headless code agents
+
+Run Claude, Codex, or another coding agent in the sandbox instead of Alpine:
+see [Headless Code Agents](https://nanosandbox.ai/docs/sdk/agents) and the
+shared example in [`../README.md`](../README.md).
 
 ## Testing
 
@@ -142,7 +172,7 @@ Unit tests (no VM required):
 dotnet test sdk/dotnet
 ```
 
-Conformance driver — all 35 scenarios in `sdk/conformance/scenarios/`:
+Conformance driver — all 40 scenarios in `sdk/conformance/scenarios/`:
 
 ```bash
 dotnet run --project sdk/dotnet/conformance
@@ -155,4 +185,4 @@ Live microVM E2E (opt-in; needs the helper + libkrun/gvproxy + a cached image):
 NANOSB_E2E=1 dotnet test sdk/dotnet --filter E2ETest
 ```
 
-Expected conformance output: `35 passed, 0 failed`, exit code 0.
+Expected conformance output: `40 passed, 0 failed`, exit code 0.

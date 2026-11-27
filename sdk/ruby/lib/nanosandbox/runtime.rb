@@ -13,8 +13,8 @@
 #
 # Provisioning is configured by env. `NANOSB_VERSION` selects the runtime
 # version to download; when the user has not set it, the SDK pins it to its own
-# version (`Nanosandbox::VERSION`), so `gem install nanosandbox-sdk -v 0.2.0`
-# provisions runtime v0.2.0. Other knobs: `NANOSB_HOME`, `NANOSB_RUNTIME_URL`,
+# version (`Nanosandbox::VERSION`), so `gem install nanosandbox-sdk -v 0.3.0`
+# provisions runtime v0.3.0. Other knobs: `NANOSB_HOME`, `NANOSB_RUNTIME_URL`,
 # `NANOSB_RUNTIME_SHA256`, and `NANOSB_OFFLINE=1` to never download.
 #
 #   Nanosandbox::ManagedRuntime.open do |rt|
@@ -161,8 +161,8 @@ module Nanosandbox
 
   # Environment for the provisioner child process: the caller's environment with
   # NANOSB_VERSION pinned to the SDK's own version when the user has not provided
-  # one, so `gem install nanosandbox-sdk -v 0.2.0` provisions the matching
-  # runtime v0.2.0. A user-provided NANOSB_VERSION is never overridden.
+  # one, so `gem install nanosandbox-sdk -v 0.3.0` provisions the matching
+  # runtime v0.3.0. A user-provided NANOSB_VERSION is never overridden.
   def self.provisioner_env
     env = {}
     if ENV["NANOSB_VERSION"].nil? || ENV["NANOSB_VERSION"].empty?

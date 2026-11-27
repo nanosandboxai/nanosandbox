@@ -19,8 +19,8 @@ using System.Threading;
 ///
 /// Provisioning is configured by env. <c>NANOSB_VERSION</c> selects the runtime
 /// version to download; when the user has not set it, the SDK pins it to its
-/// own version (read from the assembly), so a 0.2.0 package provisions runtime
-/// v0.2.0. Other knobs: <c>NANOSB_HOME</c>, <c>NANOSB_RUNTIME_URL</c>,
+/// own version (read from the assembly), so a 0.3.0 package provisions runtime
+/// v0.3.0. Other knobs: <c>NANOSB_HOME</c>, <c>NANOSB_RUNTIME_URL</c>,
 /// <c>NANOSB_RUNTIME_SHA256</c>, and <c>NANOSB_OFFLINE=1</c> to never download.
 /// </summary>
 public sealed class ManagedRuntime : IDisposable {
@@ -209,12 +209,12 @@ public sealed class ManagedRuntime : IDisposable {
 
     /// <summary>
     /// The SDK's own release version, read from the assembly. Used to pin the
-    /// runtime version when the user has not set NANOSB_VERSION, so a 0.2.0
-    /// package provisions the matching runtime v0.2.0.
+    /// runtime version when the user has not set NANOSB_VERSION, so a 0.3.0
+    /// package provisions the matching runtime v0.3.0.
     /// </summary>
     private static String sdkVersion() {
         var v = typeof(ManagedRuntime).Assembly.GetName().Version;
-        return v == null ? "0.2.0" : v.ToString(3);
+        return v == null ? "0.3.0" : v.ToString(3);
     }
 
     private static void runBash(String script) {

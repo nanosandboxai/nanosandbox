@@ -117,6 +117,32 @@ _EMBEDDED_CANONICAL: dict[str, str] = {
     "foundry": "foundry",
     "mantle": "mantle",
     "custom": "custom",
+    # oh-my-openagent vendored builtin provider snapshot (senpi-ai@2026.11.23)
+    "alibaba-token-plan": "alibaba_token_plan",
+    "amazon-bedrock": "bedrock",
+    "ant-ling": "ant_ling",
+    "azure-openai-responses": "azure_openai_responses",
+    "chatgpt-subscription": "chatgpt_subscription",
+    "cloudflare-ai-gateway": "cloudflare_ai_gateway",
+    "cloudflare-workers-ai": "cloudflare_workers_ai",
+    "devin": "devin",
+    "github-copilot": "copilot",
+    "google-vertex": "vertex_ai",
+    "minimax-cn": "minimax_cn",
+    "moonshotai": "moonshot",
+    "moonshotai-cn": "moonshot",
+    "opengateway": "opengateway",
+    "qwen-token-plan": "qwen_token_plan",
+    "qwen-token-plan-cn": "qwen_token_plan",
+    "qwen-token-plan-individual": "qwen_token_plan",
+    "qwen-token-plan-individual-cn": "qwen_token_plan",
+    "radius": "radius",
+    "vercel-ai-gateway": "vercel",
+    "xiaomi": "xiaomi",
+    "xiaomi-token-plan-ams": "xiaomi",
+    "xiaomi-token-plan-cn": "xiaomi",
+    "xiaomi-token-plan-sgp": "xiaomi",
+    "zai-coding-cn": "zai",
 }
 
 _EMBEDDED_ENV: dict[str, list[str]] = {
@@ -187,6 +213,23 @@ _EMBEDDED_ENV: dict[str, list[str]] = {
     "cursor": ["CURSOR_API_KEY"],
     # OAuth-authenticated; no env var (sentinel empty list)
     "copilot": [],
+    # oh-my-openagent vendored builtin provider snapshot (senpi-ai@2026.11.23)
+    "alibaba_token_plan": ["ALIBABA_TOKEN_PLAN_API_KEY"],
+    "ant_ling": ["ANT_LING_API_KEY"],
+    "azure_openai_responses": ["AZURE_OPENAI_API_KEY"],
+    "chatgpt_subscription": [],
+    "cloudflare_ai_gateway": [
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_GATEWAY_ID",
+    ],
+    "cloudflare_workers_ai": ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_KEY"],
+    "devin": ["DEVIN_API_KEY"],
+    "minimax_cn": ["MINIMAX_API_KEY"],
+    "opengateway": ["OPEN_GATEWAY_API_KEY"],
+    "qwen_token_plan": ["QWEN_TOKEN_PLAN_API_KEY"],
+    "radius": ["RADIUS_API_KEY"],
+    "xiaomi": ["XIAOMI_API_KEY"],
 }
 
 # Mirrors the `agents:` block of registries/models/providers.yaml exactly.
@@ -244,6 +287,7 @@ _EMBEDDED_AGENTS: dict[str, dict[str, Any]] = {
     },
     "oh-my-openagent": {
         "mode": "derived",
+        "no_env": ["copilot", "chatgpt_subscription"],
     },
     "oh-my-codex": {
         "mode": "single",

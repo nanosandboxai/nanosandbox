@@ -11,9 +11,9 @@ import (
 
 // sdkVersion is the SDK's own release version, used to pin the runtime version
 // when the user has not set NANOSB_VERSION, so `go get
-// github.com/nanosandboxai/nanosandbox/sdk/go@v0.2.0` provisions the matching
-// runtime v0.2.0.
-const sdkVersion = "0.2.0"
+// github.com/nanosandboxai/nanosandbox/sdk/go@v0.3.0` provisions the matching
+// runtime v0.3.0.
+const sdkVersion = "0.3.0"
 
 // embeddedProvisioner is the shared ensure-runtime.sh provisioner, shipped with
 // the SDK so auto-provisioning works from an installed package with no repo
