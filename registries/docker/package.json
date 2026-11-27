@@ -9,7 +9,7 @@
     "@google/gemini-cli": "0.70.0",
     "@charmland/crush": "0.102.0",
     "omo-ai": "5.1.81",
-    "oh-my-codex": "0.22.15",
+    "oh-my-codex": "0.22.20",
     "oh-my-claude-sisyphus": "5.8.4"
   }
 }
