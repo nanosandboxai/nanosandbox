@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanosb-conformance
           path: target/debug
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanosb-conformance
           path: target/debug
@@ -84,7 +84,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanosb-conformance
           path: target/debug
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanosb-conformance
           path: target/debug
@@ -128,7 +128,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanosb-conformance
           path: target/debug
@@ -153,7 +153,7 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanosb-conformance
           path: target/debug
@@ -179,7 +179,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanosb-conformance
           path: target/debug
@@ -201,7 +201,7 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanosb-conformance
           path: target/debug
