@@ -119,6 +119,19 @@ this image uses `CODEX_API_KEY` for API-key auth. For Claude, use
 <https://nanosandbox.ai/docs/sdk/agents> for the full guide and per-language
 adapters.
 
+## Error handling
+
+Wire errors are `{type:"error", code, message}` with stable codes:
+`bad_request`, `incompatible_version`, `not_found`, `invalid_state`,
+`unsupported`, `unauthorized`, `timeout`, `transport`, `io`, and `internal`.
+Retry only `timeout`/`transport` for idempotent calls; treat `not_found` as a
+missing sandbox; check `supports()` before optional verbs; re-raise unknown
+errors. A non-zero `exec` exit code is a result, not a protocol error.
+
+Each SDK exposes the code plus helpers (`is_not_found`/`isNotFound`, …). Full
+table, accessors, and per-language handlers:
+<https://nanosandbox.ai/docs/sdk/errors>.
+
 ## Conformance suite
 
 All SDKs are validated by **one** corpus: [`conformance/`](conformance/README.md)
